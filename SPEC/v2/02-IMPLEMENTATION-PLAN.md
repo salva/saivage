@@ -39,7 +39,7 @@ Build the **Runtime Core** (06-SYSTEM-DESIGN §2.1) — the central orchestratio
 | 2.1 Agent interface | `src/v2/agents/types.ts` | Base `Agent` interface, `AgentContext`, `AgentResult` (success/failure/escalation/abort) |
 | 2.2 Tool-call dispatcher | `src/v2/runtime/dispatcher.ts` | Nested tool-call pattern: intercept `run_*()` calls → suspend parent → spawn child → resume parent with result. Supports parallel dispatch with resume-on-each |
 | 2.3 Plan MCP service | `src/v2/mcp/plan-server.ts` | 11 tools per [03-PLAN-MCP-SERVICE.md](03-PLAN-MCP-SERVICE.md). Atomic writes, schema validation, history append. Built on Document Store from Phase 1 |
-| 2.4 Git MCP adaptation | existing `src/services/git/` | Add explicit file staging, `[task-<id>]` commit prefix, conflict error returns |
+| 2.4 Git MCP adaptation | existing `src/services/git/` | Add explicit file staging, `[tsk-<id>]` commit prefix, conflict error returns |
 | 2.5 Abort mechanism | `src/v2/runtime/abort.ts` | Detect urgent notes → terminate active chain bottom-up → `git checkout -- .` → Manager writes partial StageSummary (aborted) → Planner resumes. See 06-SYSTEM-DESIGN §4.2 |
 | 2.6 Context compaction | `src/v2/runtime/compaction.ts` | Track token usage → trigger at 80% → generate summary message → replace history. Max 3 compactions per conversation. See 06-SYSTEM-DESIGN §4.5 |
 | 2.7 Self-check | `src/v2/runtime/self-check.ts` | Inject progress-assessment prompt every N tool-call rounds (configurable per role). Stuck detection → agent failure. See [04-RUNTIME-DETAILS.md](04-RUNTIME-DETAILS.md) §4 |
@@ -191,7 +191,7 @@ Phases 2 and 3 can be worked on in **parallel** — they only share the agent in
 | `src/mcp/` | **Keep** | MCP client, runtime, registry |
 | `src/services/filesystem,shell,web` | **Keep** | No changes |
 | `src/services/memory,index` | **Keep** | No changes |
-| `src/services/git/` | **Adapt** | Explicit file staging, `[task-id]` prefix |
+| `src/services/git/` | **Adapt** | Explicit file staging, `[tsk-<id>]` prefix |
 | `src/services/skills/` | **Adapt** | `target_agents`, `agent:<type>` trigger |
 | `src/channels/` | **Adapt** | Wire to v2 Chat agent |
 | `src/generator/` | **Keep** | MCP service scaffold |

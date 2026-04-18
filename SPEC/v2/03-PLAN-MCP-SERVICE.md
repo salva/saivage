@@ -112,6 +112,8 @@ Move a stage from the active plan to history. This is the primary operation the 
 - `result` ("completed" | "failed" | "escalated" | "aborted", required)
 - `summary` (string, required) — from the Manager's StageSummary
 - `actual_outcomes` (string[], required) — what actually happened
+- `escalation` (Escalation, optional) — if result == "escalated", the Escalation object from StageSummary
+- `abort_reason` (string, optional) — if result == "aborted", the reason from StageSummary
 
 **Output:**
 ```json

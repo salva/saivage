@@ -49,8 +49,8 @@ When an LLM response contains multiple agent-dispatch tool calls (e.g., Manager 
 5. The runtime tracks which `tool_use_id`s are still pending. The parent's conversation loop continues normally — it receives each result as it arrives.
 
 **Constraints:**
-- Maximum 1 Coder + 1 Researcher running concurrently per Manager (enforced by convention, not by runtime — the Manager prompt instructs this).
-- If the LLM emits 3+ agent dispatch calls in one response, the runtime executes them all concurrently. There is no queueing — the Manager is responsible for not over-dispatching.
+- Maximum 1 Coder + 1 Researcher running concurrently per Manager (**enforced by the runtime**, not just convention).
+- If the LLM emits more than one `run_coder()` or more than one `run_researcher()` in a single response, the runtime rejects the excess calls with an error result. Only the first of each type is dispatched.
 
 ### 1.4 Mixed Tool Calls
 
@@ -207,9 +207,9 @@ If the worker crashes before writing the report:
 
 ### 6.1 Attempt Counting
 
-`Task.attempt` starts at **1** when the task is created. Before each dispatch, the Manager increments `attempt` in `tasks.json` (except for the first dispatch when attempt is already 1).
+`Task.attempt` starts at **1** when the task is created (representing the first attempt). After a failure, the Manager checks whether to retry: if `attempt < max_attempts`, it increments `attempt`, modifies the description with failure context, and retries; if `attempt >= max_attempts`, it escalates.
 
-Sequence: create (attempt=1) → dispatch → fail → increment (attempt=2) → modify description → dispatch → fail → increment (attempt=3) → escalate (if attempt > max_attempts).
+Sequence with `max_attempts = 3`: create (attempt=1) → dispatch → fail → 1 < 3? yes → increment (attempt=2) → modify description → dispatch → fail → 2 < 3? yes → increment (attempt=3) → dispatch → fail → 3 < 3? no → escalate. Total: 3 dispatch attempts.
 
 ### 6.2 Retry Description Modification
 

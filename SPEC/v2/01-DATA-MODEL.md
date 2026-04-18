@@ -115,6 +115,8 @@ interface CompletedStage {
   completed_at: string;
   result: "completed" | "failed" | "escalated" | "aborted";
   summary: string;                   // from Manager's stage summary
+  escalation?: Escalation;           // if result == "escalated" (preserved from StageSummary)
+  abort_reason?: string;             // if result == "aborted" (preserved from StageSummary)
 }
 ```
 

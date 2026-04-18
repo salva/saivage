@@ -134,7 +134,7 @@ Stage specified files and commit.
 |-----------|------|----------|---------|-------------|
 | `files` | string[] | yes | — | Files to stage (relative to project root) |
 | `message` | string | yes | — | Commit message |
-| `task_id` | string | no | — | If provided, message is prefixed with `[task-<id>]` |
+| `task_id` | string | no | — | If provided, message is prefixed with `[tsk-<id>]` |
 
 **Returns:** `{ sha: string }` or `{ error: "CONFLICT", files: string[] }` if conflict detected.
 
@@ -234,7 +234,7 @@ Manages `plan.json` and `plan-history.json`. All reads and writes go through thi
 | `plan_add_stage(stage)` | Append a stage | yes |
 | `plan_remove_stage(stage_id)` | Remove a stage | yes |
 | `plan_set_current(stage_id)` | Mark a stage as executing | yes |
-| `plan_complete_stage(stage_id, result, summary, actual_outcomes)` | Archive stage to history | yes |
+| `plan_complete_stage(stage_id, result, summary, actual_outcomes, escalation?, abort_reason?)` | Archive stage to history | yes |
 | `plan_get_history(last_n?)` | Read plan history | no |
 | `plan_init(stages?)` | Initialize empty plan | yes |
 | `plan_commit(message)` | Commit plan files to git | yes |

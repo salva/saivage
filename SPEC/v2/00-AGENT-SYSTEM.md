@@ -102,7 +102,7 @@ This means the Manager maintains its full conversation context throughout the st
 - Dispatches tasks to Coder or Researcher via tool calls.
 - Can dispatch **independent tasks in parallel** (1 Coder + 1 Researcher) when they have no dependencies.
 - Processes task reports returned as tool results.
-- On task failure: decides whether to retry, create a remediation task, adjust remaining tasks, or escalate to Planner. **Escalation terminates the Manager.**
+- On task failure: decides whether to retry, create a remediation task, adjust remaining tasks, or escalate to Planner. **Escalation terminates the Manager.** On escalation, the Manager updates `tasks.json` — completed tasks stay `completed`, the failing task stays `failed`, and remaining undispatched tasks stay `pending`.
 - On stage completion: writes the stage summary (aggregating Coder/Researcher reports) and notifies the Planner. **Then terminates.**
 - Schedules **skill generation** after a tool or pattern is established that will be reused.
 
@@ -348,6 +348,7 @@ The execution model is a **nested tool-call chain**:
 8. Manager loops (dispatch next tasks) or finishes:
    - **Completion**: writes `StageSummary`, returns it to Planner.
    - **Escalation**: writes `StageSummary` with `result: "escalated"`, returns it to Planner.
+   - **Failure** (runtime-generated): if the Manager's own conversation fails unrecoverably (max compactions exceeded, non-retryable LLM error), the runtime synthesizes a `StageSummary` with `result: "failed"` and returns it to the Planner. This is distinct from escalation, which is a deliberate Manager decision.
 9. Planner resumes, calls `plan_complete_stage()` to archive the stage, updates remaining stages via `plan_set_stages()` if needed.
 10. Planner calls `run_manager(next_stage)` → goto 3.
 
@@ -384,7 +385,7 @@ When the user demands an immediate course change, the system supports **aborting
 4. The Planner resumes with the abort result and the urgent note injected into context. It processes the user's request and replans accordingly.
 
 **Abort semantics:**
-- Aborted agents do not commit partial work — uncommitted changes are discarded. The runtime performs a `git checkout -- .` on the project worktree after terminating the aborted agent to ensure no partial modifications remain.
+- Aborted agents do not commit partial work — uncommitted changes are discarded. The runtime performs a `git checkout -- .` on the project worktree after terminating the aborted agent, which resets tracked modified files. **Untracked files** (new files created by the aborted agent) are not removed by `git checkout` — the rollback stage handles cleanup of those.
 - The Manager's `tasks.json` reflects the state at abort time (completed tasks stay completed, in-progress tasks are marked `aborted`).
 - On abort, the Planner **creates a rollback stage** as the first stage in the revised plan. The rollback stage inspects the project state, reverts any inconsistencies left by the interrupted work, and ensures the project is in a clean state before new work begins. After the rollback stage completes, the Planner proceeds with the new direction.
 - Abort is a **runtime mechanism**, not an LLM tool call. Agents do not need to "cooperate" with the abort — the runtime terminates their LLM conversation and synthesizes the abort result.

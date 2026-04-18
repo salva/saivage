@@ -109,7 +109,7 @@ The Runtime Core is the central orchestration engine. It is a **singleton** with
 **Responsibilities:**
 - **Agent lifecycle management**: spawn, suspend, resume, and terminate agent LLM conversations.
 - **Tool-call dispatch**: intercept agent-dispatch tool calls (`run_manager`, `run_coder`, etc.), suspend the parent, spawn the child, and inject the child's result back into the parent's conversation when done.
-- **Abort handling**: detect urgent user notes, terminate the active agent chain bottom-up, clean the working tree (`git checkout -- .`), and resume the Planner with the abort context.
+- **Abort handling**: detect urgent user notes, terminate the active agent chain bottom-up, clean the working tree (`git checkout -- .` resets tracked modified files; untracked files are left for the rollback stage), and resume the Planner with the abort context.
 - **Context compaction**: track token usage per conversation, trigger compaction when usage exceeds the threshold (default 80%), produce a summary message that replaces the conversation history.
 - **Periodic self-check**: inject a progress-assessment prompt after every N tool-call rounds to catch infinite loops.
 - **Crash recovery**: on startup, detect stale state from a previous crash, reconstruct the execution position from disk, and restart the Planner.
@@ -117,7 +117,7 @@ The Runtime Core is the central orchestration engine. It is a **singleton** with
 **Key technical details:**
 - Runs on the **Node.js single-threaded event loop**. Concurrency is achieved through async I/O — LLM calls, MCP tool calls, and channel messages are all non-blocking.
 - Parent agents are suspended in-memory (full message history + pending tool-call IDs). On crash, this is lost, but disk state is authoritative.
-- The Dispatcher supports **resume-on-each** for parallel child dispatch: when the Manager issues both `run_coder()` and `run_researcher()` in one LLM response, both children run concurrently and the Manager resumes independently as each returns.
+- The Dispatcher supports **resume-on-each** for parallel child dispatch: when the Manager issues both `run_coder()` and `run_researcher()` in one LLM response, both children run concurrently and the Manager resumes independently as each returns. The runtime enforces a maximum of **1 Coder + 1 Researcher** concurrently — excess dispatch calls of the same type are rejected with an error result.
 
 See [04-RUNTIME-DETAILS.md](04-RUNTIME-DETAILS.md) for full suspend/resume mechanics, compaction timing, self-check injection, and failure handling.
 
@@ -185,7 +185,7 @@ graph LR
 - **Responsibilities**: answer user queries about project state, relay user direction to the Planner via notes, dispatch Inspector on user request, push notifications for system events.
 - **Tools**: Plan MCP (read-only), filesystem (read-only), `run_inspector()`, `create_note()`.
 - **Channels**: Telegram (long-polling) and Web UI (WebSocket). One Chat agent instance per channel.
-- **Does not block** the execution pipeline. Cannot modify project state.
+- **Does not block** the execution pipeline. Cannot directly modify project code or plan state — its only write operations are creating user notes and dispatching the Inspector.
 
 Full agent behaviors, inputs, outputs, and trigger events are specified in [00-AGENT-SYSTEM.md](00-AGENT-SYSTEM.md).
 
@@ -232,7 +232,7 @@ An in-process pub/sub bus that connects runtime events to user-facing channels.
 | Event | Published when | Severity |
 |-------|---------------|----------|
 | `stage_completed` | Manager returns success | info |
-| `stage_failed` | Manager returns failure | error |
+| `stage_failed` | Manager fails unrecoverably (runtime error, not escalation) | error |
 | `escalation` | Manager escalates to Planner | warning |
 | `task_failed` | Worker returns failure | warning |
 | `inspector_complete` | Inspector returns report | info |
@@ -594,6 +594,8 @@ graph TB
 | File writes | Atomic temp-file + rename |
 | Agent territories | Convention-based (Coder=project code, Researcher=research/) |
 
+The **1 Coder + 1 Researcher** limit is enforced by the runtime, not just by convention. If the LLM emits duplicate dispatch calls of the same type, the excess calls are rejected.
+
 ---
 
 ## 7. Persistence & Recovery
@@ -744,7 +746,7 @@ Every agent action produces a persistent, git-committed artifact:
 
 - **Planner**: `plan.json`, `plan-history.json` (committed via `plan_commit()`)
 - **Manager**: `tasks.json`, `summary.json` (committed via git MCP)
-- **Workers**: task reports + git commits with `[task-<id>]` prefix
+- **Workers**: task reports + git commits with `[tsk-<id>]` prefix
 - **Inspector**: `inspections/<id>.json` + tools under `tools/inspector/`
 - **Chat**: dialogue logs in `tmp/chats/` (ephemeral but persisted across sessions)
 
