@@ -5,7 +5,7 @@
  */
 
 import type { SystemEvent } from "../types.js";
-import { log } from "../../log.js";
+import { log } from "../log.js";
 
 /** Subscription callback type. */
 export type EventHandler = (event: SystemEvent) => void | Promise<void>;

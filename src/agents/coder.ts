@@ -14,7 +14,7 @@ import type {
   Agent,
 } from "./types.js";
 import type { TaskReport } from "../types.js";
-import { log } from "../../log.js";
+import { log } from "../log.js";
 
 const CODER_PROMPT = `# Coder — System Prompt
 

@@ -7,13 +7,13 @@
     "node": ">=20.0.0"
   },
   "bin": {
-    "saivage": "./dist/index.js"
+    "saivage": "./dist/cli.js"
   },
   "scripts": {
     "build": "npm run build:web && tsup",
     "build:web": "cd web && npm run build",
     "build:server": "tsup",
-    "dev": "tsx src/index.ts",
+    "dev": "tsx src/server/cli.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src/",

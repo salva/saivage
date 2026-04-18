@@ -12,7 +12,7 @@ import type {
 } from "./types.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
 import { NoteManager } from "../runtime/notes.js";
-import { log } from "../../log.js";
+import { log } from "../log.js";
 
 const PLANNER_PROMPT = `# Planner — System Prompt
 

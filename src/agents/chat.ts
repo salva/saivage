@@ -12,13 +12,13 @@ import type {
   Agent,
 } from "./types.js";
 import type { SystemEvent, ChatMessage, ChatLog } from "../types.js";
-import type { ChatChannel } from "../../channels/types.js";
+import type { ChatChannel } from "../channels/types.js";
 import type { EventBus, EventFilter } from "../events/bus.js";
 import { chatSessionId } from "../ids.js";
 import { writeDoc, readDocOrNull, ensureDir } from "../store/documents.js";
 import { ChatLogSchema } from "../types.js";
 import { join } from "node:path";
-import { log } from "../../log.js";
+import { log } from "../log.js";
 
 const CHAT_PROMPT = `# Chat — System Prompt
 

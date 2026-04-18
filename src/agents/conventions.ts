@@ -4,7 +4,7 @@
  */
 
 import type { AgentRole } from "./types.js";
-import { log } from "../../log.js";
+import { log } from "../log.js";
 
 /** Territory conventions per agent role. */
 export interface ConventionRule {

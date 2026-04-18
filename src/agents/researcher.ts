@@ -12,7 +12,7 @@ import type {
   Agent,
 } from "./types.js";
 import type { TaskReport } from "../types.js";
-import { log } from "../../log.js";
+import { log } from "../log.js";
 
 const RESEARCHER_PROMPT = `# Researcher — System Prompt
 

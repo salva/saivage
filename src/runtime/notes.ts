@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
 import { readDoc, writeDoc, deleteDoc } from "../store/documents.js";
 import { UserNoteSchema, type UserNote } from "../types.js";
-import { log } from "../../log.js";
+import { log } from "../log.js";
 
 /**
  * Manages the lifecycle of user notes.

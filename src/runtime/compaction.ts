@@ -4,9 +4,9 @@
  * Max compactions per conversation (default: 3).
  */
 
-import type { Message, ContentBlock } from "../../providers/types.js";
-import type { ModelRouter } from "../../providers/router.js";
-import { log } from "../../log.js";
+import type { Message, ContentBlock } from "../providers/types.js";
+import type { ModelRouter } from "../providers/router.js";
+import { log } from "../log.js";
 
 /** Rough token estimation: ~4 chars per token. */
 function estimateTokens(messages: Message[]): number {

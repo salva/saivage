@@ -9,8 +9,12 @@ import { PiAiProvider } from "./pi-ai.js";
 import { OllamaProvider } from "./ollama.js";
 import { LlamaCppProvider } from "./llamacpp.js";
 import { getOAuthApiKey, hasOAuthCredentials } from "../auth/index.js";
-import { recordLlmCall } from "../telemetry/metrics.js";
 import { log } from "../log.js";
+
+/** Lightweight LLM call metrics (replaces v1 telemetry module). */
+function recordLlmCall(_spec: string, _data: Record<string, unknown>): void {
+  // Metrics are logged via the log module; no separate telemetry store needed.
+}
 
 /**
  * Maps OAuth provider IDs → pi-ai provider names.

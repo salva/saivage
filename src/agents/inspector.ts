@@ -12,7 +12,7 @@ import type {
   Agent,
 } from "./types.js";
 import type { InspectionReport } from "../types.js";
-import { log } from "../../log.js";
+import { log } from "../log.js";
 
 const INSPECTOR_PROMPT = `# Inspector — System Prompt
 

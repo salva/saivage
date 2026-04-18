@@ -14,7 +14,7 @@ import type {
 } from "./types.js";
 import type { Task, TaskList, TaskReport, StageSummary, Stage, Escalation } from "../types.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
-import { log } from "../../log.js";
+import { log } from "../log.js";
 
 const MANAGER_PROMPT = `# Manager — System Prompt
 

@@ -5,12 +5,12 @@
  * runs crash recovery, starts the Planner, handles graceful shutdown.
  */
 
-import { loadConfig, type SaivageConfig } from "../../config.js";
-import { ModelRouter } from "../../providers/router.js";
-import { McpRuntime } from "../../mcp/runtime.js";
-import { ensureBuiltinServices } from "../../mcp/builtins.js";
-import { getOAuthApiKey, hasOAuthCredentials } from "../../auth/index.js";
-import { cleanStash } from "../../agents/stash.js";
+import { loadConfig, type SaivageConfig } from "../config.js";
+import { ModelRouter } from "../providers/router.js";
+import { McpRuntime } from "../mcp/runtime.js";
+import { ensureBuiltinServices } from "../mcp/builtins.js";
+import { getOAuthApiKey, hasOAuthCredentials } from "../auth/index.js";
+import { cleanStash } from "../runtime/stash.js";
 
 import { EventBus } from "../events/bus.js";
 import { PlanService } from "../mcp/plan-server.js";
@@ -28,7 +28,7 @@ import { InspectorAgent } from "../agents/inspector.js";
 import type { AgentContext, AgentResult, Agent } from "../agents/types.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
 import { agentId } from "../ids.js";
-import { log } from "../../log.js";
+import { log } from "../log.js";
 
 /** Saivage v2 runtime context — returned by bootstrap. */
 export interface SaivageV2Runtime {

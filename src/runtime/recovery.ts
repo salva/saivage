@@ -17,7 +17,7 @@ import {
   type TaskReport,
   type StageSummary,
 } from "../types.js";
-import { log } from "../../log.js";
+import { log } from "../log.js";
 import type { PlanService } from "../mcp/plan-server.js";
 import type { ProjectContext } from "../store/project.js";
 

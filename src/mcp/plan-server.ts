@@ -23,7 +23,7 @@ import {
   type CompletedStage,
   type Escalation,
 } from "../types.js";
-import { log } from "../../log.js";
+import { log } from "../log.js";
 
 /** Error codes returned by the Plan MCP service. */
 export type PlanErrorCode =

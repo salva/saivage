@@ -21,8 +21,8 @@ import {
 } from "../types.js";
 import { ChatAgent } from "../agents/chat.js";
 import { chatSessionId, agentId } from "../ids.js";
-import { WebSocketChannel } from "../../channels/websocket.js";
-import { log } from "../../log.js";
+import { WebSocketChannel } from "../channels/websocket.js";
+import { log } from "../log.js";
 
 export interface ServerOptions {
   port: number;
@@ -38,10 +38,10 @@ export async function startServer(
   await app.register(fastifyWebsocket);
 
   // Serve Vue SPA from web/dist/
-  // Works both from source (tsx: src/v2/server/) and built (dist/)
+  // Works both from source (tsx: src/server/) and built (dist/)
   const thisDir = import.meta.dirname ?? __dirname;
-  const webDistPath = thisDir.includes("src/v2/server")
-    ? join(thisDir, "..", "..", "..", "web", "dist")
+  const webDistPath = thisDir.includes("/src/")
+    ? join(thisDir, "..", "..", "web", "dist")
     : join(thisDir, "..", "web", "dist");
   await app.register(fastifyStatic, {
     root: webDistPath,

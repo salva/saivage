@@ -10,7 +10,7 @@ import { homedir } from "node:os";
 import { readDocOrNull } from "../store/documents.js";
 import { SkillIndexSchema, type SkillEntry, type SkillIndex } from "../types.js";
 import type { AgentRole } from "../agents/types.js";
-import { log } from "../../log.js";
+import { log } from "../log.js";
 
 /** A resolved skill with its content loaded. */
 export interface LoadedSkill {

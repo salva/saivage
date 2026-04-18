@@ -11,7 +11,7 @@ import type {
   ContentBlock,
   ChatResponse,
   ToolSchema,
-} from "../../providers/types.js";
+} from "../providers/types.js";
 import type {
   AgentContext,
   AgentResult,
@@ -38,9 +38,9 @@ import {
   type SkillMatchContext,
 } from "../skills/loader.js";
 import { checkConvention } from "./conventions.js";
-import { stashResult, readStash, cleanStash } from "../../agents/stash.js";
-import type { RuntimeToolEntry } from "../../mcp/runtime.js";
-import { log } from "../../log.js";
+import { stashResult, readStash, cleanStash } from "../runtime/stash.js";
+import type { RuntimeToolEntry } from "../mcp/runtime.js";
+import { log } from "../log.js";
 
 /** Configuration for creating a BaseAgent. */
 export interface BaseAgentConfig {

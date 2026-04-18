@@ -13,8 +13,8 @@ import type {
   Escalation,
 } from "../types.js";
 import type { ProjectContext } from "../store/project.js";
-import type { ModelRouter } from "../../providers/router.js";
-import type { McpRuntime } from "../../mcp/runtime.js";
+import type { ModelRouter } from "../providers/router.js";
+import type { McpRuntime } from "../mcp/runtime.js";
 
 /** Agent roles in the hierarchy. */
 export type AgentRole =

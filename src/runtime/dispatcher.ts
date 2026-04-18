@@ -5,10 +5,10 @@
  * resume-on-each.
  */
 
-import type { Message, ContentBlock, ToolCallResult, ChatResponse, ToolSchema } from "../../providers/types.js";
+import type { Message, ContentBlock, ToolCallResult, ChatResponse, ToolSchema } from "../providers/types.js";
 import type { AgentContext, AgentResult, AgentRole } from "../agents/types.js";
-import type { McpRuntime, RuntimeToolEntry } from "../../mcp/runtime.js";
-import { log } from "../../log.js";
+import type { McpRuntime, RuntimeToolEntry } from "../mcp/runtime.js";
+import { log } from "../log.js";
 
 /** Agent-dispatch tool names that trigger suspend/resume. */
 export const DISPATCH_TOOLS = new Set([

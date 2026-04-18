@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { readDoc } from "../store/documents.js";
 import { UserNoteSchema, type UserNote } from "../types.js";
-import { log } from "../../log.js";
+import { log } from "../log.js";
 
 /** Signal object shared with running agents to request abort. */
 export interface AbortSignal {

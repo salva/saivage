@@ -1,6 +1,5 @@
 /**
- * Saivage v2 — CLI entry point
- * Commander.js program with v2-specific commands.
+ * Saivage — CLI entry point
  */
 
 import { Command } from "commander";
@@ -8,8 +7,8 @@ import { Command } from "commander";
 const program = new Command();
 
 program
-  .name("saivage-v2")
-  .description("Saivage v2 — Autonomous AI agent system")
+  .name("saivage")
+  .description("Saivage — Autonomous AI agent system")
   .version("2.0.0");
 
 // --- Init ---
@@ -67,7 +66,7 @@ program
 
     try {
       const runtime = await bootstrap(path);
-      console.log(`Starting Saivage v2 on ${runtime.project.projectRoot}...`);
+      console.log(`Starting Saivage on ${runtime.project.projectRoot}...`);
 
       const result = await runPlanner(runtime);
 
@@ -238,7 +237,7 @@ program
 program
   .command("serve [project-path]")
   .description("Start web server with API and WebSocket chat")
-  .option("-p, --port <port>", "Port number", "4800")
+  .option("-p, --port <port>", "Port number", "8080")
   .option("-H, --host <host>", "Host to bind", "0.0.0.0")
   .action(async (projectPath: string | undefined, opts) => {
     const { resolve } = await import("node:path");
@@ -254,7 +253,7 @@ program
         host: opts.host,
       });
 
-      console.log(`Saivage v2 server running on ${opts.host}:${opts.port}`);
+      console.log(`Saivage server running on ${opts.host}:${opts.port}`);
       console.log(`Project: ${runtime.project.projectRoot}`);
 
       // Start the planner in the background
