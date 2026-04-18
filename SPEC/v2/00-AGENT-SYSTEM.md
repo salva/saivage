@@ -79,8 +79,8 @@ User notes arriving while the Planner is suspended are queued and **injected as 
   - `description`: detailed description of what to do
   - `checklist`: list of verification points the agent must check
   - `dependencies`: tasks that must complete first
-  - `status`: `pending` | `in-progress` | `completed` | `failed`
-- **Stage Summary** (`stages/<stage-id>/summary.json`): Written when all tasks complete. Aggregates task summaries. Sent to Planner.
+  - `status`: `pending` | `in-progress` | `completed` | `failed` | `aborted`
+- **Stage Summary** (`stages/<stage-id>/summary.json`): Written when all tasks complete (or on escalation/abort). Aggregates task summaries. Sent to Planner.
 
 **Execution model:**
 1. **Planning phase**: reads referenced documents, decomposes the stage into tasks (writes `tasks.json`).
@@ -235,7 +235,7 @@ Planner (long-lived)
 
 Chat (independent, per channel)
   ├── run_inspector(request)      → returns InspectionReport
-  └── create_note(content)        → writes note for Planner
+  └── create_note(content, urgent?)  → writes note for Planner
 ```
 
 User notes arriving while the Planner is suspended are queued and injected as additional context when the Planner next resumes (this is a runtime mechanism, not a tool call).
@@ -382,9 +382,9 @@ When the user demands an immediate course change, the system supports **aborting
 4. The Planner resumes with the abort result and the urgent note injected into context. It processes the user's request and replans accordingly.
 
 **Abort semantics:**
-- Aborted agents do not commit partial work — uncommitted changes are discarded.
+- Aborted agents do not commit partial work — uncommitted changes are discarded. The runtime performs a `git checkout -- .` on the project worktree after terminating the aborted agent to ensure no partial modifications remain.
 - The Manager's `tasks.json` reflects the state at abort time (completed tasks stay completed, in-progress tasks are marked `aborted`).
-- The Planner can re-dispatch the same stage (to resume from where it stopped) or create new stages.
+- On abort, the Planner **creates a rollback stage** as the first stage in the revised plan. The rollback stage inspects the project state, reverts any inconsistencies left by the interrupted work, and ensures the project is in a clean state before new work begins. After the rollback stage completes, the Planner proceeds with the new direction.
 - Abort is a **runtime mechanism**, not an LLM tool call. Agents do not need to "cooperate" with the abort — the runtime terminates their LLM conversation and synthesizes the abort result.
 
 ### 4.3 Version Control
@@ -405,7 +405,7 @@ Serialization is inherent — the MCP server processes one tool call at a time, 
 - **Coder**: commits project code it modified + its task report.
 - **Researcher**: commits files under `research/` + its task report.
 - **Inspector**: commits reports under `inspections/` and persistent tools under `tools/inspector/`.
-- **Planner/Manager**: commit `.saivage/` state files (plan, tasks, summaries).
+- **Planner/Manager**: commit `.saivage/` state files (plan files committed via `plan_commit()`, tasks/summaries via git MCP).
 - **Chat**: read-only access to project state. Writes only notes and chat logs.
 
 ### 4.5 Plan MCP Service
@@ -423,6 +423,7 @@ The plan MCP service exposes tools:
 - `plan_complete_stage(stage_id, result, summary, actual_outcomes)` — atomically move a stage from active plan to history.
 - `plan_get_history(last_n?)` — read plan history.
 - `plan_init(stages?)` — initialize an empty plan.
+- `plan_commit(message)` — commit `plan.json` and `plan-history.json` to git via the MCP git server. Returns commit SHA.
 
 All writes are atomic (write to `.tmp`, rename). Schema validation is enforced on every write.
 
@@ -440,7 +441,7 @@ On restart, the system must reconstruct where it was:
 
 ### 4.7 Context Compaction
 
-All agents with multi-turn conversations (Planner, Manager) perform **automatic context compaction** when the conversation approaches the model's context window limit.
+**All agents** perform **automatic context compaction** when their conversation approaches the model's context window limit.
 
 **Mechanism:**
 1. The runtime tracks token usage for each active conversation.
@@ -452,8 +453,7 @@ All agents with multi-turn conversations (Planner, Manager) perform **automatic 
 - All agent state is written to disk (plans, tasks, reports) — the conversation is a working memory, not the source of truth.
 - Planner reconstructs strategic context via `plan_get()` + `plan_get_history()`.
 - Manager reconstructs tactical context from `tasks.json` + completed task reports.
-
-**One-shot agents** (Coder, Researcher, Inspector) do not need compaction — they run a single task and terminate. If a one-shot agent's task requires more context than the model window, it should be split into smaller tasks by the Manager.
+- Workers (Coder, Researcher, Inspector) reconstruct context from the task description, checklist, and any files they have already read or modified. If compaction occurs mid-task, the summary captures what has been done so far and what remains.
 
 ### 4.8 Periodic Self-Check
 

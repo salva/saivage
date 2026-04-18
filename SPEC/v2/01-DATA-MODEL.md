@@ -53,7 +53,7 @@ interface ProjectConfig {
     };
   };
   skills: {
-    max_per_task: number;            // loading budget (default: 5)
+    max_per_agent: number;           // loading budget per agent invocation (default: 5)
   };
 }
 ```

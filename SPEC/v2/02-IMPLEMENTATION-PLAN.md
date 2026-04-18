@@ -56,7 +56,7 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
   }
   ```
   - `AgentContext` carries: project paths, LLM client, tool access, task/stage info.
-  - `AgentResult`: success/failure/escalation with payload (returned to parent as tool result).
+  - `AgentResult`: success/failure/escalation/abort with payload (returned to parent as tool result).
 
 ### 2.2 Tool-call dispatch
 - `src/v2/runtime/dispatch.ts` — Implements the nested tool-call pattern:
@@ -86,7 +86,7 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
 ### 2.5 Plan MCP service
 - `src/v2/mcp/plan-server.ts` — MCP server for structured plan operations (see 03-PLAN-MCP-SERVICE.md):
   - All reads/writes to `plan.json` and `plan-history.json` go through this service.
-  - Tools: `plan_get`, `plan_get_stage`, `plan_get_current_stage`, `plan_set_stages`, `plan_add_stage`, `plan_remove_stage`, `plan_set_current`, `plan_complete_stage`, `plan_get_history`, `plan_init`.
+  - Tools: `plan_get`, `plan_get_stage`, `plan_get_current_stage`, `plan_set_stages`, `plan_add_stage`, `plan_remove_stage`, `plan_set_current`, `plan_complete_stage`, `plan_get_history`, `plan_init`, `plan_commit`.
   - Validates Stage schema on every write.
   - Atomic writes (`.tmp` + rename).
   - `plan_complete_stage` is the key atomic operation: removes stage from active plan, appends to history, clears `current_stage_id` if matching.
@@ -105,7 +105,8 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
   - On urgent note: signals abort to the active agent chain.
   - Abort propagates bottom-up: terminates lowest-level agent, synthesizes abort result for parent, cascades up to Planner.
   - Manager writes partial `StageSummary` with `result: "aborted"` on abort.
-  - Uncommitted changes from aborted agents are discarded.
+  - Uncommitted changes from aborted agents are discarded — runtime performs `git checkout -- .` on the project worktree after termination.
+  - Planner creates a rollback stage to clean up any inconsistencies before proceeding with the new plan.
 
 ### 2.8 Context compaction
 - `src/v2/runtime/compaction.ts`:
@@ -113,7 +114,7 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
   - When usage exceeds configurable threshold (default: 80% of context window), triggers compaction.
   - Compaction: produces summary message replacing conversation history.
   - Summary includes: agent role, current objective, key decisions, outstanding work, state references.
-  - Applies to Planner and Manager (long-lived agents). One-shot agents (Coder, Researcher, Inspector) do not need compaction.
+  - Applies to **all agents** (Planner, Manager, Coder, Researcher, Inspector). Workers reconstruct context from their task description, checklist, and files already read/modified.
 
 ### 2.9 Periodic self-check
 - `src/v2/runtime/self-check.ts`:
@@ -175,7 +176,7 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
 - Unit test: skill matching logic.
 - Unit test: convention violation detection/logging.
 
-**Deliverable:** Any agent can be built by extending base + defining its prompt and permissions.
+**Deliverable:** Any agent can be built by extending base + defining its prompt and conventions.
 
 ---
 
@@ -192,14 +193,14 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
 
 ### 4.2 Researcher agent
 - `src/v2/agents/researcher.ts`:
-  - System prompt: research role, cannot modify project code.
-  - Tools: filesystem (read all, write `research/` only), web search/fetch, shell (read-only commands), git (commit `research/`).
+  - System prompt: research role, writes under `research/` by convention.
+  - Tools: filesystem (read/write all), web search/fetch, shell (run commands), git (commit own files).
   - On completion: writes `TaskReport`, commits research files.
 
 ### 4.3 Tests
 - Integration test: Coder executes a simple coding task, writes report, commits.
 - Integration test: Researcher fetches info, writes to `research/`, commits.
-- Permission test: Researcher cannot write to project code.
+- Convention test: Researcher follows territory conventions (writes under `research/`).
 
 **Deliverable:** Both workers can independently execute tasks and produce reports.
 

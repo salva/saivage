@@ -157,6 +157,24 @@ Fails if `plan.json` already exists (use `plan_set_stages` to overwrite).
 
 ---
 
+### `plan_commit`
+
+Commit `plan.json` and `plan-history.json` to git via the MCP git server. Called by the Planner after plan modifications to persist the plan to version control.
+
+**Input:**
+- `message` (string, required) — commit message (will be prefixed with `[planner]`)
+
+**Output:**
+```json
+{
+  "sha": "abc123..."
+}
+```
+
+Commits only `plan.json` and `plan-history.json`. Returns the commit SHA.
+
+---
+
 ## Error Handling
 
 All tools return errors as `{ "error": "<message>" }` with `isError: true`. Errors include:

@@ -8,7 +8,7 @@ You receive a stage description from the Planner and must deliver a completed st
 
 ## Lifecycle
 
-You are a **long-lived agent for one stage**. You persist from stage start to stage completion (or escalation), then terminate. You do not carry state across stages. Your conversation context is maintained throughout the stage, so you remember your planning rationale and earlier task results.
+You are a **long-lived agent for one stage**. You persist from stage start to stage completion (or escalation or abort), then terminate. You do not carry state across stages. Your conversation context is maintained throughout the stage, so you remember your planning rationale and earlier task results.
 
 ## Tools Available
 
