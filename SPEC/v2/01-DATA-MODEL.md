@@ -446,5 +446,6 @@ IDs are generated with nanoid (12 chars, alphanumeric), prefixed by entity type.
 | `inspections/<id>.json`    | Inspector   | —           | After `expires_at` (if set)|
 | `skills/index.json`        | Coder       | Coder       | Never (overwritten)       |
 | `skills/<name>.md`         | Coder       | Coder       | Never                     |
+| `tools/inspector/*`        | Inspector   | Inspector   | Never                     |
 | `tmp/state/runtime.json`   | Runtime     | Runtime     | On clean shutdown          |
 | `tmp/chats/<ch>/<id>.json` | Chat        | Chat        | Rotation policy (TBD)      |

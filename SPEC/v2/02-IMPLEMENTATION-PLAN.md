@@ -44,7 +44,7 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
 
 ## Phase 2: Runtime Core — Agent Lifecycle & Tool-Call Dispatch
 
-**Goal:** The runtime can spawn agents, manage LLM conversations with suspend/resume, handle the tool-call dispatch pattern, and manage the git lock.
+**Goal:** The runtime can spawn agents, manage LLM conversations with suspend/resume, handle the tool-call dispatch pattern, and serve git operations via MCP.
 
 ### 2.1 Agent interface
 - `src/v2/agents/types.ts` — Base `Agent` interface:
@@ -121,18 +121,21 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
   - Returns skill content for injection into agent context.
   - Reuse/adapt `src/skills/` from v1.
 
-### 3.3 Tool permissions
-- `src/v2/agents/permissions.ts`:
-  - Defines per-agent-type file access rules:
-    - Coder: read all, write project code, commit own files via MCP git.
-    - Researcher: read all, write only `research/`, commit own files via MCP git.
-    - Inspector: read all, write only `inspector-workspace/` (+ granted paths), commit own tools via MCP git.
-  - Wraps filesystem tools with permission checks. Git permissions are enforced by the MCP git server's `files` parameter (agents can only commit files they're allowed to write).
+### 3.3 Conventions & access model
+- `src/v2/agents/conventions.ts`:
+  - All agents (except Chat) have full read/write/execute access. Chat is read-only for project state.
+  - Defines per-agent-type **conventions** (advisory, not enforced):
+    - Coder: works on project code, commits own changes + task report.
+    - Researcher: writes under `research/`, commits own files + task report.
+    - Inspector: scratch in `tmp/inspector-workspace/`, reports in `inspections/`, persistent tools in `tools/inspector/`.
+    - Planner/Manager: commit `.saivage/` state files (plan, tasks, summaries).
+  - Convention violations are logged as warnings, not blocked. Agents coordinate via conventions to avoid collisions.
+  - Git operations go through the MCP git server, which serializes access and prevents conflicts.
 
 ### 3.4 Tests
 - Integration test: agent base can call LLM, execute tools, produce result.
 - Unit test: skill matching logic.
-- Unit test: permission enforcement.
+- Unit test: convention violation detection/logging.
 
 **Deliverable:** Any agent can be built by extending base + defining its prompt and permissions.
 
@@ -221,9 +224,10 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
 - `src/v2/agents/inspector.ts`:
   - Invoked as tool call by Planner or Chat.
   - Receives `InspectionRequest` as tool parameters.
-  - Works in `tmp/inspector-workspace/`.
-  - Can create scripts, run analysis, read project code/data.
-  - Writes `InspectionReport` JSON to disk.
+  - Three storage tiers: ephemeral scratch (`tmp/inspector-workspace/`), persistent reports (`inspections/`), persistent tools (`tools/inspector/`).
+  - Can create scripts, run analysis, read/execute any project file.
+  - Writes `InspectionReport` JSON to `inspections/`.
+  - Promotes reusable tools from scratch to `tools/inspector/`.
   - Returns report as tool result to caller.
   - One-shot: terminates after returning.
 

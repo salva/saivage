@@ -2,9 +2,9 @@
 
 ## 1. Design Philosophy
 
-Replace the v1 interactive orchestrator/coder/researcher loop with a **structured hierarchical protocol** where each agent has a clearly defined role, communicates through **JSON documents**, and errors escalate upward through a chain of command.
+Replace the v1 interactive orchestrator/coder/researcher loop with a **structured hierarchical protocol** where each agent has a clearly defined role, communicates through **tool calls and JSON documents on disk**, and errors escalate upward through a chain of command.
 
-All inter-agent communication happens through files on disk (JSON documents in a well-known directory structure). There are no in-memory message queues. This makes the system crash-recoverable and inspectable.
+Inter-agent communication uses two complementary mechanisms: **tool-call invocation** for control flow (parent calls child, suspends, child returns result) and **JSON documents on disk** for persistence and auditability. A parent writes the task spec to disk, invokes the child via tool call, the child reads the spec from disk, does its work, writes results to disk, and returns a summary as the tool-call result. There are no in-memory message queues. This makes the system crash-recoverable, inspectable, and decoupled.
 
 All project documentation and agent state lives **inside the project directory** (e.g. `/project/foo/.saivage/`), not in a global `~/.saivage/`. Global config (`~/.saivage/config.json`) only stores system-wide settings (LLM credentials, Telegram tokens). Everything project-specific is project-local.
 
@@ -37,7 +37,7 @@ When the conversation context grows too large (many stages completed), the Plann
   - `objective`: what the stage should accomplish
   - `starting_points`: current state of affairs relevant to this stage
   - `expected_outcomes`: concrete, verifiable deliverables
-  - `dependencies`: stages that must complete first
+  - `dependencies`: stages that must complete first (planning constraint — runtime executes one stage at a time)
   - `acceptance_criteria`: how to know the stage is done
   - `references`: list of document paths the Manager should read before planning tasks
 - **Plan History** (`plan-history.json`): Completed stages with their summaries, moved out of the active plan on completion.
@@ -133,7 +133,7 @@ This means the Manager maintains its full conversation context throughout the st
 - Documents all work in the task report.
 - Self-assesses success against the task checklist.
 - Flags failure honestly when a task cannot be completed.
-- **Commits** its own changes via the MCP git tool (must commit only files it modified — the MCP server serializes all git operations to avoid conflicts).
+- **Commits** its changes via the MCP git tool. By convention, commits only files it modified for the current task.
 
 ### 2.4 Researcher
 
@@ -149,12 +149,11 @@ This means the Manager maintains its full conversation context throughout the st
 
 **Behaviors:**
 - Retrieves and files documentation from the internet.
-- Can read project code for context but **cannot modify project code**.
-- Can create and edit files under `research/` freely.
-- **Can write utility scripts** under `research/` for data processing, comparison, or analysis — same ownership model as Inspector.
+- Can read project code for context. By convention, writes under `research/` to avoid collisions with Coder.
+- **Can write utility scripts** under `research/` for data processing, comparison, or analysis.
 - Documents findings in structured research files.
 - Self-assesses and flags failures.
-- **Commits** its own files (`research/`) via the MCP git tool.
+- **Commits** its changes via the MCP git tool. By convention, commits files under `research/` and its task report.
 
 ### 2.5 Inspector
 
@@ -178,14 +177,14 @@ This means the Manager maintains its full conversation context throughout the st
 
 **Behaviors:**
 - Analyzes project state: code quality, data status, test coverage, model performance, etc.
-- Has its own working directory (`inspector-workspace/`) for intermediate processing.
-- **Can create its own tools/scripts** in its workspace for analysis purposes.
-- **Cannot modify main project code** — strict ownership boundary.
-  - Exception: Planner can explicitly grant write access to specific files in rare cases.
-- Can execute project code (run tests, check outputs) but not change it.
+- **Three storage tiers:**
+  - **Ephemeral workspace** (`tmp/inspector-workspace/`): scratch space for intermediate processing. Gitignored — does not survive clean checkout.
+  - **Persistent reports** (`inspections/<report-id>.json`): final analysis results. Committed to git.
+  - **Persistent tooling** (`tools/inspector/`): reusable scripts/tools that survive across investigations. Committed to git.
+- Can create tools/scripts in ephemeral workspace during analysis, then promote useful ones to `tools/inspector/`.
+- Can read, execute, and modify any project file — same access as other agents. By convention, does not modify main project code unless the investigation requires it.
 - Reports include metadata (timestamp, TTL) so the Planner can assess relevance.
-- Tools/scripts created in `inspector-workspace/` persist across investigations (reusable by future Inspector instances). Note: this directory is under `tmp/` (gitignored), so persistence is local-only — won't survive a clean checkout.
-- **Commits** its own tools/scripts in `inspector-workspace/` via the MCP git tool when they should be preserved.
+- **Commits** reports and persistent tools via the MCP git tool.
 
 **Trigger events:**
 - Planner calls `run_inspector(request)` tool → Inspector spawned
@@ -313,6 +312,8 @@ Project-local (inside the project directory, e.g. `/project/foo/.saivage/`):
 ├── skills/
 │   ├── index.json                 # Skill index for auto-loading
 │   └── <skill-name>.md            # Skill files
+├── tools/
+│   └── inspector/                 # Inspector's persistent analysis tools
 │
 │── [TEMPORARY — gitignored]
 ├── tmp/
@@ -385,11 +386,12 @@ Serialization is inherent — the MCP server processes one tool call at a time, 
 
 **Conflict resolution**: If `git_commit` detects a conflict (rare — two agents modifying the same file), it returns an error. The calling agent reports this in its `TaskReport` as a failure, which the Manager handles by creating a resolution task.
 
-**Per-agent commit rules:**
-- **Coder**: commits project files it modified + its task report.
-- **Researcher**: commits only files under `research/` + its task report.
-- **Inspector**: commits only files under `inspector-workspace/` that should be preserved.
-- **Planner/Manager**: commit `.saivage/` state files (plan, tasks, summaries). These are metadata commits, not code.
+**Conventions** (all agents except Chat have full access — conventions prevent collisions):
+- **Coder**: commits project code it modified + its task report.
+- **Researcher**: commits files under `research/` + its task report.
+- **Inspector**: commits reports under `inspections/` and persistent tools under `tools/inspector/`.
+- **Planner/Manager**: commit `.saivage/` state files (plan, tasks, summaries).
+- **Chat**: read-only access to project state. Writes only notes and chat logs.
 
 ### 4.4 Crash Recovery
 
