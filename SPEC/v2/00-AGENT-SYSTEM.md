@@ -22,7 +22,7 @@ Files are separated into two categories:
 
 **Lifecycle:** The Planner is a **long-lived agent** that persists for the entire project run. It is the top-level agent — all other agents are invoked by the Planner (directly or transitively) as tool calls. The Planner’s LLM conversation is **suspended** while subordinate agents run and **resumed** when their tool calls return.
 
-When the conversation context grows too large (many stages completed), the Planner performs a **context compaction**: it summarizes the conversation so far into a condensed state and continues from there. The `plan.json` and `plan-history.json` files on disk serve as the authoritative state, so compaction is safe.
+When the conversation context grows too large (many stages completed), the Planner performs a **context compaction**: it summarizes the conversation so far into a condensed state and continues from there. The plan state managed by the plan MCP service serves as the authoritative state, so compaction is safe.
 
 **Inputs:**
 - Project objectives (from config)
@@ -53,9 +53,9 @@ When the conversation context grows too large (many stages completed), the Plann
 User notes arriving while the Planner is suspended are queued and **injected as additional context** when the Planner next resumes.
 
 **Behaviors:**
-- Generates the initial plan from project objectives and current project state.
-- Updates the plan after each stage completes (informed by Manager’s summary returned as tool result).
-- Updates the plan when the Manager escalates (tool result with `result: "escalated"`).
+- Creates the initial plan via `plan_init(stages)` from project objectives and current project state.
+- Updates the plan via `plan_complete_stage()` and `plan_set_stages()` after each stage completes (informed by Manager's summary returned as tool result).
+- Handles escalations (tool result with `result: "escalated"`) by revising stages via `plan_add_stage()`, `plan_remove_stage()`, or `plan_set_stages()`.
 - When something is not going as expected (repeated failures, stalled progress, escalations), the Planner **schedules a full retrospective** — calling the Inspector for deep analysis before deciding on corrective action.
 - Schedules corrective/refactoring actions only when they unblock or accelerate progress toward objectives.
 - Processes **user notes** from Chat. Notes are retained until the next replanning cycle, then discarded — unless the Planner explicitly marks a note as **permanent**, in which case it is preserved and factored into all future planning.

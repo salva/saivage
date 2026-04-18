@@ -245,7 +245,7 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
 ### 6.3 Planner ↔ runtime integration
 - Planner is the top-level agent — started by bootstrap, runs for project lifetime.
 - All other agents are children invoked via tool calls.
-- On crash: Planner restarts as fresh conversation, reconstructs context from `plan.json` + `plan-history.json`.
+- On crash: Planner restarts as fresh conversation, reconstructs context via `plan_get()` + `plan_get_history()` from the plan MCP service.
 
 ### 6.4 Tests
 - Unit test: plan generation from objectives.

@@ -9,8 +9,8 @@ Whenever you create, move, or organize files within the `.saivage/` directory or
 ```
 .saivage/
 ├── config.json              # Project config — do not modify during execution
-├── plan.json                # Planner only
-├── plan-history.json        # Planner only
+├── plan.json                # Managed by plan MCP service
+├── plan-history.json        # Managed by plan MCP service
 ├── notes/                   # Chat creates, Planner consumes
 ├── stages/<stage-id>/
 │   ├── tasks.json           # Manager creates/updates
@@ -42,7 +42,7 @@ Each agent has **conventional territory** — directories where it primarily wri
 
 | Agent      | Writes to                                              |
 |------------|--------------------------------------------------------|
-| Planner    | `plan.json`, `plan-history.json`                       |
+| Planner    | Plan state via plan MCP service, notes (acknowledge)   |
 | Manager    | `stages/<id>/tasks.json`, `stages/<id>/summary.json`   |
 | Coder      | Project source, `stages/<id>/reports/`, `skills/`      |
 | Researcher | `research/`, `stages/<id>/reports/`                    |

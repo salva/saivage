@@ -37,7 +37,7 @@ Only commit files that you modified for the current task/operation:
 | Researcher | Files under `research/` + task report                        |
 | Inspector  | Report under `inspections/` + tools under `tools/inspector/` |
 | Manager    | Task list + stage summary under `stages/<id>/`               |
-| Planner    | `plan.json`, `plan-history.json`                             |
+| Planner    | Notes and other `.saivage/` metadata (plan files are managed by plan MCP service) |
 
 ### Commit Timing
 - Commit **after** verifying your work, not before.
