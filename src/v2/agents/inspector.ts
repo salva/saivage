@@ -65,19 +65,22 @@ export class InspectorAgent extends BaseAgent implements Agent {
   private input: InspectorInput;
 
   constructor(ctx: AgentContext, input: InspectorInput, config?: Partial<BaseAgentConfig>) {
-    const initialMessage = buildInspectorMessage(input);
+    // Normalize request fields
+    const request = normalizeInspectionRequest(input.request);
+    const normalized: InspectorInput = { request };
+    const initialMessage = buildInspectorMessage(normalized);
 
     super(ctx, {
       systemPrompt: INSPECTOR_PROMPT,
       skillContext: {
         agentRole: "inspector",
-        description: input.request.scope,
+        description: request.scope,
       },
       initialMessage,
       ...config,
     });
 
-    this.input = input;
+    this.input = normalized;
   }
 
   async run(): Promise<AgentResult> {
@@ -109,9 +112,21 @@ export class InspectorAgent extends BaseAgent implements Agent {
   }
 }
 
+/** Normalize an inspection request that may have missing fields from LLM output. */
+function normalizeInspectionRequest(raw: any): import("../types.js").InspectionRequest {
+  return {
+    id: raw.id ?? "unknown",
+    scope: raw.scope ?? raw.description ?? "(no scope)",
+    questions: Array.isArray(raw.questions) ? raw.questions : [],
+    requested_at: raw.requested_at ?? new Date().toISOString(),
+    requested_by: raw.requested_by ?? "planner",
+    chat_channel: raw.chat_channel,
+  };
+}
+
 function buildInspectorMessage(input: InspectorInput): string {
   const req = input.request;
-  const questions = req.questions
+  const questions = (req.questions ?? [])
     .map((q, i) => `${i + 1}. ${q}`)
     .join("\n");
 
@@ -126,7 +141,7 @@ function buildInspectorMessage(input: InspectorInput): string {
     `1. Check tools/inspector/ for reusable analysis tools.\n` +
     `2. Use tmp/inspector-workspace/ for intermediate work.\n` +
     `3. Write the report to inspections/${req.id}.json.\n` +
-    `4. Commit via MCP git with message: [${req.id}] ${req.scope.slice(0, 40)}\n` +
+    `4. Commit via MCP git with message: [${req.id}] ${(req.scope ?? "").slice(0, 40)}\n` +
     `5. Return the full InspectionReport JSON as your final response.`
   );
 }

@@ -67,21 +67,24 @@ export class ManagerAgent extends BaseAgent implements Agent {
     childSpawner: ChildSpawner,
     config?: Partial<BaseAgentConfig>,
   ) {
-    const initialMessage = buildManagerMessage(input);
+    // Normalize stage fields — the Planner LLM may omit optional arrays
+    const stage = normalizeStage(input.stage);
+    const normalized: ManagerInput = { stage };
+    const initialMessage = buildManagerMessage(normalized);
 
     super(ctx, {
       systemPrompt: MANAGER_PROMPT,
       skillContext: {
         agentRole: "manager",
-        description: input.stage.objective,
-        tags: input.stage.tags,
+        description: stage.objective,
+        tags: stage.tags,
       },
       childSpawner,
       initialMessage,
       ...config,
     });
 
-    this.input = input;
+    this.input = normalized;
   }
 
   async run(): Promise<AgentResult> {
@@ -123,20 +126,33 @@ export class ManagerAgent extends BaseAgent implements Agent {
   }
 }
 
+/** Normalize a stage object that may have missing fields from LLM output. */
+function normalizeStage(raw: any): Stage {
+  return {
+    id: raw.id ?? "unknown",
+    objective: raw.objective ?? raw.description ?? "(no objective)",
+    starting_points: raw.starting_points ?? [],
+    expected_outcomes: raw.expected_outcomes ?? [],
+    acceptance_criteria: raw.acceptance_criteria ?? [],
+    references: raw.references ?? [],
+    tags: raw.tags ?? [],
+  };
+}
+
 function buildManagerMessage(input: ManagerInput): string {
   const stage = input.stage;
-  const outcomes = stage.expected_outcomes
+  const outcomes = (stage.expected_outcomes ?? [])
     .map((o) => `- ${o}`)
-    .join("\n");
-  const criteria = stage.acceptance_criteria
+    .join("\n") || "(none)";
+  const criteria = (stage.acceptance_criteria ?? [])
     .map((c) => `- ${c}`)
-    .join("\n");
-  const refs = stage.references.length > 0
+    .join("\n") || "(none)";
+  const refs = (stage.references ?? []).length > 0
     ? stage.references.map((r) => `- ${r}`).join("\n")
     : "(none)";
-  const starting = stage.starting_points
+  const starting = (stage.starting_points ?? [])
     .map((s) => `- ${s}`)
-    .join("\n");
+    .join("\n") || "(none)";
 
   return (
     `## Stage Assignment\n\n` +
@@ -146,7 +162,7 @@ function buildManagerMessage(input: ManagerInput): string {
     `### Expected Outcomes\n${outcomes}\n\n` +
     `### Acceptance Criteria\n${criteria}\n\n` +
     `### References\n${refs}\n\n` +
-    `### Tags\n${stage.tags.join(", ") || "(none)"}\n\n` +
+    `### Tags\n${(stage.tags ?? []).join(", ") || "(none)"}\n\n` +
     `### Instructions\n` +
     `1. Read the referenced documents to understand the context.\n` +
     `2. Decompose this stage into tasks and write .saivage/stages/${stage.id}/tasks.json.\n` +

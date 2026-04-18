@@ -65,20 +65,23 @@ export class CoderAgent extends BaseAgent implements Agent {
   private input: WorkerInput;
 
   constructor(ctx: AgentContext, input: WorkerInput, config?: Partial<BaseAgentConfig>) {
-    const initialMessage = buildCoderMessage(input);
+    // Normalize task fields — the Manager LLM may use alternate names
+    const task = normalizeTask(input.task);
+    const normalized: WorkerInput = { ...input, task };
+    const initialMessage = buildCoderMessage(normalized);
 
     super(ctx, {
       systemPrompt: CODER_PROMPT,
       skillContext: {
         agentRole: "coder",
-        description: input.task.description,
-        tags: input.task.tags ?? [],
+        description: task.description,
+        tags: task.tags ?? [],
       },
       initialMessage,
       ...config,
     });
 
-    this.input = input;
+    this.input = normalized;
   }
 
   async run(): Promise<AgentResult> {
@@ -123,8 +126,28 @@ export class CoderAgent extends BaseAgent implements Agent {
   }
 }
 
+/** Normalize a task object that may have alternate field names from LLM output. */
+function normalizeTask(raw: any): import("../types.js").Task {
+  return {
+    id: raw.id ?? "unknown",
+    type: raw.type ?? "code",
+    assigned_to: raw.assigned_to ?? "coder",
+    description: raw.description ?? raw.objective ?? raw.instructions ?? "(no description)",
+    checklist: Array.isArray(raw.checklist)
+      ? raw.checklist
+      : (Array.isArray(raw.acceptance_criteria)
+          ? raw.acceptance_criteria.map((c: string) => ({ description: c, required: true }))
+          : []),
+    dependencies: raw.dependencies ?? [],
+    status: raw.status ?? "pending",
+    tags: raw.tags ?? [],
+    attempt: raw.attempt ?? 1,
+    max_attempts: raw.max_attempts ?? 3,
+  };
+}
+
 function buildCoderMessage(input: WorkerInput): string {
-  const checklist = input.task.checklist
+  const checklist = (input.task.checklist ?? [])
     .map(
       (c) =>
         `- [${c.required ? "REQUIRED" : "optional"}] ${c.description}`,
@@ -135,10 +158,10 @@ function buildCoderMessage(input: WorkerInput): string {
     `## Task Assignment\n\n` +
     `**Task ID:** ${input.task.id}\n` +
     `**Stage ID:** ${input.stageId}\n` +
-    `**Type:** ${input.task.type}\n` +
-    `**Attempt:** ${input.task.attempt} of ${input.task.max_attempts}\n\n` +
+    `**Type:** ${input.task.type ?? "code"}\n` +
+    `**Attempt:** ${input.task.attempt ?? 1} of ${input.task.max_attempts ?? 3}\n\n` +
     `### Description\n${input.task.description}\n\n` +
-    `### Checklist\n${checklist}\n\n` +
+    (checklist ? `### Checklist\n${checklist}\n\n` : "") +
     `### Instructions\n` +
     `Write the report to: .saivage/stages/${input.stageId}/reports/${input.task.id}.json\n` +
     `Commit using MCP git with message prefix: [${input.task.id}]\n` +

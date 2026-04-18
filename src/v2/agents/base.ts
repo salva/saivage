@@ -70,6 +70,7 @@ export class BaseAgent {
   protected systemPrompt: string;
   protected cancelled = false;
   private dispatcher: Dispatcher;
+  private hasChildSpawner = false;
   private compactionState: CompactionState = { compactionCount: 0 };
   private selfCheckState: SelfCheckState;
   private compactionConfig: CompactionConfig;
@@ -98,6 +99,7 @@ export class BaseAgent {
     this.dispatcher = new Dispatcher(ctx.mcpRuntime);
     if (config.childSpawner) {
       this.dispatcher.setChildSpawner(config.childSpawner);
+      this.hasChildSpawner = true;
     }
 
     // Initialize self-check
@@ -173,6 +175,10 @@ export class BaseAgent {
         log.error(`[agent:${this.role}:${this.id}] LLM call failed: ${msg}`);
         return { text: `LLM error: ${msg}`, finishReason: "error" };
       }
+
+      log.info(
+        `[agent:${this.role}:${this.id}] LLM response: ${response.toolCalls.length} tool calls, finish=${response.finishReason}, content=${response.content?.slice(0, 200)}`,
+      );
 
       // No tool calls → agent is done
       if (response.toolCalls.length === 0) {
@@ -284,6 +290,108 @@ export class BaseAgent {
         required: ["path"],
       },
     });
+
+    // Add dispatch tool schemas when a child spawner is available
+    if (this.hasChildSpawner) {
+      schemas.push(
+        {
+          name: "run_manager",
+          description:
+            "Dispatch a stage to the Manager agent. The Manager decomposes it into tasks and runs worker agents. Returns a StageSummary on success.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              stage: {
+                type: "object",
+                description: "The stage to execute",
+                properties: {
+                  id: { type: "string", description: "Unique stage ID" },
+                  objective: { type: "string", description: "What this stage must achieve" },
+                  starting_points: { type: "array", items: { type: "string" }, description: "Files or areas to start from" },
+                  expected_outcomes: { type: "array", items: { type: "string" }, description: "What should exist when done" },
+                  acceptance_criteria: { type: "array", items: { type: "string" }, description: "Verifiable criteria for completion" },
+                  references: { type: "array", items: { type: "string" }, description: "Relevant files, docs, or URLs" },
+                  tags: { type: "array", items: { type: "string" }, description: "Tags for categorization" },
+                },
+                required: ["id", "objective", "starting_points", "expected_outcomes", "acceptance_criteria", "references", "tags"],
+              },
+            },
+            required: ["stage"],
+          },
+        },
+        {
+          name: "run_inspector",
+          description:
+            "Request deep analysis from the Inspector agent. Returns an InspectionReport with findings and recommendations.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              request: {
+                type: "object",
+                description: "The inspection request",
+                properties: {
+                  id: { type: "string", description: "Unique inspection ID" },
+                  scope: { type: "string", description: "What area to inspect" },
+                  questions: { type: "array", items: { type: "string" }, description: "Specific questions to answer" },
+                  requested_at: { type: "string", description: "ISO timestamp" },
+                  requested_by: { type: "string", enum: ["planner", "chat"], description: "Who requested this" },
+                },
+                required: ["id", "scope", "questions", "requested_at", "requested_by"],
+              },
+            },
+            required: ["request"],
+          },
+        },
+        {
+          name: "run_coder",
+          description:
+            "Dispatch a coding task to a Coder worker agent. Returns a TaskReport.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: {
+                type: "object",
+                description: "The task to execute",
+                properties: {
+                  id: { type: "string" },
+                  objective: { type: "string" },
+                  files: { type: "array", items: { type: "string" } },
+                  instructions: { type: "string" },
+                  acceptance_criteria: { type: "array", items: { type: "string" } },
+                },
+                required: ["id", "objective", "files", "instructions", "acceptance_criteria"],
+              },
+              stageId: { type: "string", description: "Parent stage ID" },
+            },
+            required: ["task", "stageId"],
+          },
+        },
+        {
+          name: "run_researcher",
+          description:
+            "Dispatch a research task to a Researcher worker agent. Returns a TaskReport.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              task: {
+                type: "object",
+                description: "The research task",
+                properties: {
+                  id: { type: "string" },
+                  objective: { type: "string" },
+                  files: { type: "array", items: { type: "string" } },
+                  instructions: { type: "string" },
+                  acceptance_criteria: { type: "array", items: { type: "string" } },
+                },
+                required: ["id", "objective", "files", "instructions", "acceptance_criteria"],
+              },
+              stageId: { type: "string", description: "Parent stage ID" },
+            },
+            required: ["task", "stageId"],
+          },
+        },
+      );
+    }
 
     return schemas;
   }
