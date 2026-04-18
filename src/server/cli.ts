@@ -285,4 +285,127 @@ program
     }
   });
 
+// --- Login ---
+program
+  .command("login [project-path]")
+  .description("Authenticate with an LLM provider via OAuth")
+  .option("--provider <provider>", "OAuth provider ID", "openai-codex")
+  .action(async (projectPath: string | undefined, opts) => {
+    const { resolve } = await import("node:path");
+    const { discoverProject } = await import("../store/project.js");
+    const { getOAuthProvider, saveProfile, loadProfiles } = await import("../auth/index.js");
+
+    // Resolve project root so auth-profiles.json goes in the right .saivage/
+    const root = projectPath
+      ? resolve(projectPath)
+      : discoverProject(process.cwd());
+
+    if (root) {
+      process.env["PROJECT_ROOT"] = root;
+      process.env["SAIVAGE_ROOT"] = resolve(root, ".saivage");
+    }
+
+    const providerId = opts.provider as string;
+    const provider = getOAuthProvider(providerId);
+    if (!provider) {
+      const { getOAuthProviders } = await import("../auth/index.js");
+      const available = getOAuthProviders().map((p) => p.id).join(", ");
+      console.error(`Unknown provider: ${providerId}. Available: ${available}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    console.log(`Logging in with ${provider.name}...`);
+
+    try {
+      const { exec: execCallback } = await import("node:child_process");
+      const creds = await provider.login({
+        onAuth: (info) => {
+          console.log(`\nOpen this URL in your browser:\n  ${info.url}\n`);
+          if (info.instructions) console.log(info.instructions);
+          // Try to open browser automatically
+          execCallback(`xdg-open "${info.url}" 2>/dev/null || open "${info.url}" 2>/dev/null || true`);
+        },
+        onPrompt: async (prompt) => {
+          const { createInterface } = await import("node:readline");
+          const rl = createInterface({ input: process.stdin, output: process.stdout });
+          return new Promise<string>((resolve) => {
+            rl.question(prompt.message + " ", (answer) => {
+              rl.close();
+              resolve(answer);
+            });
+          });
+        },
+        onProgress: (msg) => console.log(msg),
+      });
+
+      const profileKey = `${providerId}-${creds.accountId ?? "default"}`;
+      saveProfile(profileKey, {
+        type: "oauth",
+        provider: providerId,
+        access: creds.access,
+        refresh: creds.refresh,
+        expires: creds.expires,
+        email: creds.email,
+      });
+
+      console.log(`\nAuthenticated successfully.`);
+      if (creds.email) console.log(`Account: ${creds.email}`);
+      console.log(`Credentials saved. Restart the service to pick them up.`);
+    } catch (err) {
+      console.error(`Login failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    }
+  });
+
+// --- Logout ---
+program
+  .command("logout [project-path]")
+  .description("Remove stored OAuth credentials")
+  .option("--provider <provider>", "OAuth provider ID to remove")
+  .action(async (projectPath: string | undefined, opts) => {
+    const { resolve } = await import("node:path");
+    const { discoverProject } = await import("../store/project.js");
+    const { loadProfiles } = await import("../auth/index.js");
+    const { writeFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+
+    const root = projectPath
+      ? resolve(projectPath)
+      : discoverProject(process.cwd());
+
+    if (root) {
+      process.env["PROJECT_ROOT"] = root;
+      process.env["SAIVAGE_ROOT"] = resolve(root, ".saivage");
+    }
+
+    const store = loadProfiles();
+    const providerId = opts.provider as string | undefined;
+
+    if (providerId) {
+      const toRemove = Object.entries(store.profiles)
+        .filter(([, p]) => p.provider === providerId)
+        .map(([k]) => k);
+      if (toRemove.length === 0) {
+        console.log(`No credentials found for ${providerId}.`);
+        return;
+      }
+      for (const key of toRemove) delete store.profiles[key];
+      console.log(`Removed ${toRemove.length} credential(s) for ${providerId}.`);
+    } else {
+      const count = Object.keys(store.profiles).length;
+      if (count === 0) {
+        console.log("No stored credentials.");
+        return;
+      }
+      store.profiles = {};
+      console.log(`Removed all ${count} credential(s).`);
+    }
+
+    const { saivageDir } = await import("../config.js");
+    const fp = join(saivageDir(), "auth-profiles.json");
+    writeFileSync(fp, JSON.stringify(store, null, 2) + "\n", "utf-8");
+    console.log("Restart the service to apply changes.");
+  });
+
 program.parse();

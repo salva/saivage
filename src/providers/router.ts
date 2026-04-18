@@ -74,6 +74,14 @@ export class ModelRouter {
       this.providers.set("openai", p);
     }
 
+    // OpenAI Codex: API key / env var fallback (also usable via OAuth)
+    const openaiCodexCfg = providerConfigs["openai-codex"];
+    if (!this.providers.has("openai-codex") && (openaiCodexCfg?.apiKey || process.env["OPENAI_CODEX_API_KEY"])) {
+      const p = new PiAiProvider("openai-codex");
+      p.setApiKey(openaiCodexCfg?.apiKey ?? process.env["OPENAI_CODEX_API_KEY"]!);
+      this.providers.set("openai-codex", p);
+    }
+
     // Ollama: always registered (local, no auth)
     const ollamaCfg = providerConfigs["ollama"];
     this.providers.set("ollama", new OllamaProvider(ollamaCfg?.baseUrl));
