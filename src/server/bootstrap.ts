@@ -271,6 +271,112 @@ export async function runPlanner(
   }
 }
 
+const RECOVERY_DELAY_MS = 5 * 60 * 1000; // 5 minutes
+
+const RECOVERY_PROMPT =
+  `The planner session ended, but the system has automatically restarted you after a recovery delay. ` +
+  `Assess the current state of the project by reading the plan (plan_get, plan_get_history). ` +
+  `Determine what work remains and continue executing stages. ` +
+  `If all objectives are truly complete and verified, respond with "PLAN_COMPLETE". ` +
+  `Otherwise, pick up where you left off and keep making progress.`;
+
+/**
+ * Run the planner in a recovery loop. When the planner exits (success or
+ * max-nudges), wait RECOVERY_DELAY_MS then restart with a continuation prompt.
+ * Only stops on explicit PLAN_COMPLETE, abort, or process shutdown.
+ */
+export async function runPlannerWithRecovery(
+  runtime: SaivageRuntime,
+): Promise<AgentResult> {
+  let cancelled = false;
+  let iteration = 0;
+
+  const cancelRecovery = () => { cancelled = true; };
+  process.on("SIGINT", cancelRecovery);
+  process.on("SIGTERM", cancelRecovery);
+
+  try {
+    while (!cancelled) {
+      iteration++;
+      log.info(`[recovery] Starting planner (iteration ${iteration})`);
+
+      const result = await runPlanner(runtime);
+
+      log.info(`[recovery] Planner exited: ${result.kind} (iteration ${iteration})`);
+
+      // Hard stops — no recovery
+      if (result.kind === "abort") {
+        log.info("[recovery] Planner aborted — stopping recovery loop");
+        return result;
+      }
+
+      // Check for genuine PLAN_COMPLETE
+      if (
+        result.kind === "success" &&
+        result.data?.summary?.includes?.("PLAN_COMPLETE")
+      ) {
+        log.info("[recovery] PLAN_COMPLETE detected — stopping recovery loop");
+        return result;
+      }
+
+      if (cancelled) break;
+
+      // For success (nudge-out) or failure — wait and retry
+      log.info(
+        `[recovery] Planner ended without PLAN_COMPLETE (${result.kind}). ` +
+        `Waiting ${RECOVERY_DELAY_MS / 1000}s before restart...`,
+      );
+
+      await runtime.eventBus.publish({
+        type: "plan_updated",
+        summary: `Planner ended (${result.kind}). Recovery restart in ${RECOVERY_DELAY_MS / 60000} minutes.`,
+        timestamp: new Date().toISOString(),
+      });
+
+      // Wait with cancellation support
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, RECOVERY_DELAY_MS);
+        const onCancel = () => {
+          clearTimeout(timer);
+          cancelled = true;
+          resolve();
+        };
+        process.once("SIGINT", onCancel);
+        process.once("SIGTERM", onCancel);
+      });
+
+      if (cancelled) break;
+
+      // Write a recovery note so the planner knows to reassess
+      const { writeDoc, ensureDir } = await import("../store/documents.js");
+      const { noteId } = await import("../ids.js");
+      const { UserNoteSchema } = await import("../types.js");
+      const { join } = await import("node:path");
+
+      const notesDir = runtime.project.paths.notes;
+      ensureDir(notesDir);
+      const id = noteId();
+      const note = {
+        id,
+        channel: "system",
+        session_id: "recovery",
+        content: RECOVERY_PROMPT,
+        created_at: new Date().toISOString(),
+        permanent: false,
+        urgent: false,
+      };
+      writeDoc(join(notesDir, `${id}.json`), note, UserNoteSchema);
+      log.info(`[recovery] Created recovery note ${id}`);
+    }
+
+    log.info("[recovery] Recovery loop cancelled — shutting down");
+    return { kind: "abort", reason: "Recovery loop cancelled by shutdown signal" };
+  } finally {
+    process.off("SIGINT", cancelRecovery);
+    process.off("SIGTERM", cancelRecovery);
+  }
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function resolveModelSpec(

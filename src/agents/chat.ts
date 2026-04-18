@@ -15,8 +15,13 @@ import type { SystemEvent, ChatMessage, ChatLog } from "../types.js";
 import type { ChatChannel } from "../channels/types.js";
 import type { EventBus, EventFilter } from "../events/bus.js";
 import { chatSessionId } from "../ids.js";
-import { writeDoc, readDocOrNull, ensureDir } from "../store/documents.js";
-import { ChatLogSchema } from "../types.js";
+import { writeDoc, readDocOrNull, readDocLenient, ensureDir } from "../store/documents.js";
+import {
+  ChatLogSchema,
+  PlanSchema,
+  PlanHistorySchema,
+  RuntimeStateSchema,
+} from "../types.js";
 import { join } from "node:path";
 import { log } from "../log.js";
 
@@ -147,6 +152,15 @@ export class ChatAgent extends BaseAgent implements Agent {
     // Record user message
     this.recordMessage("user", content);
 
+    // Check for slash commands first
+    const commandResult = await this.tryHandleCommand(content.trim());
+    if (commandResult !== null) {
+      await this.channel.send(commandResult);
+      this.recordMessage("assistant", commandResult);
+      await this.saveChatLog();
+      return;
+    }
+
     // Inject into conversation
     this.injectMessage(content);
 
@@ -165,6 +179,159 @@ export class ChatAgent extends BaseAgent implements Agent {
 
     // Persist chat log
     await this.saveChatLog();
+  }
+
+  /**
+   * Try to handle a slash command. Returns the response string if handled,
+   * or null to fall through to the LLM.
+   */
+  private async tryHandleCommand(content: string): Promise<string | null> {
+    if (!content.startsWith("/")) return null;
+
+    const spaceIdx = content.indexOf(" ");
+    const cmd = (spaceIdx === -1 ? content : content.slice(0, spaceIdx)).toLowerCase();
+    const args = spaceIdx === -1 ? "" : content.slice(spaceIdx + 1).trim();
+
+    switch (cmd) {
+      case "/help":
+        return this.cmdHelp();
+      case "/status":
+        return this.cmdStatus();
+      case "/plan":
+        return this.cmdPlan();
+      case "/history":
+        return this.cmdHistory(args);
+      case "/note":
+        return args ? this.cmdNote(args, false, false) : "Usage: `/note <message>` — create a note for the Planner.";
+      case "/note!":
+        return args ? this.cmdNote(args, false, true) : "Usage: `/note! <message>` — create an **urgent** note (aborts current work).";
+      case "/notep":
+        return args ? this.cmdNote(args, true, false) : "Usage: `/notep <message>` — create a **permanent** note.";
+      default:
+        return null; // Not a recognized command — pass to LLM
+    }
+  }
+
+  private cmdHelp(): string {
+    return [
+      "**Available Commands**",
+      "",
+      "| Command | Description |",
+      "|---------|-------------|",
+      "| `/help` | Show this help message |",
+      "| `/status` | Show runtime status (agents, current stage) |",
+      "| `/plan` | Show the current plan with all stages |",
+      "| `/history [n]` | Show completed stages (last n, default 5) |",
+      "| `/note <msg>` | Create a note for the Planner |",
+      "| `/note! <msg>` | Create an **urgent** note (aborts current work) |",
+      "| `/notep <msg>` | Create a **permanent** note |",
+      "",
+      "Any other message is handled by the AI assistant.",
+    ].join("\n");
+  }
+
+  private cmdStatus(): string {
+    const paths = this.ctx.project.paths;
+    const runtime = readDocOrNull(paths.runtimeState, RuntimeStateSchema);
+    const plan = readDocLenient(paths.plan, PlanSchema);
+
+    const lines: string[] = ["**System Status**", ""];
+
+    if (runtime) {
+      lines.push(`**Runtime:** ${runtime.status} (PID: ${runtime.pid})`);
+      lines.push(`**Started:** ${runtime.started_at}`);
+      if (runtime.active_agents.length > 0) {
+        lines.push("", "**Active Agents:**");
+        for (const a of runtime.active_agents) {
+          const task = a.current_task_id ? ` (task: ${a.current_task_id})` : "";
+          lines.push(`- ${a.agent_type} \`${a.agent_id}\` — ${a.status}${task}`);
+        }
+      } else {
+        lines.push("**Active Agents:** none");
+      }
+    } else {
+      lines.push("**Runtime:** not running");
+    }
+
+    if (plan) {
+      lines.push("");
+      lines.push(`**Current Stage:** ${plan.current_stage_id ?? "none"}`);
+      lines.push(`**Pending Stages:** ${plan.stages.length}`);
+    }
+
+    return lines.join("\n");
+  }
+
+  private cmdPlan(): string {
+    const plan = readDocLenient(this.ctx.project.paths.plan, PlanSchema);
+    if (!plan) return "No plan exists yet.";
+
+    const lines: string[] = [
+      "**Current Plan**",
+      "",
+      `Current stage: \`${plan.current_stage_id ?? "none"}\``,
+      "",
+    ];
+
+    if (plan.stages.length === 0) {
+      lines.push("_(no stages in queue)_");
+    } else {
+      for (const s of plan.stages) {
+        const marker = s.id === plan.current_stage_id ? " ← **current**" : "";
+        lines.push(`- \`${s.id}\`: ${s.objective}${marker}`);
+      }
+    }
+
+    return lines.join("\n");
+  }
+
+  private cmdHistory(args: string): string {
+    const n = parseInt(args, 10) || 5;
+    const historyPath = this.ctx.project.paths.planHistory;
+    const history = readDocLenient(historyPath, PlanHistorySchema);
+    if (!history || history.stages.length === 0) return "No completed stages yet.";
+
+    const recent = history.stages.slice(-n);
+    const lines: string[] = [`**Last ${recent.length} Completed Stages**`, ""];
+
+    for (const s of recent) {
+      const icon = s.result === "completed" ? "✅" : s.result === "failed" ? "❌" : "⚠️";
+      lines.push(`${icon} \`${s.id}\`: ${s.objective}`);
+      lines.push(`   Result: ${s.result} — ${s.summary.slice(0, 120)}`);
+    }
+
+    return lines.join("\n");
+  }
+
+  private async cmdNote(content: string, permanent: boolean, urgent: boolean): Promise<string> {
+    const { writeDoc: writeDocFn, ensureDir: ensureDirFn } = await import("../store/documents.js");
+    const { noteId } = await import("../ids.js");
+    const { UserNoteSchema } = await import("../types.js");
+
+    const notesDir = this.ctx.project.paths.notes;
+    ensureDirFn(notesDir);
+
+    const id = noteId();
+    const note = {
+      id,
+      channel: this.input.channel,
+      session_id: this.input.sessionId,
+      content,
+      created_at: new Date().toISOString(),
+      permanent,
+      urgent,
+    };
+
+    const notePath = join(notesDir, `${id}.json`);
+    writeDocFn(notePath, note, UserNoteSchema);
+
+    const flags = [
+      permanent ? "permanent" : null,
+      urgent ? "urgent" : null,
+    ].filter(Boolean).join(", ");
+
+    const flagStr = flags ? ` (${flags})` : "";
+    return `📝 Note created: \`${id}\`${flagStr}\nThe Planner will process it on its next cycle.${urgent ? "\n⚠️ Current work will be aborted for replanning." : ""}`;
   }
 
   /** Handle a system event — format and push as notification. */

@@ -244,7 +244,7 @@ program
   .option("-H, --host <host>", "Host to bind")
   .action(async (projectPath: string | undefined, opts) => {
     const { resolve } = await import("node:path");
-    const { bootstrap, runPlanner } = await import("./bootstrap.js");
+    const { bootstrap, runPlannerWithRecovery } = await import("./bootstrap.js");
     const { startServer } = await import("./server.js");
 
     const path = projectPath ? resolve(projectPath) : undefined;
@@ -261,8 +261,20 @@ program
       console.log(`Saivage server running on ${host}:${port}`);
       console.log(`Project: ${runtime.project.projectRoot}`);
 
-      // Start the planner in the background (does NOT shut down the runtime)
-      runPlanner(runtime).then((result) => {
+      // Start Telegram bot if configured
+      let telegramBot: { stop: () => void } | undefined;
+      if (runtime.config.telegram.botToken) {
+        try {
+          const { startTelegramBot } = await import("./telegram-bot.js");
+          telegramBot = await startTelegramBot(runtime);
+          console.log("Telegram bot started.");
+        } catch (err) {
+          console.error(`Telegram bot failed to start: ${err instanceof Error ? err.message : err}`);
+        }
+      }
+
+      // Start the planner with recovery loop (auto-restarts after 5min on exit)
+      runPlannerWithRecovery(runtime).then((result) => {
         console.log(`Planner finished: ${result.kind}`);
       }).catch((err) => {
         console.error(`Planner error: ${err}`);
@@ -271,6 +283,7 @@ program
       // Handle graceful shutdown
       const shutdown = async () => {
         console.log("\nShutting down...");
+        telegramBot?.stop();
         await server.close();
         await runtime.shutdown();
         process.exit(0);
