@@ -255,7 +255,7 @@ function resolveModelSpec(
   const overrides = project.config.model_overrides;
   if (overrides?.[role]) return overrides[role];
   // Fallback to default provider
-  return project.config.provider ?? "anthropic/claude-sonnet-4-20250514";
+  return project.config.provider ?? "openai-codex/gpt-5.3-codex";
 }
 
 async function injectOAuthTokens(router: ModelRouter): Promise<void> {

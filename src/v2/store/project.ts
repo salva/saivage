@@ -53,9 +53,18 @@ export function globalConfigPath(): string {
   return join(globalSaivageDir(), "config.json");
 }
 
-/** Load the global config from ~/.saivage/config.json. */
+/** Load the global config from ~/.saivage/config.json. Returns defaults if not found. */
 export function loadGlobalConfig(): GlobalConfig {
-  return readDoc(globalConfigPath(), GlobalConfigSchema);
+  const path = globalConfigPath();
+  if (!existsSync(path)) {
+    // Return sensible defaults when no v2 global config exists
+    return {
+      providers: {},
+      telegram: { bot_token: "", user_id: 0 },
+      auth_dir: join(globalSaivageDir(), "auth"),
+    };
+  }
+  return readDoc(path, GlobalConfigSchema);
 }
 
 /** Discover the .saivage/ directory by walking up from startDir. */

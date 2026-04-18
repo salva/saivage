@@ -26,7 +26,7 @@ program
     const config = {
       project_name: opts.name ?? "my-project",
       objectives: opts.objectives ?? [],
-      provider: "anthropic/claude-sonnet-4-20250514",
+      provider: "openai-codex/gpt-5.3-codex",
       notifications: {
         channels: [] as ("telegram" | "web")[],
         filters: {
@@ -211,7 +211,7 @@ program
         mcpRuntime: runtime.mcpRuntime,
         agentId: agentId(),
         role: "inspector" as const,
-        modelSpec: runtime.project.config.provider ?? "anthropic/claude-sonnet-4-20250514",
+        modelSpec: runtime.project.config.provider ?? "openai-codex/gpt-5.3-codex",
       };
 
       const inspector = new InspectorAgent(ctx, { request });

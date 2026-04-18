@@ -184,7 +184,7 @@ export async function startServer(
 function resolveModelSpec(runtime: SaivageV2Runtime): string {
   const overrides = runtime.project.config.model_overrides;
   if (overrides?.chat) return overrides.chat;
-  return runtime.project.config.provider ?? "anthropic/claude-sonnet-4-20250514";
+  return runtime.project.config.provider ?? "openai-codex/gpt-5.3-codex";
 }
 
 function getEventFilter(runtime: SaivageV2Runtime) {

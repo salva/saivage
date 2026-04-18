@@ -44,7 +44,7 @@ export interface AgentContext {
   agentId: string;
   /** Role of this agent. */
   role: AgentRole;
-  /** Model spec to use (e.g. "anthropic/claude-sonnet-4-20250514"). */
+  /** Model spec to use (e.g. "openai-codex/gpt-5.3-codex"). */
   modelSpec: string;
 }
 
