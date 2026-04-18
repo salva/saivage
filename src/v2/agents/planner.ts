@@ -113,26 +113,55 @@ export class PlannerAgent extends BaseAgent implements Agent {
   async run(): Promise<AgentResult> {
     log.info(`[planner:${this.id}] Starting planning session`);
 
-    try {
-      // Inject any pending notes before each loop iteration
-      await this.injectPendingNotes();
+    const MAX_NUDGES = 5;
+    let nudgeCount = 0;
 
-      const { text, finishReason } = await this.runLoop();
+    while (true) {
+      try {
+        // Inject any pending notes before each loop iteration
+        await this.injectPendingNotes();
 
-      if (finishReason === "abort" || finishReason === "cancelled") {
-        return { kind: "abort", reason: text };
+        const { text, finishReason } = await this.runLoop();
+
+        if (finishReason === "abort" || finishReason === "cancelled") {
+          return { kind: "abort", reason: text };
+        }
+
+        if (finishReason === "max_compactions" || finishReason === "error") {
+          return { kind: "failure", reason: text };
+        }
+
+        // Only accept completion if planner explicitly says PLAN_COMPLETE
+        if (text.includes("PLAN_COMPLETE")) {
+          return { kind: "success", data: { summary: text } };
+        }
+
+        // Planner ended turn without PLAN_COMPLETE — nudge to continue
+        nudgeCount++;
+        if (nudgeCount >= MAX_NUDGES) {
+          log.warn(`[planner:${this.id}] Max nudges reached (${MAX_NUDGES}), accepting exit`);
+          return { kind: "success", data: { summary: text } };
+        }
+
+        log.info(
+          `[planner:${this.id}] Ended turn without PLAN_COMPLETE — nudging (${nudgeCount}/${MAX_NUDGES})`,
+        );
+
+        // Add the planner's response so context is preserved, then nudge
+        this.messages.push({ role: "assistant", content: text });
+        this.injectMessage(
+          `You ended your turn without taking action and without saying "PLAN_COMPLETE". ` +
+          `The project objectives are NOT yet complete. ` +
+          `If you encountered a blocker, use run_inspector to investigate the issue, ` +
+          `or restructure the failed stage into smaller, simpler steps. ` +
+          `If you need to retry a failed/escalated stage, create a corrective stage and dispatch it with run_manager. ` +
+          `Do NOT give up. Take action now.`,
+        );
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.error(`[planner:${this.id}] Failed: ${msg}`);
+        return { kind: "failure", reason: msg };
       }
-
-      if (finishReason === "max_compactions" || finishReason === "error") {
-        return { kind: "failure", reason: text };
-      }
-
-      // Planner returning normally means plan is complete
-      return { kind: "success", data: { summary: text } };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log.error(`[planner:${this.id}] Failed: ${msg}`);
-      return { kind: "failure", reason: msg };
     }
   }
 
