@@ -234,4 +234,51 @@ program
     }
   });
 
+// --- Serve ---
+program
+  .command("serve [project-path]")
+  .description("Start web server with API and WebSocket chat")
+  .option("-p, --port <port>", "Port number", "4800")
+  .option("-H, --host <host>", "Host to bind", "0.0.0.0")
+  .action(async (projectPath: string | undefined, opts) => {
+    const { resolve } = await import("node:path");
+    const { bootstrap, runPlanner } = await import("./bootstrap.js");
+    const { startServer } = await import("./server.js");
+
+    const path = projectPath ? resolve(projectPath) : undefined;
+
+    try {
+      const runtime = await bootstrap(path);
+      const server = await startServer(runtime, {
+        port: parseInt(opts.port, 10),
+        host: opts.host,
+      });
+
+      console.log(`Saivage v2 server running on ${opts.host}:${opts.port}`);
+      console.log(`Project: ${runtime.project.projectRoot}`);
+
+      // Start the planner in the background
+      runPlanner(runtime).then((result) => {
+        console.log(`Planner finished: ${result.kind}`);
+      }).catch((err) => {
+        console.error(`Planner error: ${err}`);
+      });
+
+      // Handle graceful shutdown
+      const shutdown = async () => {
+        console.log("\nShutting down...");
+        await server.close();
+        await runtime.shutdown();
+        process.exit(0);
+      };
+      process.on("SIGINT", shutdown);
+      process.on("SIGTERM", shutdown);
+    } catch (err) {
+      console.error(
+        `Fatal: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      process.exitCode = 1;
+    }
+  });
+
 program.parse();
