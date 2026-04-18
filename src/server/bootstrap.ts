@@ -8,7 +8,7 @@
 import { loadConfig, type SaivageConfig } from "../config.js";
 import { ModelRouter } from "../providers/router.js";
 import { McpRuntime } from "../mcp/runtime.js";
-import { ensureBuiltinServices } from "../mcp/builtins.js";
+import { registerBuiltinServices } from "../mcp/builtins.js";
 import { getOAuthApiKey, hasOAuthCredentials } from "../auth/index.js";
 import { cleanStash } from "../runtime/stash.js";
 
@@ -80,7 +80,8 @@ export async function bootstrap(
 
   // 4. Initialize MCP runtime + builtin services
   const mcpRuntime = new McpRuntime(config.runtime);
-  ensureBuiltinServices();
+  registerBuiltinServices(mcpRuntime);
+  mcpRuntime.startMonitoring();
 
   // 5. Register Plan MCP service (in-process)
   const planService = new PlanService(project.saivageDir);
@@ -126,8 +127,8 @@ export async function bootstrap(
     project,
     shutdown: async () => {
       log.info("[v2] Shutting down...");
+      await mcpRuntime.shutdown();
       eventBus.clear();
-      // Runtime state cleared
       const finalState = createRuntimeState();
       finalState.status = "idle";
       await writeRuntimeState(project.paths.runtimeState, finalState);
@@ -241,7 +242,6 @@ export async function runPlanner(
   } finally {
     process.off("SIGINT", shutdownHandler);
     process.off("SIGTERM", shutdownHandler);
-    await runtime.shutdown();
   }
 }
 

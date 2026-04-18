@@ -39,7 +39,7 @@ Build the **Runtime Core** (06-SYSTEM-DESIGN §2.1) — the central orchestratio
 | 2.1 Agent interface | `src/agents/types.ts` | Base `Agent` interface, `AgentContext`, `AgentResult` (success/failure/escalation/abort) |
 | 2.2 Tool-call dispatcher | `src/runtime/dispatcher.ts` | Nested tool-call pattern: intercept `run_*()` calls → suspend parent → spawn child → resume parent with result. Supports parallel dispatch with resume-on-each |
 | 2.3 Plan MCP service | `src/mcp/plan-server.ts` | 11 tools per [03-PLAN-MCP-SERVICE.md](03-PLAN-MCP-SERVICE.md). Atomic writes, schema validation, history append. Built on Document Store from Phase 1 |
-| 2.4 Git MCP adaptation | existing `src/services/git/` | Add explicit file staging, `[tsk-<id>]` commit prefix, conflict error returns |
+| 2.4 Built-in services | `src/mcp/builtins.ts` | In-process handlers for filesystem, shell, git (with explicit file staging, `[tsk-<id>]` prefix, conflict returns), skills; stubs for web, memory, index, lock |
 | 2.5 Abort mechanism | `src/runtime/abort.ts` | Detect urgent notes → terminate active chain bottom-up → `git checkout -- .` (tracked files only; untracked left for rollback stage) → Manager writes partial StageSummary (aborted) → Planner resumes. See 06-SYSTEM-DESIGN §4.2 |
 | 2.6 Context compaction | `src/runtime/compaction.ts` | Track token usage → trigger at 80% → generate summary message → replace history. Max 3 compactions per conversation. See 06-SYSTEM-DESIGN §4.5 |
 | 2.7 Self-check | `src/runtime/self-check.ts` | Inject progress-assessment prompt every N tool-call rounds (configurable per role). Stuck detection → agent failure. See [04-RUNTIME-DETAILS.md](04-RUNTIME-DETAILS.md) §4 |
@@ -183,25 +183,20 @@ Phases 2 and 3 can be worked on in **parallel** — they only share the agent in
 
 ---
 
-## v1 Reuse Map
+## v1 Reuse Map (completed)
 
 | v1 Module | Disposition | Notes |
 |-----------|-------------|-------|
-| `src/providers/` | **Keep** | LLM router, all provider abstractions |
-| `src/auth/` | **Keep** | Auth flows for all providers |
-| `src/mcp/` | **Keep** | MCP client, runtime, registry |
-| `src/services/filesystem,shell,web` | **Keep** | No changes |
-| `src/services/memory,index` | **Keep** | No changes |
-| `src/services/git/` | **Adapt** | Explicit file staging, `[tsk-<id>]` prefix |
-| `src/services/skills/` | **Adapt** | `target_agents`, `agent:<type>` trigger |
-| `src/channels/` | **Adapt** | Wire to v2 Chat agent |
-| `src/generator/` | **Keep** | MCP service scaffold |
-| `src/config.ts` | **Adapt** | Split into global + project config |
-| `src/log.ts` | **Keep** | Logging |
-| `src/orchestrator/` | **Remove** | Replaced by Planner + Manager + Runtime |
-| `src/agents/` | **Replace** | New role-based agents (keep stash mechanism) |
-| `src/watchdog/` | **Replace** | Replaced by v2 crash recovery |
-| `src/services/lock/` | **Remove** | Convention-based territory replaces locking |
+| `src/providers/` | **Kept** | LLM router, all provider abstractions |
+| `src/auth/` | **Kept** | Auth flows for all providers |
+| `src/mcp/` | **Kept** | MCP client, runtime, registry |
+| `src/services/*` | **Replaced** | Core services reimplemented as in-process handlers in `src/mcp/builtins.ts` |
+| `src/channels/` | **Adapted** | Wired to v2 Chat agent |
+| `src/config.ts` | **Adapted** | Project-local config |
+| `src/log.ts` | **Kept** | Logging |
+| `src/orchestrator/` | **Removed** | Replaced by Planner + Manager + Runtime |
+| `src/agents/` | **Replaced** | New role-based agents (kept stash mechanism) |
+| `src/watchdog/` | **Replaced** | Replaced by v2 crash recovery |
 
 ---
 

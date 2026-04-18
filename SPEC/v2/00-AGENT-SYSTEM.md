@@ -284,46 +284,48 @@ Every agent can signal that it cannot fulfill a requirement. The signal propagat
 
 ### 3.4 File System Layout
 
-Project-local (inside the project directory, e.g. `/project/foo/.saivage/`):
+Project-local (inside the project directory, e.g. `/project/foo/`):
 ```
-<project>/.saivage/
-├── config.json                    # Project objectives, model preferences
-├── saivage.json                   # Runtime/provider config
-├── auth/                          # Provider auth tokens
-│
-│── [PERSISTENT — committed to git]
-├── plan.json                      # Active plan (stages remaining)
-├── plan-history.json              # Terminal stages archive
-├── notes/                         # User notes from Chat → Planner
-│   └── <note-id>.json             #   (volatile: deleted by runtime after acknowledgment; permanent: kept indefinitely)
-├── stages/
-│   └── <stage-id>/
-│       ├── tasks.json             # Task breakdown for this stage
-│       ├── summary.json           # Stage completion summary
-│       └── reports/
-│           └── <task-id>.json     # Individual task reports
-├── inspections/
-│   └── <report-id>.json           # Inspector reports
-├── research/                      # Researcher's knowledge base
+<project>/
+├── research/                      # Researcher's knowledge base (project-level)
 │   └── <topic>/
-├── skills/
-│   ├── index.json                 # Skill index for auto-loading
-│   └── <skill-name>.md            # Skill files
-├── tools/
-│   └── inspector/                 # Inspector's persistent analysis tools
 │
-│── [TEMPORARY — gitignored]
-├── tmp/
-│   ├── state/
-│   │   └── runtime.json           # Runtime state for crash recovery
-│   ├── inspector-workspace/       # Inspector's private working dir
-│   ├── chats/
-│   │   └── <channel>/
-│   │       └── <session-id>.json  # Chat dialogue logs
-│   └── work/
-│       ├── coder/                 # Coder's scratch space
-│       └── researcher/            # Researcher's scratch space
-└── .gitignore                     # Ignores tmp/
+└── .saivage/
+    ├── config.json                # Project objectives, model preferences
+    ├── saivage.json               # Runtime/provider config
+    ├── auth/                      # Provider auth tokens
+    │
+    │── [PERSISTENT — committed to git]
+    ├── plan.json                  # Active plan (stages remaining)
+    ├── plan-history.json          # Terminal stages archive
+    ├── notes/                     # User notes from Chat → Planner
+    │   └── <note-id>.json         #   (volatile or permanent)
+    ├── stages/
+    │   └── <stage-id>/
+    │       ├── tasks.json         # Task breakdown for this stage
+    │       ├── summary.json       # Stage completion summary
+    │       └── reports/
+    │           └── <task-id>.json # Individual task reports
+    ├── inspections/
+    │   └── <report-id>.json       # Inspector reports
+    ├── skills/
+    │   ├── index.json             # Skill index for auto-loading
+    │   └── <skill-name>.md        # Skill files
+    ├── tools/
+    │   └── inspector/             # Inspector's persistent analysis tools
+    │
+    │── [TEMPORARY — gitignored]
+    ├── tmp/
+    │   ├── state/
+    │   │   └── runtime.json       # Runtime state for crash recovery
+    │   ├── inspector-workspace/   # Inspector's private working dir
+    │   ├── chats/
+    │   │   └── <channel>/
+    │   │       └── <session-id>.json  # Chat dialogue logs
+    │   └── work/
+    │       ├── coder/             # Coder's scratch space
+    │       └── researcher/        # Researcher's scratch space
+    └── .gitignore                 # Ignores tmp/
 ```
 
 ---

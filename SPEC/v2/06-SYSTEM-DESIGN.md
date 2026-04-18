@@ -63,15 +63,15 @@ graph TB
         EBUS["Event Bus"]
     end
 
-    subgraph "MCP Services (child processes)"
+    subgraph "MCP Services (in-process + stubs)"
         FS["Filesystem"]
         SH["Shell"]
         GIT["Git"]
-        WB["Web"]
+        WB["Web (stub)"]
         PLAN["Plan"]
         SK["Skills"]
-        MEM["Memory"]
-        IDX["Index"]
+        MEM["Memory (stub)"]
+        IDX["Index (stub)"]
     end
 
     TG --> CT
@@ -770,18 +770,15 @@ The git log provides a complete, append-only timeline of all changes.
 | **Quality assurance** | None | Inspector agent with 3-tier storage |
 | **Context management** | None | Compaction + self-check + max compactions |
 
-### 10.2 v1 Component Reuse
+### 10.2 v1 Component Reuse (completed)
 
 | v1 Component | v2 Disposition |
 |-------------|---------------|
-| `src/providers/` | **Keep** — model router, all provider abstractions |
-| `src/auth/` | **Keep** — auth flows |
-| `src/mcp/` | **Keep** — client, runtime, registry |
-| `src/services/filesystem,shell,web,memory,index` | **Keep** — no changes |
-| `src/services/git/` | **Adapt** — explicit file staging, task-id commit prefix |
-| `src/services/skills/` | **Adapt** — `target_agents`, `agent:<type>` trigger |
-| `src/channels/` | **Adapt** — wire to v2 Chat agent |
-| `src/generator/` | **Keep** — MCP service scaffold |
-| `src/orchestrator/` | **Remove** — replaced by Planner + Manager + Runtime |
-| `src/agents/` | **Replace** — new role-based agents |
-| `src/services/lock/` | **Remove** — convention-based territory replaces locking |
+| `src/providers/` | **Kept** — model router, all provider abstractions |
+| `src/auth/` | **Kept** — auth flows |
+| `src/mcp/` | **Kept** — client, runtime, registry |
+| `src/services/*` | **Replaced** — core services (filesystem, shell, git, skills) reimplemented as in-process handlers in `src/mcp/builtins.ts`; web/memory/index/lock registered as stubs |
+| `src/channels/` | **Adapted** — wired to v2 Chat agent |
+| `src/generator/` | **Removed** — MCP service scaffold no longer needed (in-process model) |
+| `src/orchestrator/` | **Removed** — replaced by Planner + Manager + Runtime |
+| `src/agents/` | **Replaced** — new role-based agents |

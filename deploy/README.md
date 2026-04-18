@@ -134,5 +134,4 @@ This runs `npm ci && npm run build` inside the container and restarts the system
 - **Container can't reach internet**: Check that `lxcbr0` exists (`brctl show`) and that `/etc/default/lxc-net` has `USE_LXC_BRIDGE="true"`
 - **Node.js version**: Saivage requires Node >= 20; the container installs Node 24
 - **NVIDIA/CUDA**: The container matches the host Ubuntu version (25.10) so NVIDIA userspace libs are compatible with the host kernel module. GPU devices are bind-mounted into the container.
-- **Native modules**: `better-sqlite3` needs `build-essential` + `python3` — provision installs these
 - **Permission denied**: Most `lxc-*` commands require `sudo`; the Makefile handles this

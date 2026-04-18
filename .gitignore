@@ -15,9 +15,10 @@ Thumbs.db
 # Temp
 tmp/
 
-# v2 runtime artifacts (may leak via bind-mount from container)
+# Saivage runtime artifacts — ignore .saivage/ state from running Saivage
+# on the source repo itself (e.g. via container bind-mount).
+# Target projects have their own .saivage/.gitignore that only ignores tmp/.
 .saivage/saivage.json
-.saivage/global.json
 .saivage/auth/
 .saivage/auth-profiles.json
 .saivage/registry.json

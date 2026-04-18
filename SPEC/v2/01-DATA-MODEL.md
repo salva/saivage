@@ -9,26 +9,44 @@ Timestamps are ISO 8601 strings. IDs are opaque strings (nanoid or UUID).
 
 **Path:** `<project>/.saivage/saivage.json`
 
-Runtime/provider settings stored inside the project.
+Runtime/provider settings stored inside the project. Loaded by `src/config.ts`.
 
 ```typescript
 interface RuntimeConfig {
+  models: {
+    orchestrator: string;            // default: "anthropic/claude-sonnet-4-20250514"
+    coder: string;
+    researcher: string;
+    executor: string;
+    chat: string;
+    default: string;
+  };
   providers: {
-    [name: string]: {                // e.g. "github-copilot", "anthropic"
-      type: string;                  // provider type
-      models: {
-        [role: string]: string;      // e.g. "planner": "claude-opus-4.6"
-      };
-      timeout_ms: number;            // per-request timeout (default: 120000)
-      max_retry_duration_ms?: number; // max total retry time for retryable errors (default: 600000 = 10 min)
-      failover?: string;             // name of fallback provider
+    [name: string]: {                // e.g. "anthropic", "openai", "ollama"
+      apiKey?: string;               // API key (or use env var / OAuth)
+      baseUrl?: string;              // custom endpoint
     };
   };
-  telegram: {
-    bot_token: string;
-    user_id: number;
+  failover: {
+    [provider: string]: string[];    // fallback chain, e.g. "anthropic": ["openai"]
   };
-  auth_dir: string;                  // path to auth tokens (default: ".saivage/auth/")
+  server: {
+    port: number;                    // default: 8080
+    host: string;                    // default: "0.0.0.0"
+  };
+  agent: {
+    maxConcurrentAgents: number;     // default: 3 (not yet enforced)
+  };
+  runtime: {
+    maxServices: number;             // default: 50
+    restartOnCrash: boolean;         // default: true
+    healthCheckIntervalMs: number;   // default: 30000
+    idleShutdownMs: number;          // default: 300000
+  };
+  telegram: {
+    botToken: string;
+    allowedUserIds: number[];
+  };
 }
 ```
 

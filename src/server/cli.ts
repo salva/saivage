@@ -64,8 +64,9 @@ program
 
     const path = projectPath ? resolve(projectPath) : undefined;
 
+    let runtime;
     try {
-      const runtime = await bootstrap(path);
+      runtime = await bootstrap(path);
       console.log(`Starting Saivage on ${runtime.project.projectRoot}...`);
 
       const result = await runPlanner(runtime);
@@ -91,6 +92,8 @@ program
         `Fatal: ${err instanceof Error ? err.message : String(err)}`,
       );
       process.exitCode = 1;
+    } finally {
+      await runtime?.shutdown();
     }
   });
 
@@ -237,8 +240,8 @@ program
 program
   .command("serve [project-path]")
   .description("Start web server with API and WebSocket chat")
-  .option("-p, --port <port>", "Port number", "8080")
-  .option("-H, --host <host>", "Host to bind", "0.0.0.0")
+  .option("-p, --port <port>", "Port number")
+  .option("-H, --host <host>", "Host to bind")
   .action(async (projectPath: string | undefined, opts) => {
     const { resolve } = await import("node:path");
     const { bootstrap, runPlanner } = await import("./bootstrap.js");
@@ -248,15 +251,17 @@ program
 
     try {
       const runtime = await bootstrap(path);
-      const server = await startServer(runtime, {
-        port: parseInt(opts.port, 10),
-        host: opts.host,
-      });
 
-      console.log(`Saivage server running on ${opts.host}:${opts.port}`);
+      // CLI flags override config, which has its own schema defaults (8080 / 0.0.0.0)
+      const port = opts.port ? parseInt(opts.port, 10) : runtime.config.server.port;
+      const host = opts.host ?? runtime.config.server.host;
+
+      const server = await startServer(runtime, { port, host });
+
+      console.log(`Saivage server running on ${host}:${port}`);
       console.log(`Project: ${runtime.project.projectRoot}`);
 
-      // Start the planner in the background
+      // Start the planner in the background (does NOT shut down the runtime)
       runPlanner(runtime).then((result) => {
         console.log(`Planner finished: ${result.kind}`);
       }).catch((err) => {

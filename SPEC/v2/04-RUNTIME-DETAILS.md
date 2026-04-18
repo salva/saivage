@@ -69,13 +69,11 @@ When an LLM response contains both local tools and agent dispatches:
 
 All LLM API calls use exponential backoff with jitter:
 
-| Parameter       | Default   | Config path                           |
+| Parameter       | Default   | Notes                                 |
 |-----------------|-----------|---------------------------------------|
-| `timeout_ms`    | 120000    | `RuntimeConfig.providers[name].timeout_ms` |
-| `max_retry_duration_ms` | 600000 (10 min) | `RuntimeConfig.providers[name].max_retry_duration_ms` |
-| `initial_delay` | 1000 ms   | —                                     |
-| `max_delay`     | 60000 ms  | —                                     |
-| `multiplier`    | 2         | —                                     |
+| `initial_delay` | 30000 ms  | Retry backoff starting delay          |
+| `max_delay`     | 1200000 ms (20 min) | Retry backoff ceiling        |
+| `multiplier`    | 1.5       | Exponential backoff factor            |
 | `jitter`        | ±20%      | —                                     |
 
 **Retryable errors** (retry automatically, invisible to agents):
@@ -89,7 +87,7 @@ All LLM API calls use exponential backoff with jitter:
 - HTTP 401/403 (auth — requires operator intervention)
 - Context window exceeded (requires compaction or task splitting)
 
-Retries continue for retryable errors up to a **maximum retry duration** of 10 minutes per LLM request (configurable). If the duration is exceeded, the error is surfaced as a non-retryable failure — the agent's conversation is terminated with a failure result. This prevents indefinite stalls during provider outages, where neither self-check nor compaction can fire (they trigger only between completed tool-call rounds, not during a stuck request). Provider failover (§2.3) may resolve the issue before the timeout if a failover provider is configured.
+Retries continue **indefinitely** for retryable errors — there is no maximum retry duration. The backoff starts at 30 seconds, multiplies by 1.5 on each attempt, and caps at 20 minutes. This ensures Saivage never gives up during provider outages; the operator must manually stop the system if desired. Self-check and compaction cannot fire during a stuck request (they trigger only between completed tool-call rounds), but the system will resume normally once the provider recovers.
 
 ### 2.2 Invalid Tool Calls
 

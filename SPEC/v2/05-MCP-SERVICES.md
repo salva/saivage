@@ -2,7 +2,9 @@
 
 Complete catalog of MCP services available to v2 agents. Services are either **built-in** (shipped with Saivage, registered on startup) or **generated** (created at runtime by agents).
 
-All services communicate via **stdio transport** using the MCP SDK. The runtime manages service lifecycle (lazy start, health checks, idle shutdown, crash recovery) through the `McpRuntime` class (carried from v1).
+Core services (filesystem, shell, git, skills, plan) run **in-process** — direct function calls inside the Node.js process, no subprocess overhead. Services that need external dependencies not yet integrated (web, memory, index, lock) are registered as stubs that return an error if called.
+
+The MCP runtime manages service lifecycle through the `McpRuntime` class.
 
 ---
 
@@ -10,14 +12,14 @@ All services communicate via **stdio transport** using the MCP SDK. The runtime 
 
 | Service | Origin | Transport | Purpose |
 |---------|--------|-----------|---------|
-| [Filesystem](#1-filesystem) | builtin | stdio | File read/write/search |
-| [Shell](#2-shell) | builtin | stdio | Command execution |
-| [Git](#3-git) | builtin | stdio | Version control (serialized) |
-| [Web](#4-web) | builtin | stdio | HTTP fetch, page content extraction |
-| [Plan](#5-plan) | builtin | stdio | Plan state management |
-| [Skills](#6-skills) | builtin | stdio | Skill CRUD |
-| [Memory](#7-memory) | builtin | stdio | Long-term key-value store |
-| [Index](#8-index) | builtin | stdio | Full-text search across documents |
+| [Filesystem](#1-filesystem) | builtin | in-process | File read/write/search |
+| [Shell](#2-shell) | builtin | in-process | Command execution |
+| [Git](#3-git) | builtin | in-process | Version control |
+| [Web](#4-web) | builtin | stub | HTTP fetch, page content extraction |
+| [Plan](#5-plan) | builtin | in-process | Plan state management |
+| [Skills](#6-skills) | builtin | in-process | Skill CRUD |
+| [Memory](#7-memory) | builtin | stub | Long-term key-value store |
+| [Index](#8-index) | builtin | stub | Full-text search across documents |
 | [Agent Dispatch](#9-agent-dispatch) | runtime | in-process | Parent→child agent invocation |
 
 ---
@@ -50,8 +52,8 @@ Which agents can use which services. Convention-based — not enforced by the ru
 
 ## 1. Filesystem
 
-**Origin:** builtin (carried from v1)
-**Source:** `src/services/filesystem/service.ts`
+**Origin:** builtin
+**Implementation:** `src/mcp/builtins.ts` (in-process)
 
 ### Tools
 
@@ -97,8 +99,8 @@ Search for files matching a glob pattern.
 
 ## 2. Shell
 
-**Origin:** builtin (carried from v1)
-**Source:** `src/services/shell/service.ts`
+**Origin:** builtin
+**Implementation:** `src/mcp/builtins.ts` (in-process)
 
 ### Tools
 
@@ -119,11 +121,10 @@ Execute a shell command and return output.
 
 ## 3. Git
 
-**Origin:** builtin (adapted from v1)
-**Source:** `src/services/git/service.ts`
-**Dependency:** `simple-git`
+**Origin:** builtin
+**Implementation:** `src/mcp/builtins.ts` (in-process, uses `git` CLI directly)
 
-All git operations are serialized through this single MCP server — no direct `git` CLI calls by agents. This eliminates race conditions and ensures atomic operations.
+All git operations are serialized through this single service — no direct `git` CLI calls by agents. This eliminates race conditions and ensures atomic operations.
 
 ### Tools
 
@@ -181,9 +182,10 @@ Conflicts are rare (conventions prevent agents from touching each other's files)
 
 ## 4. Web
 
-**Origin:** builtin (carried from v1)
-**Source:** `src/services/web/service.ts`
-**Dependency:** `cheerio`
+**Origin:** builtin (stub — not yet implemented)
+**Implementation:** `src/mcp/builtins.ts` (stub handler)
+
+> **Note:** This service is registered but not yet functional. Calls return a descriptive error. A future implementation will use Playwright or a similar library.
 
 ### Tools
 
@@ -246,8 +248,8 @@ Manages `plan.json` and `plan-history.json`. All reads and writes go through thi
 
 ## 6. Skills
 
-**Origin:** builtin (carried from v1, adapted for v2)
-**Source:** `src/services/skills/service.ts`
+**Origin:** builtin
+**Implementation:** `src/mcp/builtins.ts` (in-process)
 
 ### Tools
 
@@ -301,9 +303,10 @@ Update an existing skill.
 
 ## 7. Memory
 
-**Origin:** builtin (carried from v1)
-**Source:** `src/services/memory/service.ts`
-**Storage:** SQLite with FTS5 (`<project>/.saivage/data/memory.db`)
+**Origin:** builtin (stub — not yet implemented)
+**Implementation:** `src/mcp/builtins.ts` (stub handler)
+
+> **Note:** This service is registered but not yet functional. Calls return a descriptive error. A future implementation will provide persistent key-value storage.
 
 Long-term key-value store with full-text search. Used by agents to persist knowledge across sessions.
 
@@ -358,9 +361,10 @@ Delete a memory entry.
 
 ## 8. Index
 
-**Origin:** builtin (carried from v1)
-**Source:** `src/services/index/service.ts`
-**Storage:** SQLite with FTS5 (`<project>/.saivage/data/index.db`)
+**Origin:** builtin (stub — not yet implemented)
+**Implementation:** `src/mcp/builtins.ts` (stub handler)
+
+> **Note:** This service is registered but not yet functional. Calls return a descriptive error. A future implementation will provide full-text search.
 
 Full-text search index for project documents (conversations, work items, files, notes).
 

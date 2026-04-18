@@ -9,4 +9,4 @@ export {
   unregisterService,
   updateServiceStatus,
 } from "./registry.js";
-export { ensureBuiltinServices } from "./builtins.js";
+export { registerBuiltinServices } from "./builtins.js";

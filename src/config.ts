@@ -48,21 +48,6 @@ const configSchema = z.object({
     })
     .default({}),
 
-  project: z
-    .object({
-      root: z.string().default(""),
-      venv: z.string().default(""),
-      description: z.string().default(""),
-    })
-    .default({}),
-
-  security: z
-    .object({
-      injectionScanner: z.boolean().default(true),
-      maxScanLengthBytes: z.number().default(100_000),
-    })
-    .default({}),
-
   telegram: z
     .object({
       botToken: z.string().default(""),
@@ -86,7 +71,8 @@ export function resolveProjectRoot(startDir = process.cwd()): string {
 
   let dir = startDir;
   while (true) {
-    if (existsSync(join(dir, ".saivage"))) {
+    const saivage = join(dir, ".saivage");
+    if (existsSync(join(saivage, "config.json"))) {
       return dir;
     }
     const parent = dirname(dir);
