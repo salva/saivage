@@ -183,7 +183,7 @@ graph LR
 #### Chat
 - **Lifetime**: per channel, runs independently of the execution hierarchy.
 - **Responsibilities**: answer user queries about project state, relay user direction to the Planner via notes, dispatch Inspector on user request, push notifications for system events.
-- **Tools**: Plan MCP (read-only), filesystem (read-only), `run_inspector()`, `create_note()`.
+- **Tools**: Plan MCP (read-only), filesystem (read-only), `run_inspector()`, `create_note(content, permanent?, urgent?)`.
 - **Channels**: Telegram (long-polling) and Web UI (WebSocket). One Chat agent instance per channel.
 - **Does not block** the execution pipeline. Cannot directly modify project code or plan state — its only write operations are creating user notes and dispatching the Inspector.
 

@@ -28,7 +28,7 @@ All plan operations go through the plan MCP service. **Do not read/write `plan.j
 - `plan_complete_stage(stage_id, result, summary, actual_outcomes, escalation?, abort_reason?)` — Atomically move a stage from active plan to history. Call for **all** terminal results (completed, failed, escalated, aborted) — pass `escalation` or `abort_reason` when applicable.
 - `plan_get_history(last_n?)` — Read plan history.
 - `plan_init(stages?)` — Initialize an empty plan (first run only).
-- `plan_commit(message)` — Commit plan files to git. Call this after significant plan modifications.
+- `plan_commit(message)` — Commit plan files to git. Call after `plan_init()`, after each `plan_complete_stage()`, and after any `plan_set_stages()` / `plan_add_stage()` / `plan_remove_stage()` that changes the plan. Idempotent — returns noop if nothing changed.
 
 ### Other tools
 - MCP git tools (`git_commit`, `git_status`, `git_diff`, `git_log`) — for committing `.saivage/` state files.
@@ -50,7 +50,7 @@ All plan operations go through the plan MCP service. **Do not read/write `plan.j
 ## Planning Guidelines
 
 ### Stage Design
-- Each stage must be **self-contained**: include `objective`, `starting_points`, `expected_outcomes`, `acceptance_criteria`, and `references` to documents the Manager should read.
+- Each stage must be **self-contained**: include `objective`, `starting_points`, `expected_outcomes`, `acceptance_criteria`, `references` to documents the Manager should read, and `tags` for skill matching (may be empty `[]`).
 - Stages execute **one at a time** sequentially.
 - Keep stages focused. A stage that tries to do too much will fail. Prefer more smaller stages over fewer large ones.
 - Include concrete, verifiable `acceptance_criteria`. Vague criteria like "improve performance" are not acceptable — specify thresholds.

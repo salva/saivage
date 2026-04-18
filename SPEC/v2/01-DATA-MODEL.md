@@ -149,7 +149,7 @@ interface Task {
   started_at?: string;
   completed_at?: string;
   attempt: number;                   // retry count (starts at 1)
-  max_attempts: number;              // max retries before escalation
+  max_attempts: number;              // max retries before escalation (default: 3)
 }
 
 interface ChecklistItem {
@@ -180,6 +180,7 @@ interface TaskReport {
   tests_run: TestResult[];
   commits: string[];                 // git commit SHAs
   issues_found: Issue[];
+  output_truncated?: boolean;        // true if test output or report was truncated (see 04-RUNTIME-DETAILS §5.2)
   failure_reason?: string;           // if status == "failed"
   started_at: string;
   completed_at: string;

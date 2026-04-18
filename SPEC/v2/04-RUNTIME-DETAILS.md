@@ -189,7 +189,7 @@ The Manager receives the report both as the tool-call return value (for immediat
 
 ### 5.2 Report Size
 
-`TaskReport.tests_run[].output` may be large. Workers should truncate test output to **10KB per test** and total report to **100KB**. If truncated, add a note in the report: `"output_truncated": true`.
+`TaskReport.tests_run[].output` may be large. Workers should truncate test output to **10KB per test** and total report to **100KB**. If truncated, set `output_truncated: true` on the TaskReport (see 01-DATA-MODEL §6).
 
 ### 5.3 Crash During Report Write
 
@@ -286,7 +286,7 @@ If an Inspector was dispatched by Chat (independent):
 1. Read `runtime.json` → get `current_stage_id` and `active_agents`.
 2. Call `plan_get()` to get the current plan.
 3. If `current_stage_id` was set:
-   a. Check `stages/<stage-id>/summary.json` — if exists, stage was completed, Planner just needs to process it.
+   a. Check `stages/<stage-id>/summary.json` — if exists, the stage reached a terminal result before the crash. Check whether the stage is still in the active plan (not yet archived to history). If so, the restarted Planner must call `plan_complete_stage()` for this result before any replanning. The summary contains the `result` field needed for archival.
    b. Check `stages/<stage-id>/tasks.json` — if exists, Manager was running. Reset any `in-progress` tasks to `pending`, reset any `aborted` tasks to `pending`.
    c. Check for report files in `stages/<stage-id>/reports/` — if a report exists for a `pending` task, read its `status` and `commits` fields. If `status: "completed"` and `commits` is non-empty, mark the task as `completed`. If `status: "failed"` or `commits` is empty, mark the task as `failed` (the worker finished but its changes may not have been committed).
 4. Start Planner as fresh conversation.

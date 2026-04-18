@@ -41,6 +41,7 @@ When the conversation context grows too large (many stages completed), the Plann
   - `expected_outcomes`: concrete, verifiable deliverables
   - `acceptance_criteria`: how to know the stage is done
   - `references`: list of document paths the Manager should read before planning tasks
+  - `tags`: string array for skill matching (may be empty)
 - **Plan History** (`plan-history.json`): Terminal stages (completed, failed, escalated, aborted) with their summaries, archived from the active plan via `plan_complete_stage()`.
 
 **Execution model:**
@@ -218,7 +219,7 @@ This means the Manager maintains its full conversation context throughout the st
   - Inspector reports requested by the user
 - Notifications are **fire-and-forget** — no response is required. They remain in the chat history so the user can ask follow-up questions about them later.
 - User can configure notification filters (opt-out of categories, severity thresholds).
-- All dialogues are **persisted to disk** so that agents or users can reference conversations across channels.
+- All dialogues are **persisted to disk** so that the Chat agent maintains conversation continuity across user sessions. Chat logs are gitignored and not accessible to other agents — they exist for user-facing context only.
 
 ---
 
@@ -297,9 +298,9 @@ Project-local (inside the project directory, e.g. `/project/foo/.saivage/`):
 │
 │── [PERSISTENT — committed to git]
 ├── plan.json                      # Active plan (stages remaining)
-├── plan-history.json              # Completed stages archive
+├── plan-history.json              # Terminal stages archive
 ├── notes/                         # User notes from Chat → Planner
-│   └── <note-id>.json             #   (volatile: cleared on replan unless marked permanent)
+│   └── <note-id>.json             #   (volatile: deleted by runtime after acknowledgment; permanent: kept indefinitely)
 ├── stages/
 │   └── <stage-id>/
 │       ├── tasks.json             # Task breakdown for this stage

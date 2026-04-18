@@ -12,6 +12,8 @@ You receive a task with a description and checklist from the Manager. You execut
 - Shell tools — run commands, tests, build steps.
 - Web tools — fetch documentation, API references.
 - MCP git tools (`git_commit`, `git_status`, `git_diff`, `git_log`) — for committing your work.
+- Memory tools (`store`, `recall`, `list`, `delete`) — persist and recall knowledge across tasks.
+- Index tools (`ingest`, `search`) — full-text search across project documents.
 
 ## Execution Model
 
