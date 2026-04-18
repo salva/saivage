@@ -6,6 +6,12 @@ Replace the v1 interactive orchestrator/coder/researcher loop with a **structure
 
 All inter-agent communication happens through files on disk (JSON documents in a well-known directory structure). There are no in-memory message queues. This makes the system crash-recoverable and inspectable.
 
+All project documentation and agent state lives **inside the project directory** (e.g. `/project/foo/.saivage/`), not in a global `~/.saivage/`. Global config (`~/.saivage/config.json`) only stores system-wide settings (LLM credentials, Telegram tokens). Everything project-specific is project-local.
+
+Files are separated into two categories:
+- **Persistent** (committed to git): plans, history, research, skills, stage summaries, inspection reports.
+- **Temporary** (gitignored): runtime state, agent working directories, in-progress task data, chat logs.
+
 ---
 
 ## 2. Agent Roles
@@ -36,16 +42,15 @@ All inter-agent communication happens through files on disk (JSON documents in a
 - Generates the initial plan from project objectives and current project state.
 - Updates the plan after each stage completes (informed by Manager's summary).
 - Updates the plan when the Manager escalates an issue it cannot resolve.
-- Periodically schedules **retrospective reviews** — deep analysis of progress, but only when the analysis is expected to accelerate future work, not as busywork.
+- When something is not going as expected (repeated failures, stalled progress, escalations), the Planner **schedules a full retrospective** as an explicit plan stage — dispatching the Inspector for deep analysis before deciding on corrective action.
 - Schedules corrective/refactoring actions only when they unblock or accelerate progress toward objectives.
-- Processes **user notes** from Chat: decides if a note is volatile (one-time consideration) or persistent (must be preserved and factored into all future planning).
+- Processes **user notes** from Chat. Notes are retained until the next replanning cycle, then discarded — unless the Planner explicitly marks a note as **permanent**, in which case it is preserved and factored into all future planning.
 - Can dispatch the **Inspector** to analyze project state before making planning decisions.
 
 **Trigger events:**
 - Stage completed (Manager sends summary)
 - Stage issue escalated (Manager cannot resolve)
 - User note received (Chat forwards a note)
-- Retrospective timer fires (configurable interval)
 
 ### 2.2 Manager
 
@@ -172,6 +177,8 @@ All inter-agent communication happens through files on disk (JSON documents in a
 
 **Purpose:** User-facing interface for queries, status updates, and steering.
 
+**Lifecycle:** One Chat instance per channel (web UI, Telegram, etc.). Multiple channels can be active simultaneously.
+
 **Inputs:**
 - User messages (via web UI or Telegram)
 - System events (stage completions, failures, inspector results)
@@ -180,6 +187,7 @@ All inter-agent communication happens through files on disk (JSON documents in a
 - Responses to user queries
 - **User Notes** (`notes/<note-id>.json`): forwarded to Planner for consideration
 - Push notifications (Telegram) for significant events
+- **Chat Logs** (`tmp/chats/<channel>/<session-id>.json`): complete dialogue history saved to disk
 
 **Behaviors:**
 - Can inspect: active plan, current stage, task list, task reports, inspector reports.
@@ -192,6 +200,7 @@ All inter-agent communication happens through files on disk (JSON documents in a
   - Inspector reports requested by the user
 - Notifications are **fire-and-forget** — no response is required. They remain in the chat history so the user can ask follow-up questions about them later.
 - User can configure notification filters (opt-out of categories, severity thresholds).
+- All dialogues are **persisted to disk** so that agents or users can reference conversations across channels.
 
 ---
 
@@ -232,13 +241,23 @@ Every agent can signal that it cannot fulfill a requirement. The signal propagat
 
 ### 3.3 File System Layout
 
+Global config (system-wide, not project-specific):
 ```
 ~/.saivage/
-├── config.json                    # Project objectives, model config
+├── config.json                    # LLM credentials, Telegram tokens, system settings
+└── auth/                          # Provider auth tokens
+```
+
+Project-local (inside the project directory, e.g. `/project/foo/.saivage/`):
+```
+<project>/.saivage/
+├── config.json                    # Project objectives, model preferences
+│
+│── [PERSISTENT — committed to git]
 ├── plan.json                      # Active plan (stages remaining)
 ├── plan-history.json              # Completed stages archive
 ├── notes/                         # User notes from Chat → Planner
-│   └── <note-id>.json
+│   └── <note-id>.json             #   (volatile: cleared on replan unless marked permanent)
 ├── stages/
 │   └── <stage-id>/
 │       ├── tasks.json             # Task breakdown for this stage
@@ -249,12 +268,22 @@ Every agent can signal that it cannot fulfill a requirement. The signal propagat
 │   └── <report-id>.json           # Inspector reports
 ├── research/                      # Researcher's knowledge base
 │   └── <topic>/
-├── inspector-workspace/           # Inspector's private working dir
 ├── skills/
 │   ├── index.json                 # Skill index for auto-loading
-│   └── <skill-name>.md           # Skill files
-└── state/
-    └── runtime.json               # Runtime state for crash recovery
+│   └── <skill-name>.md            # Skill files
+│
+│── [TEMPORARY — gitignored]
+├── tmp/
+│   ├── state/
+│   │   └── runtime.json           # Runtime state for crash recovery
+│   ├── inspector-workspace/       # Inspector's private working dir
+│   ├── chats/
+│   │   └── <channel>/
+│   │       └── <session-id>.json  # Chat dialogue logs
+│   └── work/
+│       ├── coder/                 # Coder's scratch space
+│       └── researcher/            # Researcher's scratch space
+└── .gitignore                     # Ignores tmp/
 ```
 
 ---
@@ -275,13 +304,21 @@ Every agent can signal that it cannot fulfill a requirement. The signal propagat
 
 ### 4.2 Concurrency
 
-- **Coding and research tasks run in parallel** when they have no dependencies. The Planner and Manager should structure stages to maximize this parallelism.
-- Multiple Coder instances can run concurrently on independent coding tasks.
-- Multiple Researcher instances can run concurrently on independent research tasks.
-- Only one Planner runs at a time (plan modifications are serialized).
-- Only one Manager runs at a time per stage (it is one-shot and dies when the stage ends or escalates).
-- Inspector processes requests sequentially (FIFO queue).
-- Chat is always available (does not block execution).
+At most **one instance of each agent type** runs at a time (except Chat — one per channel):
+
+| Agent      | Max instances | Notes |
+|------------|---------------|-------|
+| Planner    | 1             | When running, Manager and all subordinates are **suspended** until Planner finishes. |
+| Manager    | 1             | When running (planning tasks), Coder/Researcher are **suspended** until dispatch. |
+| Coder      | 1             | Runs one task at a time. |
+| Researcher | 1             | Runs one task at a time, **in parallel with Coder**. |
+| Inspector  | 1             | FIFO queue, one-shot. |
+| Chat       | 1 per channel | Never blocked. |
+
+**Hierarchical blocking:** When a higher-level agent activates, subordinate agents are suspended:
+- Planner running → Manager, Coder, Researcher suspended.
+- Manager running (task planning/evaluation) → Coder, Researcher suspended until tasks are dispatched.
+- Once tasks are dispatched, Coder and Researcher run in parallel (one of each).
 
 ### 4.3 Version Control
 
@@ -290,6 +327,7 @@ All code-producing agents (Coder, Researcher, Inspector) can commit to git:
 - Agents must not stage or commit files belonging to other concurrent agents.
 - Commit messages must reference the task ID: `[task-<id>] <description>`.
 - The runtime must ensure git operations are serialized (lock around `git add`/`commit`) to prevent race conditions.
+- **Conflict resolution**: If a commit fails due to a conflict (rare — would require two agents editing the same file), the failure is escalated to the Manager, which creates a new task to resolve the conflict.
 
 ### 4.4 Crash Recovery
 
@@ -341,8 +379,6 @@ The Manager schedules skill generation when:
 
 ## 7. Open Questions
 
-1. **Planner retrospective frequency**: Fixed interval? After every N stages? Adaptive based on error rate?
-2. **Parallel task limit**: Max concurrent Coder/Researcher instances? (Constrained by LLM rate limits and system resources.)
-3. **Note retention policy**: How long do volatile notes persist before being discarded? Suggested: until the next plan update.
-4. **Stage timeout**: Should stages have a maximum duration before auto-escalation to the Planner?
-5. **Git conflict resolution**: If two concurrent agents modify the same file (rare but possible), who resolves? Suggested: fail the later commit, escalate to Manager.
+1. **Planner retrospective depth**: How deep should the Inspector's analysis go when the Planner schedules a full retrospective? Should there be a budget (time/tokens)?
+2. **Chat log retention**: How long are chat dialogue logs kept? Rotate by size, age, or keep forever?
+3. **Permanent note format**: What metadata should permanent notes carry so the Planner can filter/prioritize them across many planning cycles?
