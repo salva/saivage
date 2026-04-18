@@ -38,12 +38,11 @@ export async function startServer(
   await app.register(fastifyWebsocket);
 
   // Serve Vue SPA from web/dist/
-  const webDistPath = join(
-    import.meta.dirname ?? __dirname,
-    "..",
-    "web",
-    "dist",
-  );
+  // Works both from source (tsx: src/v2/server/) and built (dist/)
+  const thisDir = import.meta.dirname ?? __dirname;
+  const webDistPath = thisDir.includes("src/v2/server")
+    ? join(thisDir, "..", "..", "..", "web", "dist")
+    : join(thisDir, "..", "web", "dist");
   await app.register(fastifyStatic, {
     root: webDistPath,
     prefix: "/",
