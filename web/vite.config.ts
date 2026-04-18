@@ -5,10 +5,10 @@ export default defineConfig({
   plugins: [vue()],
   server: {
     proxy: {
-      "/api": "http://localhost:7777",
-      "/health": "http://localhost:7777",
+      "/api": "http://localhost:8080",
+      "/health": "http://localhost:8080",
       "/ws": {
-        target: "ws://localhost:7777",
+        target: "ws://localhost:8080",
         ws: true,
       },
     },

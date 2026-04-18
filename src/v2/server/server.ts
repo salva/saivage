@@ -41,15 +41,13 @@ export async function startServer(
   const webDistPath = join(
     import.meta.dirname ?? __dirname,
     "..",
-    "..",
-    "..",
     "web",
     "dist",
   );
   await app.register(fastifyStatic, {
     root: webDistPath,
     prefix: "/",
-    wildcard: false,
+    wildcard: true,
   });
 
   // ─── Health ─────────────────────────────────────────────────────────────

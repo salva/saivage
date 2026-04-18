@@ -10,7 +10,7 @@ const activeTab = ref<"dashboard" | "plan">("dashboard");
 <template>
   <div class="app">
     <header class="header">
-      <h1>Saivage</h1>
+      <h1>Saivage <span class="version">v2</span></h1>
       <nav class="tabs">
         <button
           class="tab"
@@ -57,6 +57,13 @@ const activeTab = ref<"dashboard" | "plan">("dashboard");
   font-size: 18px;
   font-weight: 600;
   color: #58a6ff;
+}
+
+.version {
+  font-size: 11px;
+  font-weight: 400;
+  color: #8b949e;
+  vertical-align: super;
 }
 
 .tabs {

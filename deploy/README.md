@@ -52,7 +52,7 @@ Edit `Makefile` to change:
 | `DIST`           | `ubuntu`     | Distribution for lxc-create            |
 | `RELEASE`        | `questing`   | Release codename (25.10 = questing)    |
 | `ARCH`           | `amd64`      | Architecture                           |
-| `SAIVAGE_PORT`   | `7777`       | HTTP/WS server port                    |
+| `SAIVAGE_PORT`   | `8080`       | HTTP/WS server port                    |
 
 ### Saivage Configuration
 
@@ -102,7 +102,7 @@ make destroy    # stop and delete the container (asks confirmation)
 
 ## Networking
 
-The server binds to `0.0.0.0:7777` inside the container. Bare LXC uses `lxcbr0` bridge by default, so the server is reachable from the host at `http://<container-ip>:7777`.
+The v2 server binds to `0.0.0.0:8080` inside the container. Bare LXC uses `lxcbr0` bridge by default, so the server is reachable from the host at `http://<container-ip>:8080`.
 
 To find the container IP:
 ```bash
@@ -110,10 +110,13 @@ make ip
 ```
 
 Endpoints:
-- `http://<ip>:7777/health` — health check
-- `http://<ip>:7777/api/state` — orchestrator state
-- `ws://<ip>:7777/ws` — WebSocket chat
-- `http://<ip>:7777/` — web UI (if built)
+- `http://<ip>:8080/health` — health check
+- `http://<ip>:8080/api/state` — runtime state + current plan
+- `http://<ip>:8080/api/plan` — plan stages + execution history
+- `http://<ip>:8080/api/plan/stages/:id` — stage detail (tasks, reports)
+- `http://<ip>:8080/api/inspections` — recent inspection reports
+- `ws://<ip>:8080/ws` — WebSocket chat
+- `http://<ip>:8080/` — web dashboard (Vue 3 SPA)
 
 ## Updating
 

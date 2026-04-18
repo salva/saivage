@@ -22,7 +22,7 @@ All runtime commands go through **SSH** (`ssh saivage`) — no sudo required. On
 - **Base OS**: Ubuntu 25.10 (questing), matching host for NVIDIA/CUDA compatibility
 - **Node.js**: 24 (via NodeSource)
 - **Source mount**: host project root → `/opt/saivage` (bind mount, read-write)
-- **Service**: systemd unit `saivage.service` running `node dist/index.js serve` on port 7777
+- **Service**: systemd unit `saivage.service` running `node dist/index.js serve` on port 7777 (v1) or port 8080 (v2)
 - **SSH**: passwordless via `Host saivage` entry in `~/.ssh/config`
 - **GPU**: NVIDIA devices bind-mounted (optional), userspace libs installed in container
 - **Network**: veth on lxcbr0, static IP `10.0.3.111` (DHCP reservation via MAC `00:16:3e:5a:1e:a9`)
