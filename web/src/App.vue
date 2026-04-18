@@ -3,8 +3,20 @@ import { ref } from "vue";
 import ChatWindow from "./components/ChatWindow.vue";
 import StatusPanel from "./components/StatusPanel.vue";
 import PlanView from "./components/PlanView.vue";
+import AgentsView from "./components/AgentsView.vue";
+import FilesView from "./components/FilesView.vue";
+import DebugView from "./components/DebugView.vue";
 
-const activeTab = ref<"dashboard" | "plan">("dashboard");
+type Tab = "dashboard" | "plan" | "agents" | "files" | "debug";
+const activeTab = ref<Tab>("dashboard");
+const focusStageId = ref<string | null>(null);
+
+function handleNavigate(tab: string, focusId?: string) {
+  activeTab.value = tab as Tab;
+  if (tab === "plan" && focusId) {
+    focusStageId.value = focusId;
+  }
+}
 </script>
 
 <template>
@@ -22,16 +34,40 @@ const activeTab = ref<"dashboard" | "plan">("dashboard");
           :class="{ active: activeTab === 'plan' }"
           @click="activeTab = 'plan'"
         >Plan</button>
+        <button
+          class="tab"
+          :class="{ active: activeTab === 'agents' }"
+          @click="activeTab = 'agents'"
+        >Agents</button>
+        <button
+          class="tab"
+          :class="{ active: activeTab === 'files' }"
+          @click="activeTab = 'files'"
+        >Files</button>
+        <button
+          class="tab"
+          :class="{ active: activeTab === 'debug' }"
+          @click="activeTab = 'debug'"
+        >Debug</button>
       </nav>
       <span class="tagline">autonomous AI agent</span>
     </header>
     <main class="main">
       <template v-if="activeTab === 'dashboard'">
         <ChatWindow class="chat" />
-        <StatusPanel class="status" />
+        <StatusPanel class="status" @navigate="handleNavigate" />
       </template>
       <template v-else-if="activeTab === 'plan'">
-        <PlanView class="plan-view" />
+        <PlanView class="full-view" :focus-stage-id="focusStageId" @focus-consumed="focusStageId = null" />
+      </template>
+      <template v-else-if="activeTab === 'agents'">
+        <AgentsView class="full-view" />
+      </template>
+      <template v-else-if="activeTab === 'files'">
+        <FilesView class="full-view" />
+      </template>
+      <template v-else-if="activeTab === 'debug'">
+        <DebugView class="full-view" />
       </template>
     </main>
   </div>
@@ -112,12 +148,12 @@ const activeTab = ref<"dashboard" | "plan">("dashboard");
 }
 
 .status {
-  width: 340px;
+  width: 420px;
   border-left: 1px solid #21262d;
   flex-shrink: 0;
 }
 
-.plan-view {
+.full-view {
   flex: 1;
   overflow: hidden;
 }

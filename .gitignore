@@ -21,3 +21,4 @@ tmp/
 
 # Logs
 *.log
+.playwright-mcp/

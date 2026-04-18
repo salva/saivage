@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from "vue";
 
+const emit = defineEmits<{
+  navigate: [tab: string, focusId?: string];
+}>();
+
 interface AgentState {
-  role: string;
+  agent_type: string;
   agent_id: string;
   status: string;
   current_task_id?: string;
@@ -59,7 +63,7 @@ async function fetchState() {
     if (planRes.ok) {
       const data = await planRes.json();
       if (data.plan) plan.value = data.plan;
-      history.value = data.history?.entries ?? [];
+      history.value = data.history?.stages ?? [];
     }
   } catch { /* ignore */ }
 }
@@ -108,22 +112,33 @@ function roleColor(role: string): string {
   }
 }
 
+const ROLE_ORDER: Record<string, number> = {
+  planner: 0, manager: 1, coder: 2, researcher: 3, inspector: 4, chat: 5,
+};
+
 const stats = computed(() => {
   const completed = history.value.filter(h => h.result === "completed").length;
   const failed = history.value.filter(h => h.result === "failed" || h.result === "escalated").length;
   const remaining = plan.value?.stages.length ?? 0;
-  const agents = (state.value?.active_agents ?? []).filter(a => a.role !== "chat").length;
+  const agents = (state.value?.active_agents ?? []).filter(a => a.agent_type !== "chat").length;
   return { completed, failed, remaining, agents };
 });
 
+const currentStageId = computed(() => {
+  // Prefer runtime state (always updated by tracker) over plan
+  return state.value?.current_stage_id ?? plan.value?.current_stage_id ?? null;
+});
+
 const currentStage = computed(() => {
-  const sid = plan.value?.current_stage_id ?? state.value?.current_stage_id;
+  const sid = currentStageId.value;
   if (!sid) return null;
   return plan.value?.stages.find(s => s.id === sid) ?? null;
 });
 
 const activeWorkers = computed(() =>
-  (state.value?.active_agents ?? []).filter(a => a.role !== "chat")
+  (state.value?.active_agents ?? [])
+    .filter(a => a.agent_type !== "chat")
+    .sort((a, b) => (ROLE_ORDER[a.agent_type] ?? 9) - (ROLE_ORDER[b.agent_type] ?? 9))
 );
 </script>
 
@@ -156,7 +171,7 @@ const activeWorkers = computed(() =>
 
     <section class="section" v-if="currentStage">
       <h2>Current Stage</h2>
-      <div class="stage-card">
+      <div class="stage-card clickable" @click="emit('navigate', 'plan', currentStage.id)">
         <div class="stage-id">{{ currentStage.id }}</div>
         <div class="stage-obj">{{ currentStage.objective }}</div>
         <div v-if="currentStage.tags?.length" class="stage-tags">
@@ -168,28 +183,29 @@ const activeWorkers = computed(() =>
     <section class="section">
       <h2>Active Agents</h2>
       <div v-if="activeWorkers.length === 0" class="empty">No active agents</div>
-      <div v-for="agent in activeWorkers" :key="agent.agent_id" class="agent-card">
+      <div v-for="agent in activeWorkers" :key="agent.agent_id" class="agent-card clickable" @click="emit('navigate', 'agents')">
         <div class="agent-header">
-          <span class="agent-role" :style="{ color: roleColor(agent.role) }">{{ agent.role }}</span>
+          <span class="agent-role" :style="{ color: roleColor(agent.agent_type) }">{{ agent.agent_type }}</span>
           <span class="agent-elapsed">{{ elapsed(agent.started_at) }}</span>
         </div>
-        <div class="agent-task" v-if="agent.current_task_id">{{ agent.current_task_id }}</div>
-        <div class="agent-id">{{ agent.agent_id.slice(0, 16) }}</div>
+        <div class="agent-task link" v-if="agent.current_task_id" @click.stop="emit('navigate', 'plan', agent.current_task_id)">{{ agent.current_task_id }}</div>
+        <div class="agent-id">{{ agent.agent_id }}</div>
       </div>
     </section>
 
     <section class="section" v-if="plan && plan.stages.length > 0">
       <h2>Stage Queue</h2>
-      <div v-for="stage in plan.stages" :key="stage.id" class="queue-item"
-           :class="{ current: stage.id === plan.current_stage_id }">
-        <span class="queue-id">{{ stage.id }}</span>
-        <span class="queue-obj">{{ stage.objective.slice(0, 60) }}{{ stage.objective.length > 60 ? '…' : '' }}</span>
+      <div v-for="stage in plan.stages" :key="stage.id" class="queue-item clickable"
+           :class="{ current: stage.id === plan.current_stage_id }"
+           @click="emit('navigate', 'plan', stage.id)">
+        <div class="queue-id">{{ stage.id }}</div>
+        <div class="queue-obj">{{ stage.objective }}</div>
       </div>
     </section>
 
     <section class="section" v-if="history.length > 0">
       <h2>Completed</h2>
-      <div v-for="entry in history.slice(-10).reverse()" :key="entry.stage_id" class="history-item">
+      <div v-for="entry in history.slice(-10).reverse()" :key="entry.stage_id" class="history-item clickable" @click="emit('navigate', 'plan', entry.stage_id)">
         <span class="history-icon">{{ entry.result === 'completed' ? '✓' : entry.result === 'escalated' ? '⬆' : '✗' }}</span>
         <span class="history-id">{{ entry.stage_id }}</span>
         <span class="history-result" :class="entry.result">{{ entry.result }}</span>
@@ -230,10 +246,12 @@ h2 { font-size: 13px; font-weight: 600; color: #8b949e; text-transform: uppercas
 .agent-task { font-size: 12px; color: #c9d1d9; margin-bottom: 2px; }
 .agent-id { font-size: 10px; color: #484f58; font-family: monospace; }
 
-.queue-item { display: flex; align-items: baseline; gap: 8px; padding: 4px 0; font-size: 12px; }
+.queue-item { padding: 6px 0; border-bottom: 1px solid #21262d; font-size: 12px; }
+.queue-item:last-child { border-bottom: none; }
 .queue-item.current { color: #58a6ff; font-weight: 600; }
-.queue-id { font-family: monospace; color: #8b949e; min-width: 80px; flex-shrink: 0; }
-.queue-obj { color: #c9d1d9; }
+.queue-id { font-family: monospace; color: #8b949e; font-size: 11px; margin-bottom: 2px; }
+.queue-item.current .queue-id { color: #58a6ff; }
+.queue-obj { color: #c9d1d9; line-height: 1.4; }
 
 .history-item { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 12px; }
 .history-icon { font-size: 11px; width: 16px; text-align: center; }
@@ -242,4 +260,9 @@ h2 { font-size: 13px; font-weight: 600; color: #8b949e; text-transform: uppercas
 .history-result.completed { color: #3fb950; }
 .history-result.escalated { color: #d29922; }
 .history-result.failed { color: #f85149; }
+
+.clickable { cursor: pointer; transition: background 0.15s; }
+.clickable:hover { background: #1c2333; }
+.link { color: #58a6ff; cursor: pointer; }
+.link:hover { text-decoration: underline; }
 </style>

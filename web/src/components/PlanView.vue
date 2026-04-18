@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from "vue";
+import { ref, onMounted, onUnmounted, computed, watch, nextTick } from "vue";
+
+const props = defineProps<{
+  focusStageId?: string | null;
+}>();
+
+const emit = defineEmits<{
+  'focus-consumed': [];
+}>();
 
 interface Stage {
   id: string;
@@ -56,29 +64,22 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 async function fetchPlan() {
   try {
-    const [planRes, stateRes, healthRes] = await Promise.all([
+    const [planRes, stateRes, configRes] = await Promise.all([
       fetch("/api/plan"),
       fetch("/api/state"),
-      fetch("/health"),
+      fetch("/api/config"),
     ]);
     if (planRes.ok) {
       const data = await planRes.json();
       plan.value = data.plan;
-      history.value = data.history?.entries ?? [];
+      history.value = data.history?.stages ?? [];
     }
     if (stateRes.ok) {
       const data = await stateRes.json();
       if (data.plan && !plan.value) plan.value = data.plan;
     }
-    if (healthRes.ok) {
-      const data = await healthRes.json();
-      if (!config.value) {
-        config.value = {
-          project_name: data.project ?? "",
-          objectives: [],
-          provider: "",
-        };
-      }
+    if (configRes.ok) {
+      config.value = await configRes.json();
     }
   } catch { /* ignore */ }
 }
@@ -122,6 +123,36 @@ const allStages = computed(() => {
   const active = plan.value?.stages ?? [];
   return active;
 });
+
+const stageRefs = ref<Record<string, HTMLElement | null>>({});
+
+function setStageRef(id: string) {
+  return (el: any) => { stageRefs.value[id] = el; };
+}
+
+// Check if a stage ID is in history (completed stages)
+function isHistoryStage(stageId: string): boolean {
+  return history.value.some(h => h.stage_id === stageId);
+}
+
+watch(() => props.focusStageId, async (stageId) => {
+  if (!stageId) return;
+  // Determine which section to show
+  if (isHistoryStage(stageId)) {
+    activeSection.value = 'history';
+  } else {
+    activeSection.value = 'stages';
+    // Expand the target stage
+    if (expandedStage.value !== stageId) {
+      expandedStage.value = stageId;
+      fetchStageDetail(stageId);
+    }
+  }
+  emit('focus-consumed');
+  await nextTick();
+  const el = stageRefs.value[stageId];
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}, { immediate: true });
 </script>
 
 <template>
@@ -141,6 +172,16 @@ const allStages = computed(() => {
         <div class="field" v-if="config?.project_name">
           <span class="field-label">Name</span>
           <span class="field-value">{{ config.project_name }}</span>
+        </div>
+        <div class="field" v-if="config?.provider">
+          <span class="field-label">Provider</span>
+          <span class="field-value mono">{{ config.provider }}</span>
+        </div>
+        <div class="field" v-if="config?.objectives?.length">
+          <span class="field-label">Objectives</span>
+          <ul class="objectives-list">
+            <li v-for="(obj, i) in config.objectives" :key="i">{{ obj }}</li>
+          </ul>
         </div>
       </div>
 
@@ -178,7 +219,8 @@ const allStages = computed(() => {
     <!-- Stages detail -->
     <div v-else-if="activeSection === 'stages'" class="section-content">
       <div v-if="allStages.length === 0" class="empty-state">No stages in plan.</div>
-      <div v-for="stage in allStages" :key="stage.id" class="stage-card" @click="toggleStage(stage.id)">
+      <div v-for="stage in allStages" :key="stage.id" class="stage-card" :ref="setStageRef(stage.id)" @click="toggleStage(stage.id)"
+           :class="{ focused: stage.id === expandedStage }">
         <div class="stage-header">
           <span class="stage-id-badge" :class="{ current: stage.id === plan?.current_stage_id }">{{ stage.id }}</span>
           <span class="expand-icon">{{ expandedStage === stage.id ? '▲' : '▼' }}</span>
@@ -234,7 +276,7 @@ const allStages = computed(() => {
     <!-- History -->
     <div v-else-if="activeSection === 'history'" class="section-content">
       <div v-if="history.length === 0" class="empty-state">No completed stages yet.</div>
-      <div v-for="entry in [...history].reverse()" :key="entry.stage_id" class="history-card">
+      <div v-for="entry in [...history].reverse()" :key="entry.stage_id" class="history-card" :ref="setStageRef(entry.stage_id)">
         <div class="history-header">
           <span class="history-id">{{ entry.stage_id }}</span>
           <span class="history-result" :style="{ color: resultColor(entry.result) }">{{ entry.result }}</span>
@@ -270,6 +312,10 @@ h2 { font-size: 14px; font-weight: 600; color: #c9d1d9; margin-bottom: 12px; }
 
 .plan-summary { font-size: 13px; color: #8b949e; margin-bottom: 8px; }
 .plan-summary code { color: #58a6ff; background: #0d1117; padding: 1px 4px; border-radius: 3px; font-size: 12px; }
+.objectives-list { list-style: none; padding: 0; margin: 4px 0 0; }
+.objectives-list li { font-size: 12px; color: #c9d1d9; padding: 4px 0 4px 14px; position: relative; line-height: 1.4; border-bottom: 1px solid #21262d; }
+.objectives-list li:last-child { border-bottom: none; }
+.objectives-list li::before { content: "→"; position: absolute; left: 0; color: #58a6ff; }
 
 /* Pipeline visualization */
 .pipeline { padding-left: 4px; }
@@ -286,6 +332,7 @@ h2 { font-size: 14px; font-weight: 600; color: #c9d1d9; margin-bottom: 12px; }
 /* Stage cards */
 .stage-card { background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 12px; margin-bottom: 8px; cursor: pointer; transition: border-color 0.2s; }
 .stage-card:hover { border-color: #30363d; }
+.stage-card.focused { border-color: #58a6ff; box-shadow: 0 0 0 1px rgba(56, 139, 253, 0.3); }
 .stage-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .stage-id-badge { font-size: 12px; font-weight: 700; font-family: monospace; color: #8b949e; padding: 2px 8px; background: #0d1117; border-radius: 4px; }
 .stage-id-badge.current { color: #58a6ff; background: rgba(56, 139, 253, 0.15); }

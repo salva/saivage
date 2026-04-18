@@ -202,9 +202,13 @@ export class ModelRouter {
       chain.unshift(sticky);
     }
 
-    const failovers = this.failoverChains[modelSpec];
+    // Look up failover by full spec first, then by provider-only key
+    const { provider: providerName, model } = parseModelId(modelSpec);
+    const failovers = this.failoverChains[modelSpec] ?? this.failoverChains[providerName];
     if (failovers) {
-      chain.push(...failovers.filter((f) => !chain.includes(f)));
+      // Expand provider-only failover entries to full specs using the same model
+      const expanded = failovers.map((f) => (f.includes("/") ? f : `${f}/${model}`));
+      chain.push(...expanded.filter((f) => !chain.includes(f)));
     }
 
     return chain;

@@ -13,6 +13,7 @@ import {
   TaskReportSchema,
   StageSummarySchema,
   type RuntimeState,
+  type AgentState,
   type TaskList,
   type TaskReport,
   type StageSummary,
@@ -189,4 +190,54 @@ export function createRuntimeState(
     updated_at: new Date().toISOString(),
     pid: process.pid,
   };
+}
+
+/**
+ * Tracks agent lifecycle and persists runtime state to disk.
+ * Used by bootstrap to keep `runtime-state.json` accurate for the dashboard.
+ */
+export class RuntimeTracker {
+  private agents = new Map<string, AgentState>();
+  private currentStageId: string | null = null;
+  private startedAt: string;
+
+  constructor(private statePath: string) {
+    this.startedAt = new Date().toISOString();
+  }
+
+  /** Register an agent as active and persist. */
+  agentStarted(agentId: string, agentType: AgentState["agent_type"], taskId?: string): void {
+    this.agents.set(agentId, {
+      agent_type: agentType,
+      agent_id: agentId,
+      status: "running",
+      current_task_id: taskId,
+      started_at: new Date().toISOString(),
+    });
+    this.flush();
+  }
+
+  /** Remove an agent and persist. */
+  agentStopped(agentId: string): void {
+    this.agents.delete(agentId);
+    this.flush();
+  }
+
+  /** Update the current stage ID and persist. */
+  setCurrentStage(stageId: string | null): void {
+    this.currentStageId = stageId;
+    this.flush();
+  }
+
+  private flush(): void {
+    const state: RuntimeState = {
+      status: "running",
+      current_stage_id: this.currentStageId,
+      active_agents: [...this.agents.values()],
+      started_at: this.startedAt,
+      updated_at: new Date().toISOString(),
+      pid: process.pid,
+    };
+    writeRuntimeState(this.statePath, state);
+  }
 }

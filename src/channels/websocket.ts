@@ -15,10 +15,16 @@ export class WebSocketChannel implements ChatChannel {
 
   constructor(private ws: WebSocket) {
     ws.on("message", (data) => {
-      const msg = data.toString().trim();
-      if (msg && this.messageHandler) {
-        this.messageHandler(msg);
-      }
+      let msg = data.toString().trim();
+      if (!msg) return;
+      // Parse client JSON envelope — extract content from { type: "message", content: "..." }
+      try {
+        const parsed = JSON.parse(msg);
+        if (parsed.type === "message" && typeof parsed.content === "string") {
+          msg = parsed.content;
+        }
+      } catch { /* treat as raw text */ }
+      this.messageHandler?.(msg);
     });
 
     ws.on("close", () => {

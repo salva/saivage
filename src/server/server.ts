@@ -7,7 +7,8 @@
 import Fastify from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { existsSync, readFileSync, statSync, readdirSync } from "node:fs";
 import type { SaivageRuntime } from "./bootstrap.js";
 import { readDocOrNull, listDocs } from "../store/documents.js";
 import {
@@ -18,6 +19,7 @@ import {
   StageSummarySchema,
   TaskReportSchema,
   InspectionReportSchema,
+  ChatLogSchema,
 } from "../types.js";
 import { ChatAgent } from "../agents/chat.js";
 import { chatSessionId, agentId } from "../ids.js";
@@ -115,6 +117,17 @@ export async function startServer(
     return { state, plan };
   });
 
+  // ─── Config API ─────────────────────────────────────────────────────────
+
+  app.get("/api/config", async () => {
+    const { project_name, objectives, provider } = runtime.project.config;
+    return {
+      project_name,
+      objectives,
+      provider,
+    };
+  });
+
   // ─── Inspections API ───────────────────────────────────────────────────
 
   app.get("/api/inspections", async () => {
@@ -126,6 +139,355 @@ export async function startServer(
       ),
     ).filter(Boolean);
     return { reports };
+  });
+
+  // ─── Chat Sessions API ─────────────────────────────────────────────────
+
+  app.get("/api/chats", async () => {
+    const chatsDir = runtime.project.paths.chats;
+    const sessions: {
+      session_id: string;
+      channel: string;
+      started_at: string;
+      updated_at: string;
+      message_count: number;
+    }[] = [];
+
+    if (!existsSync(chatsDir)) return { sessions };
+
+    for (const channel of readdirSync(chatsDir)) {
+      const channelDir = join(chatsDir, channel);
+      try {
+        if (!statSync(channelDir).isDirectory()) continue;
+      } catch { continue; }
+
+      for (const file of readdirSync(channelDir)) {
+        if (!file.endsWith(".json")) continue;
+        const chatLog = readDocOrNull(
+          join(channelDir, file),
+          ChatLogSchema,
+        );
+        if (!chatLog) continue;
+        sessions.push({
+          session_id: chatLog.session_id,
+          channel: chatLog.channel,
+          started_at: chatLog.started_at,
+          updated_at: chatLog.updated_at,
+          message_count: chatLog.messages.length,
+        });
+      }
+    }
+
+    sessions.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+    return { sessions };
+  });
+
+  app.get("/api/chats/:sessionId", async (req, reply) => {
+    const { sessionId } = req.params as { sessionId: string };
+    const chatsDir = runtime.project.paths.chats;
+
+    if (!existsSync(chatsDir)) {
+      return reply.status(404).send({ error: "Not found" });
+    }
+
+    // Search across all channels
+    for (const channel of readdirSync(chatsDir)) {
+      const channelDir = join(chatsDir, channel);
+      try {
+        if (!statSync(channelDir).isDirectory()) continue;
+      } catch { continue; }
+
+      const filePath = join(channelDir, `${sessionId}.json`);
+      const chatLog = readDocOrNull(filePath, ChatLogSchema);
+      if (chatLog) return chatLog;
+    }
+
+    // Session may not have been persisted yet (new session, no messages)
+    return { session_id: sessionId, channel: "unknown", started_at: new Date().toISOString(), updated_at: new Date().toISOString(), messages: [] };
+  });
+
+  // ─── Files API ─────────────────────────────────────────────────────────
+
+  const HIDDEN_FILES = new Set(["auth-profiles.json"]);
+
+  app.get("/api/files", async (req, reply) => {
+    const queryPath = (req.query as { path?: string }).path ?? "";
+
+    // Security: reject traversal attempts
+    if (queryPath.includes("..") || queryPath.startsWith("/")) {
+      return reply.status(400).send({ error: "Invalid path" });
+    }
+
+    const saivageDir = runtime.project.saivageDir;
+    const targetDir = queryPath
+      ? resolve(saivageDir, queryPath)
+      : saivageDir;
+
+    // Ensure resolved path is within .saivage/
+    if (!targetDir.startsWith(saivageDir)) {
+      return reply.status(400).send({ error: "Invalid path" });
+    }
+
+    if (!existsSync(targetDir)) {
+      return { entries: [] };
+    }
+
+    try {
+      const items = readdirSync(targetDir);
+      const entries = items
+        .filter((name) => !HIDDEN_FILES.has(name))
+        .map((name) => {
+          const fullPath = join(targetDir, name);
+          try {
+            const st = statSync(fullPath);
+            return {
+              name,
+              type: st.isDirectory() ? "dir" as const : "file" as const,
+              size: st.isFile() ? st.size : undefined,
+              modified: st.mtime.toISOString(),
+            };
+          } catch {
+            return { name, type: "file" as const };
+          }
+        });
+      return { entries };
+    } catch {
+      return { entries: [] };
+    }
+  });
+
+  app.get("/api/files/content", async (req, reply) => {
+    const queryPath = (req.query as { path?: string }).path;
+    if (!queryPath) {
+      return reply.status(400).send({ error: "path is required" });
+    }
+
+    // Security: reject traversal attempts
+    if (queryPath.includes("..") || queryPath.startsWith("/")) {
+      return reply.status(400).send({ error: "Invalid path" });
+    }
+
+    const saivageDir = runtime.project.saivageDir;
+    const targetFile = resolve(saivageDir, queryPath);
+
+    if (!targetFile.startsWith(saivageDir)) {
+      return reply.status(400).send({ error: "Invalid path" });
+    }
+
+    if (HIDDEN_FILES.has(queryPath.split("/").pop() ?? "")) {
+      return reply.status(403).send({ error: "Access denied" });
+    }
+
+    if (!existsSync(targetFile)) {
+      return reply.status(404).send({ error: "Not found" });
+    }
+
+    try {
+      const st = statSync(targetFile);
+      // Limit to 1MB for safety
+      if (st.size > 1_048_576) {
+        const partial = readFileSync(targetFile, "utf-8").slice(0, 1_048_576);
+        return { path: queryPath, content: partial, size: st.size, truncated: true };
+      }
+      const content = readFileSync(targetFile, "utf-8");
+      const ext = queryPath.split(".").pop()?.toLowerCase();
+      const type = ext === "json" ? "json" : ext === "md" ? "md" : "txt";
+      return { path: queryPath, content, size: st.size, type, truncated: false };
+    } catch {
+      return reply.status(500).send({ error: "Read failed" });
+    }
+  });
+
+  // ─── Debug API ─────────────────────────────────────────────────────────
+
+  app.get("/api/debug/state", async () => {
+    const runtimeState = readDocOrNull(
+      runtime.project.paths.runtimeState,
+      RuntimeStateSchema,
+    );
+    const plan = readDocOrNull(
+      runtime.project.paths.plan,
+      PlanSchema,
+    );
+    const history = readDocOrNull(
+      runtime.project.paths.planHistory,
+      PlanHistorySchema,
+    );
+
+    // Read raw config files
+    let saivageConfig = null;
+    try {
+      const saivagePath = join(runtime.project.saivageDir, "saivage.json");
+      if (existsSync(saivagePath)) {
+        saivageConfig = JSON.parse(readFileSync(saivagePath, "utf-8"));
+      }
+    } catch { /* ignore */ }
+
+    return {
+      runtime: runtimeState,
+      plan,
+      history,
+      config: runtime.project.config,
+      saivage_config: saivageConfig,
+    };
+  });
+
+  app.get("/api/debug/errors", async () => {
+    interface ErrorEntry {
+      source: string;
+      type: string;
+      severity: string;
+      message: string;
+      details?: unknown;
+      timestamp?: string;
+    }
+    const errors: ErrorEntry[] = [];
+
+    // Collect from plan history
+    const history = readDocOrNull(
+      runtime.project.paths.planHistory,
+      PlanHistorySchema,
+    );
+    if (history?.stages) {
+      for (const stage of history.stages) {
+        if (stage.result === "failed" || stage.result === "escalated") {
+          errors.push({
+            source: stage.id,
+            type: `stage_${stage.result}`,
+            severity: "error",
+            message: stage.summary ?? stage.result,
+            details: stage.escalation ?? stage.abort_reason ?? null,
+            timestamp: stage.completed_at,
+          });
+        }
+      }
+    }
+
+    // Collect from stage summaries and reports
+    const stagesDir = runtime.project.paths.stages;
+    if (existsSync(stagesDir)) {
+      for (const stageId of readdirSync(stagesDir)) {
+        const stageDir = join(stagesDir, stageId);
+        try { if (!statSync(stageDir).isDirectory()) continue; } catch { continue; }
+
+        // Summary issues (read raw JSON — schema may be incomplete)
+        try {
+          const summaryPath = join(stageDir, "summary.json");
+          if (existsSync(summaryPath)) {
+            const summary = JSON.parse(readFileSync(summaryPath, "utf-8"));
+            if (Array.isArray(summary?.issues)) {
+              for (const issue of summary.issues) {
+                errors.push({
+                  source: stageId,
+                  type: "stage_issue",
+                  severity: issue.severity ?? "warning",
+                  message: issue.description ?? "Unknown issue",
+                  timestamp: summary.completed_at,
+                });
+              }
+            }
+            if (summary?.result === "failed" || summary?.result === "escalated") {
+              errors.push({
+                source: stageId,
+                type: `summary_${summary.result}`,
+                severity: "error",
+                message: summary.summary ?? summary.result,
+                details: summary.escalation ?? null,
+                timestamp: summary.completed_at,
+              });
+            }
+          }
+        } catch { /* ignore malformed summary */ }
+
+        // Failed task reports (read raw JSON)
+        const reportsDir = join(stageDir, "reports");
+        if (existsSync(reportsDir)) {
+          for (const f of readdirSync(reportsDir)) {
+            if (!f.endsWith(".json")) continue;
+            try {
+              const report = JSON.parse(readFileSync(join(reportsDir, f), "utf-8"));
+              if (report && report.status === "failed") {
+                errors.push({
+                  source: `${stageId}/${report.task_id ?? f}`,
+                  type: "task_failed",
+                  severity: "error",
+                  message: report.failure_reason ?? report.summary ?? "Task failed",
+                  details: report.issues_found,
+                  timestamp: report.completed_at,
+                });
+              }
+            } catch { /* ignore malformed report */ }
+          }
+        }
+      }
+    }
+
+    errors.sort((a, b) =>
+      (b.timestamp ?? "").localeCompare(a.timestamp ?? ""),
+    );
+    return { errors };
+  });
+
+  app.get("/api/debug/timeline", async () => {
+    interface TimelineEvent {
+      timestamp: string;
+      type: string;
+      source: string;
+      description: string;
+    }
+    const events: TimelineEvent[] = [];
+
+    // From plan history
+    const history = readDocOrNull(
+      runtime.project.paths.planHistory,
+      PlanHistorySchema,
+    );
+    if (history?.stages) {
+      for (const stage of history.stages) {
+        if (stage.started_at) {
+          events.push({
+            timestamp: stage.started_at,
+            type: "stage_started",
+            source: stage.id,
+            description: `Stage started: ${stage.objective?.slice(0, 100) ?? stage.id}`,
+          });
+        }
+        if (stage.completed_at) {
+          events.push({
+            timestamp: stage.completed_at,
+            type: `stage_${stage.result ?? "completed"}`,
+            source: stage.id,
+            description: `Stage ${stage.result}: ${stage.summary?.slice(0, 100) ?? stage.id}`,
+          });
+        }
+      }
+    }
+
+    // From task reports (across all stages)
+    const stagesDir = runtime.project.paths.stages;
+    if (existsSync(stagesDir)) {
+      for (const stageId of readdirSync(stagesDir)) {
+        const reportsDir = join(stagesDir, stageId, "reports");
+        if (!existsSync(reportsDir)) continue;
+        for (const f of readdirSync(reportsDir)) {
+          if (!f.endsWith(".json")) continue;
+          try {
+            const report = JSON.parse(readFileSync(join(reportsDir, f), "utf-8"));
+            if (report?.completed_at) {
+              events.push({
+                timestamp: report.completed_at,
+                type: `task_${report.status ?? "unknown"}`,
+                source: `${stageId}/${report.task_id ?? f}`,
+                description: `Task ${report.status}: ${(report.summary ?? report.task_id ?? f).slice(0, 100)}`,
+              });
+            }
+          } catch { /* ignore malformed report */ }
+        }
+      }
+    }
+
+    events.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    return { events };
   });
 
   // ─── WebSocket Chat ────────────────────────────────────────────────────
@@ -150,6 +512,9 @@ export async function startServer(
       runtime.eventBus,
       getEventFilter(runtime),
     );
+
+    // Send session ID to client so it can reload messages on reconnect
+    channel.sendEvent({ type: "session", sessionId });
 
     log.info(`[server] WebSocket chat session started: ${sessionId}`);
 

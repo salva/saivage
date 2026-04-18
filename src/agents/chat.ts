@@ -150,6 +150,10 @@ export class ChatAgent extends BaseAgent implements Agent {
     // Inject into conversation
     this.injectMessage(content);
 
+    // Signal thinking to the client
+    const ch = this.channel as ChatChannel & { sendEvent?: (e: Record<string, unknown>) => void };
+    ch.sendEvent?.({ type: "thinking" });
+
     // Run one LLM turn
     const { text } = await this.runLoop();
 

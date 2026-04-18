@@ -19,13 +19,14 @@ import {
   discoverProject,
   type ProjectContext,
 } from "../store/project.js";
-import { recoverFromCrash, writeRuntimeState, createRuntimeState, isAnotherInstanceRunning } from "../runtime/recovery.js";
+import { recoverFromCrash, writeRuntimeState, createRuntimeState, isAnotherInstanceRunning, RuntimeTracker } from "../runtime/recovery.js";
 import { PlannerAgent } from "../agents/planner.js";
 import { ManagerAgent } from "../agents/manager.js";
 import { CoderAgent } from "../agents/coder.js";
 import { ResearcherAgent } from "../agents/researcher.js";
 import { InspectorAgent } from "../agents/inspector.js";
 import type { AgentContext, AgentResult, Agent } from "../agents/types.js";
+import type { AgentState } from "../types.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
 import { agentId } from "../ids.js";
 import { log } from "../log.js";
@@ -38,6 +39,7 @@ export interface SaivageRuntime {
   eventBus: EventBus;
   planService: PlanService;
   project: ProjectContext;
+  tracker: RuntimeTracker;
   /** Stop the runtime gracefully. */
   shutdown: () => Promise<void>;
 }
@@ -125,6 +127,9 @@ export async function bootstrap(
   const runtimeState = createRuntimeState();
   await writeRuntimeState(project.paths.runtimeState, runtimeState);
 
+  // Runtime tracker for agent lifecycle → dashboard
+  const tracker = new RuntimeTracker(project.paths.runtimeState);
+
   const runtime: SaivageRuntime = {
     config,
     router,
@@ -132,6 +137,7 @@ export async function bootstrap(
     eventBus,
     planService,
     project,
+    tracker,
     shutdown: async () => {
       log.info("[v2] Shutting down...");
       await mcpRuntime.shutdown();
@@ -158,7 +164,7 @@ export function createChildSpawner(
     input: unknown,
     parentCtx: AgentContext,
   ): Promise<AgentResult> => {
-    const { project, router, mcpRuntime, eventBus } = runtime;
+    const { project, router, mcpRuntime, eventBus, tracker } = runtime;
 
     const ctx: AgentContext = {
       project,
@@ -170,24 +176,28 @@ export function createChildSpawner(
     };
 
     let agent: Agent;
+    let taskId: string | undefined;
 
     switch (role) {
       case "manager": {
         const managerInput = input as import("../agents/types.js").ManagerInput;
         const managerSpawner = createChildSpawner(runtime);
         agent = new ManagerAgent(ctx, managerInput, managerSpawner);
+        tracker.setCurrentStage(managerInput.stage?.id ?? null);
         break;
       }
 
       case "coder": {
         const workerInput = input as import("../agents/types.js").WorkerInput;
         agent = new CoderAgent(ctx, workerInput);
+        taskId = workerInput.task?.id;
         break;
       }
 
       case "researcher": {
         const workerInput = input as import("../agents/types.js").WorkerInput;
         agent = new ResearcherAgent(ctx, workerInput);
+        taskId = workerInput.task?.id;
         break;
       }
 
@@ -201,17 +211,23 @@ export function createChildSpawner(
         return { kind: "failure", reason: `Unknown agent role: ${role}` };
     }
 
-    const result = await agent.run();
+    tracker.agentStarted(ctx.agentId, role as AgentState["agent_type"], taskId);
 
-    // Publish events for significant results
-    if (role === "manager") {
-      const stageId = (input as import("../agents/types.js").ManagerInput).stage?.id;
-      await publishAgentResult(eventBus, role, stageId, result);
-    } else if (role === "inspector") {
-      await publishAgentResult(eventBus, role, undefined, result);
+    try {
+      const result = await agent.run();
+
+      // Publish events for significant results
+      if (role === "manager") {
+        const stageId = (input as import("../agents/types.js").ManagerInput).stage?.id;
+        await publishAgentResult(eventBus, role, stageId, result);
+      } else if (role === "inspector") {
+        await publishAgentResult(eventBus, role, undefined, result);
+      }
+
+      return result;
+    } finally {
+      tracker.agentStopped(ctx.agentId);
     }
-
-    return result;
   };
 }
 
@@ -221,7 +237,7 @@ export function createChildSpawner(
 export async function runPlanner(
   runtime: SaivageRuntime,
 ): Promise<AgentResult> {
-  const { project, router, mcpRuntime } = runtime;
+  const { project, router, mcpRuntime, tracker } = runtime;
 
   const ctx: AgentContext = {
     project,
@@ -235,6 +251,8 @@ export async function runPlanner(
   const childSpawner = createChildSpawner(runtime);
   const planner = new PlannerAgent(ctx, childSpawner);
 
+  tracker.agentStarted(ctx.agentId, "planner");
+
   // Handle graceful shutdown
   const shutdownHandler = () => {
     log.info("[v2] Received shutdown signal — cancelling Planner");
@@ -247,6 +265,7 @@ export async function runPlanner(
     const result = await planner.run();
     return result;
   } finally {
+    tracker.agentStopped(ctx.agentId);
     process.off("SIGINT", shutdownHandler);
     process.off("SIGTERM", shutdownHandler);
   }
