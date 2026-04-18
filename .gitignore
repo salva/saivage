@@ -1,0 +1,20 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.env
+~/.saivage/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Temp
+tmp/
+
+# Logs
+*.log

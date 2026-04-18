@@ -1,0 +1,26 @@
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { loadConfig, expandHome } from "./config.js";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir, homedir } from "node:os";
+
+describe("config", () => {
+  describe("expandHome", () => {
+    it("expands ~ to home directory", () => {
+      expect(expandHome("~/foo/bar")).toBe(join(homedir(), "foo/bar"));
+    });
+
+    it("leaves absolute paths alone", () => {
+      expect(expandHome("/foo/bar")).toBe("/foo/bar");
+    });
+  });
+
+  describe("loadConfig", () => {
+    it("returns defaults when no config file exists", () => {
+      const config = loadConfig(true);
+      expect(config.server.port).toBe(7777);
+      expect(config.agent.maxConcurrentAgents).toBe(3);
+      expect(config.models.orchestrator).toBe("anthropic/claude-sonnet-4-20250514");
+    });
+  });
+});
