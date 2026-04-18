@@ -69,8 +69,8 @@ User notes arriving while the Planner is suspended are queued and **injected as 
 
 **Inputs:**
 - Current stage description (from Planner's active plan) — must be self-contained with references to any documents the Manager should read before planning tasks.
-- Task completion reports (from Coder/Researcher) — delivered as events while the Manager is waiting.
-- Task failure reports (from Coder/Researcher) — delivered as events.
+- Task completion reports (from Coder/Researcher) — returned as tool-call results when subagents complete.
+- Task failure reports (from Coder/Researcher) — returned as tool-call results with `status: "failed"`.
 
 **Outputs:**
 - **Task List** (`stages/<stage-id>/tasks.json`): Ordered list of tasks for the current stage. Each task has:
@@ -133,7 +133,7 @@ This means the Manager maintains its full conversation context throughout the st
 - Documents all work in the task report.
 - Self-assesses success against the task checklist.
 - Flags failure honestly when a task cannot be completed.
-- **Can commit** its own changes to version control (must commit only files it modified, avoiding conflicts with concurrent agents).
+- **Commits** its own changes via the MCP git tool (must commit only files it modified — the MCP server serializes all git operations to avoid conflicts).
 
 ### 2.4 Researcher
 
@@ -154,7 +154,7 @@ This means the Manager maintains its full conversation context throughout the st
 - **Can write utility scripts** under `research/` for data processing, comparison, or analysis — same ownership model as Inspector.
 - Documents findings in structured research files.
 - Self-assesses and flags failures.
-- **Can commit** its own files (`research/`) to version control.
+- **Commits** its own files (`research/`) via the MCP git tool.
 
 ### 2.5 Inspector
 
@@ -184,7 +184,8 @@ This means the Manager maintains its full conversation context throughout the st
   - Exception: Planner can explicitly grant write access to specific files in rare cases.
 - Can execute project code (run tests, check outputs) but not change it.
 - Reports include metadata (timestamp, TTL) so the Planner can assess relevance.
-- Tools/scripts created in `inspector-workspace/` persist across investigations (reusable by future Inspector instances).
+- Tools/scripts created in `inspector-workspace/` persist across investigations (reusable by future Inspector instances). Note: this directory is under `tmp/` (gitignored), so persistence is local-only — won't survive a clean checkout.
+- **Commits** its own tools/scripts in `inspector-workspace/` via the MCP git tool when they should be preserved.
 
 **Trigger events:**
 - Planner calls `run_inspector(request)` tool → Inspector spawned
@@ -232,13 +233,14 @@ Planner (long-lived)
   ├── run_manager(stage)          → returns StageSummary
   │     ├── run_coder(task)        → returns TaskReport
   │     └── run_researcher(task)   → returns TaskReport
-  ├── run_inspector(request)      → returns InspectionReport
-  └── process_notes()             → reads/marks/deletes notes
+  └── run_inspector(request)      → returns InspectionReport
 
 Chat (independent, per channel)
   ├── run_inspector(request)      → returns InspectionReport
   └── create_note(content)        → writes note for Planner
 ```
+
+User notes arriving while the Planner is suspended are queued and injected as additional context when the Planner next resumes (this is a runtime mechanism, not a tool call).
 
 The Planner’s conversation never terminates — it loops: plan → call Manager → process result → update plan → repeat.
 
@@ -371,12 +373,23 @@ The tool-call model naturally serializes the hierarchy — a parent is suspended
 
 ### 4.3 Version Control
 
-All code-producing agents (Coder, Researcher, Inspector) can commit to git:
-- Each agent commits **only the files it created or modified**.
-- Agents must not stage or commit files belonging to other concurrent agents.
-- Commit messages must reference the task ID: `[task-<id>] <description>`.
-- The runtime must ensure git operations are serialized (lock around `git add`/`commit`) to prevent race conditions.
-- **Conflict resolution**: If a commit fails due to a conflict (rare — would require two agents editing the same file), the failure is escalated to the Manager, which creates a new task to resolve the conflict.
+All git operations go through an **MCP git server** that serializes access. No direct `git` CLI calls by agents.
+
+The MCP git server exposes tools:
+- `git_commit(files, message, task_id)` — stages only the specified files, commits with `[task-<id>] <message>`. Returns commit SHA or conflict error.
+- `git_status()` — returns current working tree status.
+- `git_diff(files?)` — returns diff of specified files (or all).
+- `git_log(n?)` — returns recent commit history.
+
+Serialization is inherent — the MCP server processes one tool call at a time, so no locking is needed.
+
+**Conflict resolution**: If `git_commit` detects a conflict (rare — two agents modifying the same file), it returns an error. The calling agent reports this in its `TaskReport` as a failure, which the Manager handles by creating a resolution task.
+
+**Per-agent commit rules:**
+- **Coder**: commits project files it modified + its task report.
+- **Researcher**: commits only files under `research/` + its task report.
+- **Inspector**: commits only files under `inspector-workspace/` that should be preserved.
+- **Planner/Manager**: commit `.saivage/` state files (plan, tasks, summaries). These are metadata commits, not code.
 
 ### 4.4 Crash Recovery
 

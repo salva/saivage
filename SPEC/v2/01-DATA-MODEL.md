@@ -80,7 +80,7 @@ interface Stage {
   starting_points: string[];         // current state relevant to this stage
   expected_outcomes: string[];       // concrete, verifiable deliverables
   acceptance_criteria: string[];     // how to know the stage is done
-  dependencies: string[];            // stage IDs that must complete first
+  dependencies: string[];            // stage IDs that must complete first (planning constraint — runtime is one-stage-at-a-time)
   references: string[];              // document paths relative to project root
   tags: string[];                    // for skill matching
 }
@@ -311,7 +311,6 @@ interface RuntimeState {
   status: "idle" | "running" | "suspended" | "error";
   current_stage_id: string | null;
   active_agents: AgentState[];
-  git_lock_holder: string | null;    // agent ID holding the git lock
   started_at: string;
   updated_at: string;
   pid: number;                       // process ID for stale detection
@@ -381,7 +380,7 @@ interface Escalation {
 }
 ```
 
-The Manager writes this into the `StageSummary.escalation_reason` field and sets `result: "escalated"`.
+The Manager writes this into the `StageSummary.escalation` field and sets `result: "escalated"`.
 The Planner reads it and decides whether to revise the stage, remove it, split it, or schedule an Inspector.
 
 ---
@@ -445,7 +444,7 @@ IDs are generated with nanoid (12 chars, alphanumeric), prefixed by entity type.
 | `stages/<id>/summary.json` | Manager     | —           | Never (archived)          |
 | `notes/<id>.json`          | Chat        | Planner     | On replan (unless permanent)|
 | `inspections/<id>.json`    | Inspector   | —           | After `expires_at` (if set)|
-| `skills/index.json`        | Manager     | Manager     | Never (overwritten)       |
+| `skills/index.json`        | Coder       | Coder       | Never (overwritten)       |
 | `skills/<name>.md`         | Coder       | Coder       | Never                     |
 | `tmp/state/runtime.json`   | Runtime     | Runtime     | On clean shutdown          |
 | `tmp/chats/<ch>/<id>.json` | Chat        | Chat        | Rotation policy (TBD)      |

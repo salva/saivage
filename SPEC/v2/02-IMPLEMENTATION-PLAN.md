@@ -74,12 +74,14 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
   - Resume: restore conversation, inject tool results (+ any queued notes).
   - **Context compaction**: when conversation exceeds a token threshold, summarize and compact. Write disk state (`plan.json`, etc.) as authoritative fallback.
 
-### 2.4 Git lock
-- `src/v2/runtime/gitlock.ts` — Serialized git operations:
-  - `acquireGitLock(agentId) → Promise<void>` (waits if held).
-  - `releaseGitLock(agentId)`.
-  - `commitFiles(agentId, files, message)` — add + commit specific files only.
-  - On conflict detection → return error (not throw), escalate to Manager.
+### 2.4 MCP git server
+- `src/v2/mcp/git-server.ts` — MCP server that serializes all git operations:
+  - `git_commit(files, message, task_id)` — stages specified files, commits with `[task-<id>] <message>`. Returns SHA or conflict error.
+  - `git_status()` — returns working tree status.
+  - `git_diff(files?)` — returns diff.
+  - `git_log(n?)` — returns recent history.
+  - Serialization is inherent — MCP processes one request at a time, so no locking needed.
+  - On conflict: returns error (not throw). Calling agent reports failure in `TaskReport`.
 
 ### 2.5 Crash recovery
 - `src/v2/runtime/recovery.ts`:
@@ -92,7 +94,7 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
 - Unit tests for tool-call dispatch (spawn child, suspend parent, return result).
 - Unit tests for parallel dispatch (Coder + Researcher concurrent).
 - Unit tests for conversation suspend/resume.
-- Unit tests for git lock (serialization, conflict detection).
+- Unit tests for MCP git server (serialization, conflict detection, commit scoping).
 - Unit tests for crash recovery (stale state, task reset).
 
 **Deliverable:** The nested tool-call pattern works. Parent agents suspend while children run.
@@ -122,10 +124,10 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
 ### 3.3 Tool permissions
 - `src/v2/agents/permissions.ts`:
   - Defines per-agent-type file access rules:
-    - Coder: read all, write project code, commit own files.
-    - Researcher: read all, write only `research/`, commit own files.
-    - Inspector: read all, write only `inspector-workspace/` (+ granted paths), commit own tools.
-  - Wraps filesystem/git tools with permission checks.
+    - Coder: read all, write project code, commit own files via MCP git.
+    - Researcher: read all, write only `research/`, commit own files via MCP git.
+    - Inspector: read all, write only `inspector-workspace/` (+ granted paths), commit own tools via MCP git.
+  - Wraps filesystem tools with permission checks. Git permissions are enforced by the MCP git server's `files` parameter (agents can only commit files they're allowed to write).
 
 ### 3.4 Tests
 - Integration test: agent base can call LLM, execute tools, produce result.
