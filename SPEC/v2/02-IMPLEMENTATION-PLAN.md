@@ -1,5 +1,7 @@
 # Saivage v2 — Implementation Plan
 
+See [06-SYSTEM-DESIGN.md](06-SYSTEM-DESIGN.md) for architecture overview. See [05-MCP-SERVICES.md](05-MCP-SERVICES.md) for full MCP tool catalog.
+
 ## Overview
 
 Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that works (providers, MCP, channels, services, auth), replace the orchestrator entirely, and refactor agents into the new role-based system.

@@ -1,5 +1,7 @@
 # Saivage v2 — Plan MCP Service
 
+Full specification for the plan MCP service. For the full MCP service catalog, see [05-MCP-SERVICES.md](05-MCP-SERVICES.md).
+
 ## Overview
 
 MCP service that provides structured access to `plan.json` and `plan-history.json`.

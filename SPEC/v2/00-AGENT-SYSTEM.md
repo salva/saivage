@@ -1,5 +1,7 @@
 # Saivage v2 — Agent System Specification (DRAFT)
 
+See [06-SYSTEM-DESIGN.md](06-SYSTEM-DESIGN.md) for architecture overview and component diagrams.
+
 ## 1. Design Philosophy
 
 Replace the v1 interactive orchestrator/coder/researcher loop with a **structured hierarchical protocol** where each agent has a clearly defined role, communicates through **tool calls and JSON documents on disk**, and errors escalate upward through a chain of command.
@@ -389,15 +391,7 @@ When the user demands an immediate course change, the system supports **aborting
 
 ### 4.3 Version Control
 
-All git operations go through an **MCP git server** that serializes access. No direct `git` CLI calls by agents.
-
-The MCP git server exposes tools:
-- `git_commit(files, message, task_id)` — stages only the specified files, commits with `[task-<id>] <message>`. Returns commit SHA or conflict error.
-- `git_status()` — returns current working tree status.
-- `git_diff(files?)` — returns diff of specified files (or all).
-- `git_log(n?)` — returns recent commit history.
-
-Serialization is inherent — the MCP server processes one tool call at a time, so no locking is needed.
+All git operations go through an **MCP git server** that serializes access. No direct `git` CLI calls by agents. Tools: `git_commit`, `git_status`, `git_diff`, `git_log`. See [05-MCP-SERVICES.md](05-MCP-SERVICES.md) §3 for full tool schemas.
 
 **Conflict resolution**: If `git_commit` detects a conflict (rare — two agents modifying the same file), it returns an error. The calling agent reports this in its `TaskReport` as a failure, which the Manager handles by creating a resolution task.
 
@@ -410,24 +404,9 @@ Serialization is inherent — the MCP server processes one tool call at a time, 
 
 ### 4.5 Plan MCP Service
 
-All read and write operations on `plan.json` and `plan-history.json` go through the **plan MCP service**. No agent reads or writes these files directly.
+All read and write operations on `plan.json` and `plan-history.json` go through the **plan MCP service**. No agent reads or writes these files directly. All writes are atomic (write to `.tmp`, rename). Schema validation is enforced on every write.
 
-The plan MCP service exposes tools:
-- `plan_get()` — read the current plan.
-- `plan_get_stage(stage_id)` — look up a stage in active plan or history.
-- `plan_get_current_stage()` — get the currently executing stage.
-- `plan_set_stages(stages, current_stage_id)` — replace the plan's stage list.
-- `plan_add_stage(stage)` — append a new stage.
-- `plan_remove_stage(stage_id)` — remove a stage from the active plan.
-- `plan_set_current(stage_id)` — set which stage is currently executing.
-- `plan_complete_stage(stage_id, result, summary, actual_outcomes)` — atomically move a stage from active plan to history.
-- `plan_get_history(last_n?)` — read plan history.
-- `plan_init(stages?)` — initialize an empty plan.
-- `plan_commit(message)` — commit `plan.json` and `plan-history.json` to git via the MCP git server. Returns commit SHA.
-
-All writes are atomic (write to `.tmp`, rename). Schema validation is enforced on every write.
-
-See [03-PLAN-MCP-SERVICE.md](03-PLAN-MCP-SERVICE.md) for the full specification.
+See [03-PLAN-MCP-SERVICE.md](03-PLAN-MCP-SERVICE.md) for the full specification and [05-MCP-SERVICES.md](05-MCP-SERVICES.md) §5 for the tool summary.
 
 See [04-RUNTIME-DETAILS.md](04-RUNTIME-DETAILS.md) for detailed runtime mechanics: suspend/resume, LLM error handling, compaction timing, self-check injection, task report flow, crash recovery details, and notification delivery.
 
