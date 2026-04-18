@@ -83,18 +83,29 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
   - Serialization is inherent — MCP processes one request at a time, so no locking needed.
   - On conflict: returns error (not throw). Calling agent reports failure in `TaskReport`.
 
-### 2.5 Crash recovery
+### 2.5 Plan MCP service
+- `src/v2/mcp/plan-server.ts` — MCP server for structured plan operations (see 03-PLAN-MCP-SERVICE.md):
+  - All reads/writes to `plan.json` and `plan-history.json` go through this service.
+  - Tools: `plan_get`, `plan_get_stage`, `plan_get_current_stage`, `plan_set_stages`, `plan_add_stage`, `plan_remove_stage`, `plan_set_current`, `plan_complete_stage`, `plan_get_history`, `plan_init`.
+  - Auto-increments plan `version` on every write.
+  - Validates Stage schema on every write.
+  - Atomic writes (`.tmp` + rename).
+  - `plan_complete_stage` is the key atomic operation: removes stage from active plan, appends to history, clears `current_stage_id` if matching.
+  - Built on top of the document store from Phase 1.
+
+### 2.6 Crash recovery
 - `src/v2/runtime/recovery.ts`:
   - On startup: read `runtime.json`, detect stale PID.
-  - Read `plan.json` + `plan-history.json` to reconstruct state.
+  - Call `plan_get()` + `plan_get_history()` via the plan MCP service to reconstruct state.
   - Reset in-progress tasks to pending.
   - Restart Planner as fresh conversation (disk files are authoritative).
 
-### 2.6 Tests
+### 2.7 Tests
 - Unit tests for tool-call dispatch (spawn child, suspend parent, return result).
 - Unit tests for parallel dispatch (Coder + Researcher concurrent).
 - Unit tests for conversation suspend/resume.
 - Unit tests for MCP git server (serialization, conflict detection, commit scoping).
+- Unit tests for plan MCP service (CRUD, atomic complete_stage, version increment, validation).
 - Unit tests for crash recovery (stale state, task reset).
 
 **Deliverable:** The nested tool-call pattern works. Parent agents suspend while children run.
@@ -212,13 +223,13 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
 ### 6.1 Planner agent
 - `src/v2/agents/planner.ts`:
   - **Long-lived LLM conversation** — persists for the entire project run.
-  - **Initial plan generation**: reads project objectives + current project state → produces `Plan` JSON.
+  - **Initial plan generation**: reads project objectives + current project state → calls `plan_init(stages)` or `plan_set_stages()` via the plan MCP service.
   - **Stage execution**: calls `run_manager(stage)` as a tool call. Suspends while Manager runs. Resumes with `StageSummary` as tool result.
-  - **Stage completion handler**: processes summary, moves stage to `PlanHistory`, updates plan, picks next stage.
-  - **Escalation handler**: processes escalated summary, decides action (revise stage, split, remove, schedule retrospective via Inspector).
+  - **Stage completion handler**: calls `plan_complete_stage()` to atomically move stage to history. Then updates remaining stages via `plan_set_stages()` if the plan needs revision.
+  - **Escalation handler**: processes escalated summary, decides action (revise stage, split, remove, schedule retrospective via Inspector). Uses `plan_add_stage()`, `plan_remove_stage()`, `plan_set_stages()` as needed.
   - **Inspector dispatch**: calls `run_inspector(request)` as a tool call for deep analysis.
   - **Note processing**: on resume, reads pending notes injected into context. Marks permanent if needed, incorporates into plan reasoning, deletes volatile notes.
-  - **Context compaction**: when conversation grows too large, summarizes and compacts. `plan.json` + `plan-history.json` are authoritative.
+  - **Context compaction**: when conversation grows too large, summarizes and compacts. Plan state is reconstructed via `plan_get()` + `plan_get_history()` (authoritative source).
 
 ### 6.2 Inspector agent
 - `src/v2/agents/inspector.ts`:

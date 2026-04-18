@@ -338,8 +338,8 @@ Project-local (inside the project directory, e.g. `/project/foo/.saivage/`):
 The execution model is a **nested tool-call chain**:
 
 1. Runtime starts the **Planner** (long-lived LLM conversation).
-2. Planner reads objectives + project state, generates `plan.json`.
-3. Planner calls `run_manager(stage)` → Planner suspends.
+2. Planner reads objectives + project state, calls `plan_init(stages)` via the plan MCP service.
+3. Planner calls `plan_set_current(stage_id)`, then `run_manager(stage)` → Planner suspends.
 4. **Manager** spawns, reads stage references, decomposes into tasks, writes `tasks.json`.
 5. Manager calls `run_coder(task)` and/or `run_researcher(task)` → Manager suspends.
 6. **Coder/Researcher** execute tasks, write reports, commit files → return `TaskReport`.
@@ -347,8 +347,8 @@ The execution model is a **nested tool-call chain**:
 8. Manager loops (dispatch next tasks) or finishes:
    - **Completion**: writes `StageSummary`, returns it to Planner.
    - **Escalation**: writes `StageSummary` with `result: "escalated"`, returns it to Planner.
-9. Planner resumes, processes summary, updates plan, moves stage to history.
-10. Planner calls `run_manager(next_stage)` → goto 4.
+9. Planner resumes, calls `plan_complete_stage()` to archive the stage, updates remaining stages via `plan_set_stages()` if needed.
+10. Planner calls `run_manager(next_stage)` → goto 3.
 
 At any point, the Planner can call `run_inspector(request)` for deep analysis.
 User notes are injected into the Planner’s context when it next resumes.
@@ -393,13 +393,33 @@ Serialization is inherent — the MCP server processes one tool call at a time, 
 - **Planner/Manager**: commit `.saivage/` state files (plan, tasks, summaries).
 - **Chat**: read-only access to project state. Writes only notes and chat logs.
 
-### 4.4 Crash Recovery
+### 4.5 Plan MCP Service
+
+All read and write operations on `plan.json` and `plan-history.json` go through the **plan MCP service**. No agent reads or writes these files directly.
+
+The plan MCP service exposes tools:
+- `plan_get()` — read the current plan.
+- `plan_get_stage(stage_id)` — look up a stage in active plan or history.
+- `plan_get_current_stage()` — get the currently executing stage.
+- `plan_set_stages(stages, current_stage_id)` — replace the plan's stage list. Auto-increments version.
+- `plan_add_stage(stage)` — append a new stage.
+- `plan_remove_stage(stage_id)` — remove a stage from the active plan.
+- `plan_set_current(stage_id)` — set which stage is currently executing.
+- `plan_complete_stage(stage_id, result, summary, actual_outcomes)` — atomically move a stage from active plan to history.
+- `plan_get_history(last_n?)` — read plan history.
+- `plan_init(stages?)` — initialize an empty plan.
+
+All writes are atomic (write to `.tmp`, rename). The plan `version` counter is monotonically increasing. Schema validation is enforced on every write.
+
+See [03-PLAN-MCP-SERVICE.md](03-PLAN-MCP-SERVICE.md) for the full specification.
+
+### 4.6 Crash Recovery
 
 On restart, the system must reconstruct where it was:
-1. Load `plan.json` — find `current_stage_id`.
+1. Call `plan_get()` — find `current_stage_id`.
 2. If `stages/<current_stage_id>/summary.json` exists → stage was completed, Planner needs to process it.
 3. If `stages/<current_stage_id>/tasks.json` exists → Manager was running. Reset `in-progress` tasks to `pending`.
-4. **Planner is restarted** as a fresh LLM conversation. It reads `plan.json` + `plan-history.json` to reconstruct its strategic context (this is why those files are the authoritative state).
+4. **Planner is restarted** as a fresh LLM conversation. It calls `plan_get()` + `plan_get_history()` to reconstruct its strategic context (the plan files are the authoritative state).
 5. If a stage was in-progress, Planner calls `run_manager()` for that stage. The Manager re-reads `tasks.json` and resumes from remaining pending tasks.
 6. Chat agents restart independently (stateless, re-derive from files).
 

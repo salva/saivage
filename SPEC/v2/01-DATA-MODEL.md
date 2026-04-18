@@ -437,8 +437,8 @@ IDs are generated with nanoid (12 chars, alphanumeric), prefixed by entity type.
 
 | Document                   | Created by   | Updated by   | Deleted when              |
 |----------------------------|-------------|-------------|---------------------------|
-| `plan.json`                | Planner     | Planner     | Never (overwritten)       |
-| `plan-history.json`        | Planner     | Planner     | Never (append-only)       |
+| `plan.json`                | Plan MCP    | Plan MCP    | Never (overwritten)       |
+| `plan-history.json`        | Plan MCP    | Plan MCP    | Never (append-only)       |
 | `stages/<id>/tasks.json`   | Manager     | Manager     | Never (archived)          |
 | `stages/<id>/reports/*.json`| Coder/Researcher | —     | Never (archived)          |
 | `stages/<id>/summary.json` | Manager     | —           | Never (archived)          |
