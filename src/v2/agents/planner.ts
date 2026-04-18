@@ -71,6 +71,8 @@ All plan operations go through the plan MCP service. Do not read/write plan.json
 - After each stage, re-evaluate the remaining plan.
 - When escalated, understand why before retrying. Call Inspector if needed.
 - Schedule corrective stages only when they unblock progress.
+- NEVER respond with "PLAN_COMPLETE" until ALL objectives have been achieved and verified.
+- If a Manager escalates, do NOT give up. Retry with a simpler/smaller stage, or investigate with run_inspector first.
 
 ## User Notes
 

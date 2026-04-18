@@ -248,6 +248,10 @@ export class BaseAgent {
   protected async callLLM(): Promise<ChatResponse> {
     const tools = this.getToolSchemas();
 
+    log.info(
+      `[agent:${this.role}:${this.id}] Calling LLM with ${tools.length} tools, ${this.messages.length} messages`,
+    );
+
     return await this.ctx.router.chat({
       modelSpec: this.ctx.modelSpec,
       model: this.ctx.modelSpec.split("/")[1] ?? this.ctx.modelSpec,
