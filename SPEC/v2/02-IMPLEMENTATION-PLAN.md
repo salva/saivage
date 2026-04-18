@@ -1,210 +1,83 @@
 # Saivage v2 — Implementation Plan
 
-See [06-SYSTEM-DESIGN.md](06-SYSTEM-DESIGN.md) for architecture overview. See [05-MCP-SERVICES.md](05-MCP-SERVICES.md) for full MCP tool catalog.
+Build v2 incrementally on top of the v1 codebase, following the architecture defined in [06-SYSTEM-DESIGN.md](06-SYSTEM-DESIGN.md). Reuse infrastructure that works (providers, MCP, channels, services), replace the orchestrator entirely, and build the new agent hierarchy from the bottom up.
 
-## Overview
+**Approach:** Bottom-up construction. Build the foundation layers first (data, runtime), then agents starting with the simplest (workers), then composite agents (Manager, Planner), then user-facing systems (Chat, notifications), finally CLI and Web UI.
 
-Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that works (providers, MCP, channels, services, auth), replace the orchestrator entirely, and refactor agents into the new role-based system.
-
-**Approach:** Bottom-up. Build the foundation layers first (data access, runtime), then agents one by one (simplest first), then the execution loop, then integration.
-
----
-
-## Phase 1: Foundation — Data Layer & Project Structure
-
-**Goal:** All JSON documents can be created, read, updated, validated. The project directory structure is initialized and managed correctly.
-
-### 1.1 Type definitions
-- Define all TypeScript interfaces from 01-DATA-MODEL.md as a single `src/v2/types.ts`.
-- Include Zod schemas for runtime validation of every JSON document.
-
-### 1.2 Document store
-- `src/v2/store/documents.ts` — Generic CRUD for JSON documents on disk.
-  - `read<T>(path) → T | null`
-  - `write<T>(path, data: T)` — atomic write (write to `.tmp`, rename)
-  - `append<T>(path, item: T)` — for append-only docs like plan-history
-  - `list(dir) → string[]` — list documents in a directory
-  - `delete(path)` — remove a document
-- All writes go through validation (Zod parse before write).
-
-### 1.3 Project initializer
-- `src/v2/store/project.ts` — Initialize/discover `.saivage/` directory for a project.
-  - `initProject(projectRoot)` — creates directory structure, `.gitignore` for `tmp/`.
-  - `loadProject(projectRoot) → ProjectContext` — loads config, resolves paths.
-  - `ProjectContext` bundles paths and config for everything downstream.
-
-### 1.4 ID generator
-- `src/v2/ids.ts` — nanoid-based ID generation with entity prefixes (`stg-`, `tsk-`, etc.).
-
-### 1.5 Tests
-- Unit tests for document store (CRUD, atomic writes, validation failures).
-- Unit tests for project init (directory creation, gitignore content).
-
-**Deliverable:** You can create, read, and validate every document type. Projects initialize cleanly.
+**References:**
+- [06-SYSTEM-DESIGN.md](06-SYSTEM-DESIGN.md) — component architecture and interactions
+- [01-DATA-MODEL.md](01-DATA-MODEL.md) — TypeScript interfaces and schemas
+- [00-AGENT-SYSTEM.md](00-AGENT-SYSTEM.md) — agent behaviors and protocol
+- [04-RUNTIME-DETAILS.md](04-RUNTIME-DETAILS.md) — runtime internals
+- [05-MCP-SERVICES.md](05-MCP-SERVICES.md) — MCP tool catalog
+- [03-PLAN-MCP-SERVICE.md](03-PLAN-MCP-SERVICE.md) — plan MCP specification
 
 ---
 
-## Phase 2: Runtime Core — Agent Lifecycle & Tool-Call Dispatch
+## Phase 1: Data Layer
 
-**Goal:** The runtime can spawn agents, manage LLM conversations with suspend/resume, handle the tool-call dispatch pattern, and serve git operations via MCP.
+Build the **Document Store** and **type system** (06-SYSTEM-DESIGN §2.7).
 
-### 2.1 Agent interface
-- `src/v2/agents/types.ts` — Base `Agent` interface:
-  ```
-  interface Agent {
-    type: AgentType;
-    id: string;
-    run(context: AgentContext): Promise<AgentResult>;
-  }
-  ```
-  - `AgentContext` carries: project paths, LLM client, tool access, task/stage info.
-  - `AgentResult`: success/failure/escalation/abort with payload (returned to parent as tool result).
+| Item | File | Description |
+|------|------|-------------|
+| 1.1 Type definitions | `src/v2/types.ts` | All interfaces from [01-DATA-MODEL.md](01-DATA-MODEL.md) as TypeScript types + Zod schemas for runtime validation |
+| 1.2 Document store | `src/v2/store/documents.ts` | Generic JSON CRUD — `read<T>`, `write<T>` (atomic: `.tmp`+rename), `append<T>`, `list`, `delete`. Zod validation on every write |
+| 1.3 Project initializer | `src/v2/store/project.ts` | Initialize/discover `.saivage/` directory, load config, resolve paths into `ProjectContext` |
+| 1.4 ID generator | `src/v2/ids.ts` | nanoid-based with entity prefixes (`stg-`, `tsk-`, `note-`, `insp-`, `chat-`) |
+| 1.5 Tests | | Unit tests for CRUD, atomic writes, validation failures, project init |
 
-### 2.2 Tool-call dispatch
-- `src/v2/runtime/dispatch.ts` — Implements the nested tool-call pattern:
-  - When an LLM agent calls `run_manager()`, `run_coder()`, `run_researcher()`, or `run_inspector()`, the runtime:
-    1. Suspends the calling agent’s LLM conversation.
-    2. Spawns the child agent.
-    3. Runs the child to completion.
-    4. Returns the child’s result as the tool-call response.
-    5. Resumes the parent’s LLM conversation.
-  - Supports **parallel tool calls**: Manager can issue `run_coder()` + `run_researcher()` simultaneously. Both run concurrently; parent resumes when both return.
-
-### 2.3 Conversation management
-- `src/v2/runtime/conversation.ts` — Manages LLM conversation state:
-  - Suspend: save conversation messages, pending tool calls.
-  - Resume: restore conversation, inject tool results (+ any queued notes).
-  - **Context compaction**: when conversation exceeds a token threshold, summarize and compact. Write disk state (`plan.json`, etc.) as authoritative fallback.
-
-### 2.4 MCP git server
-- `src/v2/mcp/git-server.ts` — MCP server that serializes all git operations:
-  - `git_commit(files, message, task_id)` — stages specified files, commits with `[task-<id>] <message>`. Returns SHA or conflict error.
-  - `git_status()` — returns working tree status.
-  - `git_diff(files?)` — returns diff.
-  - `git_log(n?)` — returns recent history.
-  - Serialization is inherent — MCP processes one request at a time, so no locking needed.
-  - On conflict: returns error (not throw). Calling agent reports failure in `TaskReport`.
-
-### 2.5 Plan MCP service
-- `src/v2/mcp/plan-server.ts` — MCP server for structured plan operations (see 03-PLAN-MCP-SERVICE.md):
-  - All reads/writes to `plan.json` and `plan-history.json` go through this service.
-  - Tools: `plan_get`, `plan_get_stage`, `plan_get_current_stage`, `plan_set_stages`, `plan_add_stage`, `plan_remove_stage`, `plan_set_current`, `plan_complete_stage`, `plan_get_history`, `plan_init`, `plan_commit`.
-  - Validates Stage schema on every write.
-  - Atomic writes (`.tmp` + rename).
-  - `plan_complete_stage` is the key atomic operation: removes stage from active plan, appends to history, clears `current_stage_id` if matching.
-  - Built on top of the document store from Phase 1.
-
-### 2.6 Crash recovery
-- `src/v2/runtime/recovery.ts`:
-  - On startup: read `runtime.json`, detect stale PID.
-  - Call `plan_get()` + `plan_get_history()` via the plan MCP service to reconstruct state.
-  - Reset in-progress tasks to pending.
-  - Restart Planner as fresh conversation (disk files are authoritative).
-
-### 2.7 Abort mechanism
-- `src/v2/runtime/abort.ts`:
-  - Monitors for urgent notes (notes with `urgent: true`).
-  - On urgent note: signals abort to the active agent chain.
-  - Abort propagates bottom-up: terminates lowest-level agent, synthesizes abort result for parent, cascades up to Planner.
-  - Manager writes partial `StageSummary` with `result: "aborted"` on abort.
-  - Uncommitted changes from aborted agents are discarded — runtime performs `git checkout -- .` on the project worktree after termination.
-  - Planner creates a rollback stage to clean up any inconsistencies before proceeding with the new plan.
-
-### 2.8 Context compaction
-- `src/v2/runtime/compaction.ts`:
-  - Tracks token usage per active conversation.
-  - When usage exceeds configurable threshold (default: 80% of context window), triggers compaction.
-  - Compaction: produces summary message replacing conversation history.
-  - Summary includes: agent role, current objective, key decisions, outstanding work, state references.
-  - Applies to **all agents** (Planner, Manager, Coder, Researcher, Inspector). Workers reconstruct context from their task description, checklist, and files already read/modified.
-
-### 2.9 Periodic self-check
-- `src/v2/runtime/self-check.ts`:
-  - After every N tool calls (configurable: Manager=20, workers=15), injects self-check prompt.
-  - Self-check asks the agent to assess whether it is making progress or stuck in a loop.
-  - If agent reports stuck, runtime treats it as task failure.
-  - Model throttling / transient errors retry automatically at transport level, do not count toward self-check counter.
-
-### 2.10 Tests
-- Unit tests for tool-call dispatch (spawn child, suspend parent, return result).
-- Unit tests for parallel dispatch (Coder + Researcher concurrent).
-- Unit tests for conversation suspend/resume.
-- Unit tests for MCP git server (serialization, conflict detection, commit scoping).
-- Unit tests for plan MCP service (CRUD, atomic complete_stage, validation).
-- Unit tests for crash recovery (stale state, task reset).
-- Unit tests for abort mechanism (agent chain termination, partial summary).
-- Unit tests for context compaction (trigger threshold, summary generation).
-- Unit tests for periodic self-check (injection timing, stuck detection).
-
-**Deliverable:** The nested tool-call pattern works. Parent agents suspend while children run.
-
-See [04-RUNTIME-DETAILS.md](04-RUNTIME-DETAILS.md) for detailed suspend/resume mechanics, LLM error handling, compaction timing, and self-check injection.
+**Deliverable:** All document types can be created, read, updated, and validated. Projects initialize cleanly.
 
 ---
 
-## Phase 3: LLM Integration — Agent Base Class
+## Phase 2: Runtime Core
 
-**Goal:** A base class that any agent extends. Handles LLM calls, tool execution, context assembly (including skill loading).
+Build the **Runtime Core** (06-SYSTEM-DESIGN §2.1) — the central orchestration engine.
 
-### 3.1 Agent base
-- `src/v2/agents/base.ts`:
-  - Wraps LLM provider calls (reuse `src/providers/` from v1).
-  - Assembles context: system prompt + task description + skills + reference documents.
-  - Manages tool calls via existing MCP runtime (reuse `src/mcp/` from v1).
-  - Handles conversation loop (multi-turn until agent produces a final result).
-  - Stash mechanism for large outputs (carry from v1's `src/agents/stash.ts`).
+| Item | File | Description |
+|------|------|-------------|
+| 2.1 Agent interface | `src/v2/agents/types.ts` | Base `Agent` interface, `AgentContext`, `AgentResult` (success/failure/escalation/abort) |
+| 2.2 Tool-call dispatcher | `src/v2/runtime/dispatcher.ts` | Nested tool-call pattern: intercept `run_*()` calls → suspend parent → spawn child → resume parent with result. Supports parallel dispatch with resume-on-each |
+| 2.3 Plan MCP service | `src/v2/mcp/plan-server.ts` | 11 tools per [03-PLAN-MCP-SERVICE.md](03-PLAN-MCP-SERVICE.md). Atomic writes, schema validation, history append. Built on Document Store from Phase 1 |
+| 2.4 Git MCP adaptation | existing `src/services/git/` | Add explicit file staging, `[task-<id>]` commit prefix, conflict error returns |
+| 2.5 Abort mechanism | `src/v2/runtime/abort.ts` | Detect urgent notes → terminate active chain bottom-up → `git checkout -- .` → Manager writes partial StageSummary (aborted) → Planner resumes. See 06-SYSTEM-DESIGN §4.2 |
+| 2.6 Context compaction | `src/v2/runtime/compaction.ts` | Track token usage → trigger at 80% → generate summary message → replace history. Max 3 compactions per conversation. See 06-SYSTEM-DESIGN §4.5 |
+| 2.7 Self-check | `src/v2/runtime/self-check.ts` | Inject progress-assessment prompt every N tool-call rounds (configurable per role). Stuck detection → agent failure. See [04-RUNTIME-DETAILS.md](04-RUNTIME-DETAILS.md) §4 |
+| 2.8 Crash recovery | `src/v2/runtime/recovery.ts` | On startup: read `runtime.json`, detect stale PID, reconstruct state from disk via plan MCP, reset in-progress tasks to pending. See 06-SYSTEM-DESIGN §7.1 |
+| 2.9 Tests | | Unit tests for all subsystems: dispatcher suspend/resume, parallel dispatch, plan MCP CRUD, abort chain, compaction trigger, self-check injection, crash recovery |
 
-### 3.2 Skill loader
-- `src/v2/skills/loader.ts`:
-  - Reads `skills/index.json`.
-  - Matches triggers against agent metadata (task description, tool list, file paths, tags, agent type).
-  - Filters by `target_agents` (if specified in skill entry).
-  - Ranks and selects top N skills.
-  - Returns skill content for injection into agent context.
-  - Applies to **all agent types**, not just workers.
-  - Reuse/adapt `src/skills/` from v1.
+**Deliverable:** The nested tool-call pattern works. Parent agents suspend while children run. Plan state is managed atomically.
 
-### 3.3 Conventions & access model
-- `src/v2/agents/conventions.ts`:
-  - All agents (except Chat) have full read/write/execute access. Chat is read-only for project state.
-  - Defines per-agent-type **conventions** (advisory, not enforced):
-    - Coder: works on project code, commits own changes + task report.
-    - Researcher: writes under `research/`, commits own files + task report.
-    - Inspector: scratch in `tmp/inspector-workspace/`, reports in `inspections/`, persistent tools in `tools/inspector/`.
-    - Planner/Manager: commit `.saivage/` state files (plan, tasks, summaries).
-  - Convention violations are logged as warnings, not blocked. Agents coordinate via conventions to avoid collisions.
-  - Git operations go through the MCP git server, which serializes access and prevents conflicts.
-
-### 3.4 Tests
-- Integration test: agent base can call LLM, execute tools, produce result.
-- Unit test: skill matching logic.
-- Unit test: convention violation detection/logging.
-
-**Deliverable:** Any agent can be built by extending base + defining its prompt and conventions.
+See [04-RUNTIME-DETAILS.md](04-RUNTIME-DETAILS.md) for detailed mechanics of suspend/resume, LLM error handling, compaction timing, and self-check injection.
 
 ---
 
-## Phase 4: Worker Agents — Coder & Researcher
+## Phase 3: LLM Integration
 
-**Goal:** Both worker agents execute tasks, write reports, commit code.
+Build the **LLM Provider Router** integration (06-SYSTEM-DESIGN §2.3) and agent base class with the **Skill System** (06-SYSTEM-DESIGN §2.6).
 
-### 4.1 Coder agent
-- `src/v2/agents/coder.ts`:
-  - System prompt: coding role, checklist-aware, self-assessment.
-  - Tools: filesystem (read/write project code), shell (run commands/tests), git (commit own files), web (read docs).
-  - On completion: writes `TaskReport` JSON, commits modified files.
-  - On failure: writes `TaskReport` with `status: "failed"` and `failure_reason`.
+| Item | File | Description |
+|------|------|-------------|
+| 3.1 Agent base class | `src/v2/agents/base.ts` | Wraps LLM provider calls (reuse `src/providers/`), assembles context (system prompt + skills + references), manages conversation loop, stash mechanism for large outputs |
+| 3.2 Skill loader | `src/v2/skills/loader.ts` | Read `skills/index.json`, trigger matching (keyword/tool/path/tag/agent), `target_agents` filtering, ranking, top-N selection. Adapt from v1 `src/skills/` |
+| 3.3 Conventions | `src/v2/agents/conventions.ts` | Per-agent territory definitions. Violation logging (warnings, not blocks). See 06-SYSTEM-DESIGN §1.1 (convention over enforcement) |
+| 3.4 Tests | | Integration test: agent base + LLM call + tool execution. Unit tests: skill matching, convention detection |
 
-### 4.2 Researcher agent
-- `src/v2/agents/researcher.ts`:
-  - System prompt: research role, writes under `research/` by convention.
-  - Tools: filesystem (read/write all), web search/fetch, shell (run commands), git (commit own files).
-  - On completion: writes `TaskReport`, commits research files.
+**Deliverable:** Any agent can be built by extending the base class + defining its prompt and conventions.
 
-### 4.3 Tests
-- Integration test: Coder executes a simple coding task, writes report, commits.
-- Integration test: Researcher fetches info, writes to `research/`, commits.
-- Convention test: Researcher follows territory conventions (writes under `research/`).
+> **Note:** Phases 2 and 3 can be worked on in parallel — they share only the agent interface types from 2.1.
+
+---
+
+## Phase 4: Worker Agents
+
+Build the **Coder** and **Researcher** agents (06-SYSTEM-DESIGN §2.2, Coder/Researcher subsections).
+
+| Item | File | Description |
+|------|------|-------------|
+| 4.1 Coder agent | `src/v2/agents/coder.ts` | System prompt from `prompts/coder.md`. Tools: filesystem, shell, git, web, memory, index. Executes coding tasks, runs tests, writes TaskReport, commits files |
+| 4.2 Researcher agent | `src/v2/agents/researcher.ts` | System prompt from `prompts/researcher.md`. Same tools. Writes under `research/` by convention, produces TaskReport |
+| 4.3 Tests | | Integration: execute simple task → report → commit. Convention test: researcher territory |
 
 **Deliverable:** Both workers can independently execute tasks and produce reports.
 
@@ -212,146 +85,59 @@ See [04-RUNTIME-DETAILS.md](04-RUNTIME-DETAILS.md) for detailed suspend/resume m
 
 ## Phase 5: Manager Agent
 
-**Goal:** Manager decomposes stages into tasks, dispatches to workers, handles results, writes summaries.
+Build the **Manager** agent (06-SYSTEM-DESIGN §2.2, Manager subsection).
 
-### 5.1 Manager agent
-- `src/v2/agents/manager.ts`:
-  - Receives stage description from plan (passed by Planner’s `run_manager()` tool call).
-  - Reads referenced documents.
-  - Generates `TaskList` JSON (task decomposition via LLM).
-  - Dispatch loop (within its LLM conversation):
-    1. Find next dispatchable tasks (pending, dependencies met).
-    2. Call `run_coder(task)` and/or `run_researcher(task)` as tool calls.
-       - Independent tasks: parallel tool calls (both run concurrently; Manager resumes as each returns).
-       - Dependent tasks: sequential tool calls.
-    3. Process tool results (`TaskReport`).
-    4. Update task statuses in `tasks.json`.
-    5. On failure: decide retry (increment attempt, **modify task description** with failure context), create remediation task, or escalate. If a dependency task fails, mark dependent tasks as failed. Model throttling and transient errors are retried automatically at the runtime level and do not count as task failures.
-    6. Repeat until all tasks done or escalation.
-  - On completion: write `StageSummary`, return it to Planner.
-  - On escalation: write `StageSummary` with `result: "escalated"`, return it to Planner.
-
-### 5.2 Manager ↔ worker integration
-- Manager calls `run_coder()` / `run_researcher()` as LLM tool calls → runtime dispatches child agents.
-- Manager’s LLM conversation suspends while children run, resumes with `TaskReport` as tool result.
-- Manager maintains full conversation context for the stage (remembers planning rationale, earlier results).
-
-### 5.3 Skill generation
-- When Manager detects a reusable pattern (heuristic: task description mentions "create tool/utility/helper"), schedule a follow-up task for skill creation.
-
-### 5.4 Tests
-- Unit test: task decomposition produces valid `TaskList`.
-- Integration test: full stage execution (Manager → Coder → report → summary).
-- Test: failure handling (retry, escalation).
+| Item | File | Description |
+|------|------|-------------|
+| 5.1 Manager agent | `src/v2/agents/manager.ts` | System prompt from `prompts/manager.md`. Receives stage, decomposes into TaskList, dispatches via `run_coder()` / `run_researcher()` (parallel when independent), processes TaskReports, handles failures (retry with modified description / remediate / escalate), writes StageSummary |
+| 5.2 Worker integration | | End-to-end: Manager → suspend → Coder runs → TaskReport → Manager resumes. Parallel: Coder + Researcher simultaneous |
+| 5.3 Failure handling | | Retry: increment attempt, append failure context to description. Dependency failure cascade. Escalation after max_attempts |
+| 5.4 Tests | | Integration: full stage (Manager → Coder → report → summary). Failure: retry + escalation |
 
 **Deliverable:** Complete stage execution loop works end-to-end.
 
 ---
 
-## Phase 6: Planner Agent
+## Phase 6: Planner & Inspector
 
-**Goal:** Planner generates and maintains the plan, processes events, dispatches Inspector.
+Build the **Planner** and **Inspector** agents (06-SYSTEM-DESIGN §2.2, Planner/Inspector subsections).
 
-### 6.1 Planner agent
-- `src/v2/agents/planner.ts`:
-  - **Long-lived LLM conversation** — persists for the entire project run.
-  - **Initial plan generation**: reads project objectives + current project state → calls `plan_init(stages)` or `plan_set_stages()` via the plan MCP service.
-  - **Stage execution**: calls `run_manager(stage)` as a tool call. Suspends while Manager runs. Resumes with `StageSummary` as tool result.
-  - **Stage completion handler**: calls `plan_complete_stage()` to atomically move stage to history. Then updates remaining stages via `plan_set_stages()` if the plan needs revision.
-  - **Abort handler**: receives `StageSummary` with `result: "aborted"` when an urgent user note triggers abort. Processes the urgent note and replans.
-  - **Escalation handler**: processes escalated summary, decides action (revise stage, split, remove, schedule retrospective via Inspector). Uses `plan_add_stage()`, `plan_remove_stage()`, `plan_set_stages()` as needed.
-  - **Inspector dispatch**: calls `run_inspector(request)` as a tool call for deep analysis.
-  - **Note processing**: on resume, reads pending notes injected into context. Marks permanent if needed, incorporates into plan reasoning, deletes volatile notes.
-  - **Context compaction**: when conversation grows too large, summarizes and compacts. Plan state is reconstructed via `plan_get()` + `plan_get_history()` (authoritative source).
-
-### 6.2 Inspector agent
-- `src/v2/agents/inspector.ts`:
-  - Invoked as tool call by Planner or Chat.
-  - Receives `InspectionRequest` as tool parameters.
-  - Three storage tiers: ephemeral scratch (`tmp/inspector-workspace/<report-id>/`), persistent reports (`inspections/`), persistent tools (`tools/inspector/`).
-  - Can list and reuse previous workspaces and tools from prior investigations.
-  - Can create scripts, run analysis, read/execute any project file.
-  - Writes `InspectionReport` JSON to `inspections/` (atomic write).
-  - Promotes reusable tools from scratch to `tools/inspector/` by copying + committing.
-  - Returns report as tool result to caller.
-  - One-shot: terminates after returning.
-  - Expired reports (past `expires_at`) are cleaned up lazily: deleted when the reports directory is listed.
-
-### 6.3 Planner ↔ runtime integration
-- Planner is the top-level agent — started by bootstrap, runs for project lifetime.
-- All other agents are children invoked via tool calls.
-- On crash: Planner restarts as fresh conversation, reconstructs context via `plan_get()` + `plan_get_history()` from the plan MCP service.
-
-### 6.4 Tests
-- Unit test: plan generation from objectives.
-- Unit test: stage completion → plan update + history append.
-- Unit test: escalation → retrospective scheduling.
-- Integration test: Planner → Manager → Coder → report → Planner cycle.
+| Item | File | Description |
+|------|------|-------------|
+| 6.1 Planner agent | `src/v2/agents/planner.ts` | System prompt from `prompts/planner.md`. Long-lived conversation. Plan generation via `plan_init()`, stage dispatch via `run_manager()`, stage completion via `plan_complete_stage()`, plan revision via `plan_set_stages()`. Handles escalation, abort, note processing, context compaction |
+| 6.2 Inspector agent | `src/v2/agents/inspector.ts` | System prompt from `prompts/inspector.md`. One-shot. Three storage tiers (ephemeral scratch, persistent reports, persistent tools). Writes InspectionReport, promotes tools. Serialized (FIFO queue) |
+| 6.3 Runtime integration | | Planner is top-level agent started by bootstrap. On crash, Planner restarts as fresh conversation and reconstructs from disk |
+| 6.4 Tests | | Unit: plan generation, stage completion + history, escalation handling. Integration: Planner → Manager → Coder → report → Planner cycle |
 
 **Deliverable:** Full autonomous loop: Plan → Stage → Tasks → Reports → Plan update.
 
 ---
 
-## Phase 7: Chat Agent & Notifications
+## Phase 7: Chat & Notifications
 
-**Goal:** User can query status, create notes, request inspections, receive push notifications.
+Build the **Chat** agent, **Event Bus**, and channel transports (06-SYSTEM-DESIGN §2.2 Chat, §2.5 Event Bus).
 
-### 7.1 Chat agent
-- `src/v2/agents/chat.ts`:
-  - System prompt: knows project state, can read all documents.
-  - Tools: plan MCP read-only (`plan_get`, `plan_get_stage`, `plan_get_current_stage`, `plan_get_history`), `create_note(content, urgent?)`, `run_inspector(request)`, filesystem read-only.
-  - Persists dialogue to `tmp/chats/<channel>/<session-id>.json`.
-  - One instance per channel.
-  - Does not block execution pipeline.
+| Item | File | Description |
+|------|------|-------------|
+| 7.1 Chat agent | `src/v2/agents/chat.ts` | System prompt from `prompts/chat.md`. Tools: Plan MCP (read-only), filesystem (read-only), `create_note()`, `run_inspector()`. Persists dialogue to `tmp/chats/`. One instance per channel, independent of execution |
+| 7.2 Event bus & notifier | `src/v2/events/notifier.ts` | In-process pub/sub. 6 event types. Chat agents subscribe on startup, filter by user config, format messages, push to channels. Offline buffer up to 100 events |
+| 7.3 Telegram transport | `src/v2/channels/telegram.ts` | Adapt v1. Long-polling for messages, bot API for responses and push notifications |
+| 7.4 WebSocket transport | `src/v2/channels/websocket.ts` | Adapt v1. Session timeout: 1hr on disconnect. Buffer events until reconnection |
+| 7.5 Tests | | Integration: Chat reads plan, creates note, dispatches Inspector. Notification delivery and filtering |
 
-### 7.2 Notification system
-- `src/v2/events/notifier.ts`:
-  - In-process event bus: runtime publishes events (`stage_completed`, `stage_failed`, `escalation`, `task_failed`, `inspector_complete`, `plan_updated`).
-  - Chat agents subscribe to the event bus on startup.
-  - Pushes to active chat channels (filtered by user's notification config).
-  - Telegram: push messages via bot API.
-  - Web: push via WebSocket.
-  - If a channel is offline, buffer up to 100 events. On overflow, drop oldest with a summary.
-  - Respects `ProjectConfig.notifications.filters` (min_severity, categories).
-
-### 7.3 Channel integration
-- `src/v2/channels/telegram.ts`: Adapt v1 Telegram bot. Long-polling for messages, bot API for responses/notifications.
-- `src/v2/channels/websocket.ts`: Adapt v1 WebSocket. Session timeout: 1 hour on disconnect. Buffer events until reconnection.
-- Chat log retention: 30 days, cleaned up lazily.
-
-### 7.4 Tests
-- Integration test: Chat can read plan, create note, dispatch Inspector.
-- Test: notification delivery on stage completion.
-- Test: notification filtering.
-
-**Deliverable:** Users can interact with the running system and receive updates.
+**Deliverable:** Users can interact with the running system and receive push notifications.
 
 ---
 
-## Phase 8: Main Entry Point & CLI
+## Phase 8: Entry Point & CLI
 
-**Goal:** Single entry point to start/stop the system, init projects, manage config.
+Build the **bootstrap** sequence and CLI commands (06-SYSTEM-DESIGN §8).
 
-### 8.1 Server bootstrap
-- `src/v2/server/bootstrap.ts`:
-  1. Load global config.
-  2. Discover/load project.
-  3. Run crash recovery.
-  4. Start chat channels (web, telegram).
-  5. Start execution loop (Planner → Manager → workers).
-  6. Handle graceful shutdown (write runtime state, complete current task).
-
-### 8.2 CLI commands
-- `init <project-path>` — initialize `.saivage/` in a project.
-- `start <project-path>` — start the execution loop.
-- `status <project-path>` — show current plan, stage, tasks.
-- `note <project-path> <message>` — create a user note directly.
-- `inspect <project-path> <scope>` — dispatch Inspector from CLI.
-- Carry over: `login`, `config`, `models` from v1.
-
-### 8.3 Tests
-- Integration test: full bootstrap → plan → stage → task → report cycle.
-- Test: graceful shutdown and restart.
+| Item | File | Description |
+|------|------|-------------|
+| 8.1 Bootstrap | `src/v2/server/bootstrap.ts` | Load global config → discover project → run crash recovery → start channels → start Planner → handle graceful shutdown |
+| 8.2 CLI commands | | `init`, `start`, `status`, `note`, `inspect`, `login`, `config`, `models` |
+| 8.3 Tests | | Integration: full bootstrap → plan → stage → task → report cycle. Graceful shutdown and restart |
 
 **Deliverable:** Saivage v2 is fully operational from CLI.
 
@@ -359,72 +145,62 @@ See [04-RUNTIME-DETAILS.md](04-RUNTIME-DETAILS.md) for detailed suspend/resume m
 
 ## Phase 9: Web UI & Polish
 
-**Goal:** Web interface works with v2, system is production-ready.
+Build the web interface and finalize for production (06-SYSTEM-DESIGN §8).
 
-### 9.1 Web interface adaptation
-- Update web UI to display v2 plan/stages/tasks (different from v1 orchestrator state).
-- Show plan timeline, task progress, agent status.
-- Chat via WebSocket.
-
-### 9.2 Telemetry
-- Adapt `src/telemetry/` to track v2 metrics: stages completed, tasks per stage, failure rate, LLM token usage per agent type.
-
-### 9.3 Documentation
-- Generated `README.md` with setup instructions.
-- Operator guide: how to configure projects, manage providers, customize notification filters.
+| Item | File | Description |
+|------|------|-------------|
+| 9.1 Web UI | existing `src/web/` | Adapt to display v2 plan/stages/tasks. Plan timeline, task progress, agent status. Chat via WebSocket |
+| 9.2 Telemetry | existing `src/telemetry/` | Adapt to track v2 metrics: stages completed, tasks/stage, failure rate, tokens/agent |
+| 9.3 Documentation | | README with setup instructions. Operator guide for config, providers, notifications |
 
 **Deliverable:** Production-ready v2 with web UI and documentation.
 
 ---
 
-## Reuse Map (v1 → v2)
+## Dependency Graph
 
-| v1 Module | v2 Status | Notes |
-|-----------|-----------|-------|
-| `src/providers/` | **Keep as-is** | LLM router, all providers (copilot, anthropic, ollama, llamacpp, openai-codex) |
-| `src/auth/` | **Keep as-is** | Auth flows for all providers |
-| `src/mcp/` | **Keep as-is** | MCP client, runtime, builtins, registry |
-| `src/channels/` | **Adapt** | Telegram, WebSocket, CLI channels — wire to v2 Chat agent |
-| `src/services/` | **Keep most** | filesystem, shell, git, web, lock, memory services |
-| `src/skills/` | **Adapt** | Loader/resolver → v2 trigger-based matching |
-| `src/generator/` | **Keep as-is** | MCP server generator |
-| `src/server/` | **Replace** | New bootstrap for v2 execution model |
-| `src/orchestrator/` | **Delete** | Entirely replaced by v2 Planner/Manager/Runtime |
-| `src/agents/` | **Replace** | New role-based agents, keep stash mechanism |
-| `src/watchdog/` | **Replace** | Replaced by v2 crash recovery |
-| `src/config.ts` | **Adapt** | Split into global + project config |
-| `src/log.ts` | **Keep as-is** | Logging |
+```mermaid
+graph TD
+    P1["Phase 1<br/>Data Layer"] --> P2["Phase 2<br/>Runtime Core"]
+    P1 --> P3["Phase 3<br/>LLM Integration"]
+    P2 --> P4["Phase 4<br/>Workers"]
+    P3 --> P4
+    P4 --> P5["Phase 5<br/>Manager"]
+    P5 --> P6["Phase 6<br/>Planner + Inspector"]
+    P6 --> P7["Phase 7<br/>Chat + Notifications"]
+    P7 --> P8["Phase 8<br/>CLI + Bootstrap"]
+    P8 --> P9["Phase 9<br/>Web UI + Polish"]
+
+    style P2 fill:#369,color:#fff
+    style P3 fill:#369,color:#fff
+
+    linkStyle 0 stroke:#369
+    linkStyle 1 stroke:#369
+```
+
+Phases 2 and 3 can be worked on in **parallel** — they only share the agent interface types (2.1). Everything else is sequential.
 
 ---
 
-## Dependency Graph
+## v1 Reuse Map
 
-```
-Phase 1 (Data Layer)
-    │
-    ▼
-Phase 2 (Runtime Core) ◄── Phase 3 (LLM / Agent Base)
-    │                           │
-    ▼                           ▼
-Phase 4 (Coder + Researcher)
-    │
-    ▼
-Phase 5 (Manager)
-    │
-    ▼
-Phase 6 (Planner + Inspector)
-    │
-    ▼
-Phase 7 (Chat + Notifications)
-    │
-    ▼
-Phase 8 (Entry Point + CLI)
-    │
-    ▼
-Phase 9 (Web UI + Polish)
-```
-
-Phases 2 and 3 can be worked on in parallel. Everything else is sequential.
+| v1 Module | Disposition | Notes |
+|-----------|-------------|-------|
+| `src/providers/` | **Keep** | LLM router, all provider abstractions |
+| `src/auth/` | **Keep** | Auth flows for all providers |
+| `src/mcp/` | **Keep** | MCP client, runtime, registry |
+| `src/services/filesystem,shell,web` | **Keep** | No changes |
+| `src/services/memory,index` | **Keep** | No changes |
+| `src/services/git/` | **Adapt** | Explicit file staging, `[task-id]` prefix |
+| `src/services/skills/` | **Adapt** | `target_agents`, `agent:<type>` trigger |
+| `src/channels/` | **Adapt** | Wire to v2 Chat agent |
+| `src/generator/` | **Keep** | MCP service scaffold |
+| `src/config.ts` | **Adapt** | Split into global + project config |
+| `src/log.ts` | **Keep** | Logging |
+| `src/orchestrator/` | **Remove** | Replaced by Planner + Manager + Runtime |
+| `src/agents/` | **Replace** | New role-based agents (keep stash mechanism) |
+| `src/watchdog/` | **Replace** | Replaced by v2 crash recovery |
+| `src/services/lock/` | **Remove** | Convention-based territory replaces locking |
 
 ---
 
@@ -436,4 +212,4 @@ Phases 2 and 3 can be worked on in parallel. Everything else is sequential.
 4. Move v2 code out of `src/v2/` to top level.
 5. Update `src/index.ts` to use v2 bootstrap.
 
-This allows v1 to remain runnable during development for reference/comparison.
+This allows v1 to remain runnable during development for reference and comparison.

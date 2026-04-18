@@ -1,591 +1,786 @@
 # Saivage v2 — System Design
 
-High-level architecture, component structure, data flow, and deployment topology. This document provides the bird's-eye view; detailed specifications live in companion documents.
+Comprehensive architecture and component design for the Saivage v2 autonomous software engineering system. This is the primary technical reference — all other specification documents detail specific subsystems described here.
 
-**Document index:**
+**Companion documents:**
 
-| Doc | Contents |
-|-----|----------|
-| [00-AGENT-SYSTEM.md](00-AGENT-SYSTEM.md) | Agent roles, behaviors, communication protocol, execution model |
-| [01-DATA-MODEL.md](01-DATA-MODEL.md) | TypeScript interfaces and JSON schemas for all document types |
-| [02-IMPLEMENTATION-PLAN.md](02-IMPLEMENTATION-PLAN.md) | Phased build plan (9 phases, bottom-up) |
-| [03-PLAN-MCP-SERVICE.md](03-PLAN-MCP-SERVICE.md) | Full specification for the plan MCP service |
-| [04-RUNTIME-DETAILS.md](04-RUNTIME-DETAILS.md) | Suspend/resume, LLM error handling, compaction, self-check, crash recovery |
+| Doc | Scope |
+|-----|-------|
+| [00-AGENT-SYSTEM.md](00-AGENT-SYSTEM.md) | Agent roles, behaviors, communication protocol |
+| [01-DATA-MODEL.md](01-DATA-MODEL.md) | TypeScript interfaces and JSON schemas |
+| [03-PLAN-MCP-SERVICE.md](03-PLAN-MCP-SERVICE.md) | Plan MCP service specification |
+| [04-RUNTIME-DETAILS.md](04-RUNTIME-DETAILS.md) | Runtime internals: suspend/resume, retries, compaction |
 | [05-MCP-SERVICES.md](05-MCP-SERVICES.md) | Complete MCP service catalog with tool schemas |
 
 ---
 
 ## 1. System Overview
 
-Saivage v2 is an **autonomous software engineering agent** that takes high-level project objectives and executes them through a hierarchy of specialized LLM agents. It manages its own planning, execution, quality assurance, and user communication — running continuously until the project objectives are met.
+Saivage v2 is an **autonomous software engineering system** that takes high-level project objectives and executes them through a hierarchy of specialized LLM agents. It manages its own planning, task decomposition, code generation, research, quality assurance, and user communication — running continuously until the objectives are met or the user redirects.
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                     User Interface                       │
-│         Telegram Bot  ·  Web UI (WebSocket)              │
-└────────────┬──────────────────────┬──────────────────────┘
-             │                      │
-       ┌─────▼──────┐        ┌─────▼──────┐
-       │  Chat Agent │        │  Chat Agent │    (1 per channel)
-       │  (Telegram) │        │   (Web UI)  │
-       └──────┬──────┘        └──────┬──────┘
-              │ create_note()        │ create_note()
-              │ run_inspector()      │ run_inspector()
-              │                      │
-   ┌──────────▼──────────────────────▼───────────────┐
-   │                   Runtime Core                    │
-   │  ┌──────────────────────────────────────────┐    │
-   │  │              Planner Agent                │    │
-   │  │  (long-lived · project lifetime)          │    │
-   │  │                                           │    │
-   │  │  run_manager(stage) ──┐                   │    │
-   │  │  run_inspector(req) ──┼──┐                │    │
-   │  └───────────────────────┼──┼────────────────┘    │
-   │                          │  │                      │
-   │  ┌───────────────────────▼──┼────────────────┐    │
-   │  │           Manager Agent  │                │    │
-   │  │  (long-lived · 1 stage)  │                │    │
-   │  │                          │                │    │
-   │  │  run_coder(task) ────┐   │                │    │
-   │  │  run_researcher(task)┼─┐ │                │    │
-   │  └──────────────────────┼─┼─┼────────────────┘    │
-   │                         │ │ │                      │
-   │  ┌──────────────────┐ ┌─▼─▼─▼──────────────┐     │
-   │  │   Coder Agent    │ │  Inspector Agent     │     │
-   │  │  (one-shot/task) │ │  (one-shot/request)  │     │
-   │  └──────────────────┘ └──────────────────────┘     │
-   │  ┌──────────────────┐                              │
-   │  │ Researcher Agent │                              │
-   │  │  (one-shot/task) │                              │
-   │  └──────────────────┘                              │
-   └────────────────────────────────────────────────────┘
-              │         │         │
-    ┌─────────▼─┐ ┌─────▼───┐ ┌──▼──────────┐
-    │ MCP       │ │ LLM     │ │ Event Bus   │
-    │ Services  │ │ Provider│ │ (in-process) │
-    └───────────┘ │ Router  │ └─────────────┘
-                  └─────────┘
-```
+### 1.1 Design Principles
 
----
+- **Hierarchical delegation**: a chain of command (Planner → Manager → Workers) where each level has well-scoped responsibility and clear contracts.
+- **Disk is the source of truth**: all durable state lives on disk as JSON documents. LLM conversations are transient working memory — losing them is always recoverable.
+- **Tool-call invocation**: agents communicate exclusively through LLM tool calls. A parent calls a child as a tool, suspends, receives the result when the child finishes. No message queues, no shared memory.
+- **Convention over enforcement**: all agents (except Chat) have full filesystem access. Territorial conventions (Coder writes project code, Researcher writes under `research/`) prevent collisions without runtime permission checks.
+- **Crash recoverability**: the system can restart at any point and reconstruct its state from disk.
+- **Progressive escalation**: failures cascade upward (Worker → Manager → Planner → User) with each level having the opportunity to retry, remediate, or replan.
 
-## 2. Component Architecture
+### 1.2 High-Level Architecture
 
-### 2.1 Process Model
+```mermaid
+graph TB
+    subgraph "User Interface"
+        TG["Telegram Bot"]
+        WEB["Web UI (WebSocket)"]
+    end
 
-Saivage runs as a **single Node.js process**. All components are in-process:
+    subgraph "Chat Layer"
+        CT["Chat Agent<br/>(Telegram)"]
+        CW["Chat Agent<br/>(Web)"]
+    end
 
-| Component | Type | Description |
-|-----------|------|-------------|
-| Runtime Core | singleton | Agent lifecycle, suspend/resume, abort, compaction, self-check |
-| Planner Agent | LLM conversation | Long-lived, 1 per project |
-| Manager Agent | LLM conversation | Long-lived, 1 per stage |
-| Worker Agents | LLM conversations | One-shot, 1 at a time per type |
-| Chat Agents | LLM conversations | 1 per channel, independent |
-| MCP Runtime | singleton | Service process management |
-| Event Bus | singleton | In-process pub/sub for notifications |
-| LLM Provider Router | singleton | Model selection, failover, retry |
-| Channel Transports | per-channel | Telegram polling, WebSocket server |
+    subgraph "Execution Hierarchy"
+        PL["Planner Agent<br/><i>long-lived · project lifetime</i>"]
+        MG["Manager Agent<br/><i>long-lived · one stage</i>"]
+        CD["Coder Agent<br/><i>one-shot · one task</i>"]
+        RS["Researcher Agent<br/><i>one-shot · one task</i>"]
+        IN["Inspector Agent<br/><i>one-shot · one request</i>"]
+    end
 
-MCP services (filesystem, shell, git, web, etc.) run as **child processes** spawned by the MCP Runtime, communicating via stdio. They are started lazily and shut down when idle.
+    subgraph "Runtime Core"
+        DISP["Dispatcher<br/><i>suspend/resume</i>"]
+        COMP["Compaction<br/><i>context management</i>"]
+        SC["Self-Check<br/><i>loop detection</i>"]
+        ABORT["Abort Handler<br/><i>urgent replanning</i>"]
+        REC["Recovery<br/><i>crash recovery</i>"]
+    end
 
-### 2.2 Module Structure
+    subgraph "Infrastructure"
+        LLM["LLM Provider Router"]
+        MCP["MCP Service Runtime"]
+        EBUS["Event Bus"]
+    end
 
-```
-src/v2/
-├── types.ts                    # All TypeScript interfaces + Zod schemas
-├── ids.ts                      # nanoid-based ID generator (stg-, tsk-, note-, insp-, chat-)
-│
-├── store/
-│   ├── documents.ts            # Generic JSON document CRUD (atomic writes)
-│   └── project.ts              # Project discovery, init, config loading
-│
-├── runtime/
-│   ├── core.ts                 # Main runtime: agent lifecycle, dispatch loop
-│   ├── dispatcher.ts           # Tool-call dispatch: suspend, spawn child, resume
-│   ├── abort.ts                # Abort mechanism: urgent note → chain termination
-│   ├── compaction.ts           # Context compaction: token tracking, summary generation
-│   ├── self-check.ts           # Periodic self-check injection
-│   └── recovery.ts             # Crash recovery: stale PID, state reconstruction
-│
-├── agents/
-│   ├── types.ts                # Agent interface, AgentContext, AgentResult
-│   ├── base.ts                 # Agent base class: LLM loop, tool execution, context assembly
-│   ├── conventions.ts          # Per-agent convention definitions + violation logging
-│   ├── planner.ts              # Planner agent
-│   ├── manager.ts              # Manager agent
-│   ├── coder.ts                # Coder agent
-│   ├── researcher.ts           # Researcher agent
-│   ├── inspector.ts            # Inspector agent
-│   └── chat.ts                 # Chat agent
-│
-├── skills/
-│   └── loader.ts               # Skill matching, ranking, loading into context
-│
-├── mcp/
-│   └── plan-server.ts          # Plan MCP service (new in v2)
-│
-├── events/
-│   └── notifier.ts             # Event bus + notification formatting + delivery
-│
-├── channels/
-│   ├── telegram.ts             # Telegram bot (adapted from v1)
-│   └── websocket.ts            # WebSocket server (adapted from v1)
-│
-└── server/
-    └── bootstrap.ts            # CLI entry point, startup sequence
-```
+    subgraph "MCP Services (child processes)"
+        FS["Filesystem"]
+        SH["Shell"]
+        GIT["Git"]
+        WB["Web"]
+        PLAN["Plan"]
+        SK["Skills"]
+        MEM["Memory"]
+        IDX["Index"]
+    end
 
-### 2.3 Reused v1 Components
+    TG --> CT
+    WEB --> CW
+    CT -->|create_note| PL
+    CW -->|create_note| PL
+    CT -->|run_inspector| IN
+    CW -->|run_inspector| IN
 
-| v1 Component | v2 Location | Changes |
-|-------------|-------------|---------|
-| `src/providers/` | Same | No changes — model router, provider abstractions |
-| `src/mcp/client.ts` | Same | No changes — MCP SDK client wrapper |
-| `src/mcp/runtime.ts` | Same | No changes — service lifecycle management |
-| `src/mcp/registry.ts` | Same | No changes — service registry CRUD |
-| `src/mcp/builtins.ts` | Adapted | Remove lock service, add plan service |
-| `src/services/filesystem/` | Same | No changes |
-| `src/services/shell/` | Same | No changes |
-| `src/services/git/` | Adapted | Add explicit file staging, task-id prefix |
-| `src/services/web/` | Same | No changes |
-| `src/services/skills/` | Adapted | Add `target_agents`, `agent:<type>` trigger |
-| `src/services/memory/` | Same | No changes |
-| `src/services/index/` | Same | No changes |
-| `src/generator/` | Same | No changes — MCP service scaffold |
-| `src/channels/telegram.ts` | Adapted | Connect to v2 Chat agent |
-| `src/channels/websocket.ts` | Adapted | Connect to v2 Chat agent |
-| `src/config.ts` | Adapted | Add v2 ProjectConfig fields |
-| `src/log.ts` | Same | No changes |
+    PL -->|run_manager| MG
+    PL -->|run_inspector| IN
+    MG -->|run_coder| CD
+    MG -->|run_researcher| RS
 
-### 2.4 Removed v1 Components
+    PL & MG & CD & RS & IN & CT & CW --> DISP
+    DISP --> LLM
+    DISP --> MCP
+    COMP --> DISP
+    SC --> DISP
+    ABORT --> DISP
+    REC --> DISP
 
-| v1 Component | Reason |
-|-------------|--------|
-| `src/orchestrator/` | Replaced by Planner + Manager + runtime dispatcher |
-| `src/agents/orchestrator.ts` | Replaced by Planner agent |
-| `src/agents/coder.ts` | Rewritten as `src/v2/agents/coder.ts` |
-| `src/agents/researcher.ts` | Rewritten as `src/v2/agents/researcher.ts` |
-| `src/agents/chat.ts` | Rewritten as `src/v2/agents/chat.ts` |
-| `src/services/lock/` | Convention-based territory replaces explicit locking |
-| `src/orchestrator/mcpService.ts` | `orch_*` tools replaced by plan MCP + agent dispatch |
-
----
-
-## 3. Data Flow
-
-### 3.1 Main Execution Flow
-
-```
-                        ┌──────────────┐
-                        │ Project Init │
-                        │  config.json │
-                        └──────┬───────┘
-                               │
-                        ┌──────▼───────┐
-                        │   Planner    │
-                        │ plan_init()  │
-                        └──────┬───────┘
-                               │ plan.json created
-                               │
-               ┌───────────────▼───────────────┐
-               │        Stage Loop              │
-               │                                │
-               │  plan_set_current(stage_id)    │
-               │  run_manager(stage) ─────────┐ │
-               │                              │ │
-               │  ┌───────────────────────────▼─┤
-               │  │        Manager              │
-               │  │  tasks.json written         │
-               │  │                             │
-               │  │  ┌──── Task Loop ────┐      │
-               │  │  │ run_coder(task)   │      │
-               │  │  │ run_researcher()  │      │
-               │  │  │     │             │      │
-               │  │  │  TaskReport ←─────┘      │
-               │  │  │  update tasks.json       │
-               │  │  └──────────────────┘       │
-               │  │                             │
-               │  │  summary.json written       │
-               │  │  StageSummary returned ─────┤
-               │  └─────────────────────────────┤
-               │                                │
-               │  plan_complete_stage()         │
-               │  plan_set_stages() (if revised)│
-               │  plan_commit()                 │
-               │  (next stage or done)          │
-               └────────────────────────────────┘
-```
-
-### 3.2 User Interaction Flow
-
-```
-User ──message──► Channel Transport ──► Chat Agent
-                                           │
-                              ┌────────────┼────────────┐
-                              │            │            │
-                         status query   direction    inspection
-                              │            │            │
-                         plan_get()   create_note()  run_inspector()
-                              │            │            │
-                         ◄─response   note.json      InspectionReport
-                                      written         returned
-                                           │            │
-                                      Planner        Chat formats
-                                      resumes        and replies
-                                      with note
-```
-
-### 3.3 Abort Flow
-
-```
-User: "stop everything, change direction"
-        │
-   Chat: create_note(content, urgent=true)
-        │
-   Runtime detects urgent note
-        │
-   ┌────▼────────────────────────┐
-   │  Terminate active agents     │
-   │  (bottom-up: Coder → Manager)│
-   │  git checkout -- .           │
-   │  Manager writes partial      │
-   │  StageSummary (aborted)      │
-   └────┬────────────────────────┘
-        │
-   Planner resumes with:
-   - StageSummary (result: "aborted")
-   - Urgent note content
-        │
-   Planner creates rollback stage
-   + new stages for revised direction
-        │
-   Normal execution resumes
-```
-
-### 3.4 Notification Flow
-
-```
-Runtime event (stage_completed, task_failed, etc.)
-        │
-   Event Bus (in-process)
-        │
-   ┌────▼────────────────┐
-   │  Each Chat Agent     │
-   │  - check filters     │
-   │  - format message    │
-   │  - push to channel   │
-   └─────────────────────┘
-        │
-   Channel transport
-   (Telegram bot API / WebSocket)
-        │
-   User receives notification
+    MCP --> FS & SH & GIT & WB & PLAN & SK & MEM & IDX
+    EBUS --> CT & CW
 ```
 
 ---
 
-## 4. Persistence Architecture
+## 2. Core Components
 
-### 4.1 Storage Layers
+### 2.1 Runtime Core
 
+The Runtime Core is the central orchestration engine. It is a **singleton** within the Node.js process and manages the lifecycle of every agent conversation.
+
+**Responsibilities:**
+- **Agent lifecycle management**: spawn, suspend, resume, and terminate agent LLM conversations.
+- **Tool-call dispatch**: intercept agent-dispatch tool calls (`run_manager`, `run_coder`, etc.), suspend the parent, spawn the child, and inject the child's result back into the parent's conversation when done.
+- **Abort handling**: detect urgent user notes, terminate the active agent chain bottom-up, clean the working tree (`git checkout -- .`), and resume the Planner with the abort context.
+- **Context compaction**: track token usage per conversation, trigger compaction when usage exceeds the threshold (default 80%), produce a summary message that replaces the conversation history.
+- **Periodic self-check**: inject a progress-assessment prompt after every N tool-call rounds to catch infinite loops.
+- **Crash recovery**: on startup, detect stale state from a previous crash, reconstruct the execution position from disk, and restart the Planner.
+
+**Key technical details:**
+- Runs on the **Node.js single-threaded event loop**. Concurrency is achieved through async I/O — LLM calls, MCP tool calls, and channel messages are all non-blocking.
+- Parent agents are suspended in-memory (full message history + pending tool-call IDs). On crash, this is lost, but disk state is authoritative.
+- The Dispatcher supports **resume-on-each** for parallel child dispatch: when the Manager issues both `run_coder()` and `run_researcher()` in one LLM response, both children run concurrently and the Manager resumes independently as each returns.
+
+See [04-RUNTIME-DETAILS.md](04-RUNTIME-DETAILS.md) for full suspend/resume mechanics, compaction timing, self-check injection, and failure handling.
+
+### 2.2 Agent System
+
+Six specialized agents, each an LLM conversation with a system prompt, a set of available tools, and a well-defined contract for inputs and outputs.
+
+```mermaid
+graph LR
+    subgraph "Long-Lived"
+        PL["Planner<br/>project lifetime"]
+        MG["Manager<br/>one stage"]
+    end
+    subgraph "One-Shot"
+        CD["Coder<br/>one task"]
+        RS["Researcher<br/>one task"]
+        IN["Inspector<br/>one request"]
+    end
+    subgraph "Independent"
+        CH["Chat<br/>per channel"]
+    end
+
+    PL -->|"run_manager(stage)<br/>→ StageSummary"| MG
+    PL -->|"run_inspector(req)<br/>→ InspectionReport"| IN
+    MG -->|"run_coder(task)<br/>→ TaskReport"| CD
+    MG -->|"run_researcher(task)<br/>→ TaskReport"| RS
+    CH -->|"run_inspector(req)<br/>→ InspectionReport"| IN
+    CH -.->|"create_note(content, urgent?)"| PL
 ```
-┌────────────────────────────────────────────────────────┐
-│                Project Directory                        │
-│                                                         │
-│  .saivage/                                             │
-│  ├── [Git-tracked]                                     │
-│  │   ├── config.json          ProjectConfig            │
-│  │   ├── plan.json            Active plan (via MCP)    │
-│  │   ├── plan-history.json    Completed stages         │
-│  │   ├── notes/               User → Planner           │
-│  │   ├── stages/              Per-stage artifacts       │
-│  │   ├── inspections/         Inspector reports         │
-│  │   ├── research/            Researcher output         │
-│  │   ├── skills/              Project skills            │
-│  │   └── tools/inspector/     Persistent analysis tools │
-│  │                                                      │
-│  └── [Gitignored]                                      │
-│      └── tmp/                                          │
-│          ├── state/runtime.json  Crash recovery         │
-│          ├── inspector-workspace/ Scratch space         │
-│          ├── chats/              Dialogue logs          │
-│          └── work/               Agent scratch          │
-│                                                         │
-├── research/                    Researcher output        │
-│   └── <topic>/                 (committed to git)       │
-│                                                         │
-└── (project source code)        Main codebase            │
-└────────────────────────────────────────────────────────┘
 
-┌────────────────────────────────────────────────────────┐
-│                Global (~/.saivage/)                      │
-│                                                         │
-│  config.json        LLM creds, Telegram token           │
-│  auth/              Provider auth tokens                │
-│  registry.json      MCP service registry                │
-│  skills/            User global skills                  │
-│  data/                                                  │
-│  ├── memory.db      Long-term memory (SQLite)           │
-│  └── index.db       Full-text search index (SQLite)     │
-└────────────────────────────────────────────────────────┘
-```
+#### Planner
+- **Lifetime**: project lifetime (never terminates until objectives are met).
+- **Responsibilities**: generate the initial multi-stage plan from project objectives, dispatch stages to the Manager one at a time, process stage results (completed/escalated/aborted), revise the plan adaptively, process user notes, dispatch the Inspector for retrospectives.
+- **Tools**: Plan MCP service (full read/write), `run_manager()`, `run_inspector()`, filesystem (read), git (commit `.saivage/` state).
+- **State management**: the plan MCP service is the authoritative state store. After compaction, the Planner reconstructs strategic context via `plan_get()` + `plan_get_history()`.
 
-### 4.2 Data Sovereignty
+#### Manager
+- **Lifetime**: one stage (spawned by Planner, terminates on completion/escalation/abort).
+- **Responsibilities**: decompose a stage into an ordered task list, dispatch tasks to Coder/Researcher, process task reports, handle failures (retry with modified description, remediate, escalate), write stage summary.
+- **Tools**: `run_coder()`, `run_researcher()`, filesystem (read/write tasks and summaries), git (commit `.saivage/stages/`).
+- **Parallel dispatch**: can issue one Coder + one Researcher task concurrently when tasks are independent. Resumes as each returns.
+- **Failure handling**: on task failure, increments `task.attempt`, appends failure context to description, retries. If `attempt >= max_attempts`, escalates. If a dependency task fails, cascades failure to all dependents.
 
-- **Plan state** is managed exclusively by the Plan MCP service. No agent reads/writes `plan.json` or `plan-history.json` directly.
-- **Git operations** are serialized through the Git MCP service. No agent calls `git` CLI directly.
-- **Agent conversations** are ephemeral in-memory state. All durable state is on disk. On crash, conversations are lost but the system recovers from disk.
-- **The disk is the source of truth.** Conversations are working memory only.
+#### Coder
+- **Lifetime**: one task (spawned by Manager).
+- **Responsibilities**: execute coding/testing/documentation tasks, write code, run tests, commit changes, produce a TaskReport with checklist results.
+- **Tools**: filesystem (read/write), shell (run commands/tests), git (commit own files), web (read docs), memory, index.
+- **Territory**: project source code. Commits project files + task report.
+
+#### Researcher
+- **Lifetime**: one task (spawned by Manager).
+- **Responsibilities**: gather information from external sources, organize findings under `research/`, produce a TaskReport.
+- **Tools**: same as Coder.
+- **Territory**: `research/` directory. Writes under `research/` by convention.
+
+#### Inspector
+- **Lifetime**: one investigation (spawned by Planner or Chat).
+- **Responsibilities**: deep analysis of project state — code quality, test coverage, architecture review, performance — producing an InspectionReport with findings and recommendations.
+- **Tools**: filesystem (read/write), shell (run analysis), git, web.
+- **Three storage tiers**: ephemeral workspace (`tmp/inspector-workspace/<report-id>/`), persistent reports (`inspections/`), persistent tools (`tools/inspector/`). Can promote useful tools from scratch to persistent.
+- **Serialized**: only one Inspector runs at a time (FIFO queue if Planner and Chat both request simultaneously).
+
+#### Chat
+- **Lifetime**: per channel, runs independently of the execution hierarchy.
+- **Responsibilities**: answer user queries about project state, relay user direction to the Planner via notes, dispatch Inspector on user request, push notifications for system events.
+- **Tools**: Plan MCP (read-only), filesystem (read-only), `run_inspector()`, `create_note()`.
+- **Channels**: Telegram (long-polling) and Web UI (WebSocket). One Chat agent instance per channel.
+- **Does not block** the execution pipeline. Cannot modify project state.
+
+Full agent behaviors, inputs, outputs, and trigger events are specified in [00-AGENT-SYSTEM.md](00-AGENT-SYSTEM.md).
+
+### 2.3 LLM Provider Router
+
+The Provider Router manages all LLM API communication. It is a **singleton** reused from v1.
+
+**Responsibilities:**
+- **Model selection**: for each agent role, select the model from configuration. Precedence: `ProjectConfig.model_overrides[role]` → `GlobalConfig.providers[name].models[role]` → most capable available.
+- **Retry with backoff**: all retryable errors (HTTP 429, 5xx, timeouts) are retried with exponential backoff (1s→60s, ±20% jitter). Retries are unlimited — the self-check and compaction mechanisms are the safety nets.
+- **Provider failover**: if a provider fails 5+ consecutive times within 2 minutes, switch to the configured failover provider. Try the primary again on the next agent invocation.
+- **Request timeout**: configurable per provider (default: 120s).
+
+**Non-retryable errors** (surfaced as agent failure): HTTP 400 (bad request), HTTP 401/403 (auth failure), context window exceeded.
+
+See [04-RUNTIME-DETAILS.md](04-RUNTIME-DETAILS.md) §2 for retry details and invalid tool-call handling.
+
+### 2.4 MCP Service Runtime
+
+The MCP Service Runtime manages the lifecycle of MCP service child processes. It is a **singleton** reused from v1.
+
+**Responsibilities:**
+- **Lazy startup**: services are started on first tool call, not at boot.
+- **Health monitoring**: periodic health checks. Dead services are restarted automatically.
+- **Idle shutdown**: services unused for a configurable period are stopped to free resources.
+- **Crash recovery**: tracks crash count per service. Restarts on next tool call.
+- **In-process services**: the agent-dispatch tools (`run_manager`, `run_coder`, etc.) are registered as in-process handlers — no subprocess overhead.
+- **Tool routing**: `callTool(service, tool, args)` routes to the correct service, starting it if needed.
+
+**Services available:** filesystem, shell, git, web, plan, skills, memory, index. Services communicate via stdio using the MCP SDK protocol. Full tool schemas and access matrix in [05-MCP-SERVICES.md](05-MCP-SERVICES.md).
+
+### 2.5 Event Bus & Notification System
+
+An in-process pub/sub bus that connects runtime events to user-facing channels.
+
+**Responsibilities:**
+- **Event publishing**: the runtime publishes events when significant things happen (stage completed, task failed, escalation, Inspector report ready, plan updated).
+- **Chat subscription**: each Chat agent subscribes on startup. When an event arrives, the Chat agent checks the user's notification filters (min_severity, category whitelist) and formats a concise push message.
+- **Channel delivery**: Telegram via bot API `sendMessage`, Web via WebSocket push.
+- **Offline buffering**: if a channel is disconnected, buffer up to 100 events. On overflow, drop oldest with a summary message. Deliver buffered events on reconnection.
+
+**Event types:**
+
+| Event | Published when | Severity |
+|-------|---------------|----------|
+| `stage_completed` | Manager returns success | info |
+| `stage_failed` | Manager returns failure | error |
+| `escalation` | Manager escalates to Planner | warning |
+| `task_failed` | Worker returns failure | warning |
+| `inspector_complete` | Inspector returns report | info |
+| `plan_updated` | Planner modifies the plan | info |
+
+### 2.6 Skill System
+
+Skills inject project-specific knowledge into agent contexts at invocation time.
+
+**Responsibilities:**
+- **Trigger matching**: when an agent is invoked, the Skill Loader evaluates all skills against the agent's metadata (task/stage description, tool list, file paths, tags, agent type). Trigger types: `keyword:<word>` (case-insensitive substring), `tool:<name>` (exact match), `path:<glob>` (minimatch), `tag:<label>` (exact), `agent:<type>` (exact).
+- **Target filtering**: skills with `target_agents` are only loaded for matching agent types.
+- **Ranking**: matched skills are ranked by trigger match count (descending), then `updated_at` (most recent first).
+- **Budget**: top N skills loaded per invocation (configurable, default 5).
+- **Injection format**: each loaded skill is prepended to the context as a system message section: `--- SKILL: <name> ---\n<content>\n---`.
+
+**Discovery paths** (in precedence order):
+1. `<SAIVAGE_ROOT>/skills/` — builtin skills shipped with Saivage
+2. `~/.saivage/skills/` — user global skills
+3. `<PROJECT>/.saivage/skills/` — project-specific skills (highest precedence)
+
+**Generation**: the Manager can schedule skill-creation tasks when it detects reusable patterns. The Coder creates the `.md` file and updates `skills/index.json`.
+
+### 2.7 Document Store
+
+A generic CRUD layer for all JSON documents on disk.
+
+**Responsibilities:**
+- **Atomic writes**: every write goes to a `.tmp` file first, then is renamed into place. No partial writes on crash.
+- **Schema validation**: every document is validated against its Zod schema before write. Invalid data is rejected.
+- **CRUD operations**: `read<T>(path)`, `write<T>(path, data)`, `append<T>(path, item)`, `list(dir)`, `delete(path)`.
+- **Project context**: bundles project root, config, and resolved paths for all downstream components.
 
 ---
 
-## 5. LLM Integration
+## 3. Data Architecture
 
-### 5.1 Provider Router
+### 3.1 Storage Layout
 
-Reused from v1. Routes LLM calls to configured providers with failover.
+All project state lives inside `<project>/.saivage/`. Global config is at `~/.saivage/`.
 
-```
-AgentBase.llmCall(messages)
-    │
-    ▼
-Provider Router
-    │
-    ├── Primary provider (e.g., "github-copilot")
-    │     Model selected by role:
-    │     ProjectConfig.model_overrides[role]
-    │       > GlobalConfig.providers[name].models[role]
-    │         > most capable available
-    │
-    └── Failover provider (if primary fails 5x in 2min)
-          Switch logged, try primary again on next agent
-```
+```mermaid
+graph TB
+    subgraph "Project Directory"
+        subgraph "Git-Tracked (.saivage/)"
+            CONF["config.json<br/><i>ProjectConfig</i>"]
+            PLAN["plan.json<br/><i>Active plan (via MCP)</i>"]
+            HIST["plan-history.json<br/><i>Completed stages</i>"]
+            NOTES["notes/<br/><i>User → Planner</i>"]
+            STAGES["stages/&lt;stage-id&gt;/<br/><i>tasks.json, summary.json,<br/>reports/&lt;task-id&gt;.json</i>"]
+            INSP["inspections/<br/><i>Inspector reports</i>"]
+            RESEARCH["research/&lt;topic&gt;/<br/><i>Researcher output</i>"]
+            SKILLS["skills/<br/><i>index.json + .md files</i>"]
+            TOOLS["tools/inspector/<br/><i>Persistent analysis tools</i>"]
+        end
+        subgraph "Gitignored (.saivage/tmp/)"
+            RUNTIME["state/runtime.json<br/><i>Crash recovery</i>"]
+            IWRK["inspector-workspace/<br/><i>Scratch space</i>"]
+            CHATS["chats/&lt;channel&gt;/<br/><i>Dialogue logs</i>"]
+            WORK["work/<br/><i>Agent scratch</i>"]
+        end
+        SRC["(project source code)"]
+    end
 
-### 5.2 Context Assembly
-
-When an agent is invoked, the runtime assembles its initial context:
-
-```
-┌──────────────────────────────────────────────┐
-│ System Prompt                                 │
-│ (from SPEC/v2/prompts/<agent-type>.md)        │
-├──────────────────────────────────────────────┤
-│ Skills (auto-loaded, max N per agent)         │
-│ --- SKILL: git-conventions ---                │
-│ <content>                                     │
-│ --- SKILL: testing-conventions ---            │
-│ <content>                                     │
-├──────────────────────────────────────────────┤
-│ Task/Stage Context                            │
-│ (stage description, task object, references)  │
-├──────────────────────────────────────────────┤
-│ User Notes (if resuming Planner)              │
-├──────────────────────────────────────────────┤
-│ Tool Definitions                              │
-│ (filesystem, shell, git, web, dispatch, etc.) │
-└──────────────────────────────────────────────┘
+    subgraph "Global (~/.saivage/)"
+        GCONF["config.json<br/><i>LLM creds, Telegram token</i>"]
+        AUTH["auth/<br/><i>Provider tokens</i>"]
+        REG["registry.json<br/><i>MCP service registry</i>"]
+        GSKILLS["skills/<br/><i>User global skills</i>"]
+        MEMDB["data/memory.db<br/><i>Long-term memory (SQLite)</i>"]
+        IDXDB["data/index.db<br/><i>Full-text index (SQLite)</i>"]
+    end
 ```
 
-### 5.3 Token Budget
+### 3.2 Data Sovereignty Rules
 
-The context window is partitioned (by convention, not enforcement):
+Each data domain has a single owner and a defined access pattern:
 
-| Allocation | % of context | Purpose |
-|-----------|-------------|---------|
-| System prompt + skills | ~15% | Fixed overhead |
-| Task context + references | ~25% | Input material |
-| Conversation history | ~40% | Working memory |
-| Tool results buffer | ~20% | Space for incoming results |
+| Data | Owner | Written by | Read by | Storage |
+|------|-------|-----------|---------|---------|
+| `plan.json`, `plan-history.json` | Plan MCP service | Planner (via MCP tools) | Planner, Chat | Git-tracked |
+| `stages/<id>/tasks.json` | Manager | Manager | Manager, Planner (via summary) | Git-tracked |
+| `stages/<id>/summary.json` | Manager | Manager | Planner | Git-tracked |
+| `stages/<id>/reports/<id>.json` | Worker | Coder/Researcher | Manager | Git-tracked |
+| `notes/<id>.json` | Chat | Chat (via `create_note`) | Planner | Git-tracked |
+| `inspections/<id>.json` | Inspector | Inspector | Planner, Chat | Git-tracked |
+| `research/<topic>/` | Researcher | Researcher | Any agent | Git-tracked |
+| `skills/` | Coder | Coder (when tasked) | All agents (via loader) | Git-tracked |
+| `tools/inspector/` | Inspector | Inspector | Inspector | Git-tracked |
+| `tmp/state/runtime.json` | Runtime | Runtime Core | Runtime (recovery) | Gitignored |
+| `tmp/chats/` | Chat | Chat | Chat | Gitignored |
+| Project source code | Coder | Coder | Any agent | Git-tracked |
+| Git history | Git MCP | All agents (via MCP) | All agents | Git |
 
-Compaction triggers at 80% total usage (configurable per agent role). See [04-RUNTIME-DETAILS.md](04-RUNTIME-DETAILS.md) §3.
+**Key rules:**
+- No agent reads or writes `plan.json` or `plan-history.json` directly — all access goes through the Plan MCP service.
+- No agent calls `git` CLI directly — all git operations go through the Git MCP service.
+- Conversations are ephemeral. Disk is the source of truth. On crash, all conversations are lost and reconstructed from files.
+
+### 3.3 Document Relationships
+
+```mermaid
+erDiagram
+    ProjectConfig ||--|| Plan : "defines objectives for"
+    Plan ||--|{ Stage : "contains"
+    PlanHistory ||--|{ CompletedStage : "archives"
+    Stage ||--|| TaskList : "decomposed into"
+    TaskList ||--|{ Task : "contains"
+    Task ||--|| TaskReport : "produces"
+    Stage ||--|| StageSummary : "produces"
+    StageSummary ||--o| Escalation : "may contain"
+    UserNote }|--|| Plan : "influences"
+    InspectionRequest ||--|| InspectionReport : "produces"
+    SkillIndex ||--|{ SkillEntry : "contains"
+```
+
+Full TypeScript interfaces for all document types in [01-DATA-MODEL.md](01-DATA-MODEL.md).
+
+---
+
+## 4. Execution Model
+
+### 4.1 Main Execution Loop
+
+The system runs as a **nested tool-call chain**. The Planner is the top-level agent; all others are children invoked as tools.
+
+```mermaid
+sequenceDiagram
+    participant RT as Runtime
+    participant PL as Planner
+    participant PM as Plan MCP
+    participant MG as Manager
+    participant CD as Coder
+    participant RS as Researcher
+
+    RT->>PL: Start (project objectives)
+    PL->>PM: plan_init(stages)
+    
+    loop For each stage
+        PL->>PM: plan_set_current(stage_id)
+        PL->>MG: run_manager(stage)
+        Note over PL: Suspended
+        
+        MG->>MG: Read references, decompose into tasks
+        MG->>MG: Write tasks.json
+        
+        loop For each task batch
+            par Independent tasks
+                MG->>CD: run_coder(task_a)
+                Note over MG: Suspended
+            and
+                MG->>RS: run_researcher(task_b)
+            end
+            CD-->>MG: TaskReport
+            Note over MG: Resumed
+            RS-->>MG: TaskReport
+            Note over MG: Resumed
+            MG->>MG: Update tasks.json
+        end
+        
+        MG->>MG: Write summary.json
+        MG-->>PL: StageSummary
+        Note over PL: Resumed
+        
+        PL->>PM: plan_complete_stage(stage_id, ...)
+        PL->>PM: plan_set_stages(...) [if revised]
+        PL->>PM: plan_commit("stage completed")
+    end
+```
+
+### 4.2 Abort & Replanning
+
+When the user sends an urgent note, the runtime aborts the active agent chain and returns control to the Planner.
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant CH as Chat
+    participant RT as Runtime
+    participant CD as Coder
+    participant MG as Manager
+    participant PL as Planner
+
+    U->>CH: "Stop, change direction"
+    CH->>CH: create_note(content, urgent=true)
+    CH-->>U: "Aborting current work..."
+    
+    RT->>RT: Detect urgent note
+    RT->>CD: Terminate
+    RT->>RT: git checkout -- .
+    RT->>MG: Inject abort signal
+    MG->>MG: Write partial StageSummary (aborted)
+    MG-->>PL: StageSummary (result: "aborted")
+    
+    Note over PL: Resumed with urgent note
+    PL->>PL: Create rollback stage + new stages
+    PL->>MG: run_manager(rollback_stage)
+    Note over PL: Normal execution resumes
+```
+
+### 4.3 Error Escalation
+
+Failures cascade upward through the hierarchy, with each level having the opportunity to handle them.
+
+```mermaid
+graph BT
+    CD["Coder/Researcher<br/><i>Task failure</i>"] -->|"TaskReport (failed)"| MG
+    MG["Manager<br/><i>Retry / Remediate / Escalate</i>"] -->|"StageSummary (escalated)"| PL
+    PL["Planner<br/><i>Replan / Schedule retrospective</i>"] -->|"Notification"| CH
+    CH["Chat<br/><i>Notify user</i>"] -->|"Push message"| U["User"]
+    
+    MG -->|"Retry (modify description,<br/>increment attempt)"| CD
+    PL -->|"Revised stage"| MG
+    PL -->|"run_inspector"| IN["Inspector<br/><i>Retrospective</i>"]
+```
+
+### 4.4 User Interaction
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant CH as Chat
+    participant PM as Plan MCP
+    participant IN as Inspector
+    participant PL as Planner
+
+    Note over U,PL: Status Query
+    U->>CH: "What's happening?"
+    CH->>PM: plan_get()
+    PM-->>CH: Plan state
+    CH-->>U: "Stage 3/7: Building auth module..."
+
+    Note over U,PL: Direction
+    U->>CH: "Focus on tests first"
+    CH->>CH: create_note("Focus on tests first")
+    CH-->>U: "Note created, Planner will process on next resume"
+
+    Note over U,PL: Investigation
+    U->>CH: "Check test coverage"
+    CH->>IN: run_inspector({scope: "test coverage", ...})
+    IN-->>CH: InspectionReport
+    CH-->>U: "Coverage is 42%. Inspector recommends..."
+```
+
+### 4.5 Context Compaction
+
+Applies to **all agents** when their conversation approaches the context window limit.
+
+```mermaid
+graph LR
+    A["Conversation<br/>history grows"] --> B{"Token usage<br/>> 80%?"}
+    B -->|No| C["Continue normally"]
+    B -->|Yes| D["Generate summary<br/>(LLM call)"]
+    D --> E["Replace history with:<br/>[system_prompt, summary]"]
+    E --> F["Agent re-reads<br/>disk state"]
+    F --> C
+    
+    G{"Compacted<br/>3 times?"}
+    B -->|Yes| G
+    G -->|Yes| H["Terminate agent<br/>as stuck"]
+    G -->|No| D
+```
+
+**Safety net order:** self-check (N rounds) → compaction (80% context) → max compactions (3) → forced termination.
+
+---
+
+## 5. MCP Services
+
+The system interacts with external resources (filesystem, git, web) and manages internal state (plan, skills, memory) through **MCP services** — child processes that expose tools via the MCP SDK stdio protocol.
+
+### 5.1 Service Overview
+
+```mermaid
+graph TB
+    subgraph "Agent Process"
+        AGENTS["Agents<br/>(Planner, Manager, Workers, Chat)"]
+        MCPRT["MCP Runtime<br/><i>lazy start, health check,<br/>idle shutdown</i>"]
+    end
+
+    subgraph "MCP Services (child processes)"
+        FS["Filesystem<br/><i>read, write, list, search</i>"]
+        SH["Shell<br/><i>run_command</i>"]
+        GIT["Git<br/><i>commit, status, diff, log</i><br/><b>serialized access</b>"]
+        WEB["Web<br/><i>fetch_url, fetch_page_content</i>"]
+        PLAN["Plan<br/><i>11 tools for plan CRUD</i><br/><b>atomic writes</b>"]
+        SK["Skills<br/><i>list, read, create, update</i>"]
+        MEM["Memory<br/><i>store, recall, list, delete</i><br/><b>SQLite + FTS5</b>"]
+        IDX["Index<br/><i>ingest, search</i><br/><b>SQLite + FTS5</b>"]
+    end
+
+    AGENTS --> MCPRT
+    MCPRT --> FS & SH & GIT & WEB & PLAN & SK & MEM & IDX
+```
+
+**Key design decisions:**
+- **Git is serialized**: the Git MCP processes one tool call at a time. This eliminates race conditions — no locking needed.
+- **Plan is atomic**: all plan writes use temp-file + rename. Schema validation on every write.
+- **Services are lazy**: started on first tool call, shut down after idle timeout.
+- **Generated services**: agents can create new MCP services at runtime using the v1 scaffold system, for project-specific tooling.
+
+### 5.2 Agent → Service Access
+
+| Service | Planner | Manager | Coder | Researcher | Inspector | Chat |
+|---------|:-------:|:-------:|:-----:|:----------:|:---------:|:----:|
+| Filesystem (read) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Filesystem (write) | — | ✓ | ✓ | ✓ | ✓ | — |
+| Shell | — | — | ✓ | ✓ | ✓ | — |
+| Git | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| Web | — | — | ✓ | ✓ | ✓ | — |
+| Plan (read) | ✓ | — | — | — | — | ✓ |
+| Plan (write) | ✓ | — | — | — | — | — |
+| Skills | — | — | ✓ | — | — | — |
+| Memory | — | — | ✓ | ✓ | ✓ | — |
+| Index | — | — | ✓ | ✓ | ✓ | — |
+
+Full tool schemas, parameters, and return values in [05-MCP-SERVICES.md](05-MCP-SERVICES.md).
+Plan MCP service specification in [03-PLAN-MCP-SERVICE.md](03-PLAN-MCP-SERVICE.md).
 
 ---
 
 ## 6. Concurrency Model
 
-### 6.1 Agent Hierarchy
+### 6.1 Single-Threaded Async
 
-At any point in time, the active agent tree looks like:
+Saivage runs on the **Node.js single-threaded event loop**. All concurrency is cooperative async I/O:
 
-```
-[Runtime]
- ├── Planner (suspended, waiting for Manager)
- │    └── Manager (running or suspended)
- │         ├── Coder (running)        ← max 1
- │         └── Researcher (running)   ← max 1
- │
- ├── Chat:telegram (running independently)
- └── Chat:web (running independently)
-```
+- **LLM API calls**: the main source of async work. While waiting for one agent's response, another agent's response can arrive.
+- **MCP tool calls**: child process communication via stdio pipes is async.
+- **Channel messages**: Telegram polling and WebSocket events are async.
 
-Only **leaf agents** are actively making LLM calls. Parent agents are suspended (their conversation state is held in memory).
+### 6.2 Active Agent Tree
 
-### 6.2 Thread Model
+At any point in time, only **leaf agents** are actively making LLM calls. Parent agents are suspended in memory.
 
-Despite concurrent agents, Saivage is **single-threaded** (Node.js event loop). Concurrency comes from:
-- **LLM calls** are async I/O — while waiting for one agent's LLM response, another agent's response can arrive.
-- **MCP tool calls** are async I/O — child processes communicate via stdio pipes.
-- **Channel messages** arrive asynchronously via polling (Telegram) or WebSocket events.
-
-There are **no race conditions** on shared state because:
-- Git operations are serialized through the Git MCP (sequential tool calls).
-- Plan mutations are serialized through the Plan MCP (sequential tool calls).
-- File writes use atomic temp-file + rename.
-- Each agent writes to its own territory by convention.
-
-### 6.3 Inspector Contention
-
-The Inspector is serialized (FIFO). If Planner and Chat both request the Inspector, one blocks:
-
-```
-Planner: run_inspector(req1) ─► [Inspector runs] ─► report1
-Chat:    run_inspector(req2) ─► [queued] ─────────► [Inspector runs] ─► report2
+```mermaid
+graph TB
+    RT["Runtime"] --> PL["Planner<br/><i>SUSPENDED</i>"]
+    PL --> MG["Manager<br/><i>SUSPENDED</i>"]
+    MG --> CD["Coder<br/><i>RUNNING</i>"]
+    MG --> RS["Researcher<br/><i>RUNNING</i>"]
+    RT --> CT["Chat:telegram<br/><i>RUNNING</i>"]
+    RT --> CW["Chat:web<br/><i>RUNNING</i>"]
+    
+    style CD fill:#4a4,color:#fff
+    style RS fill:#4a4,color:#fff
+    style CT fill:#4a4,color:#fff
+    style CW fill:#4a4,color:#fff
+    style PL fill:#888,color:#fff
+    style MG fill:#888,color:#fff
 ```
 
-Neither caller is aware of the queue — they simply wait for their tool call to return.
+### 6.3 Race Condition Prevention
+
+| Shared resource | Protection mechanism |
+|----------------|---------------------|
+| Git repository | Serialized through Git MCP (one call at a time) |
+| plan.json | Serialized through Plan MCP (one call at a time) |
+| File writes | Atomic temp-file + rename |
+| Agent territories | Convention-based (Coder=project code, Researcher=research/) |
 
 ---
 
-## 7. Deployment
+## 7. Persistence & Recovery
 
-### 7.1 Topology
+### 7.1 Crash Recovery
 
-```
-┌──────────────────────────────────────────┐
-│           LXC Container: saivage          │
-│           IP: 10.0.3.111                  │
-│           Port: 7777                      │
-│                                           │
-│  ┌─────────────────────────────────────┐  │
-│  │     Node.js Process (saivage)       │  │
-│  │                                     │  │
-│  │  Runtime Core                       │  │
-│  │  ├── Agent conversations (in-mem)   │  │
-│  │  ├── Event bus (in-mem)             │  │
-│  │  ├── WebSocket server (:7777)       │  │
-│  │  └── MCP child processes            │  │
-│  │       ├── filesystem (stdio)        │  │
-│  │       ├── shell (stdio)             │  │
-│  │       ├── git (stdio)               │  │
-│  │       ├── web (stdio)               │  │
-│  │       ├── plan (stdio)              │  │
-│  │       ├── skills (stdio)            │  │
-│  │       ├── memory (stdio)            │  │
-│  │       └── index (stdio)             │  │
-│  └─────────────────────────────────────┘  │
-│                                           │
-│  ~/.saivage/    Global config + data      │
-│  /home/salva/<project>/.saivage/  Project │
-│                                           │
-└──────────────────────────────────────────┘
-         │                    │
-    Telegram API         LLM Provider APIs
-    (outbound)           (outbound)
+On process restart, the system reconstructs its position from disk:
+
+```mermaid
+flowchart TD
+    START["Process starts"] --> READ["Read runtime.json"]
+    READ --> PID{"PID alive?"}
+    PID -->|"Yes"| REFUSE["Another instance running<br/>Exit with error"]
+    PID -->|"No / stale"| PLAN["Read plan.json via MCP"]
+    PLAN --> STAGE{"current_stage_id<br/>set?"}
+    STAGE -->|"No"| FRESH["Fresh start"]
+    STAGE -->|"Yes"| SUMMARY{"summary.json<br/>exists?"}
+    SUMMARY -->|"Yes"| PROCESS["Stage completed<br/>Planner processes it"]
+    SUMMARY -->|"No"| TASKS{"tasks.json<br/>exists?"}
+    TASKS -->|"Yes"| RESET["Reset in-progress tasks<br/>to pending"]
+    TASKS -->|"No"| REDISPATCH["Planner re-dispatches stage"]
+    
+    RESET --> CHECK["Check for orphaned<br/>report files"]
+    CHECK --> PLANNER["Start Planner as<br/>fresh conversation"]
+    FRESH --> PLANNER
+    PROCESS --> PLANNER
+    REDISPATCH --> PLANNER
+    PLANNER --> RECONSTRUCT["Planner calls plan_get()<br/>+ plan_get_history()"]
+    RECONSTRUCT --> RESUME["Normal execution"]
 ```
 
-### 7.2 Build & Deploy
+### 7.2 What Survives a Crash
+
+| State | Survives? | How |
+|-------|-----------|-----|
+| Plan (stages, history) | ✓ | plan.json, plan-history.json on disk |
+| Task list and status | ✓ | tasks.json on disk |
+| Task reports | ✓ | reports/<task-id>.json on disk |
+| Stage summaries | ✓ | summary.json on disk |
+| Inspection reports | ✓ | inspections/<id>.json on disk |
+| Git commits | ✓ | Git history |
+| Uncommitted file changes | ✓ | Working tree (unless aborted) |
+| Agent conversations | ✗ | In-memory only. Reconstructed from disk. |
+| Event bus state | ✗ | In-memory only. Events re-publish on reconnection. |
+
+---
+
+## 8. Deployment
+
+### 8.1 Runtime Environment
+
+```mermaid
+graph TB
+    subgraph "LXC Container: saivage (10.0.3.111)"
+        subgraph "Node.js Process"
+            CORE["Runtime Core"]
+            AGENTS["Agent Conversations"]
+            WS["WebSocket :7777"]
+            EBUS["Event Bus"]
+        end
+        subgraph "MCP Child Processes"
+            FS["filesystem"] & SH["shell"] & GIT["git"] & WEB["web"]
+            PLAN["plan"] & SK["skills"] & MEM["memory"] & IDX["index"]
+        end
+        GLOBAL["~/.saivage/<br/>config, auth, data"]
+        PROJECT["/home/salva/&lt;project&gt;/.saivage/<br/>plan, stages, reports"]
+    end
+
+    TG_API["Telegram API"] <-.->|"outbound"| CORE
+    LLM_API["LLM Provider APIs"] <-.->|"outbound"| CORE
+```
+
+### 8.2 Configuration
+
+**Two-tier configuration:**
+
+- **Global** (`~/.saivage/config.json`): LLM provider credentials (API keys, model assignments per role, timeout, failover), Telegram bot token and user ID, auth directory. Shared across all projects.
+- **Per-project** (`<project>/.saivage/config.json`): project name and objectives, provider selection, model overrides, notification preferences (channels, severity filters, category filters), skill loading budget, per-agent tuning (compaction threshold, self-check frequency, max compactions).
+
+Full schema in [01-DATA-MODEL.md](01-DATA-MODEL.md) §1-2.
+
+### 8.3 Build & Deploy
 
 ```bash
-# Build
-npm run build          # TypeScript → dist/
-
-# Deploy to container
-make -C deploy deploy  # rsync + npm ci + npm run build + systemctl restart
-
-# Service management
-ssh saivage "sudo systemctl {start|stop|restart|status} saivage"
-ssh saivage "sudo journalctl -u saivage -f"
+npm run build               # TypeScript → dist/
+make -C deploy deploy       # rsync + npm ci + build + systemctl restart
 ```
 
-### 7.3 Configuration
+### 8.4 CLI
 
-**Global** (`~/.saivage/config.json`):
-```json
-{
-  "providers": {
-    "github-copilot": {
-      "type": "github-copilot",
-      "models": { "planner": "claude-opus-4.6", "manager": "claude-sonnet-4", ... },
-      "timeout_ms": 120000,
-      "failover": "anthropic"
-    }
-  },
-  "telegram": { "bot_token": "...", "user_id": 12345 },
-  "auth_dir": "~/.saivage/auth/"
-}
-```
-
-**Per-project** (`<project>/.saivage/config.json`):
-```json
-{
-  "project_name": "my-project",
-  "objectives": ["Build a REST API for user management"],
-  "provider": "github-copilot",
-  "notifications": {
-    "channels": ["telegram"],
-    "filters": { "min_severity": "info", "categories": [] }
-  },
-  "skills": { "max_per_agent": 5 },
-  "agents": {
-    "planner": { "compaction_threshold_pct": 80, "self_check_frequency": 30 },
-    "coder": { "self_check_frequency": 15 }
-  }
-}
-```
+| Command | Description |
+|---------|-------------|
+| `init <project-path>` | Initialize `.saivage/` directory structure |
+| `start <project-path>` | Start the execution loop |
+| `status <project-path>` | Show current plan, stage, tasks |
+| `note <project-path> <msg>` | Create a user note directly |
+| `inspect <project-path> <scope>` | Dispatch Inspector from CLI |
+| `login` | Authenticate with LLM provider |
+| `config` | Manage global configuration |
 
 ---
 
-## 8. Safety & Reliability
+## 9. Safety & Reliability
 
-### 8.1 Fault Tolerance
+### 9.1 Defense in Depth
 
-| Failure | Recovery |
-|---------|----------|
-| LLM API timeout/5xx | Exponential backoff, unlimited retries |
+Multiple layers prevent runaway agents, data corruption, and unrecoverable failures:
+
+```mermaid
+graph TB
+    subgraph "Layer 1: Agent Self-Governance"
+        SC["Self-Check<br/><i>Every N tool-call rounds,<br/>agent assesses own progress</i>"]
+    end
+    subgraph "Layer 2: Runtime Guardrails"
+        COMP["Context Compaction<br/><i>At 80% context window,<br/>summarize and continue</i>"]
+        MAXC["Max Compactions<br/><i>3 compactions per conversation<br/>→ forced termination</i>"]
+    end
+    subgraph "Layer 3: Task-Level Controls"
+        RETRY["Task max_attempts<br/><i>2-3 retries before escalation</i>"]
+    end
+    subgraph "Layer 4: Hierarchy"
+        ESC["Escalation Chain<br/><i>Worker → Manager → Planner → User</i>"]
+    end
+    subgraph "Layer 5: User Control"
+        ABORT["Abort<br/><i>User can force-stop and redirect</i>"]
+    end
+
+    SC --> COMP --> MAXC --> RETRY --> ESC --> ABORT
+```
+
+### 9.2 Fault Tolerance
+
+| Failure | Recovery mechanism |
+|---------|-------------------|
+| LLM API timeout / 5xx | Exponential backoff, unlimited retries |
 | LLM API 400 (bad request) | Agent returns failure to parent |
-| LLM provider down | Failover to backup provider |
+| LLM provider persistently down | Failover to backup provider |
+| Invalid tool call from LLM | Error result returned to LLM (self-corrects); 3 consecutive failures → agent failure |
 | MCP service crash | Auto-restart on next tool call |
-| Agent infinite loop | Self-check → compaction limit → forced termination |
+| Agent infinite loop | Self-check → compaction → max compactions → forced termination |
 | Process crash | Disk-based recovery on restart |
-| Abort by user | `git checkout -- .`, rollback stage, replan |
+| User abort | `git checkout -- .`, rollback stage, replan |
+| Git conflict | Agent reports failure; Manager creates resolution task or escalates |
 
-### 8.2 Safety Nets (ordered by trigger)
+### 9.3 Auditability
 
-1. **Self-check** (per N tool-call rounds): nudges agent to assess progress.
-2. **Context compaction** (at 80% context window): summarize and continue.
-3. **Max compactions** (3 per conversation): if compacted 3x with no resolution, terminate agent as stuck.
-4. **Task max_attempts** (2-3): Manager escalates or gives up.
-5. **Escalation**: Manager → Planner → User notification.
-6. **Abort**: user can force-stop and redirect at any time.
+Every agent action produces a persistent, git-committed artifact:
 
-### 8.3 Auditability
+- **Planner**: `plan.json`, `plan-history.json` (committed via `plan_commit()`)
+- **Manager**: `tasks.json`, `summary.json` (committed via git MCP)
+- **Workers**: task reports + git commits with `[task-<id>]` prefix
+- **Inspector**: `inspections/<id>.json` + tools under `tools/inspector/`
+- **Chat**: dialogue logs in `tmp/chats/` (ephemeral but persisted across sessions)
 
-Every agent action produces a persistent artifact:
-- **Planner**: plan.json, plan-history.json (via MCP, committed to git)
-- **Manager**: tasks.json, summary.json (committed to git)
-- **Workers**: task reports, git commits with task-id prefix
-- **Inspector**: inspection reports, persistent tools
-- **Chat**: dialogue logs (ephemeral but persistent across sessions)
-
-The git log provides a complete timeline of all changes made by all agents.
+The git log provides a complete, append-only timeline of all changes.
 
 ---
 
-## 9. Differences from v1
+## 10. v1 → v2 Migration
+
+### 10.1 What Changes
 
 | Aspect | v1 | v2 |
 |--------|----|----|
 | **Architecture** | Flat orchestrator + agents | Hierarchical: Planner → Manager → Workers |
-| **Planning** | Single-level TODO list | Multi-stage plan with history, acceptance criteria |
+| **Planning** | Single-level TODO list | Multi-stage plan with history and acceptance criteria |
 | **Agent lifecycle** | All one-shot | Mixed: Planner (project), Manager (stage), Workers (task) |
-| **Concurrency** | Sequential tasks | 1 Coder + 1 Researcher in parallel |
+| **Concurrency** | Sequential tasks only | 1 Coder + 1 Researcher in parallel |
 | **State management** | In-memory + orchestrator | Disk-authoritative, crash-recoverable |
 | **Git access** | Direct CLI | MCP-serialized, explicit file staging |
 | **User interaction** | Chat reads orchestrator state | Chat reads plan/tasks, creates notes, dispatches Inspector |
-| **Error handling** | Agent retries, manual intervention | Multi-level: retry → remediate → escalate → replan → notify |
-| **Locking** | Explicit advisory locks | Convention-based territory (no locks) |
+| **Error handling** | Agent retries only | Multi-level: retry → remediate → escalate → replan → notify |
 | **Quality assurance** | None | Inspector agent with 3-tier storage |
-| **Skills** | Workers only | All agents |
-| **Plan persistence** | Orchestrator-internal | MCP service with atomic operations |
 | **Context management** | None | Compaction + self-check + max compactions |
+
+### 10.2 v1 Component Reuse
+
+| v1 Component | v2 Disposition |
+|-------------|---------------|
+| `src/providers/` | **Keep** — model router, all provider abstractions |
+| `src/auth/` | **Keep** — auth flows |
+| `src/mcp/` | **Keep** — client, runtime, registry |
+| `src/services/filesystem,shell,web,memory,index` | **Keep** — no changes |
+| `src/services/git/` | **Adapt** — explicit file staging, task-id commit prefix |
+| `src/services/skills/` | **Adapt** — `target_agents`, `agent:<type>` trigger |
+| `src/channels/` | **Adapt** — wire to v2 Chat agent |
+| `src/generator/` | **Keep** — MCP service scaffold |
+| `src/orchestrator/` | **Remove** — replaced by Planner + Manager + Runtime |
+| `src/agents/` | **Replace** — new role-based agents |
+| `src/services/lock/` | **Remove** — convention-based territory replaces locking |
