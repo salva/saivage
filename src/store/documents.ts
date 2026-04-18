@@ -23,6 +23,25 @@ export function readDocOrNull<S extends ZodTypeAny>(
   return readDoc(path, schema);
 }
 
+/** Read a JSON file without schema validation, returning null if missing. */
+export function readJsonOrNull(path: string): unknown | null {
+  if (!existsSync(path)) return null;
+  const raw = readFileSync(path, "utf-8");
+  return JSON.parse(raw);
+}
+
+/** Read with schema validation, falling back to raw JSON on validation error. */
+export function readDocLenient<S extends ZodTypeAny>(
+  path: string,
+  schema: S,
+): z.output<S> | null {
+  if (!existsSync(path)) return null;
+  const raw = readFileSync(path, "utf-8");
+  const data = JSON.parse(raw);
+  const result = schema.safeParse(data);
+  return result.success ? result.data : data;
+}
+
 /**
  * Write a JSON document atomically (tmp + rename).
  * Validates against the Zod schema before writing.

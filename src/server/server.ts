@@ -10,7 +10,7 @@ import fastifyStatic from "@fastify/static";
 import { join, resolve } from "node:path";
 import { existsSync, readFileSync, statSync, readdirSync } from "node:fs";
 import type { SaivageRuntime } from "./bootstrap.js";
-import { readDocOrNull, listDocs } from "../store/documents.js";
+import { readDocOrNull, readDocLenient, readJsonOrNull, listDocs } from "../store/documents.js";
 import {
   PlanSchema,
   PlanHistorySchema,
@@ -84,11 +84,11 @@ export async function startServer(
     const { id } = req.params as { id: string };
     const stageDir = join(runtime.project.paths.stages, id);
 
-    const tasks = readDocOrNull(
+    const tasks = readDocLenient(
       join(stageDir, "tasks.json"),
       TaskListSchema,
     );
-    const summary = readDocOrNull(
+    const summary = readDocLenient(
       join(stageDir, "summary.json"),
       StageSummarySchema,
     );
@@ -97,7 +97,7 @@ export async function startServer(
     const reportsDir = join(stageDir, "reports");
     const reportFiles = listDocs(reportsDir);
     const reports = reportFiles.map((f) =>
-      readDocOrNull(join(reportsDir, f), TaskReportSchema),
+      readDocLenient(join(reportsDir, f), TaskReportSchema),
     ).filter(Boolean);
 
     return { stage_id: id, tasks, summary, reports };

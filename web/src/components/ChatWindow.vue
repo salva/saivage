@@ -185,6 +185,7 @@ function renderMd(text: string): string {
 .chat-title { font-size: 14px; font-weight: 600; color: #c9d1d9; }
 .conn-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; color: #f85149; background: rgba(248, 81, 73, 0.1); }
 .conn-badge.online { color: #3fb950; background: rgba(63, 185, 80, 0.1); }
+.session-badge { font-size: 10px; color: #8b949e; font-family: monospace; }
 .session-badge { font-size: 10px; font-family: monospace; color: #8b949e; margin-left: auto; }
 
 .chat-body { flex: 1; overflow-y: auto; padding: 16px; }
@@ -205,7 +206,8 @@ function renderMd(text: string): string {
 .msg-content { font-size: 13px; line-height: 1.5; padding: 8px 12px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; }
 .msg.user .msg-content { background: #1f6feb; color: #fff; border-bottom-right-radius: 2px; }
 .msg.assistant .msg-content { background: #161b22; color: #c9d1d9; border: 1px solid #21262d; border-bottom-left-radius: 2px; }
-.msg.system .msg-content { background: rgba(210, 153, 34, 0.1); color: #d29922; font-size: 12px; text-align: center; border-radius: 4px; }
+.msg.system .msg-content { background: rgba(210, 153, 34, 0.08); color: #d29922; font-size: 12px; text-align: center; border-radius: 4px; border: 1px solid rgba(210, 153, 34, 0.15); }
+.msg.system .msg-content.stage-event { text-align: left; font-size: 11px; }
 
 /* Thinking dots */
 .thinking-dots { display: flex; gap: 4px; padding: 12px 16px !important; }

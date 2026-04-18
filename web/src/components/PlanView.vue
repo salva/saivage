@@ -26,7 +26,7 @@ interface Plan {
 }
 
 interface HistoryEntry {
-  stage_id: string;
+  id: string;
   result: string;
   summary: string;
   actual_outcomes?: string[];
@@ -132,7 +132,7 @@ function setStageRef(id: string) {
 
 // Check if a stage ID is in history (completed stages)
 function isHistoryStage(stageId: string): boolean {
-  return history.value.some(h => h.stage_id === stageId);
+  return history.value.some(h => h.id === stageId);
 }
 
 watch(() => props.focusStageId, async (stageId) => {
@@ -276,16 +276,63 @@ watch(() => props.focusStageId, async (stageId) => {
     <!-- History -->
     <div v-else-if="activeSection === 'history'" class="section-content">
       <div v-if="history.length === 0" class="empty-state">No completed stages yet.</div>
-      <div v-for="entry in [...history].reverse()" :key="entry.stage_id" class="history-card" :ref="setStageRef(entry.stage_id)">
+      <div v-for="entry in [...history].reverse()" :key="entry.id" class="history-card" :ref="setStageRef(entry.id)"
+           @click="toggleStage(entry.id)" :class="{ expanded: expandedStage === entry.id }">
         <div class="history-header">
-          <span class="history-id">{{ entry.stage_id }}</span>
+          <span class="history-result-icon" :style="{ color: resultColor(entry.result) }">{{ entry.result === 'completed' ? '\u2713' : entry.result === 'escalated' ? '\u2B06' : '\u2717' }}</span>
+          <span class="history-id">{{ entry.id }}</span>
           <span class="history-result" :style="{ color: resultColor(entry.result) }">{{ entry.result }}</span>
           <span v-if="entry.completed_at" class="history-time">{{ new Date(entry.completed_at).toLocaleString() }}</span>
+          <span class="expand-icon">{{ expandedStage === entry.id ? '\u25B2' : '\u25BC' }}</span>
         </div>
         <div class="history-summary">{{ entry.summary }}</div>
         <div v-if="entry.actual_outcomes?.length" class="history-outcomes">
           <h4>Outcomes</h4>
           <ul><li v-for="(o, i) in entry.actual_outcomes" :key="i">{{ o }}</li></ul>
+        </div>
+
+        <!-- Detail from stage directory -->
+        <div v-if="expandedStage === entry.id && stageDetail && stageDetail.stage_id === entry.id" class="stage-detail" @click.stop>
+          <div v-if="stageDetail.summary" class="detail-section">
+            <h3>Stage Summary</h3>
+            <div class="detail-field" v-if="stageDetail.summary.outcomes_achieved?.length">
+              <h4>Outcomes Achieved</h4>
+              <ul><li v-for="(o, i) in stageDetail.summary.outcomes_achieved" :key="i">{{ o }}</li></ul>
+            </div>
+            <div class="detail-field" v-if="stageDetail.summary.outcomes_missed?.length">
+              <h4>Outcomes Missed</h4>
+              <ul><li v-for="(o, i) in stageDetail.summary.outcomes_missed" :key="i">{{ o }}</li></ul>
+            </div>
+            <div class="detail-field" v-if="stageDetail.summary.escalation">
+              <h4>Escalation</h4>
+              <div class="escalation-reason">{{ stageDetail.summary.escalation.reason }}</div>
+            </div>
+          </div>
+
+          <div v-if="stageDetail.tasks?.tasks?.length" class="detail-section">
+            <h3>Tasks</h3>
+            <div v-for="task in stageDetail.tasks.tasks" :key="task.id" class="task-row">
+              <span class="task-id">{{ task.id }}</span>
+              <span class="task-type">{{ task.type }}</span>
+              <span class="task-status" :style="{ color: resultColor(task.status) }">{{ task.status }}</span>
+              <span class="task-desc">{{ task.description.slice(0, 80) }}</span>
+            </div>
+          </div>
+
+          <div v-if="stageDetail.reports?.length" class="detail-section">
+            <h3>Reports</h3>
+            <div v-for="report in stageDetail.reports" :key="report.task_id" class="report-card">
+              <div class="report-header">
+                <span class="report-id">{{ report.task_id }}</span>
+                <span class="report-status" :style="{ color: resultColor(report.status) }">{{ report.status }}</span>
+              </div>
+              <div class="report-summary">{{ report.summary }}</div>
+            </div>
+          </div>
+
+          <div v-if="!stageDetail.tasks && !stageDetail.summary && !stageDetail.reports?.length" class="empty-state">
+            No detailed data available for this stage.
+          </div>
         </div>
       </div>
     </div>
@@ -373,4 +420,10 @@ code { font-size: 11px; color: #58a6ff; background: #0d1117; padding: 1px 4px; b
 .history-time { font-size: 11px; color: #484f58; margin-left: auto; }
 .history-summary { font-size: 13px; color: #8b949e; line-height: 1.5; }
 .history-outcomes { margin-top: 8px; }
+.history-card { cursor: pointer; transition: border-color 0.2s; }
+.history-card:hover { border-color: #30363d; }
+.history-card.expanded { border-color: #58a6ff; }
+.history-result-icon { font-size: 13px; width: 18px; text-align: center; flex-shrink: 0; }
+.escalation-reason { font-size: 13px; color: #d29922; background: rgba(210, 153, 34, 0.1); padding: 8px; border-radius: 4px; line-height: 1.4; }
+.detail-field { margin-bottom: 8px; }
 </style>

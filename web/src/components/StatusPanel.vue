@@ -36,9 +36,10 @@ interface Plan {
 }
 
 interface HistoryEntry {
-  stage_id: string;
+  id: string;
   result: string;
   summary: string;
+  actual_outcomes?: string[];
   completed_at?: string;
 }
 
@@ -205,10 +206,13 @@ const activeWorkers = computed(() =>
 
     <section class="section" v-if="history.length > 0">
       <h2>Completed</h2>
-      <div v-for="entry in history.slice(-10).reverse()" :key="entry.stage_id" class="history-item clickable" @click="emit('navigate', 'plan', entry.stage_id)">
-        <span class="history-icon">{{ entry.result === 'completed' ? '✓' : entry.result === 'escalated' ? '⬆' : '✗' }}</span>
-        <span class="history-id">{{ entry.stage_id }}</span>
-        <span class="history-result" :class="entry.result">{{ entry.result }}</span>
+      <div v-for="entry in history.slice(-10).reverse()" :key="entry.id" class="history-entry clickable" @click="emit('navigate', 'plan', entry.id)">
+        <div class="history-header">
+          <span class="history-icon" :class="entry.result">{{ entry.result === 'completed' ? '✓' : entry.result === 'escalated' ? '⬆' : '✗' }}</span>
+          <span class="history-id">{{ entry.id }}</span>
+          <span class="history-result" :class="entry.result">{{ entry.result }}</span>
+        </div>
+        <div class="history-summary" v-if="entry.summary">{{ entry.summary }}</div>
       </div>
     </section>
   </div>
@@ -253,13 +257,19 @@ h2 { font-size: 13px; font-weight: 600; color: #8b949e; text-transform: uppercas
 .queue-item.current .queue-id { color: #58a6ff; }
 .queue-obj { color: #c9d1d9; line-height: 1.4; }
 
-.history-item { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 12px; }
-.history-icon { font-size: 11px; width: 16px; text-align: center; }
-.history-id { font-family: monospace; color: #8b949e; }
-.history-result { font-size: 11px; font-weight: 600; }
+.history-entry { padding: 8px 0; border-bottom: 1px solid #21262d; }
+.history-entry:last-child { border-bottom: none; }
+.history-header { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+.history-icon { font-size: 11px; width: 16px; text-align: center; flex-shrink: 0; }
+.history-icon.completed { color: #3fb950; }
+.history-icon.escalated { color: #d29922; }
+.history-icon.failed { color: #f85149; }
+.history-id { font-family: monospace; color: #8b949e; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-result { font-size: 10px; font-weight: 600; margin-left: auto; flex-shrink: 0; }
 .history-result.completed { color: #3fb950; }
 .history-result.escalated { color: #d29922; }
 .history-result.failed { color: #f85149; }
+.history-summary { font-size: 11px; color: #8b949e; line-height: 1.3; padding-left: 22px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 
 .clickable { cursor: pointer; transition: background 0.15s; }
 .clickable:hover { background: #1c2333; }
