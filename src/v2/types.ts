@@ -24,7 +24,7 @@ export const GlobalConfigSchema = z.object({
   }),
   auth_dir: z.string().default("~/.saivage/auth/"),
 });
-export type GlobalConfig = z.infer<typeof GlobalConfigSchema>;
+export type GlobalConfig = z.output<typeof GlobalConfigSchema>;
 
 // ─── 2. Project Config ──────────────────────────────────────────────────────
 
@@ -63,7 +63,7 @@ export const ProjectConfigSchema = z.object({
     )
     .optional(),
 });
-export type ProjectConfig = z.infer<typeof ProjectConfigSchema>;
+export type ProjectConfig = z.output<typeof ProjectConfigSchema>;
 
 // ─── 3. Plan ────────────────────────────────────────────────────────────────
 

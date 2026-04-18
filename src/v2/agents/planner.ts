@@ -151,8 +151,8 @@ export class PlannerAgent extends BaseAgent implements Agent {
     const formatted = this.noteManager.formatNotesForInjection(allNotes);
     this.injectMessage(formatted);
 
-    // Acknowledge the notes
-    await this.noteManager.acknowledgeNotes(notes.map((n) => n.id));
+    // Acknowledge the notes (uses internal pending list from getUnacknowledgedNotes)
+    this.noteManager.acknowledgeNotes();
 
     log.info(
       `[planner:${this.id}] Injected ${allNotes.length} note(s) into context`,

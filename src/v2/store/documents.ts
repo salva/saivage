@@ -5,20 +5,20 @@
 
 import { readFileSync, writeFileSync, renameSync, unlinkSync, readdirSync, mkdirSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { z } from "zod";
+import type { z, ZodTypeAny } from "zod";
 
 /** Read a JSON document from disk, validating against a Zod schema. */
-export function readDoc<T>(path: string, schema: z.ZodType<T>): T {
+export function readDoc<S extends ZodTypeAny>(path: string, schema: S): z.output<S> {
   const raw = readFileSync(path, "utf-8");
   const data = JSON.parse(raw);
   return schema.parse(data);
 }
 
 /** Read a JSON document, returning null if the file does not exist. */
-export function readDocOrNull<T>(
+export function readDocOrNull<S extends ZodTypeAny>(
   path: string,
-  schema: z.ZodType<T>,
-): T | null {
+  schema: S,
+): z.output<S> | null {
   if (!existsSync(path)) return null;
   return readDoc(path, schema);
 }
