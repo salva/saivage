@@ -72,7 +72,7 @@ All LLM API calls use exponential backoff with jitter:
 | Parameter       | Default   | Config path                           |
 |-----------------|-----------|---------------------------------------|
 | `timeout_ms`    | 120000    | `GlobalConfig.providers[name].timeout_ms` |
-| `max_retries`   | ∞ (unlimited) | —                                |
+| `max_retry_duration_ms` | 600000 (10 min) | `GlobalConfig.providers[name].max_retry_duration_ms` |
 | `initial_delay` | 1000 ms   | —                                     |
 | `max_delay`     | 60000 ms  | —                                     |
 | `multiplier`    | 2         | —                                     |
@@ -89,7 +89,7 @@ All LLM API calls use exponential backoff with jitter:
 - HTTP 401/403 (auth — requires operator intervention)
 - Context window exceeded (requires compaction or task splitting)
 
-Retries continue indefinitely for retryable errors. The self-check mechanism (§4) prevents agents from stalling forever — if no progress is made across N tool-call rounds, the agent is terminated.
+Retries continue for retryable errors up to a **maximum retry duration** of 10 minutes per LLM request (configurable). If the duration is exceeded, the error is surfaced as a non-retryable failure — the agent's conversation is terminated with a failure result. This prevents indefinite stalls during provider outages, where neither self-check nor compaction can fire (they trigger only between completed tool-call rounds, not during a stuck request). Provider failover (§2.3) may resolve the issue before the timeout if a failover provider is configured.
 
 ### 2.2 Invalid Tool Calls
 
@@ -195,7 +195,10 @@ The Manager receives the report both as the tool-call return value (for immediat
 
 If the worker crashes after writing the report file but before the git commit:
 - The report file exists on disk (untracked).
-- On crash recovery, the Manager re-starts for the stage. It finds the report file, marks the task as completed, and continues.
+- On crash recovery, the Manager re-starts for the stage. It finds the report file and reads its `status` field:
+  - If `status: "completed"` **and** the report's `commits` list is non-empty (changes were committed before crash), mark the task as `completed`.
+  - If `status: "completed"` but `commits` is empty (report written but changes never committed), mark the task as `failed` — the code changes were lost on crash. The Manager can retry.
+  - If `status: "failed"`, mark the task as `failed` and use the report's `failure_reason`.
 
 If the worker crashes before writing the report:
 - No report file exists.
@@ -285,7 +288,7 @@ If an Inspector was dispatched by Chat (independent):
 3. If `current_stage_id` was set:
    a. Check `stages/<stage-id>/summary.json` — if exists, stage was completed, Planner just needs to process it.
    b. Check `stages/<stage-id>/tasks.json` — if exists, Manager was running. Reset any `in-progress` tasks to `pending`, reset any `aborted` tasks to `pending`.
-   c. Check for untracked report files in `stages/<stage-id>/reports/` — if a report exists for a `pending` task, mark that task as `completed` (worker finished but Manager didn't process).
+   c. Check for report files in `stages/<stage-id>/reports/` — if a report exists for a `pending` task, read its `status` and `commits` fields. If `status: "completed"` and `commits` is non-empty, mark the task as `completed`. If `status: "failed"` or `commits` is empty, mark the task as `failed` (the worker finished but its changes may not have been committed).
 4. Start Planner as fresh conversation.
 5. Write clean `runtime.json` with new PID.
 
@@ -368,3 +371,32 @@ Git conflicts are rare (conventions prevent agents from touching each other's fi
 ### 11.3 Plan Commit No-Op
 
 `plan_commit()` when nothing has changed since the last commit: returns `{ sha: "<previous_sha>", noop: true }`. Not an error.
+
+---
+
+## 12. Note Lifecycle
+
+User notes are created by Chat via `create_note()` and consumed by the Planner. The **runtime** manages the full lifecycle — the Planner never writes to note files.
+
+### 12.1 Injection
+
+When the Planner resumes (after a Manager returns or an abort), the runtime:
+1. Scans `notes/` for files with no `acknowledged_at` field.
+2. Reads each unacknowledged note and injects it into the Planner's conversation context as an additional message.
+3. Permanent notes are also re-injected after context compaction (the runtime re-scans `notes/` for `permanent: true` notes).
+
+### 12.2 Acknowledgment
+
+After the Planner completes its next planning action (any `plan_*` write call or `run_manager` dispatch), the runtime:
+1. Sets `acknowledged_at` to the current timestamp on all notes that were injected in this cycle.
+2. Writes the updated note files atomically (`.tmp` + rename).
+
+### 12.3 Cleanup
+
+After acknowledgment:
+- **Volatile notes** (`permanent: false`): deleted from disk by the runtime.
+- **Permanent notes** (`permanent: true`): remain on disk indefinitely. They are re-injected after context compaction so the Planner doesn't lose lasting user direction.
+
+### 12.4 Crash Recovery
+
+On restart, unacknowledged notes (no `acknowledged_at`) are re-injected into the fresh Planner conversation. Acknowledged volatile notes that weren't deleted before the crash are cleaned up during recovery.

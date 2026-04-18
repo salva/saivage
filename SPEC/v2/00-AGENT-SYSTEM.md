@@ -59,7 +59,7 @@ User notes arriving while the Planner is suspended are queued and **injected as 
 - Handles escalations (tool result with `result: "escalated"`) by revising stages via `plan_add_stage()`, `plan_remove_stage()`, or `plan_set_stages()`.
 - When something is not going as expected (repeated failures, stalled progress, escalations), the Planner **schedules a full retrospective** — calling the Inspector for deep analysis before deciding on corrective action.
 - Schedules corrective/refactoring actions only when they unblock or accelerate progress toward objectives.
-- Processes **user notes** from Chat. Volatile notes are retained until the next replanning cycle, then discarded. **Permanent notes** represent lasting adjustments to the project's direction — they serve as lightweight objective modifications and are preserved and factored into all future planning decisions.
+- Processes **user notes** injected into its context by the runtime. **Permanent notes** represent lasting adjustments to the project's direction — they serve as lightweight objective modifications and are preserved and factored into all future planning decisions. Volatile notes are processed once and deleted by the runtime after the Planner completes its next planning action. The Planner does not write to note files — acknowledgment and cleanup are runtime-managed.
 - Calls the **Inspector** via tool call to analyze project state before making planning decisions.
 
 ### 2.2 Manager
@@ -447,7 +447,7 @@ The agent's response is evaluated:
 - If the agent reports progress, execution continues.
 - If the agent reports being stuck, the runtime treats it as a task failure — the worker returns a failed `TaskReport`, and the Manager decides whether to retry, remediate, or escalate.
 
-For **model throttling and transient errors** (rate limits, network timeouts, temporary API failures), the runtime retries automatically at the transport level — these do not count as tool calls and do not trigger self-checks. Transient retries continue indefinitely unless the user explicitly requests termination via an abort.
+For **model throttling and transient errors** (rate limits, network timeouts, temporary API failures), the runtime retries automatically at the transport level — these do not count as tool calls and do not trigger self-checks. Retries are bounded by a configurable maximum duration per request (default: 10 minutes). If the duration is exceeded, the error is surfaced as an agent failure. The user can also abort via an urgent note at any time.
 
 ---
 

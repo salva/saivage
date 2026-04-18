@@ -175,6 +175,8 @@ Commit `plan.json` and `plan-history.json` to git via the MCP git server. Called
 }
 ```
 
+If nothing has changed since the last commit: returns `{ "sha": "<previous_sha>", "noop": true }`. Not an error.
+
 Commits only `plan.json` and `plan-history.json`. Returns the commit SHA.
 
 ---

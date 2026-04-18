@@ -238,7 +238,7 @@ interface StageSummary {
 
 **Path:** `<project>/.saivage/notes/<note-id>.json`
 
-Created by Chat, consumed by Planner. Volatile notes are deleted on the next replan unless marked permanent.
+Created by Chat, consumed by Planner. The **runtime** manages note lifecycle: it injects unacknowledged notes into the Planner's context on resume, sets `acknowledged_at` after the Planner completes its planning action, and deletes volatile notes after acknowledgment. Permanent notes persist on disk indefinitely.
 
 ```typescript
 interface UserNote {
@@ -247,10 +247,9 @@ interface UserNote {
   session_id: string;                // chat session for cross-reference
   content: string;                   // the user's input/direction
   created_at: string;
-  permanent: boolean;                // false = delete on next replan
+  permanent: boolean;                // true = persist across replans; false = delete after acknowledgment
   urgent: boolean;                   // true = abort active agents and replan immediately
-  acknowledged_at?: string;          // when Planner processed it
-  planner_response?: string;         // how the Planner acted on it
+  acknowledged_at?: string;          // set by runtime when Planner has processed this note
 }
 ```
 
@@ -419,7 +418,7 @@ ProjectConfig
                            ▼
                     Escalation? ──► Planner (re-invoke)
 
-   UserNote ──► Planner (consumed on replan, deleted if not permanent)
+   UserNote ──► Runtime (injects into Planner context; manages acknowledgment and cleanup)
 
    InspectionRequest ──► Inspector ──► InspectionReport ──► Planner | Chat
 
@@ -452,7 +451,7 @@ IDs are generated with nanoid (12 chars, alphanumeric), prefixed by entity type.
 | `stages/<id>/tasks.json`   | Manager     | Manager     | Never (archived)          |
 | `stages/<id>/reports/*.json`| Coder/Researcher | —     | Never (archived)          |
 | `stages/<id>/summary.json` | Manager     | —           | Never (archived)          |
-| `notes/<id>.json`          | Chat        | Planner     | On replan (unless permanent)|
+| `notes/<id>.json`          | Chat        | Runtime     | Volatile: after ack. Permanent: never |
 | `inspections/<id>.json`    | Inspector   | —           | After `expires_at` (if set)|
 | `skills/index.json`        | Coder       | Coder       | Never (overwritten)       |
 | `skills/<name>.md`         | Coder       | Coder       | Never                     |

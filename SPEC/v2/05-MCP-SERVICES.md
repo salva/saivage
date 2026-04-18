@@ -472,6 +472,7 @@ Create a user note for the Planner.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `content` | string | yes | — | The user's direction/feedback |
+| `permanent` | boolean | no | `false` | If `true`, note persists across replans as a lasting objective modifier |
 | `urgent` | boolean | no | `false` | If `true`, aborts active agents and forces immediate replan |
 
 **Returns:** `{ note_id: string, created: true }`

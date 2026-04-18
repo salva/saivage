@@ -195,7 +195,7 @@ The Provider Router manages all LLM API communication. It is a **singleton** reu
 
 **Responsibilities:**
 - **Model selection**: for each agent role, select the model from configuration. Precedence: `ProjectConfig.model_overrides[role]` → `GlobalConfig.providers[name].models[role]` → most capable available.
-- **Retry with backoff**: all retryable errors (HTTP 429, 5xx, timeouts) are retried with exponential backoff (1s→60s, ±20% jitter). Retries are unlimited — the self-check and compaction mechanisms are the safety nets.
+- **Retry with backoff**: all retryable errors (HTTP 429, 5xx, timeouts) are retried with exponential backoff (1s→60s, ±20% jitter). Retries are bounded by a maximum retry duration per request (default: 10 minutes). If exceeded, the error is surfaced as an agent failure. Provider failover may resolve the issue before the timeout.
 - **Provider failover**: if a provider fails 5+ consecutive times within 2 minutes, switch to the configured failover provider. Try the primary again on the next agent invocation.
 - **Request timeout**: configurable per provider (default: 120s).
 
@@ -317,7 +317,7 @@ Each data domain has a single owner and a defined access pattern:
 | `stages/<id>/tasks.json` | Manager | Manager | Manager, Planner (via summary) | Git-tracked |
 | `stages/<id>/summary.json` | Manager | Manager | Planner | Git-tracked |
 | `stages/<id>/reports/<id>.json` | Worker | Coder/Researcher | Manager | Git-tracked |
-| `notes/<id>.json` | Chat | Chat (via `create_note`) | Planner | Git-tracked |
+| `notes/<id>.json` | Chat | Chat (via `create_note`); Runtime (acknowledgment, cleanup) | Planner (via runtime injection) | Git-tracked |
 | `inspections/<id>.json` | Inspector | Inspector | Planner, Chat | Git-tracked |
 | `research/<topic>/` | Researcher | Researcher | Any agent | Git-tracked |
 | `skills/` | Coder | Coder (when tasked) | All agents (via loader) | Git-tracked |
