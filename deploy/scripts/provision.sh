@@ -114,7 +114,7 @@ echo "==> Building Saivage..."
 run_as "cd /opt/saivage && npm run build"
 
 echo "==> Verifying build..."
-run_as "cd /opt/saivage && node dist/index.js --version" || true
+run_as "cd /opt/saivage && node dist/cli.js --version" || true
 
 echo "==> Creating systemd service..."
 run tee /etc/systemd/system/saivage.service > /dev/null <<EOF
@@ -127,7 +127,7 @@ Type=simple
 User=${HOST_USER}
 Group=${HOST_USER}
 WorkingDirectory=/opt/saivage
-ExecStart=/usr/bin/node dist/index.js serve
+ExecStart=/usr/bin/node dist/cli.js serve
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production

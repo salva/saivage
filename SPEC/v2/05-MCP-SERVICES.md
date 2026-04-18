@@ -218,7 +218,7 @@ Noise elements (scripts, styles, nav, ads) are automatically removed.
 ## 5. Plan
 
 **Origin:** builtin (new in v2)
-**Source:** `src/v2/mcp/plan-server.ts`
+**Source:** `src/mcp/plan-server.ts`
 **Full specification:** [03-PLAN-MCP-SERVICE.md](03-PLAN-MCP-SERVICE.md)
 
 Manages `plan.json` and `plan-history.json`. All reads and writes go through this service — no agent touches these files directly.

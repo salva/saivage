@@ -123,7 +123,7 @@ program
     console.log();
 
     if (!plan) {
-      console.log("No plan exists. Run 'saivage-v2 start' to begin.");
+      console.log("No plan exists. Run 'saivage start' to begin.");
       return;
     }
 

@@ -22,7 +22,7 @@ All runtime commands go through **SSH** (`ssh saivage`) — no sudo required. On
 - **Base OS**: Ubuntu 25.10 (questing), matching host for NVIDIA/CUDA compatibility
 - **Node.js**: 24 (via NodeSource)
 - **Source mount**: host project root → `/opt/saivage` (bind mount, read-write)
-- **Service**: systemd unit `saivage.service` running `node dist/index.js serve` on port 7777 (v1) or port 8080 (v2)
+- **Service**: systemd unit `saivage.service` running `node dist/cli.js serve` on port 8080
 - **SSH**: passwordless via `Host saivage` entry in `~/.ssh/config`
 - **GPU**: NVIDIA devices bind-mounted (optional), userspace libs installed in container
 - **Network**: veth on lxcbr0, static IP `10.0.3.111` (DHCP reservation via MAC `00:16:3e:5a:1e:a9`)
@@ -57,7 +57,9 @@ ssh saivage "command here"
 For interactive commands (like chat), use `-t` for a TTY:
 
 ```bash
-ssh saivage -t "cd /opt/saivage && node dist/index.js chat"
+# Chat is available via the web dashboard (WebSocket)
+CONTAINER_IP=$(make -C deploy ip)
+xdg-open "http://${CONTAINER_IP}:8080"
 ```
 
 ### Deploy after code changes
@@ -80,7 +82,7 @@ Or check the HTTP endpoint:
 
 ```bash
 CONTAINER_IP=$(make -C deploy ip)
-curl -s "http://${CONTAINER_IP}:7777/health" || echo "Service not responding"
+curl -s "http://${CONTAINER_IP}:8080/health" || echo "Service not responding"
 ```
 
 ### View recent logs

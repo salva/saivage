@@ -8,7 +8,7 @@ MCP service that provides structured access to `plan.json` and `plan-history.jso
 Replaces raw file reads/writes with validated, atomic operations that enforce schema constraints.
 
 **Transport:** stdio (in-process via McpRuntime)
-**Path:** `src/v2/mcp/plan-server.ts`
+**Path:** `src/mcp/plan-server.ts`
 
 ---
 

@@ -2,7 +2,7 @@ CONTAINER_NAME ?= saivage
 DIST           ?= ubuntu
 RELEASE        ?= questing
 ARCH           ?= amd64
-SAIVAGE_PORT   ?= 7777
+SAIVAGE_PORT   ?= 8080
 SCRIPTS        := scripts
 PROJECT_ROOT   := $(shell cd .. && pwd)
 # SSH alias configured by provision.sh in ~/.ssh/config
@@ -69,7 +69,9 @@ dashboard:
 	xdg-open "http://$$IP:$(SAIVAGE_PORT)" 2>/dev/null || true
 
 chat:
-	@$(SSH) -t "cd /opt/saivage && node dist/index.js chat"
+	@IP=$$(sudo lxc-info -n $(CONTAINER_NAME) -iH 2>/dev/null | head -1); \
+	echo "Chat available at http://$$IP:$(SAIVAGE_PORT) (WebSocket)"; \
+	xdg-open "http://$$IP:$(SAIVAGE_PORT)" 2>/dev/null || true
 
 test:
 	@$(SSH) "cd /opt/saivage && npm test"
