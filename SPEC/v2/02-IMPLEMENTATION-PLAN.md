@@ -42,9 +42,9 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
 
 ---
 
-## Phase 2: Runtime Core — Agent Lifecycle & Concurrency
+## Phase 2: Runtime Core — Agent Lifecycle & Tool-Call Dispatch
 
-**Goal:** The runtime can spawn, suspend, resume, and terminate agents. Hierarchical blocking works. Git lock is managed.
+**Goal:** The runtime can spawn agents, manage LLM conversations with suspend/resume, handle the tool-call dispatch pattern, and manage the git lock.
 
 ### 2.1 Agent interface
 - `src/v2/agents/types.ts` — Base `Agent` interface:
@@ -56,36 +56,46 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
   }
   ```
   - `AgentContext` carries: project paths, LLM client, tool access, task/stage info.
-  - `AgentResult`: success/failure/escalation with payload.
+  - `AgentResult`: success/failure/escalation with payload (returned to parent as tool result).
 
-### 2.2 Runtime scheduler
-- `src/v2/runtime/scheduler.ts` — Manages agent lifecycle:
-  - Tracks active agents (mirrors `RuntimeState`).
-  - Enforces concurrency limits (1 per type, except chat).
-  - Implements hierarchical blocking:
-    - Planner starts → suspend Manager/Coder/Researcher.
-    - Manager starts (planning phase) → suspend Coder/Researcher.
-    - Manager dispatches → resume Coder/Researcher.
-  - Inspector FIFO queue management.
-  - Writes `runtime.json` on every state change (crash recovery).
+### 2.2 Tool-call dispatch
+- `src/v2/runtime/dispatch.ts` — Implements the nested tool-call pattern:
+  - When an LLM agent calls `run_manager()`, `run_coder()`, `run_researcher()`, or `run_inspector()`, the runtime:
+    1. Suspends the calling agent’s LLM conversation.
+    2. Spawns the child agent.
+    3. Runs the child to completion.
+    4. Returns the child’s result as the tool-call response.
+    5. Resumes the parent’s LLM conversation.
+  - Supports **parallel tool calls**: Manager can issue `run_coder()` + `run_researcher()` simultaneously. Both run concurrently; parent resumes when both return.
 
-### 2.3 Git lock
+### 2.3 Conversation management
+- `src/v2/runtime/conversation.ts` — Manages LLM conversation state:
+  - Suspend: save conversation messages, pending tool calls.
+  - Resume: restore conversation, inject tool results (+ any queued notes).
+  - **Context compaction**: when conversation exceeds a token threshold, summarize and compact. Write disk state (`plan.json`, etc.) as authoritative fallback.
+
+### 2.4 Git lock
 - `src/v2/runtime/gitlock.ts` — Serialized git operations:
   - `acquireGitLock(agentId) → Promise<void>` (waits if held).
   - `releaseGitLock(agentId)`.
   - `commitFiles(agentId, files, message)` — add + commit specific files only.
   - On conflict detection → return error (not throw), escalate to Manager.
 
-### 2.4 Crash recovery
+### 2.5 Crash recovery
 - `src/v2/runtime/recovery.ts`:
-  - On startup: read `runtime.json`, detect stale PID, reset in-progress tasks to pending, respawn Manager for current stage.
+  - On startup: read `runtime.json`, detect stale PID.
+  - Read `plan.json` + `plan-history.json` to reconstruct state.
+  - Reset in-progress tasks to pending.
+  - Restart Planner as fresh conversation (disk files are authoritative).
 
-### 2.5 Tests
-- Unit tests for scheduler (concurrency enforcement, suspend/resume).
+### 2.6 Tests
+- Unit tests for tool-call dispatch (spawn child, suspend parent, return result).
+- Unit tests for parallel dispatch (Coder + Researcher concurrent).
+- Unit tests for conversation suspend/resume.
 - Unit tests for git lock (serialization, conflict detection).
-- Unit tests for recovery (stale state, task reset).
+- Unit tests for crash recovery (stale state, task reset).
 
-**Deliverable:** Agents can be spawned/suspended/terminated. Crash recovery works.
+**Deliverable:** The nested tool-call pattern works. Parent agents suspend while children run.
 
 ---
 
@@ -158,22 +168,25 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
 
 ### 5.1 Manager agent
 - `src/v2/agents/manager.ts`:
-  - Receives stage description from plan.
+  - Receives stage description from plan (passed by Planner’s `run_manager()` tool call).
   - Reads referenced documents.
   - Generates `TaskList` JSON (task decomposition via LLM).
-  - Dispatch loop:
+  - Dispatch loop (within its LLM conversation):
     1. Find next dispatchable tasks (pending, dependencies met).
-    2. Dispatch up to 1 Coder + 1 Researcher in parallel.
-    3. Wait for reports.
-    4. Update task statuses.
-    5. On failure: decide retry (increment attempt) vs remediation task vs escalation.
+    2. Call `run_coder(task)` and/or `run_researcher(task)` as tool calls.
+       - Independent tasks: parallel tool calls (both run concurrently).
+       - Dependent tasks: sequential tool calls.
+    3. Process tool results (`TaskReport`).
+    4. Update task statuses in `tasks.json`.
+    5. On failure: decide retry (increment attempt), create remediation task, or escalate.
     6. Repeat until all tasks done or escalation.
-  - On completion: write `StageSummary`.
-  - On escalation: write `StageSummary` with `result: "escalated"`, terminate.
+  - On completion: write `StageSummary`, return it to Planner.
+  - On escalation: write `StageSummary` with `result: "escalated"`, return it to Planner.
 
-### 5.2 Task dispatch integration
-- Wire Manager ↔ Scheduler: Manager requests agent spawn, Scheduler enforces concurrency.
-- Manager is suspended while Coder/Researcher run, wakes on report.
+### 5.2 Manager ↔ worker integration
+- Manager calls `run_coder()` / `run_researcher()` as LLM tool calls → runtime dispatches child agents.
+- Manager’s LLM conversation suspends while children run, resumes with `TaskReport` as tool result.
+- Manager maintains full conversation context for the stage (remembers planning rationale, earlier results).
 
 ### 5.3 Skill generation
 - When Manager detects a reusable pattern (heuristic: task description mentions "create tool/utility/helper"), schedule a follow-up task for skill creation.
@@ -193,23 +206,29 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
 
 ### 6.1 Planner agent
 - `src/v2/agents/planner.ts`:
+  - **Long-lived LLM conversation** — persists for the entire project run.
   - **Initial plan generation**: reads project objectives + current project state → produces `Plan` JSON.
-  - **Stage completion handler**: receives `StageSummary`, moves stage to `PlanHistory`, updates plan, picks next stage.
-  - **Escalation handler**: receives escalated `StageSummary`, decides action (revise stage, split, remove, schedule retrospective).
-  - **Note processing**: reads pending notes, marks permanent if needed, incorporates into plan reasoning, deletes volatile notes after replan.
-  - **Retrospective scheduling**: on escalation or repeated failures, inserts a retrospective stage (Inspector analysis) before next work stage.
+  - **Stage execution**: calls `run_manager(stage)` as a tool call. Suspends while Manager runs. Resumes with `StageSummary` as tool result.
+  - **Stage completion handler**: processes summary, moves stage to `PlanHistory`, updates plan, picks next stage.
+  - **Escalation handler**: processes escalated summary, decides action (revise stage, split, remove, schedule retrospective via Inspector).
+  - **Inspector dispatch**: calls `run_inspector(request)` as a tool call for deep analysis.
+  - **Note processing**: on resume, reads pending notes injected into context. Marks permanent if needed, incorporates into plan reasoning, deletes volatile notes.
+  - **Context compaction**: when conversation grows too large, summarizes and compacts. `plan.json` + `plan-history.json` are authoritative.
 
 ### 6.2 Inspector agent
 - `src/v2/agents/inspector.ts`:
-  - Receives `InspectionRequest`.
+  - Invoked as tool call by Planner or Chat.
+  - Receives `InspectionRequest` as tool parameters.
   - Works in `tmp/inspector-workspace/`.
   - Can create scripts, run analysis, read project code/data.
-  - Writes `InspectionReport` JSON.
-  - One-shot: terminates after writing report.
+  - Writes `InspectionReport` JSON to disk.
+  - Returns report as tool result to caller.
+  - One-shot: terminates after returning.
 
 ### 6.3 Planner ↔ runtime integration
-- Planner activation triggers hierarchical suspension (Manager + workers pause).
-- After Planner finishes, runtime spawns Manager for next stage.
+- Planner is the top-level agent — started by bootstrap, runs for project lifetime.
+- All other agents are children invoked via tool calls.
+- On crash: Planner restarts as fresh conversation, reconstructs context from `plan.json` + `plan-history.json`.
 
 ### 6.4 Tests
 - Unit test: plan generation from objectives.

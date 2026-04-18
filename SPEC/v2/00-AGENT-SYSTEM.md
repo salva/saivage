@@ -20,12 +20,16 @@ Files are separated into two categories:
 
 **Purpose:** Strategic long-term planning and course correction.
 
+**Lifecycle:** The Planner is a **long-lived agent** that persists for the entire project run. It is the top-level agent — all other agents are invoked by the Planner (directly or transitively) as tool calls. The Planner’s LLM conversation is **suspended** while subordinate agents run and **resumed** when their tool calls return.
+
+When the conversation context grows too large (many stages completed), the Planner performs a **context compaction**: it summarizes the conversation so far into a condensed state and continues from there. The `plan.json` and `plan-history.json` files on disk serve as the authoritative state, so compaction is safe.
+
 **Inputs:**
 - Project objectives (from config)
-- Stage completion reports (from Manager)
-- Issue escalations (from Manager)
-- User notes (from Chat)
-- Inspector reports (on demand)
+- Stage completion reports (returned by Manager tool calls)
+- Issue escalations (returned by Manager tool calls with `result: "escalated"`)
+- User notes (injected into context when Planner resumes)
+- Inspector reports (returned by Inspector tool calls)
 
 **Outputs:**
 - **Active Plan** (`plan.json`): Ordered list of stages remaining to be done. Each stage has:
@@ -38,30 +42,35 @@ Files are separated into two categories:
   - `references`: list of document paths the Manager should read before planning tasks
 - **Plan History** (`plan-history.json`): Completed stages with their summaries, moved out of the active plan on completion.
 
+**Execution model:**
+1. **Initial planning**: reads project objectives + current project state → generates `plan.json`.
+2. **Stage dispatch**: calls `run_manager(stage)` as a tool. The Planner’s conversation suspends.
+3. **Stage result**: Manager returns `StageSummary` as the tool result. Planner resumes.
+4. **Plan update**: processes the summary, moves stage to history, updates plan, picks next stage.
+5. **Loop**: calls `run_manager(next_stage)` → goto 3.
+6. At any point, can call `run_inspector(request)` as a tool for deep analysis.
+
+User notes arriving while the Planner is suspended are queued and **injected as additional context** when the Planner next resumes.
+
 **Behaviors:**
 - Generates the initial plan from project objectives and current project state.
-- Updates the plan after each stage completes (informed by Manager's summary).
-- Updates the plan when the Manager escalates an issue it cannot resolve.
-- When something is not going as expected (repeated failures, stalled progress, escalations), the Planner **schedules a full retrospective** as an explicit plan stage — dispatching the Inspector for deep analysis before deciding on corrective action.
+- Updates the plan after each stage completes (informed by Manager’s summary returned as tool result).
+- Updates the plan when the Manager escalates (tool result with `result: "escalated"`).
+- When something is not going as expected (repeated failures, stalled progress, escalations), the Planner **schedules a full retrospective** — calling the Inspector for deep analysis before deciding on corrective action.
 - Schedules corrective/refactoring actions only when they unblock or accelerate progress toward objectives.
 - Processes **user notes** from Chat. Notes are retained until the next replanning cycle, then discarded — unless the Planner explicitly marks a note as **permanent**, in which case it is preserved and factored into all future planning.
-- Can dispatch the **Inspector** to analyze project state before making planning decisions.
-
-**Trigger events:**
-- Stage completed (Manager sends summary)
-- Stage issue escalated (Manager cannot resolve)
-- User note received (Chat forwards a note)
+- Calls the **Inspector** via tool call to analyze project state before making planning decisions.
 
 ### 2.2 Manager
 
 **Purpose:** Tactical task decomposition and execution supervision.
 
-**Lifecycle:** The Manager is **stateless and one-shot per stage**. A new Manager instance is spawned for each stage. When it escalates to the Planner, it terminates — the Planner will spawn a fresh Manager for the revised stage. The Manager never needs to consult its own history; all context it needs must be in the stage description and referenced documents.
+**Lifecycle:** The Manager is a **long-lived agent, one per stage**. A fresh Manager instance is spawned when a new stage begins and persists for the entire stage duration. It terminates when the stage completes or is escalated to the Planner. The Manager does not carry state across stages — each new stage gets a fresh instance with context assembled from the stage description and referenced documents.
 
 **Inputs:**
 - Current stage description (from Planner's active plan) — must be self-contained with references to any documents the Manager should read before planning tasks.
-- Task completion reports (from Coder/Researcher)
-- Task failure reports (from Coder/Researcher)
+- Task completion reports (from Coder/Researcher) — delivered as events while the Manager is waiting.
+- Task failure reports (from Coder/Researcher) — delivered as events.
 
 **Outputs:**
 - **Task List** (`stages/<stage-id>/tasks.json`): Ordered list of tasks for the current stage. Each task has:
@@ -74,23 +83,31 @@ Files are separated into two categories:
   - `status`: `pending` | `in-progress` | `completed` | `failed`
 - **Stage Summary** (`stages/<stage-id>/summary.json`): Written when all tasks complete. Aggregates task summaries. Sent to Planner.
 
+**Execution model:**
+1. **Planning phase**: reads referenced documents, decomposes the stage into tasks (writes `tasks.json`).
+2. **Dispatch phase**: calls subagents (Coder/Researcher) via tool calls. The Manager invokes subagents as tools — each tool call blocks until the subagent completes and returns its `TaskReport`.
+3. **Evaluation phase**: processes the report, updates task status, decides next action.
+4. **Loop**: returns to dispatch phase for the next ready task(s). Independent tasks (1 Coder + 1 Researcher) can be dispatched in parallel.
+5. **Idle waiting**: when subagents are running, the Manager's LLM conversation is **suspended**. On subagent completion, the Manager is **resumed** with the report injected as a tool result.
+
+This means the Manager maintains its full conversation context throughout the stage — it remembers its planning rationale, can adapt task sequencing based on earlier results, and can generate remediation tasks without re-reading everything.
+
 **Behaviors:**
 - **Reads referenced documents** listed in the stage description before decomposing tasks.
 - Breaks the current stage into tasks, including mandatory best-practice tasks:
   - Testing for code changes
   - Documentation for new features/APIs
   - These can be standalone tasks or checklist items within coding tasks
-- Dispatches tasks to Coder or Researcher based on `assigned_to`.
-- Can dispatch **independent tasks in parallel** when they have no dependencies.
-- Monitors task completion reports.
+- Dispatches tasks to Coder or Researcher via tool calls.
+- Can dispatch **independent tasks in parallel** (1 Coder + 1 Researcher) when they have no dependencies.
+- Processes task reports returned as tool results.
 - On task failure: decides whether to retry, create a remediation task, adjust remaining tasks, or escalate to Planner. **Escalation terminates the Manager.**
 - On stage completion: writes the stage summary (aggregating Coder/Researcher reports) and notifies the Planner. **Then terminates.**
 - Schedules **skill generation** after a tool or pattern is established that will be reused.
 
 **Trigger events:**
 - New stage assigned by Planner → Manager spawned
-- Task completed (Coder/Researcher sends report)
-- Task failed (Coder/Researcher sends failure report)
+- Subagent tool call returns → Manager LLM conversation resumed
 
 ### 2.3 Coder
 
@@ -143,7 +160,7 @@ Files are separated into two categories:
 
 **Purpose:** Deep analysis of project state on demand.
 
-**Lifecycle:** The Inspector is **one-shot**. It is spawned with a request, performs its analysis, writes its report, and terminates. Multiple Inspector requests are processed sequentially (FIFO queue managed by the runtime).
+**Lifecycle:** The Inspector is **one-shot**, invoked as a tool call by the Planner or Chat. It performs its analysis, returns its report as the tool result, and terminates. Multiple Inspector requests are processed sequentially (FIFO — only one tool call at a time).
 
 **Inputs:**
 - Investigation request (from Planner or Chat)
@@ -170,8 +187,8 @@ Files are separated into two categories:
 - Tools/scripts created in `inspector-workspace/` persist across investigations (reusable by future Inspector instances).
 
 **Trigger events:**
-- Planner requests investigation → Inspector spawned
-- Chat forwards user's analysis request → Inspector spawned
+- Planner calls `run_inspector(request)` tool → Inspector spawned
+- Chat calls `run_inspector(request)` tool → Inspector spawned
 
 ### 2.6 Chat
 
@@ -206,7 +223,30 @@ Files are separated into two categories:
 
 ## 3. Communication Protocol
 
-### 3.1 Document Flow
+### 3.1 Tool-Call Hierarchy
+
+All inter-agent invocation uses the **tool-call pattern** — a parent agent calls a child agent as an LLM tool, suspends while the child runs, and resumes when the child returns its result.
+
+```
+Planner (long-lived)
+  ├── run_manager(stage)          → returns StageSummary
+  │     ├── run_coder(task)        → returns TaskReport
+  │     └── run_researcher(task)   → returns TaskReport
+  ├── run_inspector(request)      → returns InspectionReport
+  └── process_notes()             → reads/marks/deletes notes
+
+Chat (independent, per channel)
+  ├── run_inspector(request)      → returns InspectionReport
+  └── create_note(content)        → writes note for Planner
+```
+
+The Planner’s conversation never terminates — it loops: plan → call Manager → process result → update plan → repeat.
+
+The Manager’s conversation lives for one stage: plan tasks → call Coder/Researcher → process results → dispatch more → write summary → return.
+
+### 3.2 Document Flow
+
+In addition to tool-call return values, agents write JSON documents to disk for persistence and auditability:
 
 ```
 User ←→ Chat ──notes──→ Planner
@@ -228,7 +268,7 @@ Planner ──request──→ Inspector ──report──→ Planner
 Chat    ──request──→ Inspector ──report──→ Chat
 ```
 
-### 3.2 Error Escalation Chain
+### 3.3 Error Escalation Chain
 
 ```
 Coder/Researcher (task failure)
@@ -239,7 +279,7 @@ Coder/Researcher (task failure)
 
 Every agent can signal that it cannot fulfill a requirement. The signal propagates upward until an agent handles it or the user is notified.
 
-### 3.3 File System Layout
+### 3.4 File System Layout
 
 Global config (system-wide, not project-specific):
 ```
@@ -292,33 +332,42 @@ Project-local (inside the project directory, e.g. `/project/foo/.saivage/`):
 
 ### 4.1 Main Loop
 
-1. **Planner** generates or updates the plan.
-2. Runtime spawns a **Manager** for the next stage.
-3. Manager reads stage description + referenced documents, decomposes into tasks.
-4. Manager dispatches tasks (parallel when independent, coding and research tasks can run concurrently).
-5. **Coder/Researcher** execute tasks, write reports, commit their own files.
-6. On task completion/failure → Manager evaluates.
-7. On unresolvable failure → Manager escalates to Planner and **terminates**. Planner revises plan → goto 2.
-8. When all stage tasks complete → Manager writes stage summary, notifies Planner, and **terminates**.
-9. Planner updates plan → goto 2.
+The execution model is a **nested tool-call chain**:
+
+1. Runtime starts the **Planner** (long-lived LLM conversation).
+2. Planner reads objectives + project state, generates `plan.json`.
+3. Planner calls `run_manager(stage)` → Planner suspends.
+4. **Manager** spawns, reads stage references, decomposes into tasks, writes `tasks.json`.
+5. Manager calls `run_coder(task)` and/or `run_researcher(task)` → Manager suspends.
+6. **Coder/Researcher** execute tasks, write reports, commit files → return `TaskReport`.
+7. Manager resumes, processes reports, updates task statuses.
+8. Manager loops (dispatch next tasks) or finishes:
+   - **Completion**: writes `StageSummary`, returns it to Planner.
+   - **Escalation**: writes `StageSummary` with `result: "escalated"`, returns it to Planner.
+9. Planner resumes, processes summary, updates plan, moves stage to history.
+10. Planner calls `run_manager(next_stage)` → goto 4.
+
+At any point, the Planner can call `run_inspector(request)` for deep analysis.
+User notes are injected into the Planner’s context when it next resumes.
 
 ### 4.2 Concurrency
 
-At most **one instance of each agent type** runs at a time (except Chat — one per channel):
+The tool-call model naturally serializes the hierarchy — a parent is suspended while its child runs:
 
-| Agent      | Max instances | Notes |
-|------------|---------------|-------|
-| Planner    | 1             | When running, Manager and all subordinates are **suspended** until Planner finishes. |
-| Manager    | 1             | When running (planning tasks), Coder/Researcher are **suspended** until dispatch. |
-| Coder      | 1             | Runs one task at a time. |
-| Researcher | 1             | Runs one task at a time, **in parallel with Coder**. |
-| Inspector  | 1             | FIFO queue, one-shot. |
-| Chat       | 1 per channel | Never blocked. |
+| Agent      | Max instances | Lifetime | Invoked by |
+|------------|---------------|----------|------------|
+| Planner    | 1             | Project lifetime | Runtime (top-level) |
+| Manager    | 1             | One stage | Planner via `run_manager()` |
+| Coder      | 1             | One task | Manager via `run_coder()` |
+| Researcher | 1             | One task | Manager via `run_researcher()` |
+| Inspector  | 1             | One investigation | Planner or Chat via `run_inspector()` |
+| Chat       | 1 per channel | Session | Runtime (independent) |
 
-**Hierarchical blocking:** When a higher-level agent activates, subordinate agents are suspended:
-- Planner running → Manager, Coder, Researcher suspended.
-- Manager running (task planning/evaluation) → Coder, Researcher suspended until tasks are dispatched.
-- Once tasks are dispatched, Coder and Researcher run in parallel (one of each).
+**Parallelism:** The Manager can issue `run_coder()` and `run_researcher()` as **parallel tool calls** when the tasks have no dependencies. Both run concurrently; the Manager resumes when both return.
+
+**Chat independence:** Chat agents run independently of the Planner hierarchy. They can read all documents and call `run_inspector()` without blocking or being blocked by the main execution chain.
+
+**Inspector contention:** If both Planner and Chat request the Inspector simultaneously, one waits. Inspector requests are serialized (FIFO).
 
 ### 4.3 Version Control
 
@@ -331,12 +380,13 @@ All code-producing agents (Coder, Researcher, Inspector) can commit to git:
 
 ### 4.4 Crash Recovery
 
-On restart:
-1. Load `plan.json` — resume current stage.
-2. Load `stages/<stage-id>/tasks.json` — find in-progress tasks.
-3. Tasks marked `in-progress` at crash time → reset to `pending` for retry.
-4. Manager is respawned for the current stage with remaining tasks.
-5. Inspector/Chat state is stateless (re-derive from files).
+On restart, the system must reconstruct where it was:
+1. Load `plan.json` — find `current_stage_id`.
+2. If `stages/<current_stage_id>/summary.json` exists → stage was completed, Planner needs to process it.
+3. If `stages/<current_stage_id>/tasks.json` exists → Manager was running. Reset `in-progress` tasks to `pending`.
+4. **Planner is restarted** as a fresh LLM conversation. It reads `plan.json` + `plan-history.json` to reconstruct its strategic context (this is why those files are the authoritative state).
+5. If a stage was in-progress, Planner calls `run_manager()` for that stage. The Manager re-reads `tasks.json` and resumes from remaining pending tasks.
+6. Chat agents restart independently (stateless, re-derive from files).
 
 ---
 

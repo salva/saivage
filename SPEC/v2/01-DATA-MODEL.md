@@ -40,7 +40,6 @@ interface GlobalConfig {
 ```typescript
 interface ProjectConfig {
   project_name: string;
-  project_root: string;              // absolute path to the project
   objectives: string[];              // high-level project goals
   provider: string;                  // which global provider to use
   model_overrides?: {                // per-role model overrides (optional)
@@ -82,7 +81,7 @@ interface Stage {
   expected_outcomes: string[];       // concrete, verifiable deliverables
   acceptance_criteria: string[];     // how to know the stage is done
   dependencies: string[];            // stage IDs that must complete first
-  references: string[];              // document paths Manager should read
+  references: string[];              // document paths relative to project root
   tags: string[];                    // for skill matching
 }
 ```
@@ -137,6 +136,7 @@ interface Task {
   checklist: ChecklistItem[];
   dependencies: string[];            // task IDs that must complete first
   status: "pending" | "in-progress" | "completed" | "failed";
+  tags?: string[];                   // for skill matching (inherits stage tags if absent)
   started_at?: string;
   completed_at?: string;
   attempt: number;                   // retry count (starts at 1)
@@ -216,7 +216,7 @@ interface StageSummary {
   outcomes_achieved: string[];       // which expected outcomes were met
   outcomes_missed: string[];         // which were not
   issues: Issue[];                   // aggregated from task reports
-  escalation_reason?: string;        // if result == "escalated"
+  escalation?: Escalation;           // if result == "escalated" (see §13)
   started_at: string;
   completed_at: string;
   duration_ms: number;
@@ -311,7 +311,6 @@ interface RuntimeState {
   status: "idle" | "running" | "suspended" | "error";
   current_stage_id: string | null;
   active_agents: AgentState[];
-  pending_inspector_queue: string[]; // inspection request IDs (FIFO)
   git_lock_holder: string | null;    // agent ID holding the git lock
   started_at: string;
   updated_at: string;
