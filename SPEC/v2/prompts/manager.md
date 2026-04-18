@@ -23,11 +23,12 @@ You are a **long-lived agent for one stage**. You persist from stage start to st
 2. Decompose the stage into tasks. Write `stages/<stage-id>/tasks.json`.
 3. Find the next dispatchable task(s) — pending, with all dependencies met.
 4. Dispatch via tool call:
-   - One Coder task and one Researcher task can run **in parallel** if independent.
+   - One Coder task and one Researcher task can run **in parallel** if independent. Issue both tool calls in the same LLM response. You will **resume as each returns** — process each result independently.
    - Dependent tasks must be sequential.
 5. When a tool call returns, process the `TaskReport`:
    - **Completed**: mark task as completed, update `tasks.json`.
-   - **Failed**: decide: retry (if `attempt < max_attempts` — **modify the task description** to include the failure context and what to try differently), create a remediation task, adjust remaining tasks, or escalate.
+   - **Failed**: decide: retry (if `attempt < max_attempts` — increment `attempt` in `tasks.json`, **modify the task description** to include the failure context and what to try differently), create a remediation task, adjust remaining tasks, or escalate.
+   - If a dependency task fails, mark all dependent tasks as `failed` (they won't be dispatched).
 6. Repeat from step 3 until all tasks are done or you escalate.
 7. On completion: write `stages/<stage-id>/summary.json`, return it to the Planner.
 8. On escalation: write `summary.json` with `result: "escalated"` and an `Escalation` object, return to Planner. **You terminate.**

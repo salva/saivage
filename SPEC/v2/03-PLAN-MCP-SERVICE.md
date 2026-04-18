@@ -177,12 +177,25 @@ Commits only `plan.json` and `plan-history.json`. Returns the commit SHA.
 
 ## Error Handling
 
-All tools return errors as `{ "error": "<message>" }` with `isError: true`. Errors include:
+All tools return errors as `{ "code": "<ERROR_CODE>", "error": "<message>" }` with `isError: true`. Error codes:
 - `PLAN_NOT_FOUND` — plan.json does not exist (call `plan_init` first)
 - `STAGE_NOT_FOUND` — referenced stage ID not in active plan or history
 - `STAGE_EXISTS` — stage ID already exists (for `plan_add_stage`)
 - `VALIDATION_ERROR` — input fails schema validation
 - `IO_ERROR` — file read/write failure
+
+---
+
+## Stage Validation
+
+On every write, stages are validated:
+- `id` — required, non-empty string (prefix `stg-` by convention)
+- `objective` — required, 1–1000 chars
+- `starting_points` — required, string array
+- `expected_outcomes` — required, non-empty string array
+- `acceptance_criteria` — required, non-empty string array
+- `references` — required, string array (paths relative to project root)
+- `tags` — required, string array (may be empty)
 
 ---
 

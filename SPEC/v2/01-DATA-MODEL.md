@@ -19,7 +19,7 @@ interface GlobalConfig {
       models: {
         [role: string]: string;      // e.g. "planner": "claude-opus-4.6"
       };
-      timeout_ms: number;
+      timeout_ms: number;            // per-request timeout (default: 120000)
       failover?: string;             // name of fallback provider
     };
   };
@@ -46,14 +46,23 @@ interface ProjectConfig {
     [role: string]: string;
   };
   notifications: {
-    channels: string[];              // e.g. ["telegram", "web"]
+    channels: ("telegram" | "web")[];  // default: ["telegram"]
     filters: {
       min_severity: "info" | "warning" | "error";
-      categories: string[];          // opt-in categories, empty = all
+      categories: ("stage_completed" | "stage_failed" | "escalation" |
+                   "task_failed" | "inspector_complete" | "plan_updated")[];
+                                     // empty = all categories
     };
   };
   skills: {
     max_per_agent: number;           // loading budget per agent invocation (default: 5)
+  };
+  agents?: {                         // per-role runtime config (all optional, defaults apply)
+    [role: string]: {                // e.g. "planner", "manager", "coder"
+      compaction_threshold_pct?: number;  // default: 80 (% of context window)
+      self_check_frequency?: number;      // tool-call rounds before self-check
+      max_compactions?: number;           // max compactions before forced termination (default: 3)
+    };
   };
 }
 ```

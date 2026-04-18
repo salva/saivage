@@ -136,6 +136,8 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
 
 **Deliverable:** The nested tool-call pattern works. Parent agents suspend while children run.
 
+See [04-RUNTIME-DETAILS.md](04-RUNTIME-DETAILS.md) for detailed suspend/resume mechanics, LLM error handling, compaction timing, and self-check injection.
+
 ---
 
 ## Phase 3: LLM Integration — Agent Base Class
@@ -218,11 +220,11 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
   - Dispatch loop (within its LLM conversation):
     1. Find next dispatchable tasks (pending, dependencies met).
     2. Call `run_coder(task)` and/or `run_researcher(task)` as tool calls.
-       - Independent tasks: parallel tool calls (both run concurrently).
+       - Independent tasks: parallel tool calls (both run concurrently; Manager resumes as each returns).
        - Dependent tasks: sequential tool calls.
     3. Process tool results (`TaskReport`).
     4. Update task statuses in `tasks.json`.
-    5. On failure: decide retry (increment attempt, **modify task description** with failure context), create remediation task, or escalate. Model throttling and transient errors are retried automatically at the runtime level and do not count as task failures.
+    5. On failure: decide retry (increment attempt, **modify task description** with failure context), create remediation task, or escalate. If a dependency task fails, mark dependent tasks as failed. Model throttling and transient errors are retried automatically at the runtime level and do not count as task failures.
     6. Repeat until all tasks done or escalation.
   - On completion: write `StageSummary`, return it to Planner.
   - On escalation: write `StageSummary` with `result: "escalated"`, return it to Planner.
@@ -264,12 +266,14 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
 - `src/v2/agents/inspector.ts`:
   - Invoked as tool call by Planner or Chat.
   - Receives `InspectionRequest` as tool parameters.
-  - Three storage tiers: ephemeral scratch (`tmp/inspector-workspace/`), persistent reports (`inspections/`), persistent tools (`tools/inspector/`).
+  - Three storage tiers: ephemeral scratch (`tmp/inspector-workspace/<report-id>/`), persistent reports (`inspections/`), persistent tools (`tools/inspector/`).
+  - Can list and reuse previous workspaces and tools from prior investigations.
   - Can create scripts, run analysis, read/execute any project file.
-  - Writes `InspectionReport` JSON to `inspections/`.
-  - Promotes reusable tools from scratch to `tools/inspector/`.
+  - Writes `InspectionReport` JSON to `inspections/` (atomic write).
+  - Promotes reusable tools from scratch to `tools/inspector/` by copying + committing.
   - Returns report as tool result to caller.
   - One-shot: terminates after returning.
+  - Expired reports (past `expires_at`) are cleaned up lazily: deleted when the reports directory is listed.
 
 ### 6.3 Planner ↔ runtime integration
 - Planner is the top-level agent — started by bootstrap, runs for project lifetime.
@@ -293,22 +297,25 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
 ### 7.1 Chat agent
 - `src/v2/agents/chat.ts`:
   - System prompt: knows project state, can read all documents.
-  - Tools: read plan/stages/tasks/reports/inspections, create notes, dispatch Inspector.
+  - Tools: plan MCP read-only (`plan_get`, `plan_get_stage`, `plan_get_current_stage`, `plan_get_history`), `create_note(content, urgent?)`, `run_inspector(request)`, filesystem read-only.
   - Persists dialogue to `tmp/chats/<channel>/<session-id>.json`.
   - One instance per channel.
   - Does not block execution pipeline.
 
 ### 7.2 Notification system
 - `src/v2/events/notifier.ts`:
-  - Subscribes to runtime events (stage complete, failure, escalation, inspector done).
-  - Pushes to active chat channels.
+  - In-process event bus: runtime publishes events (`stage_completed`, `stage_failed`, `escalation`, `task_failed`, `inspector_complete`, `plan_updated`).
+  - Chat agents subscribe to the event bus on startup.
+  - Pushes to active chat channels (filtered by user's notification config).
   - Telegram: push messages via bot API.
   - Web: push via WebSocket.
-  - Respects user's notification filter config.
+  - If a channel is offline, buffer up to 100 events. On overflow, drop oldest with a summary.
+  - Respects `ProjectConfig.notifications.filters` (min_severity, categories).
 
 ### 7.3 Channel integration
-- Adapt v1 channels (`src/channels/telegram.ts`, `src/channels/websocket.ts`) to v2 Chat agent.
-- Chat log persistence.
+- `src/v2/channels/telegram.ts`: Adapt v1 Telegram bot. Long-polling for messages, bot API for responses/notifications.
+- `src/v2/channels/websocket.ts`: Adapt v1 WebSocket. Session timeout: 1 hour on disconnect. Buffer events until reconnection.
+- Chat log retention: 30 days, cleaned up lazily.
 
 ### 7.4 Tests
 - Integration test: Chat can read plan, create note, dispatch Inspector.

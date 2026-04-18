@@ -365,7 +365,7 @@ The tool-call model naturally serializes the hierarchy — a parent is suspended
 | Inspector  | 1             | One investigation | Planner or Chat via `run_inspector()` |
 | Chat       | 1 per channel | Session | Runtime (independent) |
 
-**Parallelism:** The Manager can issue `run_coder()` and `run_researcher()` as **parallel tool calls** when the tasks have no dependencies. Both run concurrently; the Manager resumes when both return.
+**Parallelism:** The Manager can issue `run_coder()` and `run_researcher()` as **parallel tool calls** when the tasks have no dependencies. Both run concurrently; the Manager **resumes as each child returns** — it receives each result independently and can process it, issue new dispatches, or continue waiting. See [04-RUNTIME-DETAILS.md](04-RUNTIME-DETAILS.md) §1.3 for exact mechanics.
 
 **Chat independence:** Chat agents run independently of the Planner hierarchy. They can read all documents and call `run_inspector()` without blocking or being blocked by the main execution chain.
 
@@ -429,6 +429,8 @@ All writes are atomic (write to `.tmp`, rename). Schema validation is enforced o
 
 See [03-PLAN-MCP-SERVICE.md](03-PLAN-MCP-SERVICE.md) for the full specification.
 
+See [04-RUNTIME-DETAILS.md](04-RUNTIME-DETAILS.md) for detailed runtime mechanics: suspend/resume, LLM error handling, compaction timing, self-check injection, task report flow, crash recovery details, and notification delivery.
+
 ### 4.6 Crash Recovery
 
 On restart, the system must reconstruct where it was:
@@ -489,13 +491,21 @@ The Manager schedules skill generation when:
   - `created_at` / `updated_at`: timestamps
 
 - **Trigger types** (each skill declares one or more):
-  - `keyword:<word>` — matches if the task/stage description contains the word (case-insensitive)
-  - `tool:<name>` — matches if the task uses or mentions the named tool/MCP
-  - `path:<glob>` — matches if any file in the task scope matches the glob pattern
-  - `tag:<label>` — matches if the task or stage has the given tag
-  - `agent:<type>` — matches if the current agent is the given type (e.g., `agent:planner`)
+  - `keyword:<word>` — case-insensitive substring match in the task/stage description
+  - `tool:<name>` — exact match (case-sensitive) against tool names in the task description or agent tool list
+  - `path:<glob>` — glob match (minimatch-style) against files in the task scope or project
+  - `tag:<label>` — exact match against `task.tags` or `stage.tags`
+  - `agent:<type>` — exact match against the current agent type (e.g., `agent:planner`)
 
 - When an agent is invoked, the runtime evaluates all triggers against the agent's metadata (task description, tool list, file paths, tags, agent type). Skills whose triggers match **and** whose `target_agents` includes the current agent type (or is omitted) are loaded into the agent's context.
+
+- **Loading format**: Each loaded skill is prepended to the agent's context as a system message section:
+  ```
+  ---
+  SKILL: <skill-name>
+  <full markdown content>
+  ---
+  ```
 
 - **Loading budget**: Maximum N skills per agent invocation (configurable, default 5). If more match, rank by: number of triggers matched (descending), then `updated_at` (most recent first). Truncate.
 
@@ -503,7 +513,7 @@ The Manager schedules skill generation when:
 
 ## 6. External Systems (Carried from v1)
 
-- **LLM Providers**: Router with model config, failover, timeout settings — same as v1.
+- **LLM Providers**: Router with model config, failover, timeout settings — same as v1. **Model precedence**: `ProjectConfig.model_overrides[role]` > `GlobalConfig.providers[name].models[role]` > most capable model available.
 - **MCP Providers**: Tool generation and runtime — same as v1.
 - **Web Interface**: Maintained from v1.
 - **Telegram Bot**: Maintained from v1 + push notification support with user-configurable filters.
@@ -512,4 +522,4 @@ The Manager schedules skill generation when:
 
 ## 7. Open Questions
 
-1. **Chat log retention**: How long are chat dialogue logs kept? Rotate by size, age, or keep forever?
+*(None — all resolved. See individual specs for details.)*

@@ -35,6 +35,12 @@ Whenever you create, move, or organize files within the `.saivage/` directory or
     └── researcher/          # Researcher scratch space
 ```
 
+### .gitignore Content
+The `.saivage/.gitignore` file:
+```
+tmp/
+```
+
 ## Conventions
 
 ### Territory
