@@ -87,7 +87,6 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
 - `src/v2/mcp/plan-server.ts` — MCP server for structured plan operations (see 03-PLAN-MCP-SERVICE.md):
   - All reads/writes to `plan.json` and `plan-history.json` go through this service.
   - Tools: `plan_get`, `plan_get_stage`, `plan_get_current_stage`, `plan_set_stages`, `plan_add_stage`, `plan_remove_stage`, `plan_set_current`, `plan_complete_stage`, `plan_get_history`, `plan_init`.
-  - Auto-increments plan `version` on every write.
   - Validates Stage schema on every write.
   - Atomic writes (`.tmp` + rename).
   - `plan_complete_stage` is the key atomic operation: removes stage from active plan, appends to history, clears `current_stage_id` if matching.
@@ -100,13 +99,39 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
   - Reset in-progress tasks to pending.
   - Restart Planner as fresh conversation (disk files are authoritative).
 
-### 2.7 Tests
+### 2.7 Abort mechanism
+- `src/v2/runtime/abort.ts`:
+  - Monitors for urgent notes (notes with `urgent: true`).
+  - On urgent note: signals abort to the active agent chain.
+  - Abort propagates bottom-up: terminates lowest-level agent, synthesizes abort result for parent, cascades up to Planner.
+  - Manager writes partial `StageSummary` with `result: "aborted"` on abort.
+  - Uncommitted changes from aborted agents are discarded.
+
+### 2.8 Context compaction
+- `src/v2/runtime/compaction.ts`:
+  - Tracks token usage per active conversation.
+  - When usage exceeds configurable threshold (default: 80% of context window), triggers compaction.
+  - Compaction: produces summary message replacing conversation history.
+  - Summary includes: agent role, current objective, key decisions, outstanding work, state references.
+  - Applies to Planner and Manager (long-lived agents). One-shot agents (Coder, Researcher, Inspector) do not need compaction.
+
+### 2.9 Periodic self-check
+- `src/v2/runtime/self-check.ts`:
+  - After every N tool calls (configurable: Manager=20, workers=15), injects self-check prompt.
+  - Self-check asks the agent to assess whether it is making progress or stuck in a loop.
+  - If agent reports stuck, runtime treats it as task failure.
+  - Model throttling / transient errors retry automatically at transport level, do not count toward self-check counter.
+
+### 2.10 Tests
 - Unit tests for tool-call dispatch (spawn child, suspend parent, return result).
 - Unit tests for parallel dispatch (Coder + Researcher concurrent).
 - Unit tests for conversation suspend/resume.
 - Unit tests for MCP git server (serialization, conflict detection, commit scoping).
-- Unit tests for plan MCP service (CRUD, atomic complete_stage, version increment, validation).
+- Unit tests for plan MCP service (CRUD, atomic complete_stage, validation).
 - Unit tests for crash recovery (stale state, task reset).
+- Unit tests for abort mechanism (agent chain termination, partial summary).
+- Unit tests for context compaction (trigger threshold, summary generation).
+- Unit tests for periodic self-check (injection timing, stuck detection).
 
 **Deliverable:** The nested tool-call pattern works. Parent agents suspend while children run.
 
@@ -127,9 +152,11 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
 ### 3.2 Skill loader
 - `src/v2/skills/loader.ts`:
   - Reads `skills/index.json`.
-  - Matches triggers against task metadata.
+  - Matches triggers against agent metadata (task description, tool list, file paths, tags, agent type).
+  - Filters by `target_agents` (if specified in skill entry).
   - Ranks and selects top N skills.
   - Returns skill content for injection into agent context.
+  - Applies to **all agent types**, not just workers.
   - Reuse/adapt `src/skills/` from v1.
 
 ### 3.3 Conventions & access model
@@ -194,7 +221,7 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
        - Dependent tasks: sequential tool calls.
     3. Process tool results (`TaskReport`).
     4. Update task statuses in `tasks.json`.
-    5. On failure: decide retry (increment attempt), create remediation task, or escalate.
+    5. On failure: decide retry (increment attempt, **modify task description** with failure context), create remediation task, or escalate. Model throttling and transient errors are retried automatically at the runtime level and do not count as task failures.
     6. Repeat until all tasks done or escalation.
   - On completion: write `StageSummary`, return it to Planner.
   - On escalation: write `StageSummary` with `result: "escalated"`, return it to Planner.
@@ -226,6 +253,7 @@ Build v2 incrementally on top of the v1 codebase. Reuse infrastructure that work
   - **Initial plan generation**: reads project objectives + current project state → calls `plan_init(stages)` or `plan_set_stages()` via the plan MCP service.
   - **Stage execution**: calls `run_manager(stage)` as a tool call. Suspends while Manager runs. Resumes with `StageSummary` as tool result.
   - **Stage completion handler**: calls `plan_complete_stage()` to atomically move stage to history. Then updates remaining stages via `plan_set_stages()` if the plan needs revision.
+  - **Abort handler**: receives `StageSummary` with `result: "aborted"` when an urgent user note triggers abort. Processes the urgent note and replans.
   - **Escalation handler**: processes escalated summary, decides action (revise stage, split, remove, schedule retrospective via Inspector). Uses `plan_add_stage()`, `plan_remove_stage()`, `plan_set_stages()` as needed.
   - **Inspector dispatch**: calls `run_inspector(request)` as a tool call for deep analysis.
   - **Note processing**: on resume, reads pending notes injected into context. Marks permanent if needed, incorporates into plan reasoning, deletes volatile notes.

@@ -3,7 +3,7 @@
 ## Overview
 
 MCP service that provides structured access to `plan.json` and `plan-history.json`.
-Replaces raw file reads/writes with validated, atomic operations that enforce schema constraints and auto-increment the plan version.
+Replaces raw file reads/writes with validated, atomic operations that enforce schema constraints.
 
 **Transport:** stdio (in-process via McpRuntime)
 **Path:** `src/v2/mcp/plan-server.ts`
@@ -20,7 +20,6 @@ Read the current plan.
 **Output:**
 ```json
 {
-  "version": 3,
   "updated_at": "...",
   "current_stage_id": "stg-a1b2c3",
   "stages": [...]
@@ -57,7 +56,7 @@ Get the stage currently being executed.
 
 ### `plan_set_stages`
 
-Replace the plan's stage list. Validates all stages, auto-increments `version`, sets `updated_at`. Used by the Planner to update the plan after processing a stage result.
+Replace the plan's stage list. Validates all stages, sets `updated_at`. Used by the Planner to update the plan after processing a stage result.
 
 **Input:**
 - `stages` (Stage[], required) — the new stage list
@@ -108,7 +107,7 @@ Move a stage from the active plan to history. This is the primary operation the 
 
 **Input:**
 - `stage_id` (string, required) — stage to complete
-- `result` ("completed" | "failed" | "escalated", required)
+- `result` ("completed" | "failed" | "escalated" | "aborted", required)
 - `summary` (string, required) — from the Manager's StageSummary
 - `actual_outcomes` (string[], required) — what actually happened
 
@@ -123,8 +122,7 @@ Move a stage from the active plan to history. This is the primary operation the 
 Atomically:
 1. Removes the stage from `plan.json`.
 2. Appends a `CompletedStage` entry to `plan-history.json`.
-3. Increments plan version.
-4. Clears `current_stage_id` if it matched the completed stage.
+3. Clears `current_stage_id` if it matched the completed stage.
 
 ---
 
@@ -172,4 +170,4 @@ All tools return errors as `{ "error": "<message>" }` with `isError: true`. Erro
 
 ## Atomicity
 
-All write operations are atomic: write to `.tmp` file, then rename. This prevents partial writes on crash. The plan `version` counter is monotonically increasing and serves as a consistency check.
+All write operations are atomic: write to `.tmp` file, then rename. This prevents partial writes on crash.

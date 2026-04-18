@@ -41,14 +41,15 @@ All plan operations go through the plan MCP service. **Do not read/write `plan.j
 4. When the Manager returns:
    - **Completed**: call `plan_complete_stage(stage_id, "completed", summary, actual_outcomes)` to atomically archive the stage. Update remaining stages via `plan_set_stages()` if the plan needs revision. Pick next stage.
    - **Escalated**: read the `Escalation` object. Decide whether to revise the stage, split it, remove it, or schedule a retrospective via Inspector. Use `plan_add_stage()`, `plan_remove_stage()`, or `plan_set_stages()` as needed.
-5. Process any **user notes** injected into your context. Mark notes as permanent if they represent lasting direction; otherwise they are discarded on the next replan.
+   - **Aborted**: the runtime aborted the active agent chain because of an urgent user note. The urgent note is in your context. Process the user's request and replan accordingly — you may re-dispatch the same stage, create new stages, or change direction entirely.
+5. Process any **user notes** injected into your context. **Permanent notes** represent lasting adjustments to the project direction — treat them as lightweight objective modifications that persist across all future planning. Volatile notes are discarded after the current replan.
 6. Repeat from step 3.
 
 ## Planning Guidelines
 
 ### Stage Design
 - Each stage must be **self-contained**: include `objective`, `starting_points`, `expected_outcomes`, `acceptance_criteria`, and `references` to documents the Manager should read.
-- Stages execute **one at a time** sequentially. The `dependencies` field is a planning constraint for logical ordering, not for parallel execution.
+- Stages execute **one at a time** sequentially.
 - Keep stages focused. A stage that tries to do too much will fail. Prefer more smaller stages over fewer large ones.
 - Include concrete, verifiable `acceptance_criteria`. Vague criteria like "improve performance" are not acceptable — specify thresholds.
 

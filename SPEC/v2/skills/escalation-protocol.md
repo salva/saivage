@@ -3,6 +3,8 @@
 ## When to Use
 When you (Manager) need to decide whether to retry, remediate, or escalate a task failure. Also when worker agents need to report failures clearly.
 
+**Note:** Model throttling, rate limits, and transient API errors are retried automatically by the runtime. You will never see these as task failures.
+
 ## For Worker Agents (Coder/Researcher)
 
 ### When to Report Failure

@@ -37,20 +37,19 @@ When the conversation context grows too large (many stages completed), the Plann
   - `objective`: what the stage should accomplish
   - `starting_points`: current state of affairs relevant to this stage
   - `expected_outcomes`: concrete, verifiable deliverables
-  - `dependencies`: stages that must complete first (planning constraint — runtime executes one stage at a time)
   - `acceptance_criteria`: how to know the stage is done
   - `references`: list of document paths the Manager should read before planning tasks
 - **Plan History** (`plan-history.json`): Completed stages with their summaries, moved out of the active plan on completion.
 
 **Execution model:**
-1. **Initial planning**: reads project objectives + current project state → generates `plan.json`.
-2. **Stage dispatch**: calls `run_manager(stage)` as a tool. The Planner’s conversation suspends.
+1. **Initial planning**: reads project objectives + current project state → calls `plan_init(stages)` via the plan MCP service.
+2. **Stage dispatch**: calls `run_manager(stage)` as a tool. The Planner's conversation suspends.
 3. **Stage result**: Manager returns `StageSummary` as the tool result. Planner resumes.
-4. **Plan update**: processes the summary, moves stage to history, updates plan, picks next stage.
+4. **Plan update**: calls `plan_complete_stage()` to archive the stage, updates remaining stages via `plan_set_stages()` if needed, picks next stage.
 5. **Loop**: calls `run_manager(next_stage)` → goto 3.
 6. At any point, can call `run_inspector(request)` as a tool for deep analysis.
 
-User notes arriving while the Planner is suspended are queued and **injected as additional context** when the Planner next resumes.
+User notes arriving while the Planner is suspended are queued and **injected as additional context** when the Planner next resumes. If a user note requests immediate replanning (via `urgent` flag), the runtime **aborts** the active agent chain and resumes the Planner immediately (see §4.4).
 
 **Behaviors:**
 - Creates the initial plan via `plan_init(stages)` from project objectives and current project state.
@@ -58,7 +57,7 @@ User notes arriving while the Planner is suspended are queued and **injected as 
 - Handles escalations (tool result with `result: "escalated"`) by revising stages via `plan_add_stage()`, `plan_remove_stage()`, or `plan_set_stages()`.
 - When something is not going as expected (repeated failures, stalled progress, escalations), the Planner **schedules a full retrospective** — calling the Inspector for deep analysis before deciding on corrective action.
 - Schedules corrective/refactoring actions only when they unblock or accelerate progress toward objectives.
-- Processes **user notes** from Chat. Notes are retained until the next replanning cycle, then discarded — unless the Planner explicitly marks a note as **permanent**, in which case it is preserved and factored into all future planning.
+- Processes **user notes** from Chat. Volatile notes are retained until the next replanning cycle, then discarded. **Permanent notes** represent lasting adjustments to the project's direction — they serve as lightweight objective modifications and are preserved and factored into all future planning decisions.
 - Calls the **Inspector** via tool call to analyze project state before making planning decisions.
 
 ### 2.2 Manager
@@ -372,6 +371,22 @@ The tool-call model naturally serializes the hierarchy — a parent is suspended
 
 **Inspector contention:** If both Planner and Chat request the Inspector simultaneously, one waits. Inspector requests are serialized (FIFO).
 
+### 4.4 Abort / Immediate Replanning
+
+When the user demands an immediate course change, the system supports **aborting the active agent chain** to return control to the Planner without waiting for the current stage to complete.
+
+**Mechanism:**
+1. User sends an urgent message via Chat. Chat creates a note with `urgent: true` via `create_note(content, urgent=true)`.
+2. The runtime detects the urgent note and signals an **abort** to the currently running agent chain.
+3. Abort propagates **bottom-up**: the lowest-level active agent (Coder/Researcher) is terminated first. Its parent (Manager) receives an abort signal instead of a normal tool result. The Manager writes a partial `StageSummary` with `result: "aborted"` and returns it to the Planner.
+4. The Planner resumes with the abort result and the urgent note injected into context. It processes the user's request and replans accordingly.
+
+**Abort semantics:**
+- Aborted agents do not commit partial work — uncommitted changes are discarded.
+- The Manager's `tasks.json` reflects the state at abort time (completed tasks stay completed, in-progress tasks are marked `aborted`).
+- The Planner can re-dispatch the same stage (to resume from where it stopped) or create new stages.
+- Abort is a **runtime mechanism**, not an LLM tool call. Agents do not need to "cooperate" with the abort — the runtime terminates their LLM conversation and synthesizes the abort result.
+
 ### 4.3 Version Control
 
 All git operations go through an **MCP git server** that serializes access. No direct `git` CLI calls by agents.
@@ -401,7 +416,7 @@ The plan MCP service exposes tools:
 - `plan_get()` — read the current plan.
 - `plan_get_stage(stage_id)` — look up a stage in active plan or history.
 - `plan_get_current_stage()` — get the currently executing stage.
-- `plan_set_stages(stages, current_stage_id)` — replace the plan's stage list. Auto-increments version.
+- `plan_set_stages(stages, current_stage_id)` — replace the plan's stage list.
 - `plan_add_stage(stage)` — append a new stage.
 - `plan_remove_stage(stage_id)` — remove a stage from the active plan.
 - `plan_set_current(stage_id)` — set which stage is currently executing.
@@ -409,7 +424,7 @@ The plan MCP service exposes tools:
 - `plan_get_history(last_n?)` — read plan history.
 - `plan_init(stages?)` — initialize an empty plan.
 
-All writes are atomic (write to `.tmp`, rename). The plan `version` counter is monotonically increasing. Schema validation is enforced on every write.
+All writes are atomic (write to `.tmp`, rename). Schema validation is enforced on every write.
 
 See [03-PLAN-MCP-SERVICE.md](03-PLAN-MCP-SERVICE.md) for the full specification.
 
@@ -423,6 +438,35 @@ On restart, the system must reconstruct where it was:
 5. If a stage was in-progress, Planner calls `run_manager()` for that stage. The Manager re-reads `tasks.json` and resumes from remaining pending tasks.
 6. Chat agents restart independently (stateless, re-derive from files).
 
+### 4.7 Context Compaction
+
+All agents with multi-turn conversations (Planner, Manager) perform **automatic context compaction** when the conversation approaches the model's context window limit.
+
+**Mechanism:**
+1. The runtime tracks token usage for each active conversation.
+2. When usage exceeds a configurable threshold (e.g., 80% of context window), the runtime triggers compaction before the next LLM call.
+3. Compaction produces a **summary message** that replaces the conversation history. The summary includes: agent role, current objective, key decisions made, outstanding work, and relevant state references.
+4. The agent continues from the summary as if resuming a fresh conversation.
+
+**What makes compaction safe:**
+- All agent state is written to disk (plans, tasks, reports) — the conversation is a working memory, not the source of truth.
+- Planner reconstructs strategic context via `plan_get()` + `plan_get_history()`.
+- Manager reconstructs tactical context from `tasks.json` + completed task reports.
+
+**One-shot agents** (Coder, Researcher, Inspector) do not need compaction — they run a single task and terminate. If a one-shot agent's task requires more context than the model window, it should be split into smaller tasks by the Manager.
+
+### 4.8 Periodic Self-Check
+
+To prevent agents from looping indefinitely, the runtime injects a **self-check prompt** into the conversation after every N tool calls (configurable, default: 20 for Manager, 15 for workers).
+
+The self-check asks the agent: *"You have made N tool calls. Briefly assess: are you making progress toward the task objective, or are you stuck in a loop? If stuck, report failure."*
+
+The agent's response is evaluated:
+- If the agent reports progress, execution continues.
+- If the agent reports being stuck, the runtime treats it as a task failure — the worker returns a failed `TaskReport`, and the Manager decides whether to retry, remediate, or escalate.
+
+For **model throttling and transient errors** (rate limits, network timeouts, temporary API failures), the runtime retries automatically at the transport level — these do not count as tool calls and do not trigger self-checks. Transient retries continue indefinitely unless the user explicitly requests termination via an abort.
+
 ---
 
 ## 5. Skill System
@@ -435,19 +479,23 @@ The Manager schedules skill generation when:
 
 ### 5.2 Index & Auto-Loading
 
+**All agents** can have skills loaded — not just workers. Skills provide any agent with project-specific knowledge relevant to its current task.
+
 - `skills/index.json` maps skill names to:
   - `triggers`: list of matching rules (see below)
+  - `target_agents`: list of agent types this skill applies to (e.g., `["coder", "manager"]`). If omitted, the skill applies to all agents.
   - `file`: path to the skill file
   - `description`: human-readable summary
   - `created_at` / `updated_at`: timestamps
 
 - **Trigger types** (each skill declares one or more):
-  - `keyword:<word>` — matches if the task description contains the word (case-insensitive)
+  - `keyword:<word>` — matches if the task/stage description contains the word (case-insensitive)
   - `tool:<name>` — matches if the task uses or mentions the named tool/MCP
   - `path:<glob>` — matches if any file in the task scope matches the glob pattern
   - `tag:<label>` — matches if the task or stage has the given tag
+  - `agent:<type>` — matches if the current agent is the given type (e.g., `agent:planner`)
 
-- When a task is dispatched, the runtime evaluates all triggers against the task metadata (description, tool list, file paths, tags). Skills with **any matching trigger** are loaded into the agent's context.
+- When an agent is invoked, the runtime evaluates all triggers against the agent's metadata (task description, tool list, file paths, tags, agent type). Skills whose triggers match **and** whose `target_agents` includes the current agent type (or is omitted) are loaded into the agent's context.
 
 - **Loading budget**: Maximum N skills per agent invocation (configurable, default 5). If more match, rank by: number of triggers matched (descending), then `updated_at` (most recent first). Truncate.
 
@@ -464,6 +512,4 @@ The Manager schedules skill generation when:
 
 ## 7. Open Questions
 
-1. **Planner retrospective depth**: How deep should the Inspector's analysis go when the Planner schedules a full retrospective? Should there be a budget (time/tokens)?
-2. **Chat log retention**: How long are chat dialogue logs kept? Rotate by size, age, or keep forever?
-3. **Permanent note format**: What metadata should permanent notes carry so the Planner can filter/prioritize them across many planning cycles?
+1. **Chat log retention**: How long are chat dialogue logs kept? Rotate by size, age, or keep forever?

@@ -15,7 +15,7 @@ You receive an investigation request with a scope and specific questions. You an
 
 ## Execution Model
 
-1. Read the investigation request: `scope`, `questions`, any `granted_write_paths`.
+1. Read the investigation request: `scope`, `questions`.
 2. Check `tools/inspector/` for existing analysis tools you can reuse.
 3. Plan your analysis approach.
 4. Work in `tmp/inspector-workspace/` for intermediate processing.

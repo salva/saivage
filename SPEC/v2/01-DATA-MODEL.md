@@ -68,7 +68,6 @@ The active plan. Contains only stages that remain to be done.
 
 ```typescript
 interface Plan {
-  version: number;                   // incremented on every plan update
   updated_at: string;
   current_stage_id: string | null;   // stage currently being executed
   stages: Stage[];
@@ -80,7 +79,6 @@ interface Stage {
   starting_points: string[];         // current state relevant to this stage
   expected_outcomes: string[];       // concrete, verifiable deliverables
   acceptance_criteria: string[];     // how to know the stage is done
-  dependencies: string[];            // stage IDs that must complete first (planning constraint — runtime is one-stage-at-a-time)
   references: string[];              // document paths relative to project root
   tags: string[];                    // for skill matching
 }
@@ -106,9 +104,8 @@ interface CompletedStage {
   actual_outcomes: string[];         // what actually happened
   started_at: string;
   completed_at: string;
-  result: "completed" | "failed" | "escalated";
+  result: "completed" | "failed" | "escalated" | "aborted";
   summary: string;                   // from Manager's stage summary
-  plan_version: number;              // which plan version created this stage
 }
 ```
 
@@ -135,7 +132,7 @@ interface Task {
   description: string;               // detailed work description
   checklist: ChecklistItem[];
   dependencies: string[];            // task IDs that must complete first
-  status: "pending" | "in-progress" | "completed" | "failed";
+  status: "pending" | "in-progress" | "completed" | "failed" | "aborted";
   tags?: string[];                   // for skill matching (inherits stage tags if absent)
   started_at?: string;
   completed_at?: string;
@@ -203,12 +200,12 @@ interface Issue {
 
 **Path:** `<project>/.saivage/stages/<stage-id>/summary.json`
 
-Written by the Manager when all tasks complete (or on escalation). Consumed by the Planner.
+Written by the Manager when all tasks complete (or on escalation/abort). Consumed by the Planner.
 
 ```typescript
 interface StageSummary {
   stage_id: string;
-  result: "completed" | "failed" | "escalated";
+  result: "completed" | "failed" | "escalated" | "aborted";
   summary: string;                   // aggregated narrative
   tasks_completed: number;
   tasks_failed: number;
@@ -217,6 +214,7 @@ interface StageSummary {
   outcomes_missed: string[];         // which were not
   issues: Issue[];                   // aggregated from task reports
   escalation?: Escalation;           // if result == "escalated" (see §13)
+  abort_reason?: string;             // if result == "aborted" — captured from urgent note
   started_at: string;
   completed_at: string;
   duration_ms: number;
@@ -239,6 +237,7 @@ interface UserNote {
   content: string;                   // the user's input/direction
   created_at: string;
   permanent: boolean;                // false = delete on next replan
+  urgent: boolean;                   // true = abort active agents and replan immediately
   acknowledged_at?: string;          // when Planner processed it
   planner_response?: string;         // how the Planner acted on it
 }
@@ -270,7 +269,6 @@ interface InspectionRequest {
   id: string;                        // same as report id
   scope: string;                     // what to investigate
   questions: string[];               // specific questions to answer
-  granted_write_paths?: string[];    // rare: files Inspector may modify
   requested_at: string;
   requested_by: "planner" | "chat";
   chat_channel?: string;             // if from chat, which channel to reply to
@@ -292,7 +290,8 @@ interface SkillEntry {
   name: string;
   file: string;                      // relative path to .md file
   description: string;
-  triggers: string[];                // e.g. "keyword:pandas", "tool:web_search", "path:*.py", "tag:data"
+  triggers: string[];                // e.g. "keyword:pandas", "tool:web_search", "path:*.py", "tag:data", "agent:coder"
+  target_agents?: string[];          // agent types this skill applies to (omit = all agents)
   created_at: string;
   updated_at: string;
 }

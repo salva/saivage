@@ -39,8 +39,12 @@ Choose triggers that will correctly match tasks where this skill is relevant:
 | `tool:<name>`    | exact match       | Task uses or mentions the named tool   |
 | `path:<glob>`    | glob pattern      | Any file in task scope matches         |
 | `tag:<label>`    | exact match       | Task or stage has the given tag        |
+| `agent:<type>`   | exact match       | Current agent is the given type        |
 
 Choose triggers that are **precise enough** to avoid loading the skill for unrelated tasks, but **broad enough** to catch all relevant ones. Usually 2-4 triggers per skill.
+
+### 2b. Define Target Agents (optional)
+If the skill only applies to certain agent types, set `target_agents` in the index entry. For example, a code-quality skill might target `["coder"]`, while a planning-strategy skill might target `["planner", "manager"]`. **Omit** `target_agents` if the skill applies to all agents.
 
 ### 3. Update the Index
 Add an entry to `.saivage/skills/index.json`:
@@ -51,6 +55,7 @@ Add an entry to `.saivage/skills/index.json`:
   "file": "skills/skill-name.md",
   "description": "One-line description of what this skill teaches.",
   "triggers": ["keyword:oauth", "tag:authentication", "path:src/auth/*"],
+  "target_agents": ["coder"],
   "created_at": "<ISO 8601>",
   "updated_at": "<ISO 8601>"
 }
