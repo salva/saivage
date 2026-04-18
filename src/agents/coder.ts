@@ -1,5 +1,5 @@
 /**
- * Saivage v2 — Coder Agent
+ * Saivage — Coder Agent
  * Executes coding/testing/documentation tasks, writes code, runs tests,
  * commits changes, produces TaskReport.
  */

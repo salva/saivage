@@ -1,32 +1,11 @@
 /**
- * Saivage v2 — Type definitions and Zod schemas
+ * Saivage — Type definitions and Zod schemas
  * All interfaces from SPEC/v2/01-DATA-MODEL.md
  */
 
 import { z } from "zod";
 
-// ─── 1. Global Config ───────────────────────────────────────────────────────
-
-export const GlobalConfigSchema = z.object({
-  providers: z.record(
-    z.string(),
-    z.object({
-      type: z.string(),
-      models: z.record(z.string(), z.string()),
-      timeout_ms: z.number().default(120_000),
-      max_retry_duration_ms: z.number().default(600_000),
-      failover: z.string().optional(),
-    }),
-  ),
-  telegram: z.object({
-    bot_token: z.string(),
-    user_id: z.number(),
-  }),
-  auth_dir: z.string().default("~/.saivage/auth/"),
-});
-export type GlobalConfig = z.output<typeof GlobalConfigSchema>;
-
-// ─── 2. Project Config ──────────────────────────────────────────────────────
+// ─── 1. Project Config ──────────────────────────────────────────────────────
 
 export const ProjectConfigSchema = z.object({
   project_name: z.string(),

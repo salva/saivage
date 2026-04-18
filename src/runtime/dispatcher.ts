@@ -1,5 +1,5 @@
 /**
- * Saivage v2 — Tool-call Dispatcher
+ * Saivage — Tool-call Dispatcher
  * Nested tool-call pattern: intercept agent-dispatch calls, suspend parent,
  * spawn child, resume parent with result. Supports parallel dispatch with
  * resume-on-each.

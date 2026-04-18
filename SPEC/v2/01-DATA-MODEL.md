@@ -5,14 +5,14 @@ Timestamps are ISO 8601 strings. IDs are opaque strings (nanoid or UUID).
 
 ---
 
-## 1. Global Config
+## 1. Runtime Config
 
-**Path:** `~/.saivage/config.json`
+**Path:** `<project>/.saivage/saivage.json`
 
-System-wide settings, not project-specific.
+Runtime/provider settings stored inside the project.
 
 ```typescript
-interface GlobalConfig {
+interface RuntimeConfig {
   providers: {
     [name: string]: {                // e.g. "github-copilot", "anthropic"
       type: string;                  // provider type
@@ -28,7 +28,7 @@ interface GlobalConfig {
     bot_token: string;
     user_id: number;
   };
-  auth_dir: string;                  // path to auth tokens (default: "~/.saivage/auth/")
+  auth_dir: string;                  // path to auth tokens (default: ".saivage/auth/")
 }
 ```
 

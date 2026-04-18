@@ -1,5 +1,5 @@
 /**
- * Saivage v2 — Context Compaction
+ * Saivage — Context Compaction
  * Track token usage, trigger at threshold, generate summary, replace history.
  * Max compactions per conversation (default: 3).
  */

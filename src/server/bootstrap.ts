@@ -1,5 +1,5 @@
 /**
- * Saivage v2 — Bootstrap
+ * Saivage — Bootstrap
  * Wires all v2 components together: loads config, initializes providers,
  * MCP runtime, event bus, Plan MCP service, registers agent spawners,
  * runs crash recovery, starts the Planner, handles graceful shutdown.
@@ -30,8 +30,8 @@ import type { ChildSpawner } from "../runtime/dispatcher.js";
 import { agentId } from "../ids.js";
 import { log } from "../log.js";
 
-/** Saivage v2 runtime context — returned by bootstrap. */
-export interface SaivageV2Runtime {
+/** Saivage runtime context — returned by bootstrap. */
+export interface SaivageRuntime {
   config: SaivageConfig;
   router: ModelRouter;
   mcpRuntime: McpRuntime;
@@ -43,10 +43,10 @@ export interface SaivageV2Runtime {
 }
 
 /**
- * Bootstrap the Saivage v2 system.
+ * Bootstrap the Saivage system.
  *
- * 1. Load global config
- * 2. Discover/load project
+ * 1. Discover/load project
+ * 2. Load runtime config
  * 3. Initialize providers + MCP runtime
  * 4. Register Plan MCP service
  * 5. Run crash recovery
@@ -54,12 +54,8 @@ export interface SaivageV2Runtime {
  */
 export async function bootstrap(
   projectPath?: string,
-): Promise<SaivageV2Runtime> {
-  // 1. Load global config (v1 config for provider creds)
-  const config = loadConfig();
-  log.info("[v2] Config loaded");
-
-  // 2. Discover project
+): Promise<SaivageRuntime> {
+  // 1. Discover project
   const projectRoot = projectPath ?? discoverProject(process.cwd());
   if (!projectRoot) {
     throw new Error(
@@ -69,9 +65,13 @@ export async function bootstrap(
   const project = loadProject(projectRoot);
   log.info(`[v2] Project: ${project.projectRoot}`);
 
-  // Set env vars for subprocess inheritance
+  // Set env vars for subprocess inheritance and project-local path resolution.
   process.env["SAIVAGE_ROOT"] = project.saivageDir;
   process.env["PROJECT_ROOT"] = project.projectRoot;
+
+  // 2. Load project-local runtime config
+  const config = loadConfig(true, project.projectRoot);
+  log.info("[v2] Config loaded");
 
   // 3. Initialize model router + OAuth
   const router = new ModelRouter(config);
@@ -117,7 +117,7 @@ export async function bootstrap(
   const runtimeState = createRuntimeState();
   await writeRuntimeState(project.paths.runtimeState, runtimeState);
 
-  const runtime: SaivageV2Runtime = {
+  const runtime: SaivageRuntime = {
     config,
     router,
     mcpRuntime,
@@ -143,7 +143,7 @@ export async function bootstrap(
  * This is the function that wires Planner → Manager → Coder/Researcher.
  */
 export function createChildSpawner(
-  runtime: SaivageV2Runtime,
+  runtime: SaivageRuntime,
 ): ChildSpawner {
   return async (
     role: import("../agents/types.js").AgentRole,
@@ -211,7 +211,7 @@ export function createChildSpawner(
  * Start the Planner agent and run the autonomous loop.
  */
 export async function runPlanner(
-  runtime: SaivageV2Runtime,
+  runtime: SaivageRuntime,
 ): Promise<AgentResult> {
   const { project, router, mcpRuntime } = runtime;
 

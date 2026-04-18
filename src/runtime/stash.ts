@@ -4,15 +4,17 @@
  */
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+import { saivageDir } from "../config.js";
 import { log } from "../log.js";
 
-const STASH_DIR = join(homedir(), ".saivage", "stash");
+function stashDir(): string {
+  return join(saivageDir(), "tmp", "stash");
+}
 
 /** Ensure stash directory exists */
 function ensureDir(): void {
-  mkdirSync(STASH_DIR, { recursive: true });
+  mkdirSync(stashDir(), { recursive: true });
 }
 
 /**
@@ -22,7 +24,7 @@ export function stashResult(content: string, toolName: string): string {
   ensureDir();
   const id = randomUUID().slice(0, 12);
   const filename = `${toolName}_${id}.txt`;
-  const filepath = join(STASH_DIR, filename);
+  const filepath = join(stashDir(), filename);
   writeFileSync(filepath, content, "utf-8");
   log.info(`Stashed ${content.length} chars from tool "${toolName}" → ${filepath}`);
   return filepath;
@@ -33,9 +35,10 @@ export function stashResult(content: string, toolName: string): string {
  */
 export function readStash(filepath: string, offset = 0, length = 10_000): { content: string; totalSize: number; offset: number; length: number } {
   // Security: only allow reading from the stash directory
-  const resolved = join(filepath);
-  if (!resolved.startsWith(STASH_DIR)) {
-    throw new Error(`read_stash only works on stashed files under ${STASH_DIR}`);
+  const stashRoot = resolve(stashDir());
+  const resolved = resolve(filepath);
+  if (resolved !== stashRoot && !resolved.startsWith(`${stashRoot}/`)) {
+    throw new Error(`read_stash only works on stashed files under ${stashRoot}`);
   }
   const full = readFileSync(filepath, "utf-8");
   const chunk = full.slice(offset, offset + length);
@@ -54,8 +57,9 @@ export function cleanStash(maxAgeMs = 24 * 60 * 60 * 1000): number {
   ensureDir();
   const now = Date.now();
   let removed = 0;
-  for (const f of readdirSync(STASH_DIR)) {
-    const fp = join(STASH_DIR, f);
+  const dir = stashDir();
+  for (const f of readdirSync(dir)) {
+    const fp = join(dir, f);
     try {
       const st = statSync(fp);
       if (now - st.mtimeMs > maxAgeMs) {

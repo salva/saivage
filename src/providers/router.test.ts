@@ -14,19 +14,17 @@ function makeConfig(overrides: Partial<SaivageConfig> = {}): SaivageConfig {
     },
     providers: {},
     failover: {},
-    server: { port: 7777, host: "0.0.0.0" },
+    server: { port: 8080, host: "0.0.0.0" },
     agent: { maxConcurrentAgents: 3 },
-    generator: { language: "typescript", testBeforeRegister: true, sandbox: true },
     runtime: {
       maxServices: 50,
       restartOnCrash: true,
       healthCheckIntervalMs: 30000,
       idleShutdownMs: 300000,
     },
-    versions: { storagePath: "~/.saivage/versions", retainCount: 5 },
-    sandbox: { timeoutMs: 120000, secondaryInstancePort: 7778 },
-    watchdog: { enabled: true, healthCheckIntervalMs: 5000, restartTimeoutMs: 60000 },
+    project: { root: "", venv: "", description: "" },
     security: { injectionScanner: true, maxScanLengthBytes: 100000 },
+    telegram: { botToken: "", allowedUserIds: [] },
     ...overrides,
   };
 }

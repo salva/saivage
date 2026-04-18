@@ -71,8 +71,8 @@ All LLM API calls use exponential backoff with jitter:
 
 | Parameter       | Default   | Config path                           |
 |-----------------|-----------|---------------------------------------|
-| `timeout_ms`    | 120000    | `GlobalConfig.providers[name].timeout_ms` |
-| `max_retry_duration_ms` | 600000 (10 min) | `GlobalConfig.providers[name].max_retry_duration_ms` |
+| `timeout_ms`    | 120000    | `RuntimeConfig.providers[name].timeout_ms` |
+| `max_retry_duration_ms` | 600000 (10 min) | `RuntimeConfig.providers[name].max_retry_duration_ms` |
 | `initial_delay` | 1000 ms   | —                                     |
 | `max_delay`     | 60000 ms  | —                                     |
 | `multiplier`    | 2         | —                                     |
@@ -102,7 +102,7 @@ The runtime never crashes on bad tool calls — it always returns an error resul
 
 ### 2.3 Provider Failover
 
-If a provider becomes persistently unavailable (5+ consecutive retryable errors within 2 minutes), and a `failover` provider is configured in GlobalConfig, the runtime switches to the failover provider for the remainder of the current agent's conversation. The switch is logged. On next agent invocation, the primary provider is tried first again.
+If a provider becomes persistently unavailable (5+ consecutive retryable errors within 2 minutes), and a `failover` provider is configured in RuntimeConfig, the runtime switches to the failover provider for the remainder of the current agent's conversation. The switch is logged. On next agent invocation, the primary provider is tried first again.
 
 ---
 

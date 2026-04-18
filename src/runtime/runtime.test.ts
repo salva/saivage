@@ -77,11 +77,6 @@ function makeProjectContext(root: string): ProjectContext {
       },
       skills: { max_per_agent: 5 },
     },
-    globalConfig: {
-      providers: {},
-      telegram: { bot_token: "", user_id: 0 },
-      auth_dir: "",
-    },
     paths: {
       plan: join(saivageDir, "plan.json"),
       planHistory: join(saivageDir, "plan-history.json"),

@@ -1,5 +1,5 @@
 /**
- * Saivage v2 — Plan MCP Service
+ * Saivage — Plan MCP Service
  * 11 tools for plan state management per 03-PLAN-MCP-SERVICE.md.
  * Atomic writes, schema validation, history append.
  */

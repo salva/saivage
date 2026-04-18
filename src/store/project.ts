@@ -1,17 +1,14 @@
 /**
- * Saivage v2 — Project initializer
+ * Saivage — Project initializer
  * Initialize/discover .saivage/ directory, load config, resolve paths.
  */
 
 import { join } from "node:path";
 import { existsSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { readDoc, writeDoc, ensureDir } from "./documents.js";
 import {
   ProjectConfigSchema,
-  GlobalConfigSchema,
   type ProjectConfig,
-  type GlobalConfig,
 } from "../types.js";
 
 /** Resolved paths and loaded config for a project. */
@@ -22,8 +19,6 @@ export interface ProjectContext {
   saivageDir: string;
   /** Loaded project config. */
   config: ProjectConfig;
-  /** Loaded global config. */
-  globalConfig: GlobalConfig;
 
   // Convenience resolved paths
   paths: {
@@ -41,30 +36,6 @@ export interface ProjectContext {
     inspectorWorkspace: string;
     work: string;
   };
-}
-
-/** Global saivage directory (~/.saivage/). */
-export function globalSaivageDir(): string {
-  return join(homedir(), ".saivage");
-}
-
-/** Path to the global config file. */
-export function globalConfigPath(): string {
-  return join(globalSaivageDir(), "config.json");
-}
-
-/** Load the global config from ~/.saivage/config.json. Returns defaults if not found. */
-export function loadGlobalConfig(): GlobalConfig {
-  const path = globalConfigPath();
-  if (!existsSync(path)) {
-    // Return sensible defaults when no v2 global config exists
-    return {
-      providers: {},
-      telegram: { bot_token: "", user_id: 0 },
-      auth_dir: join(globalSaivageDir(), "auth"),
-    };
-  }
-  return readDoc(path, GlobalConfigSchema);
 }
 
 /** Discover the .saivage/ directory by walking up from startDir. */
@@ -87,7 +58,6 @@ export function loadProject(projectRoot: string): ProjectContext {
   const configPath = join(saivageDir, "config.json");
 
   const config = readDoc(configPath, ProjectConfigSchema);
-  const globalConfig = loadGlobalConfig();
 
   const paths = {
     plan: join(saivageDir, "plan.json"),
@@ -105,7 +75,7 @@ export function loadProject(projectRoot: string): ProjectContext {
     work: join(saivageDir, "tmp", "work"),
   };
 
-  return { projectRoot, saivageDir, config, globalConfig, paths };
+  return { projectRoot, saivageDir, config, paths };
 }
 
 /**

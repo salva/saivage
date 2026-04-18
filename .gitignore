@@ -2,7 +2,6 @@ node_modules/
 dist/
 *.tsbuildinfo
 .env
-~/.saivage/
 
 # OS
 .DS_Store
@@ -17,6 +16,11 @@ Thumbs.db
 tmp/
 
 # v2 runtime artifacts (may leak via bind-mount from container)
+.saivage/saivage.json
+.saivage/global.json
+.saivage/auth/
+.saivage/auth-profiles.json
+.saivage/registry.json
 .saivage/stages/
 .saivage/inspections/
 .saivage/notes/

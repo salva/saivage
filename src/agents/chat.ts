@@ -1,5 +1,5 @@
 /**
- * Saivage v2 — Chat Agent
+ * Saivage — Chat Agent
  * User-facing conversational agent. Reads project state, creates notes
  * for the Planner, dispatches the Inspector, pushes notifications.
  */

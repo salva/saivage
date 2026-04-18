@@ -1,5 +1,5 @@
 /**
- * Saivage v2 — Web Server
+ * Saivage — Web Server
  * Fastify HTTP + WebSocket server exposing v2 plan/stage/task state,
  * chat via WebSocket, and telemetry endpoints.
  */
@@ -8,7 +8,7 @@ import Fastify from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
 import { join } from "node:path";
-import type { SaivageV2Runtime } from "./bootstrap.js";
+import type { SaivageRuntime } from "./bootstrap.js";
 import { readDocOrNull, listDocs } from "../store/documents.js";
 import {
   PlanSchema,
@@ -30,8 +30,8 @@ export interface ServerOptions {
 }
 
 export async function startServer(
-  runtime: SaivageV2Runtime,
-  options: ServerOptions = { port: 4800, host: "0.0.0.0" },
+  runtime: SaivageRuntime,
+  options: ServerOptions = { port: 8080, host: "0.0.0.0" },
 ): Promise<{ close: () => Promise<void> }> {
   const app = Fastify({ logger: false });
 
@@ -178,13 +178,13 @@ export async function startServer(
   };
 }
 
-function resolveModelSpec(runtime: SaivageV2Runtime): string {
+function resolveModelSpec(runtime: SaivageRuntime): string {
   const overrides = runtime.project.config.model_overrides;
   if (overrides?.chat) return overrides.chat;
   return runtime.project.config.provider ?? "openai-codex/gpt-5.3-codex";
 }
 
-function getEventFilter(runtime: SaivageV2Runtime) {
+function getEventFilter(runtime: SaivageRuntime) {
   const filters = runtime.project.config.notifications?.filters;
   if (!filters) return undefined;
   return {

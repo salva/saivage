@@ -1,5 +1,5 @@
 /**
- * Saivage v2 — Agent Conventions
+ * Saivage — Agent Conventions
  * Per-agent territory definitions. Violation logging (warnings, not blocks).
  */
 

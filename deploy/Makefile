@@ -23,7 +23,7 @@ provision:
 	@bash $(SCRIPTS)/provision.sh
 
 configure:
-	@$(SSH) "mkdir -p ~/.saivage && nano ~/.saivage/saivage.json"
+	@$(SSH) "mkdir -p /opt/saivage/.saivage && nano /opt/saivage/.saivage/saivage.json"
 
 start-container:
 	@sudo lxc-start -n $(CONTAINER_NAME)

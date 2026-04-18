@@ -1,7 +1,7 @@
 /**
  * OAuth credential store.
  *
- * Persists auth profiles to ~/.saivage/auth-profiles.json.
+ * Persists auth profiles to <project>/.saivage/auth-profiles.json.
  * Supports login, token refresh, and API key retrieval.
  * Mirrors the OpenClaw/pi-ai pattern.
  */

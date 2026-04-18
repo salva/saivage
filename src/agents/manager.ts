@@ -1,5 +1,5 @@
 /**
- * Saivage v2 — Manager Agent
+ * Saivage — Manager Agent
  * Receives a stage, decomposes into tasks, dispatches via run_coder()/
  * run_researcher(), processes TaskReports, handles failures, writes StageSummary.
  */

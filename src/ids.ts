@@ -1,5 +1,5 @@
 /**
- * Saivage v2 — ID generator
+ * Saivage — ID generator
  * nanoid-based with entity prefixes: stg-, tsk-, note-, insp-, chat-
  */
 

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 
 // --- Schema ---
@@ -28,7 +28,7 @@ const configSchema = z.object({
 
   server: z
     .object({
-      port: z.number().default(7777),
+      port: z.number().default(8080),
       host: z.string().default("0.0.0.0"),
     })
     .default({}),
@@ -39,53 +39,12 @@ const configSchema = z.object({
     })
     .default({}),
 
-  generator: z
-    .object({
-      language: z.string().default("typescript"),
-      testBeforeRegister: z.boolean().default(true),
-      sandbox: z.boolean().default(true),
-    })
-    .default({}),
-
   runtime: z
     .object({
       maxServices: z.number().default(50),
       restartOnCrash: z.boolean().default(true),
       healthCheckIntervalMs: z.number().default(30_000),
       idleShutdownMs: z.number().default(300_000),
-    })
-    .default({}),
-
-  versions: z
-    .object({
-      storagePath: z.string().default("~/.saivage/versions"),
-      retainCount: z.number().default(5),
-    })
-    .default({}),
-
-  sandbox: z
-    .object({
-      timeoutMs: z.number().default(120_000),
-      secondaryInstancePort: z.number().default(7778),
-    })
-    .default({}),
-
-  watchdog: z
-    .object({
-      enabled: z.boolean().default(true),
-      healthCheckIntervalMs: z.number().default(5_000),
-      restartTimeoutMs: z.number().default(60_000),
-    })
-    .default({}),
-
-  autonomy: z
-    .object({
-      enabled: z.boolean().default(false),
-      planningCooldownMs: z.number().default(60_000), // min 1 min between planning cycles
-      maxTasksPerCycle: z.number().default(3),
-      objectives: z.array(z.string()).default([]),
-      planDocsPath: z.string().default(".saivage/planning"), // relative to project.root
-      retrospectiveInterval: z.number().default(10), // run retrospective every N completed tasks
     })
     .default({}),
 
@@ -111,24 +70,40 @@ const configSchema = z.object({
     })
     .default({}),
 
-  telemetry: z
-    .object({
-      enabled: z.boolean().default(true),
-      intervalMs: z.number().default(30_000),
-    })
-    .default({}),
+
 });
 
 export type SaivageConfig = z.infer<typeof configSchema>;
 
 // --- Paths ---
 
-export function saivageDir(): string {
-  return join(homedir(), ".saivage");
+export function resolveProjectRoot(startDir = process.cwd()): string {
+  const envProjectRoot = process.env["PROJECT_ROOT"];
+  if (envProjectRoot) return envProjectRoot;
+
+  const envSaivageRoot = process.env["SAIVAGE_ROOT"];
+  if (envSaivageRoot) return dirname(envSaivageRoot);
+
+  let dir = startDir;
+  while (true) {
+    if (existsSync(join(dir, ".saivage"))) {
+      return dir;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return startDir;
+    dir = parent;
+  }
 }
 
-export function configPath(): string {
-  return join(saivageDir(), "saivage.json");
+export function saivageDir(projectRoot?: string): string {
+  if (!projectRoot && process.env["SAIVAGE_ROOT"]) {
+    return process.env["SAIVAGE_ROOT"];
+  }
+  return join(projectRoot ?? resolveProjectRoot(), ".saivage");
+}
+
+export function configPath(projectRoot?: string): string {
+  return join(saivageDir(projectRoot), "saivage.json");
 }
 
 // --- Env var interpolation ---
@@ -162,16 +137,13 @@ export function expandHome(p: string): string {
 // --- Load ---
 
 let cached: SaivageConfig | null = null;
+let cachedConfigDir: string | null = null;
 
-export function loadConfig(force = false): SaivageConfig {
-  if (cached && !force) return cached;
+export function loadConfig(force = false, projectRoot?: string): SaivageConfig {
+  const dir = saivageDir(projectRoot);
+  if (cached && !force && cachedConfigDir === dir) return cached;
 
-  const dir = saivageDir();
-  const fp = configPath();
-
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
+  const fp = configPath(projectRoot);
 
   let raw: unknown = {};
   if (existsSync(fp)) {
@@ -181,6 +153,7 @@ export function loadConfig(force = false): SaivageConfig {
 
   const interpolated = deepInterpolate(raw);
   cached = configSchema.parse(interpolated);
+  cachedConfigDir = dir;
   return cached;
 }
 
@@ -188,11 +161,11 @@ export function ensureDir(p: string): void {
   if (!existsSync(p)) mkdirSync(p, { recursive: true });
 }
 
-export function writeDefaultConfig(): void {
-  const fp = configPath();
+export function writeDefaultConfig(projectRoot?: string): void {
+  const fp = configPath(projectRoot);
   if (existsSync(fp)) return;
 
-  ensureDir(saivageDir());
+  ensureDir(saivageDir(projectRoot));
   const defaultConfig = {
     models: {
       orchestrator: "anthropic/claude-sonnet-4-20250514",
@@ -209,7 +182,7 @@ export function writeDefaultConfig(): void {
       llamacpp: { baseUrl: "http://localhost:8080" },
     },
     failover: {},
-    server: { port: 7777, host: "0.0.0.0" },
+    server: { port: 8080, host: "0.0.0.0" },
     agent: { maxConcurrentAgents: 3 },
   };
   writeFileSync(fp, JSON.stringify(defaultConfig, null, 2) + "\n", "utf-8");

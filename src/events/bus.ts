@@ -1,5 +1,5 @@
 /**
- * Saivage v2 — Event Bus
+ * Saivage — Event Bus
  * In-process pub/sub for runtime events. Chat agents subscribe to receive
  * notifications about stage completions, failures, escalations, etc.
  */

@@ -165,13 +165,13 @@ Common causes: stale `node_modules` (remove and retry), native module build issu
 
 ### Port conflict
 
-If the service won't start because port 7777 is already in use:
+If the service won't start because port 8080 is already in use:
 
 ```bash
-ssh saivage "ss -tlnp | grep 7777"
+ssh saivage "ss -tlnp | grep 8080"
 ```
 
-Kill the conflicting process or change the port in `~/.saivage/saivage.json` inside the container.
+Kill the conflicting process or change the port in `/opt/saivage/.saivage/saivage.json` inside the container.
 
 ### NVIDIA/CUDA not working
 
@@ -196,6 +196,6 @@ ssh saivage "dpkg -l | grep nvidia"      # container
 - **Provisioning**: `deploy/scripts/provision.sh`
 - **Default config**: `deploy/config/saivage.json`
 - **LXC config** (host, needs sudo): `/var/lib/lxc/saivage/config`
-- **Runtime config** (inside container): `~/.saivage/saivage.json`
+- **Runtime config** (inside container): `/opt/saivage/.saivage/saivage.json`
 - **Systemd unit** (inside container): `/etc/systemd/system/saivage.service`
 - **Source** (inside container): `/opt/saivage` (bind mount of host project root)

@@ -1,5 +1,5 @@
 /**
- * Saivage v2 — Inspector Agent
+ * Saivage — Inspector Agent
  * One-shot deep analysis agent. Investigates project state, produces
  * InspectionReport with findings, recommendations, metrics.
  */

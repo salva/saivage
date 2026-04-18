@@ -15,10 +15,7 @@
     "declarationMap": true,
     "sourceMap": true,
     "isolatedModules": true,
-    "verbatimModuleSyntax": true,
-    "paths": {
-      "#src/*": ["./src/*"]
-    }
+    "verbatimModuleSyntax": true
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist", "web", "**/*.test.ts"]

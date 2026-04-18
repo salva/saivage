@@ -1,10 +1,9 @@
 /**
- * Saivage v2 — Main barrel export
+ * Saivage — Main barrel export
  */
 
 // Types
 export type {
-  GlobalConfig,
   ProjectConfig,
   Plan,
   Stage,
@@ -42,8 +41,6 @@ export {
   loadProject,
   discoverProject,
   initProject,
-  loadGlobalConfig,
-  globalSaivageDir,
   type ProjectContext,
 } from "./store/project.js";
 
@@ -86,6 +83,6 @@ export {
   bootstrap,
   runPlanner,
   createChildSpawner,
-  type SaivageV2Runtime,
+  type SaivageRuntime,
 } from "./server/bootstrap.js";
 export { startServer, type ServerOptions } from "./server/server.js";

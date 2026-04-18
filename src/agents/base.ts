@@ -1,5 +1,5 @@
 /**
- * Saivage v2 — Agent Base Class
+ * Saivage — Agent Base Class
  * Wraps LLM provider calls, assembles context (system prompt + skills + references),
  * manages the conversation loop, tool execution, compaction, self-check, and stash.
  */

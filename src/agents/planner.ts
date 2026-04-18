@@ -1,5 +1,5 @@
 /**
- * Saivage v2 — Planner Agent
+ * Saivage — Planner Agent
  * Top-level strategic agent. Owns the plan, dispatches stages to the Manager,
  * dispatches investigations to the Inspector, processes user notes, adapts.
  */

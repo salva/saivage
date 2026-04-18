@@ -1,5 +1,5 @@
 /**
- * Saivage v2 — Researcher Agent
+ * Saivage — Researcher Agent
  * Gathers information from external sources, organizes findings under
  * research/, produces TaskReport.
  */

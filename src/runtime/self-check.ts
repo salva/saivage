@@ -1,5 +1,5 @@
 /**
- * Saivage v2 — Self-Check
+ * Saivage — Self-Check
  * Inject progress-assessment prompt every N tool-call rounds.
  * Stuck detection via context limits + max compactions.
  */

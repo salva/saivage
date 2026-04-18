@@ -1,5 +1,5 @@
 /**
- * Saivage v2 — Note Lifecycle
+ * Saivage — Note Lifecycle
  * Runtime-managed note lifecycle: inject unacknowledged notes into Planner
  * context on resume, set acknowledged_at after Planner's next planning
  * action, delete volatile notes after acknowledgment, re-inject permanent

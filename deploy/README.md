@@ -60,7 +60,7 @@ Place your configuration in `config/saivage.json`. After `make provision`, edit 
 
 ```bash
 make shell
-nano ~/.saivage/saivage.json
+nano /opt/saivage/.saivage/saivage.json
 ```
 
 At minimum, set your model provider API key:

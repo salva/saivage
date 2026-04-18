@@ -1,5 +1,5 @@
 /**
- * Saivage v2 — Abort Mechanism
+ * Saivage — Abort Mechanism
  * Detect urgent notes → terminate active chain bottom-up →
  * git checkout -- . (tracked files only) → Manager writes partial
  * StageSummary (aborted) → Planner resumes.

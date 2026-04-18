@@ -1,5 +1,5 @@
 /**
- * Saivage v2 — Document Store
+ * Saivage — Document Store
  * Generic JSON CRUD with atomic writes and Zod validation.
  */
 

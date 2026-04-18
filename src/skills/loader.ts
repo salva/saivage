@@ -1,12 +1,11 @@
 /**
- * Saivage v2 — Skill Loader
+ * Saivage — Skill Loader
  * Read skills/index.json, trigger matching, target_agents filtering,
  * ranking, top-N selection.
  */
 
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
 import { readDocOrNull } from "../store/documents.js";
 import { SkillIndexSchema, type SkillEntry, type SkillIndex } from "../types.js";
 import type { AgentRole } from "../agents/types.js";
@@ -37,9 +36,8 @@ export interface SkillMatchContext {
  * Load and resolve skills for an agent invocation.
  *
  * Discovery paths (in precedence order):
- * 1. Built-in: <SAIVAGE_ROOT>/skills/
- * 2. Global: ~/.saivage/skills/
- * 3. Project: <project>/.saivage/skills/
+ * 1. Built-in: <repo>/skills/
+ * 2. Project: <project>/.saivage/skills/
  */
 export function resolveSkills(
   context: SkillMatchContext,
@@ -110,11 +108,12 @@ function collectSkillEntries(
 ): EntryWithDir[] {
   const results: EntryWithDir[] = [];
   const seen = new Set<string>();
+  const thisDir = import.meta.dirname ?? __dirname;
 
-  // Discovery paths (project overrides global overrides builtin)
+  // Discovery paths (project overrides built-in)
   const dirs = [
     projectSkillsDir,
-    join(homedir(), ".saivage", "skills"),
+    join(thisDir, "..", "..", "skills"),
   ];
 
   for (const dir of dirs) {

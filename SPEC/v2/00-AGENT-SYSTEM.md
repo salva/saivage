@@ -8,7 +8,7 @@ Replace the v1 interactive orchestrator/coder/researcher loop with a **structure
 
 Inter-agent communication uses two complementary mechanisms: **tool-call invocation** for control flow (parent calls child, suspends, child returns result) and **JSON documents on disk** for persistence and auditability. A parent writes the task spec to disk, invokes the child via tool call, the child reads the spec from disk, does its work, writes results to disk, and returns a summary as the tool-call result. There are no in-memory message queues. This makes the system crash-recoverable, inspectable, and decoupled.
 
-All project documentation and agent state lives **inside the project directory** (e.g. `/project/foo/.saivage/`), not in a global `~/.saivage/`. Global config (`~/.saivage/config.json`) only stores system-wide settings (LLM credentials, Telegram tokens). Everything project-specific is project-local.
+All project documentation, agent state, runtime config, and auth state live **inside the project directory** (e.g. `/project/foo/.saivage/`). Nothing is stored in a global `~/.saivage/` directory.
 
 Files are separated into two categories:
 - **Persistent** (committed to git): plans, history, research, skills, stage summaries, inspection reports.
@@ -284,17 +284,12 @@ Every agent can signal that it cannot fulfill a requirement. The signal propagat
 
 ### 3.4 File System Layout
 
-Global config (system-wide, not project-specific):
-```
-~/.saivage/
-├── config.json                    # LLM credentials, Telegram tokens, system settings
-└── auth/                          # Provider auth tokens
-```
-
 Project-local (inside the project directory, e.g. `/project/foo/.saivage/`):
 ```
 <project>/.saivage/
 ├── config.json                    # Project objectives, model preferences
+├── saivage.json                   # Runtime/provider config
+├── auth/                          # Provider auth tokens
 │
 │── [PERSISTENT — committed to git]
 ├── plan.json                      # Active plan (stages remaining)
@@ -494,7 +489,7 @@ The Manager schedules skill generation when:
 
 ## 6. External Systems (Carried from v1)
 
-- **LLM Providers**: Router with model config, failover, timeout settings — same as v1. **Model precedence**: `ProjectConfig.model_overrides[role]` > `GlobalConfig.providers[name].models[role]` > most capable model available.
+- **LLM Providers**: Router with model config, failover, timeout settings — same as v1. **Model precedence**: `ProjectConfig.model_overrides[role]` > `RuntimeConfig.providers[name].models[role]` > most capable model available.
 - **MCP Providers**: Tool generation and runtime — same as v1.
 - **Web Interface**: Maintained from v1.
 - **Telegram Bot**: Maintained from v1 + push notification support with user-configurable filters.

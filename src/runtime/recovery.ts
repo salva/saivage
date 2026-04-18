@@ -1,5 +1,5 @@
 /**
- * Saivage v2 — Crash Recovery
+ * Saivage — Crash Recovery
  * On startup: read runtime.json, detect stale PID, reconstruct state
  * from disk, reset in-progress and aborted tasks to pending.
  */

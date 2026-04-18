@@ -92,7 +92,7 @@ These don't exist in Saivage and would give major capability boosts:
 1. **Wire security into agent loop** — Scanner/redactor exist but aren't called.
    Add to tool result processing in `base.ts` ReAct loop.
 
-2. **External MCP server config** — Allow `~/.saivage/saivage.json` to declare
+2. **External MCP server config** — Allow `<project>/.saivage/saivage.json` to declare
    external MCP servers by command+args (same format as Claude Desktop
    `mcp.json`). The runtime already supports this — just expose it.
 

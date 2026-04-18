@@ -290,8 +290,7 @@ Update an existing skill.
 
 ### Discovery Paths (precedence order)
 1. `<SAIVAGE_ROOT>/skills/` — builtin skills shipped with Saivage
-2. `~/.saivage/skills/` — user global skills
-3. `<PROJECT>/.saivage/skills/` — project-specific skills (highest precedence)
+2. `<PROJECT>/.saivage/skills/` — project-specific skills (highest precedence)
 
 ### v2 Adaptation
 - Add `target_agents` to frontmatter (v1 had `agentTypes`)
@@ -304,7 +303,7 @@ Update an existing skill.
 
 **Origin:** builtin (carried from v1)
 **Source:** `src/services/memory/service.ts`
-**Storage:** SQLite with FTS5 (`~/.saivage/data/memory.db`)
+**Storage:** SQLite with FTS5 (`<project>/.saivage/data/memory.db`)
 
 Long-term key-value store with full-text search. Used by agents to persist knowledge across sessions.
 
@@ -361,7 +360,7 @@ Delete a memory entry.
 
 **Origin:** builtin (carried from v1)
 **Source:** `src/services/index/service.ts`
-**Storage:** SQLite with FTS5 (`~/.saivage/data/index.db`)
+**Storage:** SQLite with FTS5 (`<project>/.saivage/data/index.db`)
 
 Full-text search index for project documents (conversations, work items, files, notes).
 
@@ -505,7 +504,7 @@ Managed by `McpRuntime` (carried from v1):
 ## Generated Services
 
 Agents (primarily Coder, directed by Manager) can **generate new MCP services** at runtime using the scaffold system from v1 (`src/generator/scaffold.ts`). Generated services:
-- Are registered in `~/.saivage/registry.json` with `origin: "generated"`.
+- Are registered in `<project>/.saivage/registry.json` with `origin: "generated"`.
 - Follow the same stdio transport protocol.
 - Are auto-discovered on next startup.
 - Can be created to wrap external APIs, data sources, or project-specific tooling.

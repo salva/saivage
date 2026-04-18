@@ -1,5 +1,5 @@
 /**
- * Saivage v2 — Agent types
+ * Saivage — Agent types
  * Base interfaces for the agent system.
  */
 

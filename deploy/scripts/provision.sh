@@ -141,7 +141,7 @@ run systemctl enable saivage
 
 echo "==> Provisioning complete."
 echo ""
-echo "  Configure:  make configure  (edit ~/.saivage/saivage.json)"
+echo "  Configure:  make configure  (edit /opt/saivage/.saivage/saivage.json)"
 echo "  Start:      make start"
 echo "  Logs:       make logs"
 echo "  Chat:       make chat"

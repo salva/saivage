@@ -194,7 +194,7 @@ Full agent behaviors, inputs, outputs, and trigger events are specified in [00-A
 The Provider Router manages all LLM API communication. It is a **singleton** reused from v1.
 
 **Responsibilities:**
-- **Model selection**: for each agent role, select the model from configuration. Precedence: `ProjectConfig.model_overrides[role]` → `GlobalConfig.providers[name].models[role]` → most capable available.
+- **Model selection**: for each agent role, select the model from configuration. Precedence: `ProjectConfig.model_overrides[role]` → `RuntimeConfig.providers[name].models[role]` → most capable available.
 - **Retry with backoff**: all retryable errors (HTTP 429, 5xx, timeouts) are retried with exponential backoff (1s→60s, ±20% jitter). Retries are bounded by a maximum retry duration per request (default: 10 minutes). If exceeded, the error is surfaced as an agent failure. Provider failover may resolve the issue before the timeout.
 - **Provider failover**: if a provider fails 5+ consecutive times within 2 minutes, switch to the configured failover provider. Try the primary again on the next agent invocation.
 - **Request timeout**: configurable per provider (default: 120s).
@@ -251,8 +251,7 @@ Skills inject project-specific knowledge into agent contexts at invocation time.
 
 **Discovery paths** (in precedence order):
 1. `<SAIVAGE_ROOT>/skills/` — builtin skills shipped with Saivage
-2. `~/.saivage/skills/` — user global skills
-3. `<PROJECT>/.saivage/skills/` — project-specific skills (highest precedence)
+2. `<PROJECT>/.saivage/skills/` — project-specific skills (highest precedence)
 
 **Generation**: the Manager can schedule skill-creation tasks when it detects reusable patterns. The Coder creates the `.md` file and updates `skills/index.json`.
 
@@ -272,7 +271,7 @@ A generic CRUD layer for all JSON documents on disk.
 
 ### 3.1 Storage Layout
 
-All project state lives inside `<project>/.saivage/`. Global config is at `~/.saivage/`.
+All Saivage state lives inside `<project>/.saivage/`.
 
 ```mermaid
 graph TB
@@ -297,11 +296,11 @@ graph TB
         SRC["(project source code)"]
     end
 
-    subgraph "Global (~/.saivage/)"
-        GCONF["config.json<br/><i>LLM creds, Telegram token</i>"]
+    subgraph "Project (.saivage/)"
+        GCONF["saivage.json<br/><i>Runtime/provider config</i>"]
         AUTH["auth/<br/><i>Provider tokens</i>"]
         REG["registry.json<br/><i>MCP service registry</i>"]
-        GSKILLS["skills/<br/><i>User global skills</i>"]
+        GSKILLS["skills/<br/><i>Project skills</i>"]
         MEMDB["data/memory.db<br/><i>Long-term memory (SQLite)</i>"]
         IDXDB["data/index.db<br/><i>Full-text index (SQLite)</i>"]
     end
@@ -660,7 +659,7 @@ graph TB
             FS["filesystem"] & SH["shell"] & GIT["git"] & WEB["web"]
             PLAN["plan"] & SK["skills"] & MEM["memory"] & IDX["index"]
         end
-        GLOBAL["~/.saivage/<br/>config, auth, data"]
+        GLOBAL["/home/salva/&lt;project&gt;/.saivage/<br/>config, auth, data"]
         PROJECT["/home/salva/&lt;project&gt;/.saivage/<br/>plan, stages, reports"]
     end
 
@@ -670,10 +669,10 @@ graph TB
 
 ### 8.2 Configuration
 
-**Two-tier configuration:**
+**Project-local configuration:**
 
-- **Global** (`~/.saivage/config.json`): LLM provider credentials (API keys, model assignments per role, timeout, failover), Telegram bot token and user ID, auth directory. Shared across all projects.
-- **Per-project** (`<project>/.saivage/config.json`): project name and objectives, provider selection, model overrides, notification preferences (channels, severity filters, category filters), skill loading budget, per-agent tuning (compaction threshold, self-check frequency, max compactions).
+- **Runtime/provider config** (`<project>/.saivage/saivage.json`): LLM provider credentials (API keys, model assignments per role, timeout, failover), Telegram bot token and user ID, auth directory.
+- **Project config** (`<project>/.saivage/config.json`): project name and objectives, provider selection, model overrides, notification preferences (channels, severity filters, category filters), skill loading budget, per-agent tuning (compaction threshold, self-check frequency, max compactions).
 
 Full schema in [01-DATA-MODEL.md](01-DATA-MODEL.md) §1-2.
 
