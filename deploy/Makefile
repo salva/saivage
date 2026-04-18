@@ -81,6 +81,8 @@ test:
 deploy:
 	@echo "==> Source is bind-mounted — rebuilding in container..."
 	@$(SSH) "cd /opt/saivage && npm ci && npm run build"
+	@echo "==> Refreshing systemd unit..."
+	@$(SSH) "sudo cp /opt/saivage/deploy/saivage.service /etc/systemd/system/saivage.service && sudo systemctl daemon-reload"
 	@echo "==> Restarting daemon..."
 	@$(SSH) "sudo systemctl restart saivage"
 	@echo "==> Deploy complete."

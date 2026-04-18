@@ -19,7 +19,7 @@ import {
   discoverProject,
   type ProjectContext,
 } from "../store/project.js";
-import { recoverFromCrash, writeRuntimeState, createRuntimeState } from "../runtime/recovery.js";
+import { recoverFromCrash, writeRuntimeState, createRuntimeState, isAnotherInstanceRunning } from "../runtime/recovery.js";
 import { PlannerAgent } from "../agents/planner.js";
 import { ManagerAgent } from "../agents/manager.js";
 import { CoderAgent } from "../agents/coder.js";
@@ -99,7 +99,14 @@ export async function bootstrap(
       planService.handleToolCall(toolName, args),
   );
 
-  // 6. Crash recovery
+  // 6. Single-instance guard
+  if (isAnotherInstanceRunning(project.paths.runtimeState)) {
+    throw new Error(
+      "Another Saivage instance is already running. Stop it first or check runtime.json.",
+    );
+  }
+
+  // 7. Crash recovery
   const recovery = await recoverFromCrash(project, planService);
   if (recovery.recovered) {
     log.info(`[v2] Crash recovery completed (stale state from previous run)`);
@@ -108,10 +115,10 @@ export async function bootstrap(
     }
   }
 
-  // 7. Event bus
+  // 8. Event bus
   const eventBus = new EventBus();
 
-  // 8. Clean stale stash files
+  // 9. Clean stale stash files
   cleanStash();
 
   // Write initial runtime state

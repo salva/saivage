@@ -133,6 +133,8 @@ Stage specified files and commit.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
 | `files` | string[] | yes | — | Files to stage (relative to project root) |
 | `message` | string | yes | — | Commit message |
 | `task_id` | string | no | — | If provided, message is prefixed with `[tsk-<id>]` |
@@ -256,7 +258,7 @@ Manages `plan.json` and `plan-history.json`. All reads and writes go through thi
 #### `list_skills`
 List all available skills with metadata.
 
-**Returns:** Array of `{ name, description, triggers, target_agents, scope, updated_at }`.
+**Returns:** `{ skills: [{ name, file, description, triggers, target_agents?, created_at, updated_at }] }`
 
 #### `read_skill`
 Read full skill markdown content.
@@ -270,14 +272,13 @@ Read full skill markdown content.
 #### `create_skill`
 Create a new skill file with YAML frontmatter.
 
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `name` | string | yes | — | Skill name (lowercase, hyphens) |
-| `description` | string | yes | — | Human-readable summary |
-| `content` | string | yes | — | Full markdown content with YAML frontmatter |
-| `scope` | string | no | `"workspace"` | `"user"` (global) or `"workspace"` (project) |
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | yes | Skill name (lowercase, hyphens) |
+| `description` | string | yes | Human-readable summary |
+| `content` | string | yes | Full markdown content with YAML frontmatter |
 
-**Returns:** `{ created: true, path: string }`
+**Returns:** `{ created: true, name: string }`
 
 #### `update_skill`
 Update an existing skill.
@@ -312,43 +313,36 @@ Long-term key-value store with full-text search. Used by agents to persist knowl
 
 ### Tools
 
-#### `store`
+#### `store_memory`
 Store a key-value pair.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `key` | string | yes | — | Unique key |
 | `value` | string | yes | — | Content to store |
-| `tags` | string[] | no | `[]` | Categorization tags |
 
 **Returns:** `{ stored: true }`
 
 Upserts — overwrites if key exists.
 
-#### `recall`
-Recall by exact key or full-text search.
+#### `recall_memory`
+Recall by exact key.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `key` | string | no | — | Exact key lookup |
-| `query` | string | no | — | Full-text search |
-| `limit` | number | no | 10 | Max results |
+| `key` | string | yes | — | Exact key lookup |
 
-One of `key` or `query` must be provided.
+**Returns:** `{ results: [{ key, value, createdAt, updatedAt }] }`
 
-**Returns:** `{ results: [{ key, value, tags, createdAt, updatedAt }] }`
-
-#### `list`
-List memory keys, optionally filtered by tag.
+#### `list_memories`
+List memory keys.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `tag` | string | no | — | Filter by tag |
-| `limit` | number | no | 50 | Max results |
 
-**Returns:** `{ keys: [{ key, tags, updatedAt }] }`
+**Returns:** `{ keys: [{ key, updatedAt }] }`
 
-#### `delete`
+#### `delete_memory`
 Delete a memory entry.
 
 | Parameter | Type | Required | Description |

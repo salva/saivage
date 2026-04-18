@@ -91,12 +91,14 @@ const filesystemHandler: InProcessToolHandler = async (toolName, args) => {
     case "search_files": {
       const dir = resolvePath(args.directory as string);
       const pattern = args.pattern as string;
-      // Extract filename-level glob for find -name (handles **/*.ext etc.)
-      const namePattern = pattern.includes("/") ? pattern.split("/").pop()! : pattern;
+      // Use find with -path for glob patterns that include directories
+      const findArgs = pattern.includes("/")
+        ? [dir, "-path", `*/${pattern}`, "-type", "f"]
+        : [dir, "-name", pattern, "-type", "f"];
       try {
         const { stdout } = await execFileAsync(
           "find",
-          [dir, "-name", namePattern, "-type", "f"],
+          findArgs,
           { maxBuffer: MAX_OUTPUT },
         );
         const files = stdout.trim().split("\n").filter(Boolean);
@@ -170,7 +172,7 @@ const gitTools: ToolEntry[] = [
   { name: "git_status", description: "Show working tree status", inputSchema: { type: "object", properties: {} } },
   { name: "git_create_branch", description: "Create and checkout a new branch", inputSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
   { name: "git_checkout", description: "Checkout a branch or ref", inputSchema: { type: "object", properties: { ref: { type: "string" } }, required: ["ref"] } },
-  { name: "git_commit", description: "Stage specified files and commit", inputSchema: { type: "object", properties: { files: { type: "array", items: { type: "string" } }, message: { type: "string" }, task_id: { type: "string" } }, required: ["message"] } },
+  { name: "git_commit", description: "Stage specified files and commit", inputSchema: { type: "object", properties: { files: { type: "array", items: { type: "string" } }, message: { type: "string" }, task_id: { type: "string" } }, required: ["files", "message"] } },
   { name: "git_merge", description: "Merge a branch", inputSchema: { type: "object", properties: { branch: { type: "string" } }, required: ["branch"] } },
   { name: "git_diff", description: "Show diff", inputSchema: { type: "object", properties: { files: { type: "array", items: { type: "string" } }, ref1: { type: "string" }, ref2: { type: "string" } } } },
   { name: "git_delete_branch", description: "Delete a branch", inputSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
@@ -217,7 +219,10 @@ const gitHandler: InProcessToolHandler = async (toolName, args) => {
     }
 
     case "git_commit": {
-      const files = (args.files as string[] | undefined) ?? ["."];
+      const files = args.files as string[] | undefined;
+      if (!files || files.length === 0) {
+        return { content: { error: "files is required — explicit file list enforces per-agent commit scoping" }, isError: true };
+      }
       const message = args.message as string;
       const taskId = args.task_id as string | undefined;
       const prefix = taskId ? `[tsk-${taskId}] ` : "";
@@ -336,7 +341,15 @@ const skillsHandler: InProcessToolHandler = async (toolName, args) => {
       const index = existsSync(indexPath)
         ? JSON.parse(readFileSync(indexPath, "utf-8"))
         : { skills: [] };
-      index.skills.push({ name, description, created_at: new Date().toISOString() });
+      const now = new Date().toISOString();
+      index.skills.push({
+        name,
+        file: `${name}.md`,
+        description,
+        triggers: [],
+        created_at: now,
+        updated_at: now,
+      });
       writeFileSync(indexPath, JSON.stringify(index, null, 2), "utf-8");
       return { content: { created: true, name }, isError: false };
     }
