@@ -125,8 +125,9 @@ export class SubAgent {
       );
       log.info(`Agent ${this.id.slice(0, 8)} iter ${i}: calling ${modelSpec}`);
       let response: ChatResponse;
-      const baseDelaySec = 5;
-      const maxDelaySec = 300;
+      const baseDelaySec = 30;
+      const backoffMult = 1.5;
+      const maxDelaySec = 20 * 60; // 20 minutes
       for (let attempt = 0; ; attempt++) {
         if (this.cancelled) {
           await this.emitFailed("Cancelled by user", i);
@@ -169,8 +170,8 @@ export class SubAgent {
             continue; // retry immediately with shorter conversation
           }
 
-          const delaySec = Math.min(baseDelaySec * Math.pow(2, attempt), maxDelaySec);
-          log.warn(`Agent ${this.id.slice(0, 8)} iter ${i}: LLM failed (attempt ${attempt + 1}): ${msg} — retrying in ${delaySec}s`);
+          const delaySec = Math.min(baseDelaySec * Math.pow(backoffMult, attempt), maxDelaySec);
+          log.warn(`Agent ${this.id.slice(0, 8)} iter ${i}: LLM failed (attempt ${attempt + 1}): ${msg} — retrying in ${Math.round(delaySec)}s`);
           await this.emitProgress(i, `⏳ LLM throttled, waiting ${delaySec}s before retry (attempt ${attempt + 1})`);
           await new Promise((r) => setTimeout(r, delaySec * 1000));
           // Clear sticky failovers so we try the primary model again

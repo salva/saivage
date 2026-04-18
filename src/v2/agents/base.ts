@@ -244,21 +244,77 @@ export class BaseAgent {
 
   // ─── Protected ──────────────────────────────────────────────────────────
 
-  /** Make an LLM call with current conversation state. */
+  /** Make an LLM call with current conversation state.
+   *  Retries indefinitely on transient errors with exponential backoff
+   *  (30s initial, x1.5, max 20min). Context overflow triggers compaction
+   *  and immediate retry instead of backoff.
+   */
   protected async callLLM(): Promise<ChatResponse> {
     const tools = this.getToolSchemas();
+    const BASE_DELAY_S = 30;
+    const BACKOFF_MULT = 1.5;
+    const MAX_DELAY_S = 20 * 60; // 20 minutes
 
     log.info(
       `[agent:${this.role}:${this.id}] Calling LLM with ${tools.length} tools, ${this.messages.length} messages`,
     );
 
-    return await this.ctx.router.chat({
-      modelSpec: this.ctx.modelSpec,
-      model: this.ctx.modelSpec.split("/")[1] ?? this.ctx.modelSpec,
-      system: this.systemPrompt,
-      messages: this.messages,
-      tools: tools.length > 0 ? tools : undefined,
-    });
+    for (let attempt = 0; ; attempt++) {
+      if (this.cancelled || this.abortSignal?.aborted) {
+        throw new Error("Agent cancelled");
+      }
+
+      try {
+        return await this.ctx.router.chat({
+          modelSpec: this.ctx.modelSpec,
+          model: this.ctx.modelSpec.split("/")[1] ?? this.ctx.modelSpec,
+          system: this.systemPrompt,
+          messages: this.messages,
+          tools: tools.length > 0 ? tools : undefined,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+
+        // Context overflow → compact and retry immediately (no backoff)
+        const isContextOverflow =
+          msg.includes("exceeds the context window") ||
+          msg.includes("context_length_exceeded");
+        const isOrphanedToolResult =
+          msg.includes("No tool call found for function call output") ||
+          msg.includes("tool_use_id");
+
+        if (isContextOverflow || isOrphanedToolResult) {
+          const reason = isContextOverflow
+            ? "context window exceeded"
+            : "orphaned tool_result";
+          log.warn(
+            `[agent:${this.role}:${this.id}] ${reason} — compacting and retrying`,
+          );
+          this.messages = await compactConversation(
+            this.systemPrompt,
+            this.messages,
+            this.ctx.router,
+            this.compactionConfig,
+            this.compactionState,
+          );
+          continue;
+        }
+
+        // All other errors → exponential backoff, retry forever
+        const delaySec = Math.min(
+          BASE_DELAY_S * Math.pow(BACKOFF_MULT, attempt),
+          MAX_DELAY_S,
+        );
+        log.warn(
+          `[agent:${this.role}:${this.id}] LLM failed (attempt ${attempt + 1}): ${msg} — retrying in ${Math.round(delaySec)}s`,
+        );
+
+        // Clear sticky failovers so the router retries the primary model
+        this.ctx.router.clearStickyFailover(this.ctx.modelSpec);
+
+        await new Promise((r) => setTimeout(r, delaySec * 1000));
+      }
+    }
   }
 
   /** Get available tool schemas for this agent. */
