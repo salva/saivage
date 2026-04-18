@@ -9,7 +9,7 @@ let gitInstance: SimpleGit | null = null;
 
 function git(): SimpleGit {
   if (!gitInstance) {
-    const cwd = process.env["SAIVAGE_GIT_CWD"] ?? process.cwd();
+    const cwd = process.env["SAIVAGE_GIT_CWD"] ?? process.env["PROJECT_ROOT"] ?? process.cwd();
     gitInstance = simpleGit(cwd);
   }
   return gitInstance;

@@ -27,7 +27,7 @@ server.tool(
   async ({ command, cwd, timeout }) => {
     try {
       const output = execSync(command, {
-        cwd: cwd ?? process.cwd(),
+        cwd: cwd ?? process.env["PROJECT_ROOT"] ?? process.cwd(),
         timeout: timeout ?? 60_000,
         maxBuffer: MAX_OUTPUT,
         encoding: "utf-8",

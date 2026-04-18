@@ -16,5 +16,11 @@ Thumbs.db
 # Temp
 tmp/
 
+# v2 runtime artifacts (may leak via bind-mount from container)
+.saivage/stages/
+.saivage/inspections/
+.saivage/notes/
+.saivage/tmp/
+
 # Logs
 *.log

@@ -13,6 +13,12 @@ import {
 } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 
+/** Resolve paths relative to the project root, not the process cwd. */
+const ROOT = process.env["PROJECT_ROOT"] || process.cwd();
+function resolvePath(filePath: string): string {
+  return resolve(ROOT, filePath);
+}
+
 const server = new McpServer({
   name: "filesystem",
   version: "0.1.0",
@@ -25,7 +31,7 @@ server.tool(
   { path: z.string().describe("Absolute or relative file path") },
   async ({ path: filePath }) => {
     try {
-      const resolved = resolve(filePath);
+      const resolved = resolvePath(filePath);
       const content = readFileSync(resolved, "utf-8");
       return { content: [{ type: "text" as const, text: content }] };
     } catch (err) {
@@ -52,7 +58,7 @@ server.tool(
   },
   async ({ path: filePath, content }) => {
     try {
-      const resolved = resolve(filePath);
+      const resolved = resolvePath(filePath);
       const dir = dirname(resolved);
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
       writeFileSync(resolved, content, "utf-8");
@@ -80,7 +86,7 @@ server.tool(
   { path: z.string().describe("Directory path") },
   async ({ path: dirPath }) => {
     try {
-      const resolved = resolve(dirPath);
+      const resolved = resolvePath(dirPath);
       const entries = readdirSync(resolved);
       const result = entries.map((name) => {
         const full = join(resolved, name);
@@ -114,7 +120,7 @@ server.tool(
   },
   async ({ directory, pattern }) => {
     try {
-      const resolved = resolve(directory);
+      const resolved = resolvePath(directory);
       const matches: string[] = [];
 
       function walk(dir: string): void {
