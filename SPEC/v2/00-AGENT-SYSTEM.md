@@ -41,7 +41,7 @@ When the conversation context grows too large (many stages completed), the Plann
   - `expected_outcomes`: concrete, verifiable deliverables
   - `acceptance_criteria`: how to know the stage is done
   - `references`: list of document paths the Manager should read before planning tasks
-- **Plan History** (`plan-history.json`): Completed stages with their summaries, moved out of the active plan on completion.
+- **Plan History** (`plan-history.json`): Terminal stages (completed, failed, escalated, aborted) with their summaries, archived from the active plan via `plan_complete_stage()`.
 
 **Execution model:**
 1. **Initial planning**: reads project objectives + current project state → calls `plan_init(stages)` via the plan MCP service.
@@ -237,7 +237,7 @@ Planner (long-lived)
 
 Chat (independent, per channel)
   ├── run_inspector(request)      → returns InspectionReport
-  └── create_note(content, urgent?)  → writes note for Planner
+  └── create_note(content, permanent?, urgent?)  → writes note for Planner
 ```
 
 User notes arriving while the Planner is suspended are queued and injected as additional context when the Planner next resumes (this is a runtime mechanism, not a tool call).

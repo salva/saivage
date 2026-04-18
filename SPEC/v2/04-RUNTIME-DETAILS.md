@@ -171,7 +171,7 @@ The runtime does **not** try to parse the LLM's self-assessment for keywords. In
 
 ### 4.4 Maximum Compactions
 
-If an agent's conversation triggers compaction more than **3 times** (configurable), the runtime terminates the agent as stuck. Workers return a failed TaskReport; Manager returns a failed/escalated StageSummary. This is the ultimate safety net for infinite loops.
+If an agent's conversation triggers compaction more than **3 times** (configurable), the runtime terminates the agent as stuck. Workers return a failed TaskReport; Manager returns a StageSummary with `result: "failed"`. This is the ultimate safety net for infinite loops.
 
 ---
 

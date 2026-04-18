@@ -40,11 +40,12 @@ Build the **Runtime Core** (06-SYSTEM-DESIGN §2.1) — the central orchestratio
 | 2.2 Tool-call dispatcher | `src/v2/runtime/dispatcher.ts` | Nested tool-call pattern: intercept `run_*()` calls → suspend parent → spawn child → resume parent with result. Supports parallel dispatch with resume-on-each |
 | 2.3 Plan MCP service | `src/v2/mcp/plan-server.ts` | 11 tools per [03-PLAN-MCP-SERVICE.md](03-PLAN-MCP-SERVICE.md). Atomic writes, schema validation, history append. Built on Document Store from Phase 1 |
 | 2.4 Git MCP adaptation | existing `src/services/git/` | Add explicit file staging, `[tsk-<id>]` commit prefix, conflict error returns |
-| 2.5 Abort mechanism | `src/v2/runtime/abort.ts` | Detect urgent notes → terminate active chain bottom-up → `git checkout -- .` → Manager writes partial StageSummary (aborted) → Planner resumes. See 06-SYSTEM-DESIGN §4.2 |
+| 2.5 Abort mechanism | `src/v2/runtime/abort.ts` | Detect urgent notes → terminate active chain bottom-up → `git checkout -- .` (tracked files only; untracked left for rollback stage) → Manager writes partial StageSummary (aborted) → Planner resumes. See 06-SYSTEM-DESIGN §4.2 |
 | 2.6 Context compaction | `src/v2/runtime/compaction.ts` | Track token usage → trigger at 80% → generate summary message → replace history. Max 3 compactions per conversation. See 06-SYSTEM-DESIGN §4.5 |
 | 2.7 Self-check | `src/v2/runtime/self-check.ts` | Inject progress-assessment prompt every N tool-call rounds (configurable per role). Stuck detection → agent failure. See [04-RUNTIME-DETAILS.md](04-RUNTIME-DETAILS.md) §4 |
-| 2.8 Crash recovery | `src/v2/runtime/recovery.ts` | On startup: read `runtime.json`, detect stale PID, reconstruct state from disk via plan MCP, reset in-progress tasks to pending. See 06-SYSTEM-DESIGN §7.1 |
-| 2.9 Tests | | Unit tests for all subsystems: dispatcher suspend/resume, parallel dispatch, plan MCP CRUD, abort chain, compaction trigger, self-check injection, crash recovery |
+| 2.8 Crash recovery | `src/v2/runtime/recovery.ts` | On startup: read `runtime.json`, detect stale PID, reconstruct state from disk via plan MCP, reset in-progress tasks to pending. Respect report `status` and verify `commits` before trusting recovered reports. See [04-RUNTIME-DETAILS.md](04-RUNTIME-DETAILS.md) §5.3, §8 |
+| 2.9 Note lifecycle | `src/v2/runtime/notes.ts` | Runtime-managed note lifecycle: inject unacknowledged notes into Planner context on resume, set `acknowledged_at` after Planner's next planning action, delete volatile notes after acknowledgment, re-inject permanent notes after compaction. See [04-RUNTIME-DETAILS.md](04-RUNTIME-DETAILS.md) §12 |
+| 2.10 Tests | | Unit tests for all subsystems: dispatcher suspend/resume, parallel dispatch, plan MCP CRUD, abort chain, compaction trigger, self-check injection, crash recovery, note lifecycle |
 
 **Deliverable:** The nested tool-call pattern works. Parent agents suspend while children run. Plan state is managed atomically.
 
@@ -119,7 +120,7 @@ Build the **Chat** agent, **Event Bus**, and channel transports (06-SYSTEM-DESIG
 
 | Item | File | Description |
 |------|------|-------------|
-| 7.1 Chat agent | `src/v2/agents/chat.ts` | System prompt from `prompts/chat.md`. Tools: Plan MCP (read-only), filesystem (read-only), `create_note()`, `run_inspector()`. Persists dialogue to `tmp/chats/`. One instance per channel, independent of execution |
+| 7.1 Chat agent | `src/v2/agents/chat.ts` | System prompt from `prompts/chat.md`. Tools: Plan MCP (read-only), filesystem (read-only), `create_note(content, permanent?, urgent?)`, `run_inspector()`. Persists dialogue to `tmp/chats/`. One instance per channel, independent of execution |
 | 7.2 Event bus & notifier | `src/v2/events/notifier.ts` | In-process pub/sub. 6 event types. Chat agents subscribe on startup, filter by user config, format messages, push to channels. Offline buffer up to 100 events |
 | 7.3 Telegram transport | `src/v2/channels/telegram.ts` | Adapt v1. Long-polling for messages, bot API for responses and push notifications |
 | 7.4 WebSocket transport | `src/v2/channels/websocket.ts` | Adapt v1. Session timeout: 1hr on disconnect. Buffer events until reconnection |

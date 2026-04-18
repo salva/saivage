@@ -145,12 +145,12 @@ graph LR
     MG -->|"run_coder(task)<br/>→ TaskReport"| CD
     MG -->|"run_researcher(task)<br/>→ TaskReport"| RS
     CH -->|"run_inspector(req)<br/>→ InspectionReport"| IN
-    CH -.->|"create_note(content, urgent?)"| PL
+    CH -.->|"create_note(content, permanent?, urgent?)"| PL
 ```
 
 #### Planner
 - **Lifetime**: project lifetime (never terminates until objectives are met).
-- **Responsibilities**: generate the initial multi-stage plan from project objectives, dispatch stages to the Manager one at a time, process stage results (completed/escalated/aborted), revise the plan adaptively, process user notes, dispatch the Inspector for retrospectives.
+- **Responsibilities**: generate the initial multi-stage plan from project objectives, dispatch stages to the Manager one at a time, process stage results (completed/failed/escalated/aborted), revise the plan adaptively, process user notes, dispatch the Inspector for retrospectives.
 - **Tools**: Plan MCP service (full read/write), `run_manager()`, `run_inspector()`, filesystem (read), git (commit `.saivage/` state).
 - **State management**: the plan MCP service is the authoritative state store. After compaction, the Planner reconstructs strategic context via `plan_get()` + `plan_get_history()`.
 
@@ -280,7 +280,7 @@ graph TB
         subgraph "Git-Tracked (.saivage/)"
             CONF["config.json<br/><i>ProjectConfig</i>"]
             PLAN["plan.json<br/><i>Active plan (via MCP)</i>"]
-            HIST["plan-history.json<br/><i>Completed stages</i>"]
+            HIST["plan-history.json<br/><i>Terminal stages</i>"]
             NOTES["notes/<br/><i>User → Planner</i>"]
             STAGES["stages/&lt;stage-id&gt;/<br/><i>tasks.json, summary.json,<br/>reports/&lt;task-id&gt;.json</i>"]
             INSP["inspections/<br/><i>Inspector reports</i>"]
@@ -615,7 +615,7 @@ flowchart TD
     STAGE -->|"Yes"| SUMMARY{"summary.json<br/>exists?"}
     SUMMARY -->|"Yes"| PROCESS["Stage completed<br/>Planner processes it"]
     SUMMARY -->|"No"| TASKS{"tasks.json<br/>exists?"}
-    TASKS -->|"Yes"| RESET["Reset in-progress tasks<br/>to pending"]
+    TASKS -->|"Yes"| RESET["Reset in-progress & aborted<br/>tasks to pending"]
     TASKS -->|"No"| REDISPATCH["Planner re-dispatches stage"]
     
     RESET --> CHECK["Check for orphaned<br/>report files"]

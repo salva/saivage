@@ -20,6 +20,7 @@ interface GlobalConfig {
         [role: string]: string;      // e.g. "planner": "claude-opus-4.6"
       };
       timeout_ms: number;            // per-request timeout (default: 120000)
+      max_retry_duration_ms?: number; // max total retry time for retryable errors (default: 600000 = 10 min)
       failover?: string;             // name of fallback provider
     };
   };
@@ -99,7 +100,7 @@ interface Stage {
 
 **Path:** `<project>/.saivage/plan-history.json`
 
-Archive of completed stages. Append-only.
+Archive of terminal stages (completed, failed, escalated, aborted). Append-only.
 
 ```typescript
 interface PlanHistory {
