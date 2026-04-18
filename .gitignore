@@ -15,17 +15,9 @@ Thumbs.db
 # Temp
 tmp/
 
-# Saivage runtime artifacts — ignore .saivage/ state from running Saivage
-# on the source repo itself (e.g. via container bind-mount).
-# Target projects have their own .saivage/.gitignore that only ignores tmp/.
-.saivage/saivage.json
-.saivage/auth/
-.saivage/auth-profiles.json
-.saivage/registry.json
-.saivage/stages/
-.saivage/inspections/
-.saivage/notes/
-.saivage/tmp/
+# Saivage runtime artifacts — the source tree is NOT a target project.
+# Target projects live elsewhere (e.g. target/) and have their own .saivage/.
+.saivage/
 
 # Logs
 *.log
