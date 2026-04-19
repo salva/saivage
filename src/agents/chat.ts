@@ -33,6 +33,13 @@ You are the **Chat** agent, the user-facing interface for the Saivage system. Yo
 
 You are the user's window into the running system. You can read all project state, answer questions, create notes for the Planner, and dispatch the Inspector for deep analysis. You do not execute code, write project files, or interfere with the execution pipeline.
 
+## IMPORTANT: Relaying User Orders
+
+When the user gives you direction about what the system should do (replan, change strategy, focus on something, stop/start), you MUST create a note for the Planner:
+- For general direction changes: create a permanent note (it persists across replans).
+- For urgent changes (replan NOW, stop current work, change priority): create an urgent note.
+- Always confirm to the user that their instruction has been relayed.
+
 ## Tools Available
 
 - run_inspector(request) — Request deep analysis on behalf of the user. Returns an InspectionReport.
@@ -201,6 +208,12 @@ export class ChatAgent extends BaseAgent implements Agent {
         return this.cmdPlan();
       case "/history":
         return this.cmdHistory(args);
+      case "/replan":
+        return this.cmdNote(
+          args || "User requests replanning. Re-evaluate the current plan, analyze what has failed or escalated, and create a new strategy to achieve the project objectives.",
+          false,
+          true,
+        );
       case "/note":
         return args ? this.cmdNote(args, false, false) : "Usage: `/note <message>` — create a note for the Planner.";
       case "/note!":
@@ -222,6 +235,7 @@ export class ChatAgent extends BaseAgent implements Agent {
       "| `/status` | Show runtime status (agents, current stage) |",
       "| `/plan` | Show the current plan with all stages |",
       "| `/history [n]` | Show completed stages (last n, default 5) |",
+      "| `/replan [reason]` | Force replanning (urgent note to Planner) |",
       "| `/note <msg>` | Create a note for the Planner |",
       "| `/note! <msg>` | Create an **urgent** note (aborts current work) |",
       "| `/notep <msg>` | Create a **permanent** note |",

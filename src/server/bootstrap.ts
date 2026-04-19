@@ -271,14 +271,18 @@ export async function runPlanner(
   }
 }
 
-const RECOVERY_DELAY_MS = 5 * 60 * 1000; // 5 minutes
+const RECOVERY_DELAY_MS = 60 * 1000; // 1 minute (reduced from 5 to keep momentum)
 
 const RECOVERY_PROMPT =
-  `The planner session ended, but the system has automatically restarted you after a recovery delay. ` +
-  `Assess the current state of the project by reading the plan (plan_get, plan_get_history). ` +
-  `Determine what work remains and continue executing stages. ` +
-  `If all objectives are truly complete and verified, respond with "PLAN_COMPLETE". ` +
-  `Otherwise, pick up where you left off and keep making progress.`;
+  `SYSTEM RECOVERY: The planner session ended without completing all objectives. ` +
+  `You have been automatically restarted. You MUST:\n\n` +
+  `1. Call plan_get() to read the current plan state.\n` +
+  `2. Call plan_get_history() to see what stages have completed, failed, or escalated.\n` +
+  `3. Assess what work remains to achieve ALL project objectives.\n` +
+  `4. If escalated stages exist, analyze WHY they failed and create corrective stages.\n` +
+  `5. Call plan_set_current() on the next stage and dispatch it with run_manager().\n\n` +
+  `DO NOT say PLAN_COMPLETE unless ALL objectives are truly achieved with evidence from successful stages. ` +
+  `If stages have escalated or failed, the objectives are NOT complete — you must fix the issues and retry.`;
 
 /**
  * Run the planner in a recovery loop. When the planner exits (success or
@@ -290,6 +294,9 @@ export async function runPlannerWithRecovery(
 ): Promise<AgentResult> {
   let cancelled = false;
   let iteration = 0;
+
+  // Increase max listeners to avoid warnings across recovery iterations
+  process.setMaxListeners(Math.max(process.getMaxListeners(), 30));
 
   const cancelRecovery = () => { cancelled = true; };
   process.on("SIGINT", cancelRecovery);
@@ -310,10 +317,12 @@ export async function runPlannerWithRecovery(
         return result;
       }
 
-      // Check for genuine PLAN_COMPLETE
+      // Check for genuine PLAN_COMPLETE — exact match only
+      // The planner's run() already uses strict regex /^\s*PLAN_COMPLETE\s*$/m
+      // and sets summary to exactly "PLAN_COMPLETE" when detected.
       if (
         result.kind === "success" &&
-        result.data?.summary?.includes?.("PLAN_COMPLETE")
+        result.data?.summary === "PLAN_COMPLETE"
       ) {
         log.info("[recovery] PLAN_COMPLETE detected — stopping recovery loop");
         return result;
@@ -321,7 +330,7 @@ export async function runPlannerWithRecovery(
 
       if (cancelled) break;
 
-      // For success (nudge-out) or failure — wait and retry
+      // For success (nudge-out) or failure — always retry
       log.info(
         `[recovery] Planner ended without PLAN_COMPLETE (${result.kind}). ` +
         `Waiting ${RECOVERY_DELAY_MS / 1000}s before restart...`,
@@ -329,7 +338,7 @@ export async function runPlannerWithRecovery(
 
       await runtime.eventBus.publish({
         type: "plan_updated",
-        summary: `Planner ended (${result.kind}). Recovery restart in ${RECOVERY_DELAY_MS / 60000} minutes.`,
+        summary: `Planner ended (${result.kind}). Recovery restart in ${Math.round(RECOVERY_DELAY_MS / 1000)}s.`,
         timestamp: new Date().toISOString(),
       });
 
@@ -383,9 +392,25 @@ function resolveModelSpec(
   project: ProjectContext,
   role: string,
 ): string {
-  // Check per-role model override in project config
+  // Check per-role model override in project config (config.json)
   const overrides = project.config.model_overrides;
   if (overrides?.[role]) return overrides[role];
+
+  // Check role-based models from runtime config (saivage.json)
+  // Map agent roles to config model keys
+  const roleToModelKey: Record<string, string> = {
+    planner: "orchestrator",
+    manager: "orchestrator",
+    coder: "coder",
+    researcher: "researcher",
+    inspector: "orchestrator",
+    chat: "chat",
+  };
+  const runtimeConfig = loadConfig(false, project.projectRoot);
+  const modelKey = roleToModelKey[role] ?? role;
+  const modelFromConfig = (runtimeConfig.models as Record<string, string>)?.[modelKey];
+  if (modelFromConfig) return modelFromConfig;
+
   // Fallback to default provider
   return project.config.provider ?? "openai-codex/gpt-5.3-codex";
 }

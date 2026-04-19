@@ -13,12 +13,12 @@ const providerConfigSchema = z.object({
 const configSchema = z.object({
   models: z
     .object({
-      orchestrator: z.string().default("anthropic/claude-sonnet-4-20250514"),
-      coder: z.string().default("anthropic/claude-sonnet-4-20250514"),
-      researcher: z.string().default("openai/gpt-4o"),
-      executor: z.string().default("anthropic/claude-haiku-3"),
-      chat: z.string().default("anthropic/claude-sonnet-4-20250514"),
-      default: z.string().default("anthropic/claude-sonnet-4-20250514"),
+      orchestrator: z.string().optional(),
+      coder: z.string().optional(),
+      researcher: z.string().optional(),
+      executor: z.string().optional(),
+      chat: z.string().optional(),
+      default: z.string().optional(),
     })
     .default({}),
 
@@ -153,14 +153,7 @@ export function writeDefaultConfig(projectRoot?: string): void {
 
   ensureDir(saivageDir(projectRoot));
   const defaultConfig = {
-    models: {
-      orchestrator: "anthropic/claude-sonnet-4-20250514",
-      coder: "anthropic/claude-sonnet-4-20250514",
-      researcher: "openai/gpt-4o",
-      executor: "anthropic/claude-haiku-3",
-      chat: "anthropic/claude-sonnet-4-20250514",
-      default: "anthropic/claude-sonnet-4-20250514",
-    },
+    models: {},
     providers: {
       anthropic: {},
       openai: {},

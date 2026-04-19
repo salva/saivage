@@ -544,8 +544,13 @@ export async function startServer(
 }
 
 function resolveModelSpec(runtime: SaivageRuntime): string {
+  // Chat-specific model from project config overrides
   const overrides = runtime.project.config.model_overrides;
   if (overrides?.chat) return overrides.chat;
+  // Chat model from runtime config (saivage.json) — ideally a cheaper/faster model
+  const chatModel = runtime.config.models?.chat;
+  if (chatModel) return chatModel;
+  // Fallback to default provider
   return runtime.project.config.provider ?? "openai-codex/gpt-5.3-codex";
 }
 
