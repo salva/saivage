@@ -8,6 +8,7 @@
 import type { Message, ContentBlock, ToolCallResult, ChatResponse, ToolSchema } from "../providers/types.js";
 import type { AgentContext, AgentResult, AgentRole } from "../agents/types.js";
 import type { McpRuntime, RuntimeToolEntry } from "../mcp/runtime.js";
+import { readStash } from "./stash.js";
 import { log } from "../log.js";
 
 /** Agent-dispatch tool names that trigger suspend/resume. */
@@ -144,6 +145,17 @@ export class Dispatcher {
     ctx: AgentContext,
   ): Promise<ToolCallResultEntry> {
     try {
+      // Handle synthetic read_stash tool
+      if (tc.name === "read_stash") {
+        const args = tc.input as { path?: string; offset?: number; length?: number };
+        if (!args.path) {
+          return { toolUseId: tc.id, content: "Error: 'path' is required for read_stash", isError: true };
+        }
+        const result = readStash(args.path, args.offset ?? 0, args.length ?? 10_000);
+        this.consecutiveInvalidCalls = 0;
+        return { toolUseId: tc.id, content: JSON.stringify(result), isError: false };
+      }
+
       // Find which service owns this tool
       const allTools = this.mcpRuntime.getAllTools();
       const toolEntry = allTools.find(
