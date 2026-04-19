@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, watch } from "vue";
+import { ref, onMounted, onUnmounted, computed, watch, nextTick } from "vue";
 
 interface AgentState {
   agent_type: string;
@@ -33,15 +33,37 @@ interface ChatLog {
   messages: ChatMessage[];
 }
 
+interface ConversationEntry {
+  role: "user" | "assistant" | "system";
+  kind: "text" | "tool_call" | "tool_result" | "tool_error";
+  content: string;
+  tool?: string;
+}
+
+interface AgentConversation {
+  agent_id: string;
+  role: string;
+  message_count: number;
+  entries: ConversationEntry[];
+}
+
+type SelectionKind = "agent" | "chat";
+
 const activeAgents = ref<AgentState[]>([]);
 const chatSessions = ref<ChatSession[]>([]);
 const selectedSession = ref<ChatLog | null>(null);
+const selectedAgent = ref<AgentConversation | null>(null);
 const selectedId = ref<string | null>(null);
+const selectionKind = ref<SelectionKind | null>(null);
 const loading = ref(false);
 const activeTab = ref<"active" | "history">("active");
 const now = ref(Date.now());
+const autoScroll = ref(true);
+const threadBody = ref<HTMLElement | null>(null);
+const collapsedTools = ref<Set<number>>(new Set());
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let clockTimer: ReturnType<typeof setInterval> | null = null;
+let agentPollTimer: ReturnType<typeof setInterval> | null = null;
 
 async function fetchData() {
   try {
@@ -61,10 +83,48 @@ async function fetchData() {
   } catch { /* ignore */ }
 }
 
-async function loadSession(sessionId: string) {
-  if (selectedId.value === sessionId) return;
-  selectedId.value = sessionId;
+async function loadAgentConversation(agentId: string) {
+  if (selectionKind.value === "agent" && selectedId.value === agentId && selectedAgent.value) {
+    // Just refresh
+    try {
+      const res = await fetch(`/api/agents/${agentId}/conversation`);
+      if (res.ok) {
+        const data = await res.json() as AgentConversation;
+        const wasAtBottom = isScrolledToBottom();
+        selectedAgent.value = data;
+        if (wasAtBottom) {
+          await nextTick();
+          scrollToBottom();
+        }
+      }
+    } catch { /* ignore */ }
+    return;
+  }
+  selectedId.value = agentId;
+  selectionKind.value = "agent";
+  selectedSession.value = null;
   loading.value = true;
+  collapsedTools.value = new Set();
+  try {
+    const res = await fetch(`/api/agents/${agentId}/conversation`);
+    if (res.ok) {
+      selectedAgent.value = await res.json() as AgentConversation;
+      await nextTick();
+      scrollToBottom();
+    }
+  } catch { /* ignore */ }
+  loading.value = false;
+  startAgentPolling(agentId);
+}
+
+async function loadSession(sessionId: string) {
+  if (selectionKind.value === "chat" && selectedId.value === sessionId) return;
+  selectedId.value = sessionId;
+  selectionKind.value = "chat";
+  selectedAgent.value = null;
+  loading.value = true;
+  collapsedTools.value = new Set();
+  stopAgentPolling();
   try {
     const res = await fetch(`/api/chats/${sessionId}`);
     if (res.ok) {
@@ -72,6 +132,39 @@ async function loadSession(sessionId: string) {
     }
   } catch { /* ignore */ }
   loading.value = false;
+}
+
+function startAgentPolling(agentId: string) {
+  stopAgentPolling();
+  agentPollTimer = setInterval(() => {
+    if (selectionKind.value === "agent" && selectedId.value === agentId) {
+      loadAgentConversation(agentId);
+    } else {
+      stopAgentPolling();
+    }
+  }, 3000);
+}
+
+function stopAgentPolling() {
+  if (agentPollTimer) { clearInterval(agentPollTimer); agentPollTimer = null; }
+}
+
+function isScrolledToBottom(): boolean {
+  if (!threadBody.value) return true;
+  const el = threadBody.value;
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+}
+
+function scrollToBottom() {
+  if (threadBody.value) {
+    threadBody.value.scrollTop = threadBody.value.scrollHeight;
+  }
+}
+
+function toggleToolCollapse(index: number) {
+  const s = new Set(collapsedTools.value);
+  if (s.has(index)) s.delete(index); else s.add(index);
+  collapsedTools.value = s;
 }
 
 onMounted(() => {
@@ -83,6 +176,7 @@ onMounted(() => {
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer);
   if (clockTimer) clearInterval(clockTimer);
+  stopAgentPolling();
 });
 
 function elapsed(startedAt: string): string {
@@ -118,6 +212,25 @@ function roleColor(role: string): string {
   }
 }
 
+function kindIcon(kind: string): string {
+  switch (kind) {
+    case "text": return "";
+    case "tool_call": return "\u2192";
+    case "tool_result": return "\u2190";
+    case "tool_error": return "\u2716";
+    default: return "";
+  }
+}
+
+function kindLabel(kind: string): string {
+  switch (kind) {
+    case "tool_call": return "Tool Call";
+    case "tool_result": return "Result";
+    case "tool_error": return "Error";
+    default: return "";
+  }
+}
+
 function msgRoleColor(role: string): string {
   switch (role) {
     case "user": return "#58a6ff";
@@ -145,6 +258,10 @@ function formatTime(ts: string): string {
   return new Date(ts).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+function truncate(s: string, max: number): string {
+  return s.length <= max ? s : s.slice(0, max) + "\u2026";
+}
+
 const filteredSessions = computed(() => {
   return chatSessions.value.filter(s => s.message_count > 0);
 });
@@ -166,9 +283,19 @@ const filteredSessions = computed(() => {
         <!-- Active agents -->
         <template v-if="activeTab === 'active'">
           <div v-if="activeAgents.length === 0" class="sidebar-empty">No active agents</div>
-          <div v-for="agent in activeAgents" :key="agent.agent_id" class="sidebar-item">
+          <div
+            v-for="agent in activeAgents"
+            :key="agent.agent_id"
+            class="sidebar-item clickable"
+            :class="{ selected: selectionKind === 'agent' && selectedId === agent.agent_id }"
+            @click="loadAgentConversation(agent.agent_id)"
+          >
             <div class="item-header">
               <span class="agent-role" :style="{ color: roleColor(agent.agent_type) }">{{ agent.agent_type }}</span>
+              <span class="agent-status">
+                <span class="pulse"></span>
+                running
+              </span>
               <span class="agent-time">{{ elapsed(agent.started_at) }}</span>
             </div>
             <div class="item-sub">{{ agent.agent_id }}</div>
@@ -183,28 +310,89 @@ const filteredSessions = computed(() => {
             v-for="session in filteredSessions"
             :key="session.session_id"
             class="sidebar-item clickable"
-            :class="{ selected: selectedId === session.session_id }"
+            :class="{ selected: selectionKind === 'chat' && selectedId === session.session_id }"
             @click="loadSession(session.session_id)"
           >
             <div class="item-header">
               <span class="session-id">{{ session.session_id.slice(0, 16) }}</span>
               <span class="session-time">{{ timeAgo(session.updated_at) }}</span>
             </div>
-            <div class="item-sub">{{ session.message_count }} messages · {{ session.channel }}</div>
+            <div class="item-sub">{{ session.message_count }} messages &middot; {{ session.channel }}</div>
           </div>
         </template>
       </div>
     </div>
 
     <div class="thread-panel">
-      <div v-if="!selectedSession && !loading" class="thread-empty">
-        <div class="thread-empty-icon">💬</div>
-        <div>Select a chat session to view the conversation</div>
+      <!-- Empty state -->
+      <div v-if="!selectedAgent && !selectedSession && !loading" class="thread-empty">
+        <div class="thread-empty-icon">&#x1F916;</div>
+        <div>Select an active agent to watch its conversation</div>
+        <div class="thread-empty-hint">Click an agent in the sidebar to see what it's doing in real-time</div>
       </div>
 
-      <div v-if="loading" class="thread-empty">Loading conversation…</div>
+      <div v-if="loading" class="thread-empty">
+        <div class="spinner"></div>
+        Loading conversation&hellip;
+      </div>
 
-      <template v-if="selectedSession && !loading">
+      <!-- Agent conversation (Copilot-style) -->
+      <template v-if="selectedAgent && selectionKind === 'agent' && !loading">
+        <div class="thread-header agent-header">
+          <span class="agent-role-badge" :style="{ background: roleColor(selectedAgent.role) }">{{ selectedAgent.role }}</span>
+          <span class="thread-id">{{ selectedAgent.agent_id }}</span>
+          <span class="thread-count">{{ selectedAgent.message_count }} messages &middot; {{ selectedAgent.entries.length }} entries</span>
+          <span class="live-badge"><span class="pulse"></span>Live</span>
+        </div>
+
+        <div class="thread-body" ref="threadBody">
+          <div
+            v-for="(entry, idx) in selectedAgent.entries"
+            :key="idx"
+            class="entry"
+            :class="[entry.kind, entry.role]"
+          >
+            <!-- Text messages (thinking / user input) -->
+            <template v-if="entry.kind === 'text'">
+              <div class="entry-bar" :class="entry.role">
+                <span class="entry-role-label">{{ entry.role === 'assistant' ? 'Thinking' : entry.role === 'user' ? 'Context' : 'System' }}</span>
+              </div>
+              <div class="entry-content text-content" :class="entry.role">{{ entry.content }}</div>
+            </template>
+
+            <!-- Tool calls -->
+            <template v-if="entry.kind === 'tool_call'">
+              <div class="tool-header" @click="toggleToolCollapse(idx)">
+                <span class="tool-icon call">{{ kindIcon(entry.kind) }}</span>
+                <span class="tool-name">{{ entry.tool }}</span>
+                <span class="tool-chevron" :class="{ collapsed: collapsedTools.has(idx) }">&#9660;</span>
+              </div>
+              <div v-if="!collapsedTools.has(idx)" class="entry-content tool-content">{{ entry.content }}</div>
+            </template>
+
+            <!-- Tool results -->
+            <template v-if="entry.kind === 'tool_result' || entry.kind === 'tool_error'">
+              <div class="tool-header result-header" :class="{ error: entry.kind === 'tool_error' }" @click="toggleToolCollapse(idx)">
+                <span class="tool-icon" :class="entry.kind === 'tool_error' ? 'error' : 'result'">{{ kindIcon(entry.kind) }}</span>
+                <span class="tool-result-label">{{ kindLabel(entry.kind) }}</span>
+                <span class="tool-result-preview">{{ truncate(entry.content.split('\n')[0], 80) }}</span>
+                <span class="tool-chevron" :class="{ collapsed: collapsedTools.has(idx) }">&#9660;</span>
+              </div>
+              <div v-if="!collapsedTools.has(idx)" class="entry-content tool-content" :class="{ 'error-content': entry.kind === 'tool_error' }">{{ entry.content }}</div>
+            </template>
+          </div>
+
+          <!-- Thinking indicator at bottom -->
+          <div class="thinking-indicator">
+            <span class="thinking-dot"></span>
+            <span class="thinking-dot"></span>
+            <span class="thinking-dot"></span>
+          </div>
+        </div>
+      </template>
+
+      <!-- Chat session (existing) -->
+      <template v-if="selectedSession && selectionKind === 'chat' && !loading">
         <div class="thread-header">
           <span class="thread-id">{{ selectedSession.session_id }}</span>
           <span class="thread-channel">{{ selectedSession.channel }}</span>
@@ -246,28 +434,129 @@ const filteredSessions = computed(() => {
 
 .sidebar-item { padding: 8px 10px; border-radius: 6px; margin-bottom: 4px; background: #0d1117; border: 1px solid #21262d; }
 .sidebar-item.clickable { cursor: pointer; }
-.sidebar-item.clickable:hover { border-color: #30363d; }
+.sidebar-item.clickable:hover { border-color: #30363d; background: #161b22; }
 .sidebar-item.selected { border-color: #58a6ff; background: rgba(56, 139, 253, 0.1); }
-.item-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px; }
+.item-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px; gap: 6px; }
 .agent-role { font-size: 13px; font-weight: 600; }
-.agent-time { font-size: 11px; color: #d29922; font-family: monospace; }
+.agent-status { font-size: 10px; color: #3fb950; display: flex; align-items: center; gap: 4px; }
+.agent-time { font-size: 11px; color: #d29922; font-family: monospace; margin-left: auto; }
 .session-id { font-size: 12px; font-family: monospace; color: #c9d1d9; }
 .session-time { font-size: 11px; color: #8b949e; }
-.item-sub { font-size: 11px; color: #8b949e; }
+.item-sub { font-size: 11px; color: #8b949e; font-family: monospace; }
 .item-task { font-size: 11px; color: #58a6ff; font-family: monospace; margin-top: 2px; }
 
+.pulse {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: #3fb950;
+  animation: pulse-anim 2s ease-in-out infinite;
+}
+@keyframes pulse-anim {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* ─── Thread panel ─── */
 .thread-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 .thread-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #484f58; font-size: 14px; gap: 8px; }
-.thread-empty-icon { font-size: 32px; opacity: 0.5; }
+.thread-empty-icon { font-size: 36px; opacity: 0.5; }
+.thread-empty-hint { font-size: 12px; color: #30363d; }
 
+.spinner { width: 20px; height: 20px; border: 2px solid #30363d; border-top-color: #58a6ff; border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ─── Thread header ─── */
 .thread-header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid #21262d; background: #161b22; flex-shrink: 0; }
-.thread-id { font-size: 13px; font-family: monospace; color: #c9d1d9; font-weight: 600; }
+.agent-header { gap: 8px; }
+.thread-id { font-size: 12px; font-family: monospace; color: #8b949e; }
 .thread-channel { font-size: 11px; color: #8b949e; background: #21262d; padding: 1px 6px; border-radius: 3px; }
 .thread-time { font-size: 11px; color: #8b949e; }
 .thread-count { font-size: 11px; color: #8b949e; margin-left: auto; }
 
-.thread-body { flex: 1; overflow-y: auto; padding: 16px; }
+.agent-role-badge {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+  color: #fff; padding: 2px 8px; border-radius: 4px;
+}
 
+.live-badge {
+  font-size: 10px; color: #3fb950; display: flex; align-items: center; gap: 4px;
+  background: rgba(63, 185, 80, 0.1); padding: 2px 8px; border-radius: 10px;
+}
+
+/* ─── Thread body ─── */
+.thread-body { flex: 1; overflow-y: auto; padding: 12px 16px; }
+
+/* ─── Conversation entries (Copilot style) ─── */
+.entry { margin-bottom: 2px; }
+
+.entry-bar {
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+  padding: 6px 0 2px; color: #8b949e;
+}
+.entry-bar.assistant { color: #3fb950; }
+.entry-bar.user { color: #58a6ff; }
+.entry-bar.system { color: #d29922; }
+
+.entry-role-label { font-size: 10px; }
+
+.entry-content {
+  font-size: 13px; line-height: 1.55; padding: 6px 12px; border-radius: 6px;
+  white-space: pre-wrap; word-break: break-word; margin-bottom: 4px;
+}
+
+.text-content.assistant { background: #0d1117; color: #c9d1d9; border-left: 3px solid #3fb950; }
+.text-content.user { background: rgba(56, 139, 253, 0.08); color: #c9d1d9; border-left: 3px solid #58a6ff; }
+.text-content.system { background: rgba(210, 153, 34, 0.08); color: #d29922; border-left: 3px solid #d29922; font-size: 12px; }
+
+/* ─── Tool calls / results ─── */
+.tool-header {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 8px; cursor: pointer; border-radius: 4px;
+  font-size: 12px; color: #8b949e;
+  background: #161b22; border: 1px solid #21262d;
+  margin-top: 2px;
+}
+.tool-header:hover { background: #1c2128; border-color: #30363d; }
+
+.tool-icon { font-size: 12px; font-weight: 700; width: 16px; text-align: center; }
+.tool-icon.call { color: #58a6ff; }
+.tool-icon.result { color: #3fb950; }
+.tool-icon.error { color: #f85149; }
+
+.tool-name { font-weight: 600; color: #58a6ff; font-family: monospace; font-size: 12px; }
+.tool-result-label { font-weight: 600; color: #3fb950; font-size: 11px; }
+.tool-result-preview { color: #484f58; font-size: 11px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.result-header.error .tool-result-label { color: #f85149; }
+.result-header.error .tool-result-preview { color: #f85149; }
+
+.tool-chevron { font-size: 8px; color: #484f58; transition: transform 0.15s; margin-left: auto; }
+.tool-chevron.collapsed { transform: rotate(-90deg); }
+
+.tool-content {
+  font-family: monospace; font-size: 11px; line-height: 1.45;
+  background: #0d1117; color: #8b949e; border: 1px solid #21262d;
+  border-top: none; border-radius: 0 0 4px 4px;
+  padding: 6px 10px; max-height: 300px; overflow-y: auto;
+}
+.error-content { color: #f85149; background: rgba(248, 81, 73, 0.05); }
+
+/* ─── Thinking indicator ─── */
+.thinking-indicator {
+  display: flex; gap: 4px; padding: 12px 0 4px; justify-content: center;
+}
+.thinking-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: #30363d;
+  animation: thinking 1.4s ease-in-out infinite;
+}
+.thinking-dot:nth-child(2) { animation-delay: 0.2s; }
+.thinking-dot:nth-child(3) { animation-delay: 0.4s; }
+@keyframes thinking {
+  0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+  40% { opacity: 1; transform: scale(1.2); }
+}
+
+/* ─── Chat session messages (existing) ─── */
 .msg { margin-bottom: 12px; max-width: 90%; }
 .msg.user { margin-left: auto; }
 .msg.assistant { margin-right: auto; }

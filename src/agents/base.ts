@@ -42,6 +42,14 @@ import { stashResult, readStash, cleanStash } from "../runtime/stash.js";
 import type { RuntimeToolEntry } from "../mcp/runtime.js";
 import { log } from "../log.js";
 
+/** A single entry in the serialized conversation snapshot for the dashboard. */
+export interface ConversationEntry {
+  role: "user" | "assistant" | "system";
+  kind: "text" | "tool_call" | "tool_result" | "tool_error";
+  content: string;
+  tool?: string;
+}
+
 /** Configuration for creating a BaseAgent. */
 export interface BaseAgentConfig {
   /** System prompt (from prompts/<role>.md). */
@@ -240,6 +248,42 @@ export class BaseAgent {
   /** Get the current message count. */
   get messageCount(): number {
     return this.messages.length;
+  }
+
+  /** Return a serializable snapshot of the conversation for the dashboard. */
+  getConversationSnapshot(): ConversationEntry[] {
+    const entries: ConversationEntry[] = [];
+
+    for (const msg of this.messages) {
+      if (typeof msg.content === "string") {
+        entries.push({ role: msg.role, kind: "text", content: msg.content });
+      } else if (Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          if (block.type === "text" && block.text) {
+            entries.push({ role: msg.role, kind: "text", content: block.text });
+          } else if (block.type === "tool_use") {
+            const inputStr = typeof block.input === "string"
+              ? block.input
+              : JSON.stringify(block.input, null, 2);
+            entries.push({
+              role: "assistant",
+              kind: "tool_call",
+              tool: block.name ?? "unknown",
+              content: inputStr.length > 2000 ? inputStr.slice(0, 2000) + "\n…(truncated)" : inputStr,
+            });
+          } else if (block.type === "tool_result") {
+            const text = block.content ?? block.text ?? "";
+            entries.push({
+              role: "system",
+              kind: block.is_error ? "tool_error" : "tool_result",
+              tool: block.tool_use_id,
+              content: text.length > 3000 ? text.slice(0, 3000) + "\n…(truncated)" : text,
+            });
+          }
+        }
+      }
+    }
+    return entries;
   }
 
   // ─── Protected ──────────────────────────────────────────────────────────

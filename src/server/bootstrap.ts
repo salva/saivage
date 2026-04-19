@@ -40,6 +40,8 @@ export interface SaivageRuntime {
   planService: PlanService;
   project: ProjectContext;
   tracker: RuntimeTracker;
+  /** Live agent instances for conversation inspection. */
+  agentRegistry: Map<string, import("../agents/base.js").BaseAgent>;
   /** Stop the runtime gracefully. */
   shutdown: () => Promise<void>;
 }
@@ -129,6 +131,7 @@ export async function bootstrap(
 
   // Runtime tracker for agent lifecycle → dashboard
   const tracker = new RuntimeTracker(project.paths.runtimeState);
+  const agentRegistry = new Map<string, import("../agents/base.js").BaseAgent>();
 
   const runtime: SaivageRuntime = {
     config,
@@ -138,6 +141,7 @@ export async function bootstrap(
     planService,
     project,
     tracker,
+    agentRegistry,
     shutdown: async () => {
       log.info("[v2] Shutting down...");
       await mcpRuntime.shutdown();
@@ -212,6 +216,7 @@ export function createChildSpawner(
     }
 
     tracker.agentStarted(ctx.agentId, role as AgentState["agent_type"], taskId);
+    runtime.agentRegistry.set(ctx.agentId, agent as import("../agents/base.js").BaseAgent);
 
     try {
       const result = await agent.run();
@@ -227,6 +232,7 @@ export function createChildSpawner(
       return result;
     } finally {
       tracker.agentStopped(ctx.agentId);
+      runtime.agentRegistry.delete(ctx.agentId);
     }
   };
 }
@@ -252,6 +258,7 @@ export async function runPlanner(
   const planner = new PlannerAgent(ctx, childSpawner);
 
   tracker.agentStarted(ctx.agentId, "planner");
+  runtime.agentRegistry.set(ctx.agentId, planner as import("../agents/base.js").BaseAgent);
 
   // Handle graceful shutdown
   const shutdownHandler = () => {
@@ -266,6 +273,7 @@ export async function runPlanner(
     return result;
   } finally {
     tracker.agentStopped(ctx.agentId);
+    runtime.agentRegistry.delete(ctx.agentId);
     process.off("SIGINT", shutdownHandler);
     process.off("SIGTERM", shutdownHandler);
   }

@@ -117,6 +117,22 @@ export async function startServer(
     return { state, plan };
   });
 
+  // ─── Agent Conversation API ─────────────────────────────────────────────
+
+  app.get("/api/agents/:agentId/conversation", async (req, reply) => {
+    const { agentId } = req.params as { agentId: string };
+    const agent = runtime.agentRegistry.get(agentId);
+    if (!agent) {
+      return reply.status(404).send({ error: "Agent not found or no longer running" });
+    }
+    return {
+      agent_id: agentId,
+      role: agent.role,
+      message_count: agent.messageCount,
+      entries: agent.getConversationSnapshot(),
+    };
+  });
+
   // ─── Config API ─────────────────────────────────────────────────────────
 
   app.get("/api/config", async () => {
