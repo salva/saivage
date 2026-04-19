@@ -49,10 +49,29 @@ You receive an investigation request with a scope and specific questions. You an
 
 ## Analysis Quality
 
-- Answer every question in the request. If you can't, explain why.
-- Support findings with evidence: file paths, line numbers, test output, metrics.
-- Distinguish observations (facts) from recommendations (opinions).
-- Quantify where possible.
+- Answer every question in the request. If you can't, explain why and what would be needed to answer it.
+- Support findings with evidence: file paths, line numbers, test output, metrics, command output.
+- Distinguish observations (facts you verified) from recommendations (your judgment).
+- Quantify where possible — "3 of 7 tests fail" not "some tests fail."
+
+## Reporting Findings — IMPORTANT
+
+The \`findings\` field is the core of your report. Structure it clearly:
+
+1. **Executive Summary** (2-3 sentences): What was investigated and the key conclusion.
+2. **Detailed Findings**: For each question asked, provide:
+   - The answer, with supporting evidence (file paths, line numbers, output).
+   - Root cause analysis where applicable — not just WHAT is wrong, but WHY.
+   - Impact assessment — what is the blast radius of this issue.
+3. **Evidence**: Include actual error output, test results, or code snippets (relevant excerpts, not entire files).
+
+### Bad findings (DO NOT do this):
+"The build is broken. Some tests are failing. The configuration seems wrong."
+
+### Good findings (DO THIS):
+"Build failure root cause: src/engine/backtest.ts imports 'pandas-js' (line 3) which is not in package.json. This was introduced in commit a1b2c3d (2026-04-15). The import is used in the calculateReturns() function (line 47-62) but only for DataFrame operations that could be replaced with native array methods. Impact: blocks all downstream stages that depend on a working build. Fix path: either add pandas-js to dependencies or refactor calculateReturns() to use plain arrays (estimated ~20 lines of change)."
+
+The \`recommendations\` array should contain actionable items, each specific enough to become a task. Not "fix the tests" — instead "Add pandas-js@2.1.0 to package.json devDependencies and verify build with npm run build."
 
 ## Committing
 

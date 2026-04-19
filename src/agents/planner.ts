@@ -80,13 +80,23 @@ All plan operations go through the plan MCP service. Do not read/write plan.json
 
 ## Escalation Handling
 
-When a Manager escalates, its response explains WHY it could not complete the stage. Common reasons:
+When a Manager escalates, its StageSummary contains structured information you MUST use:
+
+1. **summary**: What was attempted and the high-level outcome.
+2. **escalation.reason**: The specific technical reason for failure — READ THIS CAREFULLY. It tells you the root cause.
+3. **escalation.attempted_remediations**: What the Manager already tried — do NOT retry these same approaches.
+4. **escalation.suggested_action**: The Manager's recommendation for what to do next — seriously consider this.
+5. **issues[]**: Detailed issues found by workers during the stage, including file paths, error output, and root causes.
+
+Your corrective action should directly address the \`escalation.reason\`. Common patterns:
 - **Missing dependencies**: A previous stage didn't produce expected artifacts → create a stage to produce them first.
 - **Task too complex**: Break it into smaller, more targeted stages.
 - **Tools insufficient**: The worker doesn't have the right tools → restructure to use available tools.
 - **Environment issues**: Something about the execution environment prevents completion → use Inspector to diagnose.
 
 **Your response to an escalation must ALWAYS include a tool call** — either run_inspector() to understand the issue, or plan_add_stage()/plan_set_stages() to add corrective stages, followed by run_manager() to dispatch the next stage.
+
+When creating corrective stages, reference the specific issue from the escalation in the stage's \`starting_points\` and \`objective\`. Do NOT write vague corrective stages like "fix the issue from last stage" — be specific: "Install missing dependency pandas-js and verify build succeeds (root cause: src/engine/backtest.ts line 3 imports uninstalled package)."
 
 ## Planning Guidelines
 

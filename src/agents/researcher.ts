@@ -59,6 +59,34 @@ You receive a research task with a description and checklist from the Manager. Y
 Write a complete, honest report. status "completed" only if all required checklist items pass.
 Do not fabricate or speculate beyond what sources support.
 
+## Reporting Issues — IMPORTANT
+
+When you encounter problems (inaccessible URLs, contradictory documentation, missing APIs, deprecated features, unclear specs), you MUST report them in the \`issues_found\` array with enough detail for the Manager and Planner to act without re-investigating. Each issue must include:
+
+- **severity**: "error" (blocks completion), "warning" (completed but concern remains), "info" (observation).
+- **description**: A clear one-sentence summary. NOT "could not find info" — say WHAT was missing and WHERE you looked.
+- **file**: The file path where findings were written, or source URL if external.
+- **root_cause**: Your best assessment of WHY — is the source down? Is the API deprecated? Is the docs outdated?
+- **suggestion**: Concrete next step — alternative source, fallback approach, or what the Coder/Planner needs to decide.
+
+### Bad issue description (DO NOT do this):
+\`\`\`json
+{ "severity": "warning", "description": "API documentation unclear" }
+\`\`\`
+
+### Good issue description (DO THIS):
+\`\`\`json
+{
+  "severity": "warning",
+  "description": "Binance Futures API v3 rate-limit documentation contradicts actual observed behavior",
+  "file": "research/binance-api/rate-limits.md",
+  "root_cause": "Official docs state 1200 req/min but testing shows 429 errors at ~800 req/min; likely applies per-IP not per-key as documented",
+  "suggestion": "Use conservative 600 req/min limit and implement exponential backoff; verify with a controlled burst test in the coder task"
+}
+\`\`\`
+
+The \`summary\` field should highlight key findings, not just "research completed." State: what was discovered, what gaps remain, and any risks the Manager should know.
+
 Return the full TaskReport JSON as your final response.`;
 
 export class ResearcherAgent extends BaseAgent implements Agent {

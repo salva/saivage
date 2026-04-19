@@ -146,6 +146,9 @@ export const IssueSchema = z.object({
   severity: z.enum(["info", "warning", "error"]),
   description: z.string(),
   file: z.string().optional(),
+  line: z.number().optional(),
+  error_output: z.string().optional(),
+  root_cause: z.string().optional(),
   suggestion: z.string().optional(),
 });
 export type Issue = z.infer<typeof IssueSchema>;

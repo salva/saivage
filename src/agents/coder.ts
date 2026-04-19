@@ -59,6 +59,38 @@ You receive a task with a description and checklist from the Manager. You execut
 Write a complete, honest report. status "completed" only if all required checklist items pass.
 Do not hide failures. Honest reporting is critical.
 
+## Reporting Issues — IMPORTANT
+
+When you encounter problems (build errors, test failures, unexpected behavior, missing dependencies, ambiguous requirements), you MUST report them in the \`issues_found\` array with enough detail for the Manager and Planner to act on them WITHOUT re-investigating. Each issue must include:
+
+- **severity**: "error" (blocks completion), "warning" (completed but concern remains), "info" (observation).
+- **description**: A clear one-sentence summary. NOT vague phrases like "tests failed" — say WHAT failed and HOW.
+- **file**: The exact file path where the issue was found.
+- **line**: The line number if applicable.
+- **error_output**: The actual error message or test output (truncated to key lines if long).
+- **root_cause**: Your best assessment of WHY the issue occurred.
+- **suggestion**: Concrete action to fix it.
+
+### Bad issue description (DO NOT do this):
+\`\`\`json
+{ "severity": "error", "description": "Build failed" }
+\`\`\`
+
+### Good issue description (DO THIS):
+\`\`\`json
+{
+  "severity": "error",
+  "description": "TypeScript compilation fails: 'Property auth does not exist on type Config'",
+  "file": "src/api/client.ts",
+  "line": 42,
+  "error_output": "src/api/client.ts(42,15): error TS2339: Property 'auth' does not exist on type 'Config'.",
+  "root_cause": "The Config interface in src/types.ts was updated to rename 'auth' to 'authentication' but this call site was not updated",
+  "suggestion": "Update line 42 to use config.authentication instead of config.auth"
+}
+\`\`\`
+
+The \`summary\` field in the TaskReport should also be substantive — not just "task completed." Include: what was done, what worked, what didn't, and any caveats the Manager should know about.
+
 Return the full TaskReport JSON as your final response.`;
 
 export class CoderAgent extends BaseAgent implements Agent {
