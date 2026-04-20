@@ -16,9 +16,12 @@ Thumbs.db
 tmp/
 
 # Saivage runtime artifacts — the source tree is NOT a target project.
-# Target projects live elsewhere (e.g. target/) and have their own .saivage/.
+# Target projects live elsewhere and have their own .saivage/.
 .saivage/
+
+# Screenshots / artifacts
+*.png
+.playwright-mcp/
 
 # Logs
 *.log
-.playwright-mcp/
