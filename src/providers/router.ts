@@ -6,6 +6,7 @@ import type {
 } from "./types.js";
 import { parseModelId } from "./types.js";
 import { PiAiProvider } from "./pi-ai.js";
+import { CopilotProvider } from "./copilot.js";
 import { OllamaProvider } from "./ollama.js";
 import { LlamaCppProvider } from "./llamacpp.js";
 import { getOAuthApiKey, hasOAuthCredentials } from "../auth/index.js";
@@ -23,7 +24,6 @@ function recordLlmCall(_spec: string, _data: Record<string, unknown>): void {
 const OAUTH_TO_PI: Record<string, string> = {
   "openai-codex": "openai-codex",
   "anthropic": "anthropic",
-  "github-copilot": "github-copilot",
 };
 
 /**
@@ -50,6 +50,10 @@ export class ModelRouter {
 
   private initProviders(config: SaivageConfig): void {
     const providerConfigs = config.providers;
+
+    if (hasOAuthCredentials("github-copilot")) {
+      this.providers.set("github-copilot", new CopilotProvider());
+    }
 
     // Register pi-ai backed providers for all available OAuth credentials
     for (const [oauthId, piProvider] of Object.entries(OAUTH_TO_PI)) {
@@ -115,6 +119,19 @@ export class ModelRouter {
   /** List all registered providers */
   listProviders(): string[] {
     return [...this.providers.keys()];
+  }
+
+  /** List model IDs exposed by a registered provider, when supported. */
+  async listModels(providerName: string): Promise<string[]> {
+    const provider = this.providers.get(providerName);
+    if (!provider?.listModels) return [];
+
+    if (provider.setApiKey) {
+      const oauthKey = await this.resolveApiKey(providerName);
+      if (oauthKey) provider.setApiKey(oauthKey);
+    }
+
+    return provider.listModels();
   }
 
   /** Get context window size (tokens) for a model spec like "github-copilot/gpt-5.3-codex" */

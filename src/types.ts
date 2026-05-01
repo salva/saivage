@@ -104,8 +104,8 @@ export type ChecklistItem = z.infer<typeof ChecklistItemSchema>;
 
 export const TaskSchema = z.object({
   id: z.string(),
-  type: z.enum(["code", "research", "test", "document"]),
-  assigned_to: z.enum(["coder", "researcher"]),
+  type: z.enum(["code", "research", "data", "review", "test", "document"]),
+  assigned_to: z.enum(["coder", "researcher", "data_agent", "reviewer"]),
   description: z.string(),
   checklist: z.array(ChecklistItemSchema),
   dependencies: z.array(z.string()),
@@ -156,7 +156,7 @@ export type Issue = z.infer<typeof IssueSchema>;
 export const TaskReportSchema = z.object({
   task_id: z.string(),
   stage_id: z.string(),
-  agent: z.enum(["coder", "researcher"]),
+  agent: z.enum(["coder", "researcher", "data_agent", "reviewer"]),
   status: z.enum(["completed", "failed"]),
   summary: z.string(),
   checklist_results: z.array(ChecklistResultSchema),
@@ -270,6 +270,8 @@ export const AgentStateSchema = z.object({
     "manager",
     "coder",
     "researcher",
+    "data_agent",
+    "reviewer",
     "inspector",
     "chat",
   ]),
@@ -306,6 +308,7 @@ export const SystemEventSchema = z.object({
   task_id: z.string().optional(),
   report_id: z.string().optional(),
   summary: z.string(),
+  timestamp: z.string().optional(),
 });
 export type SystemEvent = z.infer<typeof SystemEventSchema>;
 

@@ -11,12 +11,49 @@ import type {
 } from "./types.js";
 import { getGitHubCopilotBaseUrl } from "../auth/github-copilot.js";
 
+type ResponsesInputItem =
+  | { role: "user"; content: Array<{ type: "input_text"; text: string }> }
+  | { role: "assistant"; content: Array<{ type: "output_text"; text: string }> }
+  | { type: "function_call"; id: string; call_id: string; name: string; arguments: string }
+  | { type: "function_call_output"; call_id: string; output: string };
+
+interface CopilotModelMetadata {
+  id: string;
+  model_picker_enabled?: boolean;
+  supported_endpoints?: string[];
+  capabilities?: {
+    limits?: {
+      max_context_window_tokens?: number;
+      max_output_tokens?: number;
+    };
+  };
+}
+
 const COPILOT_HEADERS: Record<string, string> = {
   "User-Agent": "GitHubCopilotChat/0.35.0",
   "Editor-Version": "vscode/1.107.0",
   "Editor-Plugin-Version": "copilot-chat/0.35.0",
   "Copilot-Integration-Id": "vscode-chat",
+  "Openai-Intent": "conversation-edits",
 };
+
+const RESPONSES_API_AGENT_INPUT_TYPES = new Set([
+  "file_search_call",
+  "computer_call",
+  "computer_call_output",
+  "web_search_call",
+  "function_call",
+  "function_call_output",
+  "image_generation_call",
+  "code_interpreter_call",
+  "local_shell_call",
+  "local_shell_call_output",
+  "mcp_list_tools",
+  "mcp_approval_request",
+  "mcp_approval_response",
+  "mcp_call",
+  "reasoning",
+]);
 
 /**
  * Models that use the Anthropic Messages API via Copilot.
@@ -35,6 +72,44 @@ function isAnthropicModel(model: string): boolean {
   return ANTHROPIC_API_MODELS.has(model) || model.startsWith("claude-");
 }
 
+function isAgentCall(body: unknown): boolean {
+  if (!body || typeof body !== "object") return false;
+  const candidate = body as { messages?: Array<{ role?: string }>; input?: Array<{ role?: string; type?: string }> };
+
+  if (candidate.messages && candidate.messages.length > 0) {
+    const lastMessage = candidate.messages[candidate.messages.length - 1];
+    return lastMessage?.role === "tool" || lastMessage?.role === "assistant";
+  }
+
+  if (candidate.input && candidate.input.length > 0) {
+    const lastInput = candidate.input[candidate.input.length - 1];
+    return lastInput?.role === "assistant" || !!(lastInput?.type && RESPONSES_API_AGENT_INPUT_TYPES.has(lastInput.type));
+  }
+
+  return false;
+}
+
+function createCopilotFetch(apiKey: string): typeof fetch {
+  return (async (input: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1] = {}) => {
+    let parsedBody: unknown;
+    try {
+      if (typeof init.body === "string") parsedBody = JSON.parse(init.body);
+    } catch {
+      parsedBody = undefined;
+    }
+
+    const headers = new Headers(init.headers);
+    for (const [key, value] of Object.entries(COPILOT_HEADERS)) {
+      headers.set(key, value);
+    }
+    headers.set("Authorization", `Bearer ${apiKey}`);
+    headers.set("X-Initiator", isAgentCall(parsedBody) ? "agent" : "user");
+    headers.delete("x-api-key");
+
+    return fetch(input, { ...init, headers });
+  }) as typeof fetch;
+}
+
 /**
  * GitHub Copilot provider.
  *
@@ -45,8 +120,10 @@ function isAnthropicModel(model: string): boolean {
 export class CopilotProvider extends BaseProvider {
   readonly name = "copilot";
   private apiKey: string = "";
+  private baseUrl: string = "https://api.githubcopilot.com";
   private openaiClient?: OpenAI;
   private anthropicClient?: Anthropic;
+  private modelsCache: { expiresAt: number; models: CopilotModelMetadata[] } | null = null;
 
   constructor(apiKey?: string) {
     super();
@@ -55,17 +132,19 @@ export class CopilotProvider extends BaseProvider {
 
   setApiKey(apiKey: string): void {
     this.apiKey = apiKey;
-    const baseUrl = getGitHubCopilotBaseUrl(apiKey);
+    this.baseUrl = getGitHubCopilotBaseUrl(apiKey);
+    this.modelsCache = null;
 
     this.openaiClient = new OpenAI({
       apiKey,
-      baseURL: baseUrl,
+      baseURL: this.baseUrl,
       defaultHeaders: COPILOT_HEADERS,
-    });
+      fetch: createCopilotFetch(apiKey),
+    } as unknown as ConstructorParameters<typeof OpenAI>[0]);
 
     this.anthropicClient = new Anthropic({
       apiKey,
-      baseURL: `${baseUrl}/anthropic`,
+      baseURL: `${this.baseUrl}/anthropic`,
       defaultHeaders: COPILOT_HEADERS,
     });
   }
@@ -74,7 +153,107 @@ export class CopilotProvider extends BaseProvider {
     if (isAnthropicModel(request.model)) {
       return this.chatAnthropic(request);
     }
+
+    if (await this.shouldUseResponsesApi(request.model)) {
+      return this.chatResponses(request);
+    }
+
     return this.chatOpenAI(request);
+  }
+
+  private async shouldUseResponsesApi(model: string): Promise<boolean> {
+    const metadata = await this.getModelMetadata(model);
+    if (metadata?.supported_endpoints?.includes("/responses")) return true;
+    if (metadata?.supported_endpoints && !metadata.supported_endpoints.includes("/chat/completions")) return true;
+    return model === "gpt-5.5" || model.startsWith("gpt-5.5-");
+  }
+
+  private async getModelMetadata(model: string): Promise<CopilotModelMetadata | undefined> {
+    const models = await this.fetchModels();
+    return models.find((candidate) => candidate.id === model || model.startsWith(`${candidate.id}-`));
+  }
+
+  private getCachedModelMetadata(model: string): CopilotModelMetadata | undefined {
+    const models = this.modelsCache?.models ?? [];
+    return models.find((candidate) => candidate.id === model || model.startsWith(`${candidate.id}-`));
+  }
+
+  private isChatCapableModel(model: CopilotModelMetadata): boolean {
+    if (model.model_picker_enabled === false) return false;
+    const endpoints = model.supported_endpoints ?? [];
+    return endpoints.includes("/responses") || endpoints.includes("/chat/completions") || endpoints.includes("/v1/messages");
+  }
+
+  private async fetchModels(): Promise<CopilotModelMetadata[]> {
+    if (!this.apiKey) return [];
+    if (this.modelsCache && this.modelsCache.expiresAt > Date.now()) return this.modelsCache.models;
+
+    const response = await fetch(`${this.baseUrl}/models`, {
+      headers: {
+        ...COPILOT_HEADERS,
+        Authorization: `Bearer ${this.apiKey}`,
+        "X-Initiator": "agent",
+      },
+    });
+    if (!response.ok) return [];
+
+    const payload = await response.json() as { data?: CopilotModelMetadata[] };
+    const models = Array.isArray(payload.data) ? payload.data : [];
+    this.modelsCache = { expiresAt: Date.now() + 10 * 60 * 1000, models };
+    return models;
+  }
+
+  private async chatResponses(request: ChatRequest): Promise<ChatResponse> {
+    if (!this.openaiClient) throw new Error("Copilot provider not configured");
+
+    const input = this.convertMessagesResponses(request);
+    const tools = request.tools?.map((tool) => ({
+      type: "function" as const,
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.inputSchema,
+    }));
+
+    const response = await this.openaiClient.responses.create({
+      model: request.model,
+      instructions: request.system || undefined,
+      input,
+      max_output_tokens: request.maxTokens ?? 8192,
+      ...(tools && tools.length > 0 ? { tools } : {}),
+      ...(request.temperature != null ? { temperature: request.temperature } : {}),
+    } as OpenAI.Responses.ResponseCreateParamsNonStreaming);
+
+    let content = response.output_text ?? "";
+    const toolCalls: ToolCallResult[] = [];
+
+    for (const item of response.output ?? []) {
+      if (item.type === "function_call") {
+        toolCalls.push({
+          id: item.call_id,
+          name: item.name,
+          input: JSON.parse(item.arguments || "{}"),
+        });
+      } else if (item.type === "message" && !content) {
+        content = item.content
+          ?.filter((part) => part.type === "output_text")
+          .map((part) => part.text)
+          .join("") ?? "";
+      }
+    }
+
+    let finishReason: ChatResponse["finishReason"] = "end_turn";
+    if (toolCalls.length > 0) finishReason = "tool_use";
+    else if (response.status === "incomplete") finishReason = "max_tokens";
+
+    return {
+      content,
+      toolCalls,
+      finishReason,
+      usage: {
+        inputTokens: response.usage?.input_tokens ?? 0,
+        outputTokens: response.usage?.output_tokens ?? 0,
+      },
+    };
   }
 
   // ── OpenAI-compatible path ────────────────────────────
@@ -85,14 +264,15 @@ export class CopilotProvider extends BaseProvider {
     const messages = this.convertMessagesOpenAI(request);
     const tools = request.tools?.map((t) => this.convertToolOpenAI(t));
 
+    const tokenLimitKey = request.model.startsWith("gpt-5") ? "max_completion_tokens" : "max_tokens";
     const response = await this.openaiClient.chat.completions.create({
       model: request.model,
       messages,
-      max_tokens: request.maxTokens ?? 8192,
+      [tokenLimitKey]: request.maxTokens ?? 8192,
       ...(tools && tools.length > 0 ? { tools } : {}),
       ...(request.temperature != null ? { temperature: request.temperature } : {}),
       ...(request.stopSequences ? { stop: request.stopSequences } : {}),
-    });
+    } as OpenAI.ChatCompletionCreateParamsNonStreaming);
 
     const choice = response.choices[0];
     if (!choice) throw new Error("No choices returned");
@@ -146,6 +326,66 @@ export class CopilotProvider extends BaseProvider {
         }
       }
     }
+    return result;
+  }
+
+  private convertMessagesResponses(request: ChatRequest): ResponsesInputItem[] {
+    const result: ResponsesInputItem[] = [];
+
+    for (const message of request.messages) {
+      if (typeof message.content === "string") {
+        if (message.role === "assistant") {
+          result.push({
+            role: "assistant",
+            content: [{ type: "output_text", text: message.content }],
+          });
+        } else {
+          result.push({
+            role: "user",
+            content: [{ type: "input_text", text: message.content }],
+          });
+        }
+        continue;
+      }
+
+      const blocks = message.content as ContentBlock[];
+      const textParts: string[] = [];
+
+      for (const block of blocks) {
+        if (block.type === "tool_result") {
+          result.push({
+            type: "function_call_output",
+            call_id: block.tool_use_id ?? "",
+            output: block.content ?? "",
+          });
+        } else if (block.type === "tool_use" && block.id && block.name) {
+          result.push({
+            type: "function_call",
+            id: `fc_${block.id}`,
+            call_id: block.id,
+            name: block.name,
+            arguments: JSON.stringify(block.input ?? {}),
+          });
+        } else if (block.type === "text" && block.text) {
+          textParts.push(block.text);
+        }
+      }
+
+      if (textParts.length > 0) {
+        if (message.role === "assistant") {
+          result.push({
+            role: "assistant",
+            content: [{ type: "output_text", text: textParts.join("") }],
+          });
+        } else {
+          result.push({
+            role: "user",
+            content: [{ type: "input_text", text: textParts.join("") }],
+          });
+        }
+      }
+    }
+
     return result;
   }
 
@@ -223,11 +463,20 @@ export class CopilotProvider extends BaseProvider {
   }
 
   maxContextTokens(model: string): number {
+    const metadata = this.getCachedModelMetadata(model);
+    const contextWindow = metadata?.capabilities?.limits?.max_context_window_tokens;
+    if (contextWindow) return contextWindow;
+
     if (model.includes("claude")) return 200_000;
-    if (model.includes("gpt-5")) return 200_000;
+    if (model.includes("gpt-5")) return 400_000;
     if (model.includes("gpt-4")) return 128_000;
     if (model.includes("gemini")) return 1_000_000;
     return 128_000;
+  }
+
+  async listModels(): Promise<string[]> {
+    const models = await this.fetchModels();
+    return [...new Set(models.filter((model) => this.isChatCapableModel(model)).map((model) => model.id))].sort();
   }
 
   async isAvailable(): Promise<boolean> {

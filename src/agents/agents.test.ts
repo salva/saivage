@@ -191,6 +191,26 @@ describe("Conventions", () => {
     expect(warning).toBeNull();
   });
 
+  it("allows data agent writing to data sources", () => {
+    const warning = checkConvention("data_agent", "research/data-sources/source.md");
+    expect(warning).toBeNull();
+  });
+
+  it("detects data agent writing to source code", () => {
+    const warning = checkConvention("data_agent", "src/models/new_model.py");
+    expect(warning).not.toBeNull();
+  });
+
+  it("allows reviewer writing stage review notes", () => {
+    const warning = checkConvention("reviewer", ".saivage/stages/stg-1/reviews/review.md");
+    expect(warning).toBeNull();
+  });
+
+  it("detects reviewer writing to source code", () => {
+    const warning = checkConvention("reviewer", "src/models/new_model.py");
+    expect(warning).not.toBeNull();
+  });
+
   it("no convention for unknown role returns null", () => {
     // Chat has conventions, but agents without excluded territories pass
     const warning = checkConvention(

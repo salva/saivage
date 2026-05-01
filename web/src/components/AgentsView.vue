@@ -207,6 +207,8 @@ function roleColor(role: string): string {
     case "manager": return "#58a6ff";
     case "coder": return "#3fb950";
     case "researcher": return "#d29922";
+    case "data_agent": return "#2f81f7";
+    case "reviewer": return "#a371f7";
     case "inspector": return "#f0883e";
     default: return "#c9d1d9";
   }

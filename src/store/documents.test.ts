@@ -30,6 +30,7 @@ import {
 import {
   PlanSchema,
   PlanHistorySchema,
+  TaskSchema,
   TaskListSchema,
   TaskReportSchema,
   StageSummarySchema,
@@ -288,6 +289,50 @@ describe("Type schemas", () => {
       tests_run: [{ name: "basic", passed: true }],
       commits: ["abc123"],
       issues_found: [],
+      started_at: new Date().toISOString(),
+      completed_at: new Date().toISOString(),
+      duration_ms: 5000,
+    };
+    expect(() => TaskReportSchema.parse(report)).not.toThrow();
+  });
+
+  it("validates reviewer tasks and reports", () => {
+    const task = {
+      id: "tsk-review",
+      type: "review" as const,
+      assigned_to: "reviewer" as const,
+      description: "Review completed stage work",
+      checklist: [{ description: "Acceptance criteria reviewed", required: true }],
+      dependencies: ["tsk-code"],
+      status: "pending" as const,
+      attempt: 1,
+      max_attempts: 3,
+    };
+    expect(() => TaskSchema.parse(task)).not.toThrow();
+
+    const report = {
+      task_id: "tsk-review",
+      stage_id: "stg-1",
+      agent: "reviewer" as const,
+      status: "completed" as const,
+      summary: "Stage work reviewed; one warning remains.",
+      checklist_results: [
+        { description: "Acceptance criteria reviewed", passed: true },
+      ],
+      files_modified: [],
+      files_created: [".saivage/stages/stg-1/reviews/review.md"],
+      tests_added: [],
+      tests_run: [{ name: "review-json", passed: true }],
+      commits: [],
+      issues_found: [
+        {
+          severity: "warning" as const,
+          description: "Experiment conclusion lacks confidence interval evidence",
+          file: "results/leaderboard.json",
+          root_cause: "Metrics were reported without uncertainty analysis",
+          suggestion: "Run bootstrap confidence analysis before claiming improvement",
+        },
+      ],
       started_at: new Date().toISOString(),
       completed_at: new Date().toISOString(),
       duration_ms: 5000,

@@ -144,6 +144,17 @@ export async function startServer(
     };
   });
 
+  app.get("/api/providers", async () => {
+    const providers = await Promise.all(runtime.router.listProviders().map(async (name) => {
+      try {
+        return { name, models: await runtime.router.listModels(name) };
+      } catch (err) {
+        return { name, models: [], error: err instanceof Error ? err.message : String(err) };
+      }
+    }));
+    return { providers };
+  });
+
   // ─── Inspections API ───────────────────────────────────────────────────
 
   app.get("/api/inspections", async () => {
@@ -527,6 +538,7 @@ export async function startServer(
       channel,
       runtime.eventBus,
       getEventFilter(runtime),
+      runtime.plannerControl,
     );
 
     // Send session ID to client so it can reload messages on reconnect

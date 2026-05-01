@@ -2,9 +2,9 @@
  * Saivage — Built-in MCP Services (in-process)
  *
  * Core services (filesystem, shell, git, skills) run in-process — no
- * subprocess spawning, no external dependencies.  Services that need
+ * subprocess spawning, no external dependencies. Services that need
  * libraries not yet integrated (web, memory, index, lock) are registered
- * as stubs that return a descriptive error if called.
+ * as unavailable stubs so they stay out of the agent-facing tool catalog.
  */
 
 import type { McpRuntime, InProcessToolHandler } from "./runtime.js";
@@ -16,7 +16,8 @@ import {
   mkdirSync,
   existsSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
+import { createHash } from "node:crypto";
 import { exec, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { log } from "../log.js";
@@ -24,14 +25,136 @@ import { log } from "../log.js";
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 const MAX_OUTPUT = 100 * 1024; // 100 KB
+const MAX_FETCH_CHARS = 200_000;
+const MAX_DOWNLOAD_BYTES = 250 * 1024 * 1024;
 
 function projectRoot(): string {
   return process.env["PROJECT_ROOT"] ?? process.cwd();
 }
 
+function assertInside(baseDir: string, candidate: string, label: string): string {
+  const base = resolve(baseDir);
+  const target = resolve(candidate);
+  const rel = relative(base, target);
+  if (rel === "" || (!rel.startsWith("..") && !rel.startsWith("/"))) {
+    return target;
+  }
+  throw new Error(`${label} must stay inside ${base}`);
+}
+
 function resolvePath(p: string): string {
-  if (p.startsWith("/")) return p;
-  return join(projectRoot(), p);
+  const root = projectRoot();
+  const target = p.startsWith("/") ? p : join(root, p);
+  return assertInside(root, target, "Path");
+}
+
+function resolveSkillPath(skillsDir: string, name: string): string {
+  if (!/^[a-zA-Z0-9._-]+$/.test(name)) {
+    throw new Error("Skill name may only contain letters, numbers, dots, underscores, and hyphens");
+  }
+  return assertInside(skillsDir, join(skillsDir, `${name}.md`), "Skill path");
+}
+
+function parseHttpUrl(value: string): URL {
+  const url = new URL(value);
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("URL must use http or https");
+  }
+  return url;
+}
+
+function headersObject(headers: Headers): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const key of ["content-type", "content-length", "last-modified", "etag"]) {
+    const value = headers.get(key);
+    if (value) result[key] = value;
+  }
+  return result;
+}
+
+function stripHtml(value: string): string {
+  return value
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+interface DownloadAttempt {
+  url: string;
+  attempt: number;
+  status?: number;
+  ok?: boolean;
+  error?: string;
+  bytes?: number;
+  headers?: Record<string, string>;
+}
+
+interface DownloadSuccess {
+  url: string;
+  path: string;
+  bytes: number;
+  sha256: string;
+  headers: Record<string, string>;
+  attempts: DownloadAttempt[];
+}
+
+async function downloadUrl(
+  url: URL,
+  outPath: string,
+  options: {
+    maxBytes: number;
+    headers?: Record<string, string>;
+    attempts: DownloadAttempt[];
+    attemptNumber: number;
+  },
+): Promise<DownloadSuccess | null> {
+  const response = await fetch(url, {
+    headers: { "User-Agent": "Saivage/0.1 data-agent", ...(options.headers ?? {}) },
+  });
+  const responseHeaders = headersObject(response.headers);
+  const attempt: DownloadAttempt = {
+    url: url.toString(),
+    attempt: options.attemptNumber,
+    status: response.status,
+    ok: response.ok,
+    headers: responseHeaders,
+  };
+  options.attempts.push(attempt);
+
+  if (!response.ok) {
+    attempt.error = `HTTP ${response.status}`;
+    return null;
+  }
+
+  const contentLength = Number(response.headers.get("content-length") ?? 0);
+  if (contentLength > options.maxBytes) {
+    attempt.error = `Download size ${contentLength} exceeds max_bytes ${options.maxBytes}`;
+    return null;
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  attempt.bytes = buffer.byteLength;
+  if (buffer.byteLength > options.maxBytes) {
+    attempt.error = `Download size ${buffer.byteLength} exceeds max_bytes ${options.maxBytes}`;
+    return null;
+  }
+
+  mkdirSync(dirname(outPath), { recursive: true });
+  writeFileSync(outPath, buffer);
+  return {
+    url: url.toString(),
+    path: relative(projectRoot(), outPath),
+    bytes: buffer.byteLength,
+    sha256: createHash("sha256").update(buffer).digest("hex"),
+    headers: responseHeaders,
+    attempts: options.attempts,
+  };
 }
 
 // ─── Filesystem ─────────────────────────────────────────────────────────────
@@ -163,6 +286,227 @@ const shellHandler: InProcessToolHandler = async (toolName, args) => {
       },
       isError: false, // non-zero exit is not an MCP error
     };
+  }
+};
+
+// ─── Data Acquisition ───────────────────────────────────────────────────────
+
+const dataTools: ToolEntry[] = [
+  {
+    name: "web_search",
+    description: "Search the public web for data sources, APIs, documentation, and downloadable datasets. Returns candidate URLs with snippets when available.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        max_results: { type: "number", description: "Maximum number of results to return (default 8, max 20)" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "fetch_url",
+    description: "Fetch a URL as text with status, selected headers, and a truncated body. Use for API docs, CSV previews, metadata pages, and robots-friendly web pages.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string" },
+        max_chars: { type: "number", description: "Maximum response characters to return (default 200000)" },
+      },
+      required: ["url"],
+    },
+  },
+  {
+    name: "fetch_page_text",
+    description: "Fetch an HTML page and return readable text extracted from it. Use this before falling back to Playwright for simple static pages.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string" },
+        max_chars: { type: "number", description: "Maximum extracted text characters to return (default 200000)" },
+      },
+      required: ["url"],
+    },
+  },
+  {
+    name: "download_file",
+    description: "Download a public http/https file to any project-relative path chosen by the task, returning path, byte size, sha256, and provenance headers.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        url: { type: "string" },
+        path: { type: "string", description: "Project-relative output path selected for this artifact; not restricted to one directory" },
+        max_bytes: { type: "number", description: "Maximum bytes allowed (default 250MB)" },
+        headers: { type: "object", description: "Optional request headers for sources that require a documented header such as Accept" },
+      },
+      required: ["url", "path"],
+    },
+  },
+  {
+    name: "download_with_fallbacks",
+    description: "Try multiple http/https source URLs with bounded retries, save the first successful artifact, and return an attempt log for provenance and reliability accounting.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        urls: { type: "array", items: { type: "string" }, description: "Candidate source URLs in preference order" },
+        path: { type: "string", description: "Project-relative output path selected for this artifact; not restricted to one directory" },
+        max_bytes: { type: "number", description: "Maximum bytes allowed (default 250MB)" },
+        retries_per_url: { type: "number", description: "Attempts per URL before trying the next source (default 2, max 5)" },
+        headers: { type: "object", description: "Optional request headers applied to each candidate URL" },
+        manifest_path: { type: "string", description: "Optional project-relative JSON path where the source attempts and selected artifact metadata should be written" },
+      },
+      required: ["urls", "path"],
+    },
+  },
+  {
+    name: "head_url",
+    description: "Request URL metadata without downloading the full body. Use to check availability, content type, file size, etag, and last-modified.",
+    inputSchema: {
+      type: "object",
+      properties: { url: { type: "string" } },
+      required: ["url"],
+    },
+  },
+];
+
+const dataHandler: InProcessToolHandler = async (toolName, args) => {
+  switch (toolName) {
+    case "web_search": {
+      const query = String(args.query ?? "").trim();
+      if (!query) return { content: { error: "query is required" }, isError: true };
+      const maxResults = Math.min(Math.max(Number(args.max_results ?? 8), 1), 20);
+      const searchUrl = new URL("https://duckduckgo.com/html/");
+      searchUrl.searchParams.set("q", query);
+      const response = await fetch(searchUrl, { headers: { "User-Agent": "Saivage/0.1 data-agent" } });
+      const html = await response.text();
+      const results: Array<{ title: string; url: string; snippet?: string }> = [];
+      const resultRegex = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi;
+      for (const match of html.matchAll(resultRegex)) {
+        let url = match[1] ?? "";
+        try {
+          const parsed = new URL(url, searchUrl);
+          const uddg = parsed.searchParams.get("uddg");
+          if (uddg) url = decodeURIComponent(uddg);
+        } catch {
+          // Keep original URL.
+        }
+        results.push({ title: stripHtml(match[2] ?? ""), url, snippet: stripHtml(match[3] ?? "") });
+        if (results.length >= maxResults) break;
+      }
+      return { content: { query, results, status: response.status }, isError: false };
+    }
+
+    case "fetch_url": {
+      const url = parseHttpUrl(String(args.url));
+      const maxChars = Math.min(Math.max(Number(args.max_chars ?? MAX_FETCH_CHARS), 1_000), 1_000_000);
+      const response = await fetch(url, { headers: { "User-Agent": "Saivage/0.1 data-agent" } });
+      const text = await response.text();
+      return {
+        content: {
+          url: url.toString(),
+          status: response.status,
+          ok: response.ok,
+          headers: headersObject(response.headers),
+          content: text.slice(0, maxChars),
+          truncated: text.length > maxChars,
+        },
+        isError: false,
+      };
+    }
+
+    case "fetch_page_text": {
+      const url = parseHttpUrl(String(args.url));
+      const maxChars = Math.min(Math.max(Number(args.max_chars ?? MAX_FETCH_CHARS), 1_000), 1_000_000);
+      const response = await fetch(url, { headers: { "User-Agent": "Saivage/0.1 data-agent" } });
+      const html = await response.text();
+      const text = stripHtml(html);
+      return {
+        content: {
+          url: url.toString(),
+          status: response.status,
+          ok: response.ok,
+          headers: headersObject(response.headers),
+          text: text.slice(0, maxChars),
+          truncated: text.length > maxChars,
+        },
+        isError: false,
+      };
+    }
+
+    case "download_file": {
+      const url = parseHttpUrl(String(args.url));
+      const outPath = resolvePath(String(args.path));
+      const maxBytes = Math.min(Math.max(Number(args.max_bytes ?? MAX_DOWNLOAD_BYTES), 1), 2 * 1024 * 1024 * 1024);
+      const attempts: DownloadAttempt[] = [];
+      try {
+        const result = await downloadUrl(url, outPath, {
+          maxBytes,
+          headers: args.headers as Record<string, string> | undefined,
+          attempts,
+          attemptNumber: 1,
+        });
+        if (result) return { content: result, isError: false };
+      } catch (err) {
+        attempts.push({ url: url.toString(), attempt: 1, error: err instanceof Error ? err.message : String(err) });
+      }
+      return { content: { error: "Download failed", url: url.toString(), attempts }, isError: true };
+    }
+
+    case "download_with_fallbacks": {
+      const urls = Array.isArray(args.urls) ? args.urls.map(String).filter(Boolean) : [];
+      if (urls.length === 0) return { content: { error: "urls must contain at least one source" }, isError: true };
+      const outPath = resolvePath(String(args.path));
+      const manifestPath = args.manifest_path ? resolvePath(String(args.manifest_path)) : null;
+      const maxBytes = Math.min(Math.max(Number(args.max_bytes ?? MAX_DOWNLOAD_BYTES), 1), 2 * 1024 * 1024 * 1024);
+      const retriesPerUrl = Math.min(Math.max(Number(args.retries_per_url ?? 2), 1), 5);
+      const headers = args.headers as Record<string, string> | undefined;
+      const attempts: DownloadAttempt[] = [];
+
+      for (const rawUrl of urls) {
+        let url: URL;
+        try {
+          url = parseHttpUrl(rawUrl);
+        } catch (err) {
+          attempts.push({ url: rawUrl, attempt: 0, error: err instanceof Error ? err.message : String(err) });
+          continue;
+        }
+
+        for (let attemptNumber = 1; attemptNumber <= retriesPerUrl; attemptNumber++) {
+          try {
+            const result = await downloadUrl(url, outPath, { maxBytes, headers, attempts, attemptNumber });
+            if (result) {
+              if (manifestPath) {
+                mkdirSync(dirname(manifestPath), { recursive: true });
+                writeFileSync(manifestPath, JSON.stringify(result, null, 2) + "\n", "utf-8");
+              }
+              return { content: { ...result, selected_url: result.url }, isError: false };
+            }
+          } catch (err) {
+            attempts.push({
+              url: url.toString(),
+              attempt: attemptNumber,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+      }
+
+      const failure = { error: "All download sources failed", path: relative(projectRoot(), outPath), attempts };
+      if (manifestPath) {
+        mkdirSync(dirname(manifestPath), { recursive: true });
+        writeFileSync(manifestPath, JSON.stringify(failure, null, 2) + "\n", "utf-8");
+      }
+      return { content: failure, isError: true };
+    }
+
+    case "head_url": {
+      const url = parseHttpUrl(String(args.url));
+      const response = await fetch(url, { method: "HEAD", headers: { "User-Agent": "Saivage/0.1 data-agent" } });
+      return { content: { url: url.toString(), status: response.status, ok: response.ok, headers: headersObject(response.headers) }, isError: false };
+    }
+
+    default:
+      return { content: { error: `Unknown data tool: ${toolName}` }, isError: true };
   }
 };
 
@@ -325,7 +669,7 @@ const skillsHandler: InProcessToolHandler = async (toolName, args) => {
     }
     case "read_skill": {
       const name = args.name as string;
-      const skillPath = join(skillsDir, `${name}.md`);
+      const skillPath = resolveSkillPath(skillsDir, name);
       if (!existsSync(skillPath)) {
         return { content: { error: `Skill "${name}" not found` }, isError: true };
       }
@@ -336,7 +680,7 @@ const skillsHandler: InProcessToolHandler = async (toolName, args) => {
       const description = args.description as string;
       const content = args.content as string;
       mkdirSync(skillsDir, { recursive: true });
-      writeFileSync(join(skillsDir, `${name}.md`), content, "utf-8");
+      writeFileSync(resolveSkillPath(skillsDir, name), content, "utf-8");
       const indexPath = join(skillsDir, "index.json");
       const index = existsSync(indexPath)
         ? JSON.parse(readFileSync(indexPath, "utf-8"))
@@ -356,7 +700,7 @@ const skillsHandler: InProcessToolHandler = async (toolName, args) => {
     case "update_skill": {
       const name = args.name as string;
       const content = args.content as string;
-      const skillPath = join(skillsDir, `${name}.md`);
+      const skillPath = resolveSkillPath(skillsDir, name);
       if (!existsSync(skillPath)) {
         return { content: { error: `Skill "${name}" not found` }, isError: true };
       }
@@ -410,14 +754,15 @@ const lockTools: ToolEntry[] = [
 export function registerBuiltinServices(mcpRuntime: McpRuntime): void {
   mcpRuntime.registerInProcess("filesystem", filesystemTools, filesystemHandler);
   mcpRuntime.registerInProcess("shell", shellTools, shellHandler);
+  mcpRuntime.registerInProcess("data", dataTools, dataHandler);
   mcpRuntime.registerInProcess("git", gitTools, gitHandler);
   mcpRuntime.registerInProcess("skills", skillsTools, skillsHandler);
 
   // Stubs — services that need external dependencies not yet integrated
-  mcpRuntime.registerInProcess("web", webTools, stubHandler("web"));
-  mcpRuntime.registerInProcess("memory", memoryTools, stubHandler("memory"));
-  mcpRuntime.registerInProcess("index", indexTools, stubHandler("index"));
-  mcpRuntime.registerInProcess("lock", lockTools, stubHandler("lock"));
+  mcpRuntime.registerInProcess("web", webTools, stubHandler("web"), { available: false });
+  mcpRuntime.registerInProcess("memory", memoryTools, stubHandler("memory"), { available: false });
+  mcpRuntime.registerInProcess("index", indexTools, stubHandler("index"), { available: false });
+  mcpRuntime.registerInProcess("lock", lockTools, stubHandler("lock"), { available: false });
 
-  log.info("[builtins] 8 built-in services registered (4 active, 4 stubs)");
+  log.info("[builtins] 9 built-in services registered (5 active, 4 stubs)");
 }

@@ -24,9 +24,12 @@ import { PlannerAgent } from "../agents/planner.js";
 import { ManagerAgent } from "../agents/manager.js";
 import { CoderAgent } from "../agents/coder.js";
 import { ResearcherAgent } from "../agents/researcher.js";
+import { DataAgent } from "../agents/data-agent.js";
+import { ReviewerAgent } from "../agents/reviewer.js";
 import { InspectorAgent } from "../agents/inspector.js";
 import type { AgentContext, AgentResult, Agent } from "../agents/types.js";
 import type { AgentState } from "../types.js";
+import type { ServiceEntry } from "../mcp/registry.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
 import { agentId } from "../ids.js";
 import { log } from "../log.js";
@@ -40,10 +43,44 @@ export interface SaivageRuntime {
   planService: PlanService;
   project: ProjectContext;
   tracker: RuntimeTracker;
+  plannerControl: PlannerControl;
   /** Live agent instances for conversation inspection. */
   agentRegistry: Map<string, import("../agents/base.js").BaseAgent>;
   /** Stop the runtime gracefully. */
   shutdown: () => Promise<void>;
+}
+
+export interface PlannerRestartRequest {
+  reason: string;
+  requestedBy: string;
+  requestedAt: string;
+}
+
+export class PlannerControl {
+  private pendingRestart: PlannerRestartRequest | null = null;
+  private listeners = new Set<(request: PlannerRestartRequest) => void>();
+
+  requestRestart(reason: string, requestedBy = "user"): PlannerRestartRequest {
+    const request = {
+      reason,
+      requestedBy,
+      requestedAt: new Date().toISOString(),
+    };
+    this.pendingRestart = request;
+    for (const listener of this.listeners) listener(request);
+    return request;
+  }
+
+  consumeRestartRequest(): PlannerRestartRequest | null {
+    const request = this.pendingRestart;
+    this.pendingRestart = null;
+    return request;
+  }
+
+  onRestartRequested(listener: (request: PlannerRestartRequest) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
 }
 
 /**
@@ -85,6 +122,7 @@ export async function bootstrap(
   // 4. Initialize MCP runtime + builtin services
   const mcpRuntime = new McpRuntime(config.runtime);
   registerBuiltinServices(mcpRuntime);
+  await startConfiguredMcpServers(mcpRuntime, config);
   mcpRuntime.startMonitoring();
 
   // 5. Register Plan MCP service (in-process)
@@ -132,6 +170,7 @@ export async function bootstrap(
   // Runtime tracker for agent lifecycle → dashboard
   const tracker = new RuntimeTracker(project.paths.runtimeState);
   const agentRegistry = new Map<string, import("../agents/base.js").BaseAgent>();
+  const plannerControl = new PlannerControl();
 
   const runtime: SaivageRuntime = {
     config,
@@ -141,6 +180,7 @@ export async function bootstrap(
     planService,
     project,
     tracker,
+    plannerControl,
     agentRegistry,
     shutdown: async () => {
       log.info("[v2] Shutting down...");
@@ -205,6 +245,20 @@ export function createChildSpawner(
         break;
       }
 
+      case "data_agent": {
+        const workerInput = input as import("../agents/types.js").WorkerInput;
+        agent = new DataAgent(ctx, workerInput);
+        taskId = workerInput.task?.id;
+        break;
+      }
+
+      case "reviewer": {
+        const workerInput = input as import("../agents/types.js").WorkerInput;
+        agent = new ReviewerAgent(ctx, workerInput);
+        taskId = workerInput.task?.id;
+        break;
+      }
+
       case "inspector": {
         const inspectorInput = input as import("../agents/types.js").InspectorInput;
         agent = new InspectorAgent(ctx, inspectorInput);
@@ -216,7 +270,7 @@ export function createChildSpawner(
     }
 
     tracker.agentStarted(ctx.agentId, role as AgentState["agent_type"], taskId);
-    runtime.agentRegistry.set(ctx.agentId, agent as import("../agents/base.js").BaseAgent);
+    runtime.agentRegistry.set(ctx.agentId, agent as unknown as import("../agents/base.js").BaseAgent);
 
     try {
       const result = await agent.run();
@@ -242,6 +296,7 @@ export function createChildSpawner(
  */
 export async function runPlanner(
   runtime: SaivageRuntime,
+  options: { abortSignal?: { aborted: boolean } } = {},
 ): Promise<AgentResult> {
   const { project, router, mcpRuntime, tracker } = runtime;
 
@@ -255,7 +310,9 @@ export async function runPlanner(
   };
 
   const childSpawner = createChildSpawner(runtime);
-  const planner = new PlannerAgent(ctx, childSpawner);
+  const planner = new PlannerAgent(ctx, childSpawner, {
+    abortSignal: options.abortSignal,
+  });
 
   tracker.agentStarted(ctx.agentId, "planner");
   runtime.agentRegistry.set(ctx.agentId, planner as import("../agents/base.js").BaseAgent);
@@ -292,6 +349,55 @@ const RECOVERY_PROMPT =
   `DO NOT say PLAN_COMPLETE unless ALL objectives are truly achieved with evidence from successful stages. ` +
   `If stages have escalated or failed, the objectives are NOT complete — you must fix the issues and retry.`;
 
+const CONTINUOUS_IMPROVEMENT_PROMPT =
+  `SYSTEM CONTINUOUS IMPROVEMENT: The configured project objectives appear complete, but Saivage is running in continuous-improvement mode. ` +
+  `Do not stop just because the active plan is empty. You MUST keep improving the target project while preserving its objectives and constraints. ` +
+  `The next stage must be driven by the project's stated mission, not by generic repository tidying.\n\n` +
+  `On this cycle:\n` +
+  `1. Call plan_get() and plan_get_history() to confirm the current state.\n` +
+  `2. Re-read the project objectives and recent results to identify the next highest-value objective-aligned experiment or blocker.\n` +
+  `3. If the project is an ML/research project, prefer a research -> data/features -> implementation -> evaluation -> comparison cycle: find a promising model/data idea, implement a bounded experiment, retrieve required data, run honest evaluation, update the leaderboard/reporting, and compare against prior models.\n` +
+  `4. Only create maintenance, QA, documentation, or hardening stages when they directly unblock or improve the reliability of the objective-aligned experiment loop.\n` +
+  `5. Create at least one concrete, bounded next stage with plan_add_stage() or plan_set_stages().\n` +
+  `6. Dispatch the next stage with run_manager().\n\n` +
+  `Only say PLAN_COMPLETE if continuous-improvement mode has been disabled by runtime configuration or shutdown is requested.`;
+
+function buildRestartPrompt(request: PlannerRestartRequest): string {
+  return (
+    `SYSTEM REQUESTED PLANNER RESTART: ${request.requestedBy} explicitly requested that the Planner restart.\n\n` +
+    `Requested at: ${request.requestedAt}\n` +
+    `Reason/request: ${request.reason}\n\n` +
+    `On restart, do not assume the previous in-memory conversation is complete. ` +
+    `Call plan_get() and plan_get_history(), reassess current project state, honor this user request, and continue with the next concrete action.`
+  );
+}
+
+async function createPlannerNote(
+  runtime: SaivageRuntime,
+  content: string,
+  sessionId: string,
+): Promise<string> {
+  const { writeDoc, ensureDir } = await import("../store/documents.js");
+  const { noteId } = await import("../ids.js");
+  const { UserNoteSchema } = await import("../types.js");
+  const { join } = await import("node:path");
+
+  const notesDir = runtime.project.paths.notes;
+  ensureDir(notesDir);
+  const id = noteId();
+  const note = {
+    id,
+    channel: "system",
+    session_id: sessionId,
+    content,
+    created_at: new Date().toISOString(),
+    permanent: false,
+    urgent: true,
+  };
+  writeDoc(join(notesDir, `${id}.json`), note, UserNoteSchema);
+  return id;
+}
+
 /**
  * Run the planner in a recovery loop. When the planner exits (success or
  * max-nudges), wait RECOVERY_DELAY_MS then restart with a continuation prompt.
@@ -315,7 +421,32 @@ export async function runPlannerWithRecovery(
       iteration++;
       log.info(`[recovery] Starting planner (iteration ${iteration})`);
 
-      const result = await runPlanner(runtime);
+      const abortSignal = { aborted: false };
+      let restartDuringRun: PlannerRestartRequest | null = null;
+      const unsubscribeRestart = runtime.plannerControl.onRestartRequested((request) => {
+        restartDuringRun = request;
+        abortSignal.aborted = true;
+        log.info(`[recovery] Planner restart requested by ${request.requestedBy}: ${request.reason}`);
+      });
+
+      const result = await runPlanner(runtime, { abortSignal });
+      unsubscribeRestart();
+
+      const restartRequest = runtime.plannerControl.consumeRestartRequest() ?? restartDuringRun;
+
+      if (restartRequest) {
+        const noteId = await createPlannerNote(
+          runtime,
+          buildRestartPrompt(restartRequest),
+          "planner-restart",
+        );
+        await runtime.eventBus.publish({
+          type: "plan_updated",
+          summary: `Planner restart requested by ${restartRequest.requestedBy}. Restart note ${noteId} created.`,
+        });
+        log.info(`[recovery] Restarting planner immediately after explicit request (${noteId})`);
+        continue;
+      }
 
       log.info(`[recovery] Planner exited: ${result.kind} (iteration ${iteration})`);
 
@@ -325,15 +456,28 @@ export async function runPlannerWithRecovery(
         return result;
       }
 
-      // Check for genuine PLAN_COMPLETE — exact match only
-      // The planner's run() already uses strict regex /^\s*PLAN_COMPLETE\s*$/m
-      // and sets summary to exactly "PLAN_COMPLETE" when detected.
-      if (
-        result.kind === "success" &&
-        result.data?.summary === "PLAN_COMPLETE"
-      ) {
-        log.info("[recovery] PLAN_COMPLETE detected — stopping recovery loop");
-        return result;
+      // Check for genuine PLAN_COMPLETE — exact match only.
+      // In continuous-improvement mode this is not terminal: it means the
+      // current objective batch is complete and the Planner should create the
+      // next maintenance/improvement cycle from persisted state.
+      if (result.kind === "success" && hasSummary(result.data) && result.data.summary === "PLAN_COMPLETE") {
+        if (!runtime.config.runtime.continuousImprovement) {
+          log.info("[recovery] PLAN_COMPLETE detected — stopping recovery loop");
+          return result;
+        }
+
+        const noteId = await createPlannerNote(
+          runtime,
+          CONTINUOUS_IMPROVEMENT_PROMPT,
+          "continuous-improvement",
+        );
+        await runtime.eventBus.publish({
+          type: "plan_updated",
+          summary: `Planner completed the active plan. Continuous-improvement note ${noteId} created; restarting Planner.`,
+          timestamp: new Date().toISOString(),
+        });
+        log.info(`[recovery] PLAN_COMPLETE detected; continuous-improvement mode is enabled. Restarting planner (${noteId})`);
+        continue;
       }
 
       if (cancelled) break;
@@ -364,25 +508,7 @@ export async function runPlannerWithRecovery(
 
       if (cancelled) break;
 
-      // Write a recovery note so the planner knows to reassess
-      const { writeDoc, ensureDir } = await import("../store/documents.js");
-      const { noteId } = await import("../ids.js");
-      const { UserNoteSchema } = await import("../types.js");
-      const { join } = await import("node:path");
-
-      const notesDir = runtime.project.paths.notes;
-      ensureDir(notesDir);
-      const id = noteId();
-      const note = {
-        id,
-        channel: "system",
-        session_id: "recovery",
-        content: RECOVERY_PROMPT,
-        created_at: new Date().toISOString(),
-        permanent: false,
-        urgent: false,
-      };
-      writeDoc(join(notesDir, `${id}.json`), note, UserNoteSchema);
+      const id = await createPlannerNote(runtime, RECOVERY_PROMPT, "recovery");
       log.info(`[recovery] Created recovery note ${id}`);
     }
 
@@ -411,6 +537,8 @@ function resolveModelSpec(
     manager: "orchestrator",
     coder: "coder",
     researcher: "researcher",
+    data_agent: "data_agent",
+    reviewer: "reviewer",
     inspector: "orchestrator",
     chat: "chat",
   };
@@ -421,6 +549,38 @@ function resolveModelSpec(
 
   // Fallback to default provider
   return project.config.provider ?? "openai-codex/gpt-5.3-codex";
+}
+
+async function startConfiguredMcpServers(
+  mcpRuntime: McpRuntime,
+  config: SaivageConfig,
+): Promise<void> {
+  for (const [name, server] of Object.entries(config.mcpServers ?? {})) {
+    if (server.disabled || !server.autostart) {
+      log.info(`[mcp] Configured external MCP "${name}" is disabled or not autostarted`);
+      continue;
+    }
+
+    const entry: ServiceEntry = {
+      name,
+      version: "0.1.0",
+      origin: "external",
+      command: server.command,
+      args: server.args,
+      env: server.env,
+      transport: server.transport,
+      tools: [],
+      capabilities: [],
+      status: "active",
+      createdAt: new Date().toISOString(),
+    };
+
+    try {
+      await mcpRuntime.startFromEntry(entry);
+    } catch (err) {
+      log.warn(`[mcp] External MCP "${name}" unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 }
 
 async function injectOAuthTokens(router: ModelRouter): Promise<void> {
@@ -492,5 +652,9 @@ async function publishAgentResult(
     case "abort":
       break; // Aborts don't generate events — the user already knows
   }
+}
+
+function hasSummary(value: unknown): value is { summary: string } {
+  return !!value && typeof value === "object" && typeof (value as { summary?: unknown }).summary === "string";
 }
 

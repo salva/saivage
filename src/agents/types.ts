@@ -22,6 +22,8 @@ export type AgentRole =
   | "manager"
   | "coder"
   | "researcher"
+  | "data_agent"
+  | "reviewer"
   | "inspector"
   | "chat";
 

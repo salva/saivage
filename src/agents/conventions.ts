@@ -28,6 +28,16 @@ const CONVENTIONS: Partial<Record<AgentRole, ConventionRule>> = {
     excludeTerritory: ["src/"],
     description: "Researcher should write under research/, not project source",
   },
+  data_agent: {
+    writeTerritory: ["data/", "research/data-sources/", ".saivage/stages/"],
+    excludeTerritory: ["src/"],
+    description: "Data Agent should write data artifacts, provenance notes, and reports, not project source",
+  },
+  reviewer: {
+    writeTerritory: [".saivage/stages/", "reviews/", "reports/"],
+    excludeTerritory: ["src/", "data/", "research/"],
+    description: "Reviewer should write review findings and reports, not implementation, research, or data artifacts",
+  },
   inspector: {
     writeTerritory: [
       ".saivage/inspections/",

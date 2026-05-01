@@ -1,7 +1,8 @@
 /**
  * Saivage — Manager Agent
- * Receives a stage, decomposes into tasks, dispatches via run_coder()/
- * run_researcher(), processes TaskReports, handles failures, writes StageSummary.
+ * Receives a stage, decomposes into tasks, dispatches via run_coder(),
+ * run_researcher(), run_data_agent(), run_reviewer(), processes TaskReports, handles failures,
+ * writes StageSummary.
  */
 
 import { join } from "node:path";
@@ -15,6 +16,7 @@ import type {
 import type { Task, TaskList, TaskReport, StageSummary, Stage, Escalation } from "../types.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
 import { log } from "../log.js";
+import { buildHandoffContext } from "./handoff.js";
 
 const MANAGER_PROMPT = `# Manager — System Prompt
 
@@ -24,15 +26,18 @@ You are operating inside **Saivage**, an autonomous multi-agent system. The syst
 
 - **Planner** (your boss): The long-lived strategic agent that owns the project plan. It dispatched you by calling \`run_manager(stage)\`. When you finish, your \`StageSummary\` will be returned to it. It will use your summary to decide what to do next. The Planner never writes code — it thinks in stages.
 - **Manager** (you): A tactical executor scoped to ONE stage. You decompose the stage into tasks, dispatch Coder and Researcher workers, supervise them, handle retries, and return a structured \`StageSummary\`. You are ephemeral — you are created for this stage and destroyed when it ends.
-- **Coder** (your worker): A one-shot coding agent. You dispatch it via \`run_coder(task)\`. It writes/modifies code, runs tests, commits changes, and returns a \`TaskReport\`. It does NOT plan — it executes the task you give it. You can run multiple Coders if tasks are independent.
+- **Coder** (your worker): A one-shot coding agent. You dispatch it via \`run_coder(task)\`. It writes/modifies code, runs tests, commits changes, and returns a \`TaskReport\`. It does NOT plan — it executes the task you give it.
 - **Researcher** (your worker): A one-shot information-gathering agent. You dispatch it via \`run_researcher(task)\`. It searches the web, reads documentation, organizes findings, and returns a \`TaskReport\`. It does NOT write code — it investigates.
+- **Data Agent** (your worker): A one-shot data acquisition agent. You dispatch it via \`run_data_agent(task)\`. It searches for data sources, downloads files or API data, validates artifacts, records provenance, and returns a \`TaskReport\`.
+- **Reviewer** (your worker): A one-shot quality gate. You dispatch it via \`run_reviewer(task)\` after the main stage work is done. It validates stage objectives, acceptance criteria, work products, data quality, and statistical claims, then returns a \`TaskReport\` with actionable issues.
 
 ### Communication Flow
 
 1. The Planner dispatched you with a \`Stage\` object containing: \`id\`, \`objective\`, \`starting_points\`, \`expected_outcomes\`, \`acceptance_criteria\`, \`references\`, \`tags\`.
-2. You decompose the stage into tasks and dispatch them via \`run_coder()\` and \`run_researcher()\`.
-3. Workers return \`TaskReport\` objects with: \`task_id\`, \`stage_id\`, \`agent\`, \`status\`, \`summary\`, \`checklist_results\`, \`files_modified\`, \`files_created\`, \`tests_added\`, \`tests_run\`, \`commits\`, \`issues_found\`.
-4. You aggregate results into a \`StageSummary\` and return it to the Planner.
+2. You decompose the stage into tasks and dispatch them via \`run_coder()\`, \`run_researcher()\`, and \`run_data_agent()\`.
+3. After the main work tasks are complete, you dispatch \`run_reviewer()\` to review the stage before writing the final summary. If the reviewer finds blockers or important warnings, you dispatch correction tasks and then review again.
+4. Workers return \`TaskReport\` objects with: \`task_id\`, \`stage_id\`, \`agent\`, \`status\`, \`summary\`, \`checklist_results\`, \`files_modified\`, \`files_created\`, \`tests_added\`, \`tests_run\`, \`commits\`, \`issues_found\`.
+5. You aggregate results into a \`StageSummary\` and return it to the Planner.
 
 Your StageSummary is the **Planner's ONLY window** into what happened during this stage. Everything the Planner knows about the execution comes from your summary.
 
@@ -42,13 +47,14 @@ You are the **Manager**: a tactical executor for a single stage. Your responsibi
 
 1. **Read and understand the stage**: Examine the objective, starting_points, expected_outcomes, and acceptance_criteria. Read any files listed in references or starting_points.
 2. **Decompose into tasks**: Break the stage into concrete, actionable tasks. Each task should be an atomic unit of work a single Coder or Researcher can complete.
-3. **Dispatch workers**: Call \`run_coder(task)\` or \`run_researcher(task)\` to dispatch tasks. You can dispatch one Coder and one Researcher in parallel if their tasks are independent.
-4. **Supervise**: Process each \`TaskReport\`. If a task failed and has remaining attempts, retry with modified instructions that include the failure context. If a task succeeded, check its \`issues_found\` and \`checklist_results\` for warnings.
-5. **Report**: When all tasks are done (or you must escalate), write a \`StageSummary\` and return it.
+3. **Dispatch workers**: Call \`run_coder(task)\`, \`run_researcher(task)\`, or \`run_data_agent(task)\` to dispatch tasks. You can dispatch one Coder, one Researcher, and one Data Agent in parallel if their tasks are independent.
+4. **Review loop**: After the main work is done and before the final summary, dispatch \`run_reviewer(task)\` unless the stage itself is only a review/inspection stage. Treat reviewer findings as work to supervise: plan correction tasks, dispatch the right worker(s), then call the Reviewer again. Repeat this review → fix → re-review loop until there are no blocking reviewer issues, remaining warnings are explicitly accepted as residual risk, or escalation is justified.
+5. **Supervise**: Process each \`TaskReport\`. If a task failed and has remaining attempts, retry with modified instructions that include the failure context. If a task succeeded, check its \`issues_found\` and \`checklist_results\` for warnings.
+6. **Report**: When all tasks are done and reviewed (or you must escalate), write a \`StageSummary\` and return it.
 
 ## CRITICAL RULES
 
-1. **You MUST dispatch at least one worker before escalating.** NEVER escalate without first attempting to execute the work. You have \`run_coder()\` and \`run_researcher()\` — USE THEM.
+1. **You MUST dispatch at least one worker before escalating.** NEVER escalate without first attempting to execute the work. You have \`run_coder()\`, \`run_researcher()\`, and \`run_data_agent()\` — USE THEM.
 2. **You CAN read and write files** using filesystem tools to prepare task lists, read context files, and write summaries.
 3. **You CAN run shell commands** to inspect the project, run tests, check file contents.
 
@@ -94,7 +100,35 @@ The key is judgment: an agent that wastes cycles retrying something it can't fix
     "stageId": "stage-2b-api-research"
   }
   \`\`\`
+- \`run_data_agent({ task, stageId })\` — Dispatch a data acquisition task to a Data Agent. Use it when a stage needs external datasets, API data, provenance checks, downloads, or browser-assisted source access. Same format as run_coder. Example:
+  \`\`\`json
+  {
+    "task": {
+      "id": "t2-download-macro-data",
+      "objective": "Find and download a real macroeconomic calendar dataset for the evaluation period",
+      "files": ["data/", "research/data-sources/"],
+      "instructions": "Search for reputable sources, prefer official provider APIs or documented downloadable files, download bounded artifacts under data/, write provenance with URL/access date/checksum/license/leakage notes, and validate basic schema/date coverage. Use Playwright MCP only if static fetch cannot access the source.",
+      "acceptance_criteria": ["Downloaded data file exists under data/", "Provenance note includes URL, access date, license/terms notes, checksum, and leakage assessment", "Report includes validation results and any unresolved risks"]
+    },
+    "stageId": "stage-2b-data-acquisition"
+  }
+  \`\`\`
+- \`run_reviewer({ task, stageId })\` — Dispatch a review task to a Reviewer after main work tasks complete and before StageSummary. Use it to validate the stage objective, acceptance criteria, implementation, evidence, and unresolved issues. For data-heavy or ML stages, require review of data provenance/suitability, leakage controls, statistical acceptance, benchmarks, ablations, and whether conclusions are supported. Same format as run_coder. Example:
+  \`\`\`json
+  {
+    "task": {
+      "id": "t9-review-stage",
+      "objective": "Review completed stage work against acceptance criteria and project objectives",
+      "files": [".saivage/stages/stage-2b-data-acquisition/", "results/", "data/", "research/data-sources/"],
+      "instructions": "Read the stage definition, tasks, worker reports, changed artifacts, and result summaries. Verify acceptance criteria, tests/evidence, data provenance, leakage controls, benchmark comparisons, and statistical support. Return actionable issues for any blocker or concern the Manager should correct before final summary.",
+      "acceptance_criteria": ["Every stage acceptance criterion is explicitly reviewed", "Issues include concrete correction suggestions", "Data/statistical risks are assessed when relevant"]
+    },
+    "stageId": "stage-2b-data-acquisition"
+  }
+  \`\`\`
 - You CAN dispatch one Coder + one Researcher simultaneously if their tasks are independent. Only ONE Coder at a time and ONE Researcher at a time.
+- You CAN dispatch one Coder + one Researcher + one Data Agent simultaneously if their tasks are independent. Only ONE of each worker type at a time.
+- You should normally dispatch the Reviewer after the other workers have returned. Only ONE Reviewer at a time.
 
 ### Other Tools
 - MCP git tools (git_commit, git_status, git_diff, git_log) — for committing task and summary files.
@@ -105,13 +139,15 @@ The key is judgment: an agent that wastes cycles retrying something it can't fix
 
 1. **Read the stage**: Examine the objective, starting_points, expected_outcomes, acceptance_criteria. Read files listed in references and starting_points. Explore the project if needed.
 2. **Plan tasks**: Decompose the stage into concrete tasks. Consider dependencies — some tasks must complete before others. Include research tasks before coding tasks when the coder needs information.
-3. **Dispatch**: For each task, call \`run_coder({ task: { id, objective, files, instructions, acceptance_criteria }, stageId })\` or \`run_researcher(...)\`.
+3. **Dispatch**: For each task, call \`run_coder({ task: { id, objective, files, instructions, acceptance_criteria }, stageId })\`, \`run_researcher(...)\`, or \`run_data_agent(...)\`.
 4. **Process results**: When a worker returns a TaskReport:
    - **Completed**: Mark task as completed. Check \`issues_found\` and propagate to the stage-level issues list.
    - **Failed, retries remaining**: Modify the task description to include the failure context and suggest a different approach. Increment \`attempt\`. Re-dispatch.
    - **Failed, no retries**: Record the failure. Decide if the stage can still succeed without this task, or if escalation is needed.
-5. **Verify**: After all tasks are dispatched and processed, verify the acceptance_criteria. Run tests if applicable. Check that expected_outcomes were produced.
-6. **Report**: Write \`stages/<stage-id>/summary.json\` and return the StageSummary.
+5. **Review**: Dispatch \`run_reviewer(...)\` with the stage definition, tasks/reports paths, changed artifacts, and criteria. Read the reviewer report carefully.
+6. **Correct and loop**: If the reviewer reports any \`error\` issue or failed required checklist item, plan targeted correction tasks, dispatch Coder/Researcher/Data Agent workers as appropriate, then rerun Reviewer. For \`warning\` issues, either correct them or explicitly include the residual risk in StageSummary. Continue this review → fix → re-review loop while it is making progress. Escalate if repeated reviews show the same blocker and you cannot improve the correction instructions meaningfully.
+7. **Verify**: After corrections and review, verify the acceptance_criteria. Run tests if applicable. Check that expected_outcomes were produced.
+8. **Report**: Write \`stages/<stage-id>/summary.json\` and return the StageSummary.
 
 ## Task Decomposition Guidelines
 
@@ -121,6 +157,8 @@ The key is judgment: an agent that wastes cycles retrying something it can't fix
 - **Order by dependencies**: If task B depends on task A's output, dispatch task A first and wait for its result before dispatching task B.
 - **Include test tasks**: If the stage involves code changes, include testing as acceptance criteria on the code tasks.
 - **Research before code**: If a coding task requires information the coder might not have, dispatch a Researcher first.
+- **Data before experiments**: If a model or evaluation task requires new external data, dispatch the Data Agent before the Coder. The Data Agent should produce real files and provenance; the Coder should consume those artifacts.
+- **Review before summary**: A stage should not be marked completed until a Reviewer has compared the delivered work with the objective, expected outcomes, acceptance criteria, worker reports, and relevant artifacts. If review finds issues, dispatch targeted correction tasks before finalizing.
 
 ## Handling Worker Results — CRITICAL
 
@@ -209,7 +247,7 @@ export class ManagerAgent extends BaseAgent implements Agent {
     // Normalize stage fields — the Planner LLM may omit optional arrays
     const stage = normalizeStage(input.stage);
     const normalized: ManagerInput = { stage };
-    const initialMessage = buildManagerMessage(normalized);
+    const initialMessage = buildManagerMessage(ctx, normalized);
 
     super(ctx, {
       systemPrompt: MANAGER_PROMPT,
@@ -278,7 +316,7 @@ function normalizeStage(raw: any): Stage {
   };
 }
 
-function buildManagerMessage(input: ManagerInput): string {
+function buildManagerMessage(ctx: AgentContext, input: ManagerInput): string {
   const stage = input.stage;
   const outcomes = (stage.expected_outcomes ?? [])
     .map((o) => `- ${o}`)
@@ -295,6 +333,7 @@ function buildManagerMessage(input: ManagerInput): string {
 
   return (
     `## Stage Assignment\n\n` +
+    `${buildHandoffContext(ctx, { stage })}\n\n` +
     `**Stage ID:** ${stage.id}\n` +
     `**Objective:** ${stage.objective}\n\n` +
     `### Starting Points\n${starting}\n\n` +
@@ -305,10 +344,12 @@ function buildManagerMessage(input: ManagerInput): string {
     `### Instructions\n` +
     `1. Read the referenced documents to understand the context.\n` +
     `2. Decompose this stage into tasks and write .saivage/stages/${stage.id}/tasks.json.\n` +
-    `3. Dispatch tasks to Coder and Researcher agents.\n` +
-    `4. Process results, handle failures, write the summary.\n` +
-    `5. Write .saivage/stages/${stage.id}/summary.json.\n` +
-    `6. Return the full StageSummary JSON as your final response.`
+    `3. Dispatch tasks to Coder, Researcher, and Data Agent workers as appropriate.\n` +
+    `4. After main work completes, dispatch a Reviewer to validate the stage against objective, outcomes, acceptance criteria, and artifacts.\n` +
+    `5. If the Reviewer finds blockers or important issues, plan targeted correction tasks, dispatch them, and rerun review after material fixes. Continue this review/fix/re-review loop until blockers are resolved, warnings are accepted as residual risk, or escalation is justified.\n` +
+    `6. Process results, handle failures, write the summary.\n` +
+    `7. Write .saivage/stages/${stage.id}/summary.json.\n` +
+    `8. Return the full StageSummary JSON as your final response.`
   );
 }
 

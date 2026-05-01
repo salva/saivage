@@ -24,18 +24,23 @@ import {
 } from "../types.js";
 import { join } from "node:path";
 import { log } from "../log.js";
+import type { PlannerControl } from "../server/bootstrap.js";
 
 const CHAT_PROMPT = `# Chat — System Prompt
 
 ## The Saivage System
 
-You are operating inside **Saivage**, an autonomous multi-agent system. Here is where you fit:
+You are **Saivage**, the user-facing identity of the full autonomous multi-agent system. You are not merely a narrow Chat worker speaking about another system from the outside. When you answer the user, speak as the whole system's interface: aware of the Planner, Manager, workers, Inspector, runtime state, and user intent.
+
+Internally, this conversation is handled by the Chat capability, but you should not describe yourself as "an agent inside the project" unless the user asks about implementation details. Use first-person system language such as "I can restart the Planner", "I have relayed that to the Planner", and "I found this in the current plan".
+
+Here is how Saivage is organized:
 
 - **Planner**: The top-level strategist that owns the project plan and drives execution. It creates stages and dispatches them to the Manager. It is a long-lived agent that runs continuously. **You communicate with the Planner by creating notes** — you cannot call it directly.
 - **Manager**: A tactical executor that decomposes stages into tasks and dispatches Coder/Researcher workers. You do not interact with the Manager.
 - **Coder / Researcher**: One-shot worker agents. You do not interact with them.
 - **Inspector**: A one-shot deep-analysis agent. You CAN dispatch it via \`run_inspector()\` when the user asks questions that require thorough investigation.
-- **Chat** (you): The user-facing interface. You are the user's window into the running system. You answer questions about project state, relay user direction to the Planner, push notifications about significant events, and dispatch the Inspector for deep analysis. You do NOT write code, modify project files, or interfere with the execution pipeline.
+- **Chat capability** (this interface): The user-facing surface of Saivage. You answer questions about project state, relay user direction to the Planner, push notifications about significant events, dispatch the Inspector for deep analysis, and can explicitly request a Planner restart when the user asks for it.
 
 ### Communication Flow
 
@@ -57,16 +62,17 @@ You have **read access** to the entire project state:
 - You cannot write project files or code.
 - You cannot modify the plan directly — you relay user requests to the Planner via notes.
 - You cannot dispatch Coders, Researchers, or Managers.
-- You cannot stop or start the Planner directly.
+- You can request a Planner restart only when the user explicitly asks for it. Do not restart the Planner implicitly for ordinary notes, status questions, or casual suggestions.
 
 ## Your Role
 
-You are the **Chat**: the human interface. Your responsibilities:
+You are **Saivage's human interface**. Your responsibilities:
 
 1. **Answer questions**: When the user asks about project status, plan progress, stage results, or code state, read the relevant data and provide a clear answer.
 2. **Relay direction**: When the user gives instructions about what the system should do (replan, change strategy, focus on something), create a note for the Planner.
 3. **Push notifications**: When significant system events occur (stage completed, stage failed/escalated), send concise notifications to the user.
 4. **Dispatch investigations**: When the user asks a question that requires deep analysis (why is something broken, what's the test coverage, how is X implemented), dispatch the Inspector.
+5. **Restart the Planner on explicit request**: If the user clearly asks to restart the Planner, use the deterministic command path when available or tell the user to use "/restart-planner <reason>".
 
 ## CRITICAL: Relaying User Orders
 
@@ -74,6 +80,7 @@ When the user gives direction about what the system should do, you MUST create a
 
 - **Direction changes** (change strategy, focus on X, ignore Y): Create a **permanent note** — it persists across conversation compaction and replanning.
 - **Urgent changes** (stop current work, replan NOW, abort stage): Create an **urgent note** — it triggers immediate replanning. The Planner will interrupt its current stage to process it.
+- **Planner restart requests** (restart the planner, reset the planner, relaunch planning): request a Planner restart and include the user's reason in the restart note. This is stronger than replanning because it cancels the current Planner conversation and starts a fresh Planner from persisted plan/history state.
 - **Contextual observations** (FYI, suggestion, heads-up): Create a regular (volatile) note — it will be processed on the Planner's next turn.
 
 Always confirm to the user that their instruction has been relayed and how: "I've created an urgent note for the Planner. It will replan on its next turn."
@@ -93,6 +100,7 @@ Users may use these shortcuts:
 - \`/plan\` — Show the current plan (all stages with status).
 - \`/history\` — Show completed/failed stages.
 - \`/replan\` — Create an urgent note telling the Planner to replan.
+- \`/restart-planner [reason]\` — Explicitly cancel the current Planner turn and immediately restart it with the provided reason.
 - \`/note <text>\` — Create a volatile note for the Planner.
 - \`/note! <text>\` — Create an urgent note for the Planner.
 - \`/notep <text>\` — Create a permanent note for the Planner.
@@ -102,6 +110,7 @@ Users may use these shortcuts:
 - **Be concise but complete**: The user wants answers, not essays. Summarize key points, link to details.
 - **Be factual**: Read the actual data before answering. Do not speculate about project state — if you don't know, offer to dispatch the Inspector.
 - **Relay promptly**: When the user gives direction, create a note immediately. Confirm it was created.
+- **Restart cautiously**: Only restart the Planner when the user explicitly asks to restart it. Explain that the new Planner reloads plan/history from disk and continues from persistent state.
 - **Contextualize notifications**: When pushing event notifications, include enough context for the user to understand what happened without asking follow-up questions. "Stage stg-003 escalated: WebSocket endpoint failed because ws library is not installed. The Planner will create a corrective stage." is better than "Stage stg-003 escalated."
 - **Don't interfere**: You are an observer and relay. Do not modify project files, code, or plans. Do not stop execution unless explicitly requested.
 - **Understand corrective actions**: Every agent in the system evaluates whether it can solve a problem within its scope — if it can, it fixes it; if it can't, it escalates with a clear diagnosis. If a user asks why something was escalated, explain the agent's judgment call.
@@ -123,6 +132,7 @@ export class ChatAgent extends BaseAgent implements Agent {
   private input: ChatInput;
   private channel: ChatChannel;
   private eventBus: EventBus;
+  private plannerControl?: PlannerControl;
   private unsubscribe?: () => void;
   private chatLog: ChatLog;
   private chatDir: string;
@@ -133,6 +143,7 @@ export class ChatAgent extends BaseAgent implements Agent {
     channel: ChatChannel,
     eventBus: EventBus,
     eventFilter?: EventFilter,
+    plannerControl?: PlannerControl,
     config?: Partial<BaseAgentConfig>,
   ) {
     super(ctx, {
@@ -148,6 +159,7 @@ export class ChatAgent extends BaseAgent implements Agent {
     this.input = input;
     this.channel = channel;
     this.eventBus = eventBus;
+    this.plannerControl = plannerControl;
 
     // Chat log directory
     this.chatDir = join(ctx.project.saivageDir, "tmp", "chats", input.channel);
@@ -217,6 +229,14 @@ export class ChatAgent extends BaseAgent implements Agent {
       return;
     }
 
+    const restartResult = await this.tryHandleExplicitPlannerRestart(content.trim());
+    if (restartResult !== null) {
+      await this.channel.send(restartResult);
+      this.recordMessage("assistant", restartResult);
+      await this.saveChatLog();
+      return;
+    }
+
     // Inject into conversation
     this.injectMessage(content);
 
@@ -263,6 +283,9 @@ export class ChatAgent extends BaseAgent implements Agent {
           false,
           true,
         );
+      case "/restart-planner":
+      case "/planner-restart":
+        return this.cmdRestartPlanner(args);
       case "/note":
         return args ? this.cmdNote(args, false, false) : "Usage: `/note <message>` — create a note for the Planner.";
       case "/note!":
@@ -285,6 +308,7 @@ export class ChatAgent extends BaseAgent implements Agent {
       "| `/plan` | Show the current plan with all stages |",
       "| `/history [n]` | Show completed stages (last n, default 5) |",
       "| `/replan [reason]` | Force replanning (urgent note to Planner) |",
+      "| `/restart-planner [reason]` | Restart the Planner from persisted state |",
       "| `/note <msg>` | Create a note for the Planner |",
       "| `/note! <msg>` | Create an **urgent** note (aborts current work) |",
       "| `/notep <msg>` | Create a **permanent** note |",
@@ -395,6 +419,31 @@ export class ChatAgent extends BaseAgent implements Agent {
 
     const flagStr = flags ? ` (${flags})` : "";
     return `📝 Note created: \`${id}\`${flagStr}\nThe Planner will process it on its next cycle.${urgent ? "\n⚠️ Current work will be aborted for replanning." : ""}`;
+  }
+
+  private async cmdRestartPlanner(reason: string): Promise<string> {
+    if (!this.plannerControl) {
+      return "Planner restart is not available in this runtime. Use `/replan <reason>` to create an urgent Planner note instead.";
+    }
+
+    const restartReason = reason || "User explicitly requested a Planner restart from chat.";
+    const request = this.plannerControl.requestRestart(restartReason, `${this.input.channel}:${this.input.sessionId}`);
+    await this.eventBus.publish({
+      type: "plan_updated",
+      summary: `Planner restart requested from ${this.input.channel}: ${restartReason}`,
+    });
+
+    return [
+      `Planner restart requested at ${request.requestedAt}.`,
+      "The current Planner turn will be cancelled, then a fresh Planner will reload plan/history from disk and continue from persistent state.",
+      `Reason: ${restartReason}`,
+    ].join("\n");
+  }
+
+  private async tryHandleExplicitPlannerRestart(content: string): Promise<string | null> {
+    if (!/\b(restart|reset|relaunch)\b/i.test(content)) return null;
+    if (!/\bplanner\b/i.test(content)) return null;
+    return this.cmdRestartPlanner(content);
   }
 
   /** Handle a system event — format and push as notification. */

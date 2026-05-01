@@ -17,6 +17,7 @@ const serviceEntrySchema = z.object({
   origin: z.enum(["builtin", "generated", "external"]).default("builtin"),
   command: z.string(),
   args: z.array(z.string()).default([]),
+  env: z.record(z.string(), z.string()).default({}),
   transport: z.enum(["stdio", "sse"]).default("stdio"),
   tools: z.array(toolEntrySchema).default([]),
   capabilities: z.array(z.string()).default([]),

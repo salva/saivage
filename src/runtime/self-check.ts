@@ -12,6 +12,8 @@ export const DEFAULT_SELF_CHECK_FREQUENCY: Record<AgentRole, number> = {
   manager: 20,
   coder: 15,
   researcher: 15,
+  data_agent: 15,
+  reviewer: 15,
   inspector: 15,
   chat: 0, // Chat doesn't use self-check
 };

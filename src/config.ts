@@ -10,17 +10,45 @@ const providerConfigSchema = z.object({
   baseUrl: z.string().optional(),
 });
 
+const notificationFiltersSchema = z.object({
+  min_severity: z.enum(["info", "warning", "error"]).default("info"),
+  categories: z
+    .array(z.enum([
+      "stage_completed",
+      "stage_failed",
+      "escalation",
+      "task_failed",
+      "inspector_complete",
+      "plan_updated",
+    ]))
+    .default([]),
+});
+
+const mcpServerSchema = z.object({
+  command: z.string(),
+  args: z.array(z.string()).default([]),
+  env: z.record(z.string(), z.string()).default({}),
+  disabled: z.boolean().default(false),
+  autostart: z.boolean().default(true),
+  transport: z.enum(["stdio", "sse"]).default("stdio"),
+});
+
 const configSchema = z.object({
   models: z
     .object({
       orchestrator: z.string().optional(),
+      planner: z.string().optional(),
+      manager: z.string().optional(),
       coder: z.string().optional(),
       researcher: z.string().optional(),
+      data_agent: z.string().optional(),
+      reviewer: z.string().optional(),
+      inspector: z.string().optional(),
       executor: z.string().optional(),
       chat: z.string().optional(),
       default: z.string().optional(),
     })
-    .default({}),
+    .default({ orchestrator: "anthropic/claude-sonnet-4-20250514" }),
 
   providers: z.record(z.string(), providerConfigSchema).default({}),
 
@@ -43,6 +71,7 @@ const configSchema = z.object({
     .object({
       maxServices: z.number().default(50),
       restartOnCrash: z.boolean().default(true),
+      continuousImprovement: z.boolean().default(true),
       healthCheckIntervalMs: z.number().default(30_000),
       idleShutdownMs: z.number().default(300_000),
     })
@@ -55,7 +84,14 @@ const configSchema = z.object({
     })
     .default({}),
 
+  notifications: z
+    .object({
+      channels: z.array(z.enum(["telegram", "web"])).default(["web"]),
+      filters: notificationFiltersSchema.default({}),
+    })
+    .default({}),
 
+  mcpServers: z.record(z.string(), mcpServerSchema).default({}),
 });
 
 export type SaivageConfig = z.infer<typeof configSchema>;
@@ -163,6 +199,20 @@ export function writeDefaultConfig(projectRoot?: string): void {
     failover: {},
     server: { port: 8080, host: "0.0.0.0" },
     agent: { maxConcurrentAgents: 3 },
+    notifications: {
+      channels: ["web"],
+      filters: { min_severity: "info", categories: [] },
+    },
+    mcpServers: {
+      playwright: {
+        command: "npx",
+        args: ["-y", "@playwright/mcp@latest", "--headless"],
+        env: { PLAYWRIGHT_BROWSERS_PATH: "${HOME}/.cache/ms-playwright" },
+        disabled: false,
+        autostart: true,
+        transport: "stdio",
+      },
+    },
   };
   writeFileSync(fp, JSON.stringify(defaultConfig, null, 2) + "\n", "utf-8");
 }

@@ -15,6 +15,7 @@ import type {
 } from "./types.js";
 import type { TaskReport } from "../types.js";
 import { log } from "../log.js";
+import { buildHandoffContext } from "./handoff.js";
 
 const CODER_PROMPT = `# Coder — System Prompt
 
@@ -140,7 +141,7 @@ export class CoderAgent extends BaseAgent implements Agent {
     // Normalize task fields — the Manager LLM may use alternate names
     const task = normalizeTask(input.task);
     const normalized: WorkerInput = { ...input, task };
-    const initialMessage = buildCoderMessage(normalized);
+    const initialMessage = buildCoderMessage(ctx, normalized);
 
     super(ctx, {
       systemPrompt: CODER_PROMPT,
@@ -200,11 +201,19 @@ export class CoderAgent extends BaseAgent implements Agent {
 
 /** Normalize a task object that may have alternate field names from LLM output. */
 function normalizeTask(raw: any): import("../types.js").Task {
+  const descriptionParts = [raw.description ?? raw.objective ?? "(no description)"];
+  if (Array.isArray(raw.files) && raw.files.length > 0) {
+    descriptionParts.push(`Suggested files or starting points:\n${raw.files.map((file: string) => `- ${file}`).join("\n")}`);
+  }
+  if (typeof raw.instructions === "string" && raw.instructions.trim()) {
+    descriptionParts.push(`Detailed instructions from Manager:\n${raw.instructions.trim()}`);
+  }
+
   return {
     id: raw.id ?? "unknown",
     type: raw.type ?? "code",
     assigned_to: raw.assigned_to ?? "coder",
-    description: raw.description ?? raw.objective ?? raw.instructions ?? "(no description)",
+    description: descriptionParts.join("\n\n"),
     checklist: Array.isArray(raw.checklist)
       ? raw.checklist
       : (Array.isArray(raw.acceptance_criteria)
@@ -218,7 +227,7 @@ function normalizeTask(raw: any): import("../types.js").Task {
   };
 }
 
-function buildCoderMessage(input: WorkerInput): string {
+function buildCoderMessage(ctx: AgentContext, input: WorkerInput): string {
   const checklist = (input.task.checklist ?? [])
     .map(
       (c) =>
@@ -228,6 +237,7 @@ function buildCoderMessage(input: WorkerInput): string {
 
   return (
     `## Task Assignment\n\n` +
+    `${buildHandoffContext(ctx, { stageId: input.stageId, includeTasks: true })}\n\n` +
     `**Task ID:** ${input.task.id}\n` +
     `**Stage ID:** ${input.stageId}\n` +
     `**Type:** ${input.task.type ?? "code"}\n` +

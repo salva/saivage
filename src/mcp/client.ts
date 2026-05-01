@@ -40,7 +40,7 @@ export class McpClient {
       command: this.serviceEntry.command,
       args: this.serviceEntry.args,
       env: Object.fromEntries(
-        Object.entries(process.env).filter(([, v]) => v !== undefined),
+        Object.entries({ ...process.env, ...(this.serviceEntry.env ?? {}) }).filter(([, v]) => v !== undefined),
       ) as Record<string, string>,
     });
 

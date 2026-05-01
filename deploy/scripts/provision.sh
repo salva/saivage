@@ -4,6 +4,7 @@ set -euo pipefail
 CONTAINER_NAME="${CONTAINER_NAME:-saivage}"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
 HOST_USER="$(whoami)"
+TARGET_PROJECT_MOUNT="${TARGET_PROJECT_MOUNT:-/work/target}"
 
 run() {
     sudo lxc-attach -n "$CONTAINER_NAME" -- "$@"
@@ -23,6 +24,7 @@ run apt-get install -y \
     git \
     build-essential \
     python3 \
+    xvfb \
     openssh-server
 
 echo "==> Installing NVIDIA userspace libraries (matching host driver)..."
@@ -109,6 +111,11 @@ echo "==> Source is bind-mounted at /opt/saivage — no sync needed."
 
 echo "==> Installing npm dependencies..."
 run_as "cd /opt/saivage && npm ci"
+run_as "cd /opt/saivage/web && npm ci"
+
+echo "==> Installing Playwright browser dependencies for headless MCP..."
+run_as "cd /opt/saivage && npx -y playwright@latest install --with-deps chromium" || \
+    echo "    WARNING: Playwright browser installation failed; Data Agent can still use built-in data MCP tools."
 
 echo "==> Building Saivage..."
 run_as "cd /opt/saivage && npm run build"
@@ -127,7 +134,7 @@ Type=simple
 User=${HOST_USER}
 Group=${HOST_USER}
 WorkingDirectory=/opt/saivage
-ExecStart=/usr/bin/node dist/cli.js serve
+ExecStart=/usr/bin/node dist/cli.js serve ${TARGET_PROJECT_MOUNT}
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=production
@@ -142,6 +149,7 @@ run systemctl enable saivage
 echo "==> Provisioning complete."
 echo ""
 echo "  Configure:  make configure  (edit /opt/saivage/.saivage/saivage.json)"
+echo "  Project:    ${TARGET_PROJECT_MOUNT}"
 echo "  Start:      make start"
 echo "  Logs:       make logs"
 echo "  Chat:       make chat"

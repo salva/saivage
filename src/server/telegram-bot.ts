@@ -57,7 +57,7 @@ export async function startTelegramBot(
       try {
         await bot.api.sendMessage(chatId, text, {
           parse_mode: parseMode,
-          disable_web_page_preview: true,
+          link_preview_options: { is_disabled: true },
         });
       } catch (err) {
         log.error(`[telegram] Failed to send message to ${chatId}: ${err}`);
@@ -78,7 +78,9 @@ export async function startTelegramBot(
     const eventFilter = runtime.config.notifications?.filters
       ? {
           minSeverity: runtime.config.notifications.filters.min_severity,
-          categories: runtime.config.notifications.filters.categories,
+          allowedTypes: runtime.config.notifications.filters.categories.length
+            ? runtime.config.notifications.filters.categories
+            : undefined,
         }
       : undefined;
 
@@ -88,6 +90,7 @@ export async function startTelegramBot(
       channel,
       runtime.eventBus,
       eventFilter,
+      runtime.plannerControl,
     );
 
     // Run the chat agent in background

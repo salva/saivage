@@ -107,6 +107,8 @@ function roleColor(role: string): string {
     case "manager": return "#58a6ff";
     case "coder": return "#3fb950";
     case "researcher": return "#d29922";
+    case "data_agent": return "#2f81f7";
+    case "reviewer": return "#a371f7";
     case "inspector": return "#f0883e";
     case "chat": return "#8b949e";
     default: return "#c9d1d9";
@@ -114,7 +116,7 @@ function roleColor(role: string): string {
 }
 
 const ROLE_ORDER: Record<string, number> = {
-  planner: 0, manager: 1, coder: 2, researcher: 3, inspector: 4, chat: 5,
+  planner: 0, manager: 1, coder: 2, researcher: 3, data_agent: 4, reviewer: 5, inspector: 6, chat: 7,
 };
 
 const stats = computed(() => {

@@ -6,6 +6,8 @@ Mirrors the [myoc/OpenClaw LXC deployment](../../myoc/) pattern — bare LXC wit
 
 The container uses the same Ubuntu release as the host (25.10 questing) to ensure NVIDIA driver and CUDA userspace library compatibility for local model inference.
 
+For the exact setup used in this workspace, see [DEPLOYMENT.md](DEPLOYMENT.md).
+
 ## Prerequisites
 
 - Bare LXC installed on the host (`sudo apt install lxc`)
@@ -53,6 +55,8 @@ Edit `Makefile` to change:
 | `RELEASE`        | `questing`   | Release codename (25.10 = questing)    |
 | `ARCH`           | `amd64`      | Architecture                           |
 | `SAIVAGE_PORT`   | `8080`       | HTTP/WS server port                    |
+| `TARGET_PROJECT_ROOT` | sibling `target` repo when present | Host path of the repo Saivage should operate on |
+| `TARGET_PROJECT_MOUNT` | `/work/target` | Where the target repo is mounted inside the container |
 
 ### Saivage Configuration
 
@@ -127,6 +131,8 @@ make deploy
 ```
 
 This runs `npm ci && npm run build` inside the container and restarts the systemd service.
+
+The default service targets `/work/target`, which is mounted from the sibling `../target` repo when it exists.
 
 ## Troubleshooting
 

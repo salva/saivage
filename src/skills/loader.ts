@@ -6,8 +6,8 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { readDocOrNull } from "../store/documents.js";
-import { SkillIndexSchema, type SkillEntry, type SkillIndex } from "../types.js";
+import { readJsonOrNull } from "../store/documents.js";
+import { SkillEntrySchema, SkillIndexSchema, type SkillEntry } from "../types.js";
 import type { AgentRole } from "../agents/types.js";
 import { log } from "../log.js";
 
@@ -118,8 +118,44 @@ function collectSkillEntries(
 
   for (const dir of dirs) {
     const indexPath = join(dir, "index.json");
-    const index = readDocOrNull(indexPath, SkillIndexSchema);
-    if (!index) continue;
+    const rawIndex = readJsonOrNull(indexPath);
+    if (!rawIndex) continue;
+
+    const parsedIndex = SkillIndexSchema.safeParse(rawIndex);
+    if (!parsedIndex.success) {
+      const rawSkills =
+        rawIndex && typeof rawIndex === "object" && Array.isArray((rawIndex as { skills?: unknown }).skills)
+          ? (rawIndex as { skills: unknown[] }).skills
+          : [];
+
+      if (rawSkills.length === 0) {
+        log.warn(`[skills] Invalid skill index at ${indexPath}; skipping file`);
+        continue;
+      }
+
+      log.warn(`[skills] Invalid skill index at ${indexPath}; skipping malformed entries`);
+
+      for (const rawEntry of rawSkills) {
+        const parsedEntry = SkillEntrySchema.safeParse(rawEntry);
+        if (!parsedEntry.success) {
+          const entryName =
+            rawEntry && typeof rawEntry === "object" && typeof (rawEntry as { name?: unknown }).name === "string"
+              ? (rawEntry as { name: string }).name
+              : "(unnamed)";
+          log.warn(`[skills] Skipping invalid skill entry '${entryName}' from ${indexPath}`);
+          continue;
+        }
+
+        const entry = parsedEntry.data;
+        if (seen.has(entry.name)) continue;
+        seen.add(entry.name);
+        results.push({ entry, dir });
+      }
+
+      continue;
+    }
+
+    const index = parsedIndex.data;
 
     for (const entry of index.skills) {
       if (seen.has(entry.name)) continue; // earlier paths take precedence

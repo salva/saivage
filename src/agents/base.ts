@@ -524,10 +524,60 @@ const RUN_RESEARCHER_SCHEMA: ToolSchema = {
   },
 };
 
+const RUN_DATA_AGENT_SCHEMA: ToolSchema = {
+  name: "run_data_agent",
+  description:
+    "Dispatch a data acquisition task to a Data Agent. Use for finding, downloading, validating, and documenting external datasets or API data. Returns a TaskReport.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task: {
+        type: "object",
+        description: "The data acquisition task",
+        properties: {
+          id: { type: "string" },
+          objective: { type: "string" },
+          files: { type: "array", items: { type: "string" } },
+          instructions: { type: "string" },
+          acceptance_criteria: { type: "array", items: { type: "string" } },
+        },
+        required: ["id", "objective", "files", "instructions", "acceptance_criteria"],
+      },
+      stageId: { type: "string", description: "Parent stage ID" },
+    },
+    required: ["task", "stageId"],
+  },
+};
+
+const RUN_REVIEWER_SCHEMA: ToolSchema = {
+  name: "run_reviewer",
+  description:
+    "Dispatch a review task to a Reviewer worker agent after stage work is done. Use to validate stage objectives, acceptance criteria, work products, data/statistical quality, and issues before writing StageSummary. Returns a TaskReport.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task: {
+        type: "object",
+        description: "The review task",
+        properties: {
+          id: { type: "string" },
+          objective: { type: "string" },
+          files: { type: "array", items: { type: "string" } },
+          instructions: { type: "string" },
+          acceptance_criteria: { type: "array", items: { type: "string" } },
+        },
+        required: ["id", "objective", "files", "instructions", "acceptance_criteria"],
+      },
+      stageId: { type: "string", description: "Parent stage ID" },
+    },
+    required: ["task", "stageId"],
+  },
+};
+
 /** Role → dispatch tools mapping. Only expose tools each role should use. */
 const ROLE_DISPATCH_TOOLS: Record<string, ToolSchema[]> = {
   planner: [RUN_MANAGER_SCHEMA, RUN_INSPECTOR_SCHEMA],
-  manager: [RUN_CODER_SCHEMA, RUN_RESEARCHER_SCHEMA],
+  manager: [RUN_CODER_SCHEMA, RUN_RESEARCHER_SCHEMA, RUN_DATA_AGENT_SCHEMA, RUN_REVIEWER_SCHEMA],
   chat: [RUN_INSPECTOR_SCHEMA],
 };
 

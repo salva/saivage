@@ -13,6 +13,7 @@ import type {
 } from "./types.js";
 import type { InspectionReport } from "../types.js";
 import { log } from "../log.js";
+import { buildHandoffContext } from "./handoff.js";
 
 const INSPECTOR_PROMPT = `# Inspector — System Prompt
 
@@ -132,7 +133,7 @@ export class InspectorAgent extends BaseAgent implements Agent {
     // Normalize request fields
     const request = normalizeInspectionRequest(input.request);
     const normalized: InspectorInput = { request };
-    const initialMessage = buildInspectorMessage(normalized);
+    const initialMessage = buildInspectorMessage(ctx, normalized);
 
     super(ctx, {
       systemPrompt: INSPECTOR_PROMPT,
@@ -188,7 +189,7 @@ function normalizeInspectionRequest(raw: any): import("../types.js").InspectionR
   };
 }
 
-function buildInspectorMessage(input: InspectorInput): string {
+function buildInspectorMessage(ctx: AgentContext, input: InspectorInput): string {
   const req = input.request;
   const questions = (req.questions ?? [])
     .map((q, i) => `${i + 1}. ${q}`)
@@ -196,6 +197,7 @@ function buildInspectorMessage(input: InspectorInput): string {
 
   return (
     `## Investigation Request\n\n` +
+    `${buildHandoffContext(ctx)}\n\n` +
     `**Request ID:** ${req.id}\n` +
     `**Requested By:** ${req.requested_by}\n` +
     `**Requested At:** ${req.requested_at}\n\n` +

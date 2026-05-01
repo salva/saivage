@@ -57,6 +57,8 @@ export {
 // Agents
 export { CoderAgent } from "./agents/coder.js";
 export { ResearcherAgent } from "./agents/researcher.js";
+export { DataAgent } from "./agents/data-agent.js";
+export { ReviewerAgent } from "./agents/reviewer.js";
 export { ManagerAgent } from "./agents/manager.js";
 export { PlannerAgent } from "./agents/planner.js";
 export { InspectorAgent } from "./agents/inspector.js";

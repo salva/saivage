@@ -3,12 +3,14 @@ DIST           ?= ubuntu
 RELEASE        ?= questing
 ARCH           ?= amd64
 SAIVAGE_PORT   ?= 8080
+TARGET_PROJECT_ROOT ?= $(shell if [ -d "$(CURDIR)/../../target" ]; then cd "$(CURDIR)/../../target" && pwd; fi)
+TARGET_PROJECT_MOUNT ?= /work/target
 SCRIPTS        := scripts
 PROJECT_ROOT   := $(shell cd .. && pwd)
 # SSH alias configured by provision.sh in ~/.ssh/config
 SSH            := ssh saivage
 
-export CONTAINER_NAME DIST RELEASE ARCH PROJECT_ROOT
+export CONTAINER_NAME DIST RELEASE ARCH PROJECT_ROOT TARGET_PROJECT_ROOT TARGET_PROJECT_MOUNT
 
 .PHONY: create provision configure start stop restart status logs shell ip \
         info dashboard chat test deploy destroy \
@@ -80,7 +82,9 @@ test:
 
 deploy:
 	@echo "==> Source is bind-mounted — rebuilding in container..."
-	@$(SSH) "cd /opt/saivage && npm ci && npm run build"
+	@$(SSH) "cd /opt/saivage && npm ci && cd web && npm ci && cd .. && npm run build"
+	@echo "==> Ensuring headless Playwright browser is available..."
+	@$(SSH) "cd /opt/saivage && npx -y playwright@latest install chromium" || true
 	@echo "==> Refreshing systemd unit..."
 	@$(SSH) "sudo cp /opt/saivage/deploy/saivage.service /etc/systemd/system/saivage.service && sudo systemctl daemon-reload"
 	@echo "==> Restarting daemon..."
@@ -96,6 +100,10 @@ destroy:
 
 help:
 	@echo "Saivage LXC Deployment (bare lxc)"
+	@echo ""
+	@echo "Target project:"
+	@echo "  host  - $(TARGET_PROJECT_ROOT)"
+	@echo "  mount - $(TARGET_PROJECT_MOUNT)"
 	@echo ""
 	@echo "Container lifecycle:"
 	@echo "  make create            - Create the LXC container"

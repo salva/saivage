@@ -22,6 +22,7 @@ interface InProcessService {
   name: string;
   tools: ToolEntry[];
   handler: InProcessToolHandler;
+  available: boolean;
 }
 
 interface ManagedService {
@@ -123,9 +124,14 @@ export class McpRuntime {
     name: string,
     tools: ToolEntry[],
     handler: InProcessToolHandler,
+    options: { available?: boolean } = {},
   ): void {
-    this.inProcessServices.set(name, { name, tools, handler });
-    log.info(`In-process service "${name}" registered — ${tools.length} tools`);
+    const available = options.available ?? true;
+    this.inProcessServices.set(name, { name, tools, handler, available });
+    log.info(
+      `In-process service "${name}" registered — ${tools.length} tools` +
+      (available ? "" : " (unavailable)"),
+    );
   }
 
   /** Call a tool on a service (lazy-start) */
@@ -137,6 +143,9 @@ export class McpRuntime {
     // Check in-process services first
     const inProc = this.inProcessServices.get(serviceName);
     if (inProc) {
+      if (!inProc.available) {
+        throw new Error(`Service "${serviceName}" is registered but unavailable`);
+      }
       const result = await inProc.handler(toolName, args);
       if (result.isError) {
         throw new Error(
@@ -166,6 +175,7 @@ export class McpRuntime {
 
     // First: in-process services (always available, no startup needed)
     for (const [name, svc] of this.inProcessServices) {
+      if (!svc.available) continue;
       for (const tool of svc.tools) {
         tools.push({ ...tool, service: name });
         seen.add(tool.name);

@@ -70,6 +70,7 @@ export interface ModelProvider {
   supportsImages(): boolean;
   supportsStreaming(): boolean;
   maxContextTokens(model: string): number;
+  listModels?(): Promise<string[]> | string[];
 
   isAvailable(): Promise<boolean>;
   getRateLimitStatus(): RateLimitStatus;

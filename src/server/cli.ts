@@ -236,6 +236,39 @@ program
     }
   });
 
+// --- Models ---
+program
+  .command("models [project-path]")
+  .description("List registered providers and their available models")
+  .option("--provider <provider>", "Only list models for one provider")
+  .action(async (projectPath: string | undefined, opts) => {
+    const { resolve } = await import("node:path");
+    const { discoverProject } = await import("../store/project.js");
+    const { loadConfig } = await import("../config.js");
+    const { ModelRouter } = await import("../providers/router.js");
+
+    try {
+      const root = projectPath ? resolve(projectPath) : discoverProject(process.cwd());
+      if (root) {
+        process.env["PROJECT_ROOT"] = root;
+        process.env["SAIVAGE_ROOT"] = resolve(root, ".saivage");
+      }
+
+      const config = loadConfig(true, root ?? undefined);
+      const router = new ModelRouter(config);
+      const providers = opts.provider ? [opts.provider as string] : router.listProviders();
+
+      for (const provider of providers) {
+        const models = await router.listModels(provider);
+        console.log(`${provider}${models.length ? ` (${models.length})` : ""}`);
+        for (const model of models) console.log(`  ${model}`);
+      }
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    }
+  });
+
 // --- Serve ---
 program
   .command("serve [project-path]")

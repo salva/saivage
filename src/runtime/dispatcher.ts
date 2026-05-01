@@ -16,6 +16,8 @@ export const DISPATCH_TOOLS = new Set([
   "run_manager",
   "run_coder",
   "run_researcher",
+  "run_data_agent",
+  "run_reviewer",
   "run_inspector",
 ]);
 
@@ -24,6 +26,8 @@ export const DISPATCH_ROLE_MAP: Record<string, AgentRole> = {
   run_manager: "manager",
   run_coder: "coder",
   run_researcher: "researcher",
+  run_data_agent: "data_agent",
+  run_reviewer: "reviewer",
   run_inspector: "inspector",
 };
 
@@ -108,7 +112,7 @@ export class Dispatcher {
       results.push(result);
     }
 
-    // Enforce dispatch constraints: max 1 coder + 1 researcher per batch
+    // Enforce dispatch constraints: max 1 worker of each type per batch.
     const { allowed: allowedDispatches, rejected } =
       this.enforceDispatchLimits(dispatchCalls);
 
@@ -250,7 +254,7 @@ export class Dispatcher {
   }
 
   /**
-   * Enforce dispatch limits: max 1 coder + 1 researcher per batch.
+  * Enforce dispatch limits: max 1 of each worker type per batch.
    * Excess calls of the same type are rejected.
    */
   private enforceDispatchLimits(
@@ -264,8 +268,8 @@ export class Dispatcher {
       const role = DISPATCH_ROLE_MAP[tc.name];
       if (!role) continue;
 
-      // For workers (coder/researcher), enforce max 1 of each
-      if (role === "coder" || role === "researcher") {
+      // For workers, enforce max 1 of each.
+      if (role === "coder" || role === "researcher" || role === "data_agent" || role === "reviewer") {
         if (seen[role]) {
           log.warn(
             `[dispatcher] Rejecting duplicate ${role} dispatch — max 1 per batch`,

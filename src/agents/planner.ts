@@ -13,6 +13,7 @@ import type {
 import type { ChildSpawner } from "../runtime/dispatcher.js";
 import { NoteManager } from "../runtime/notes.js";
 import { log } from "../log.js";
+import { buildHandoffContext } from "./handoff.js";
 
 const PLANNER_PROMPT = `# Planner — System Prompt
 
@@ -143,6 +144,7 @@ Escalations are the most important signals you receive. A vague response to an e
 - **Include concrete, verifiable acceptance criteria**. "Code works" is not verifiable. "Running \`npm test\` produces all-green output and coverage > 80%" is verifiable.
 - **After each stage, re-evaluate the plan**. What was learned? Does the remaining plan still make sense? Adapt.
 - **Use starting_points**: Include file paths that the Manager/workers should read first. This prevents workers from wasting time exploring the wrong areas.
+- **Continuous improvement must follow the project mission**: When the active plan is empty, do not default to generic maintenance. Re-read the objectives and create the next stage that most directly advances them. For ML/research projects, prefer repeated research -> data/features -> implementation -> walk-forward evaluation -> leaderboard comparison -> error-analysis cycles. Maintenance/QA/documentation stages are appropriate only when they directly unblock or strengthen that experiment loop.
 
 ## User Notes
 
@@ -153,7 +155,7 @@ Notes from the user arrive via the Chat agent. The runtime injects pending notes
 
 When a note asks you to change direction, restructure the plan accordingly and continue execution.
 
-Return "PLAN_COMPLETE" as your final response ONLY when ALL objectives are achieved and verified.`;
+Return "PLAN_COMPLETE" only when ALL configured objectives are achieved and verified AND there is no explicit runtime instruction to continue improving. If the runtime injects a continuous-improvement instruction, create and dispatch the next bounded improvement stage instead of stopping.`;
 
 /**
  * The Planner is long-lived. It runs until all stages are complete,
@@ -277,6 +279,7 @@ function buildPlannerMessage(ctx: AgentContext): string {
 
   return (
     `## Project Planning Session\n\n` +
+    `${buildHandoffContext(ctx)}\n\n` +
     `**Project Root:** ${ctx.project.projectRoot}\n` +
     `**Saivage Dir:** ${ctx.project.saivageDir}\n\n` +
     `### Project Objectives\n${objList}\n\n` +
@@ -285,6 +288,7 @@ function buildPlannerMessage(ctx: AgentContext): string {
     `2. Create a multi-stage plan using plan_init(stages).\n` +
     `3. Execute stages one at a time via run_manager(stage).\n` +
     `4. Process results, adapt the plan, and continue until all objectives are met.\n` +
-    `5. When all objectives are achieved, respond with "PLAN_COMPLETE".`
+    `5. If all objectives are achieved but a continuous-improvement note is present, create and dispatch the next improvement/verification/hardening stage.\n` +
+    `6. Only respond with "PLAN_COMPLETE" when objectives are verified and no continuous-improvement instruction is active.`
   );
 }
