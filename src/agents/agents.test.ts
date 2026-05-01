@@ -11,6 +11,9 @@ import { resolveSkills, formatSkillsForPrompt } from "../skills/loader.js";
 import { checkConvention, getConvention } from "./conventions.js";
 import { writeDoc, ensureDir } from "../store/documents.js";
 import { SkillIndexSchema } from "../types.js";
+import { ReviewerAgent } from "./reviewer.js";
+import type { AgentContext, WorkerInput } from "./types.js";
+import type { ChatRequest, ChatResponse } from "../providers/types.js";
 
 let tmpDir: string;
 
@@ -226,3 +229,106 @@ describe("Conventions", () => {
     expect(rule!.writeTerritory).toContain("src/");
   });
 });
+
+describe("ReviewerAgent", () => {
+  it("keeps prior review reports visible for follow-up reviews", async () => {
+    const calls: ChatRequest[] = [];
+    const router = {
+      getMaxContextTokens: () => 200_000,
+      chat: async (request: ChatRequest): Promise<ChatResponse> => {
+        calls.push(request);
+        const reviewNumber = calls.length;
+        return {
+          content: JSON.stringify({
+            task_id: `review-${reviewNumber}`,
+            stage_id: "stage-1",
+            agent: "reviewer",
+            status: "completed",
+            summary: reviewNumber === 1 ? "first review found blocker" : "follow-up checked corrective task",
+            checklist_results: [],
+            files_modified: [],
+            files_created: [],
+            tests_added: [],
+            tests_run: [],
+            commits: [],
+            issues_found: [],
+          }),
+          toolCalls: [],
+          finishReason: "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+
+    const ctx = makeReviewerContext(tmpDir, router);
+    const firstInput = makeReviewInput("review-1", "Initial review");
+    const agent = new ReviewerAgent(ctx, firstInput);
+
+    await agent.review(firstInput);
+    await agent.review(makeReviewInput("review-2", "Recheck blocker after corrective task t2"));
+
+    expect(calls).toHaveLength(2);
+    const secondMessages = JSON.stringify(calls[1].messages);
+    expect(secondMessages).toContain("first review found blocker");
+    expect(secondMessages).toContain("Follow-up Review 2");
+    expect(secondMessages).toContain("Recheck blocker after corrective task t2");
+  });
+});
+
+function makeReviewerContext(root: string, router: unknown): AgentContext {
+  const saivageDir = join(root, ".saivage");
+  ensureDir(saivageDir);
+  ensureDir(join(saivageDir, "skills"));
+
+  return {
+    project: {
+      projectRoot: root,
+      saivageDir,
+      config: {
+        project_name: "test",
+        objectives: ["test objective"],
+        provider: "test",
+        notifications: { channels: [], filters: { min_severity: "info", categories: [] } },
+        skills: { max_per_agent: 5 },
+      },
+      paths: {
+        plan: join(saivageDir, "plan.json"),
+        planHistory: join(saivageDir, "plan-history.json"),
+        stages: join(saivageDir, "stages"),
+        notes: join(saivageDir, "notes"),
+        inspections: join(saivageDir, "inspections"),
+        skills: join(saivageDir, "skills"),
+        tools: join(saivageDir, "tools"),
+        research: join(root, "research"),
+        tmp: join(saivageDir, "tmp"),
+        runtimeState: join(saivageDir, "tmp", "state", "runtime.json"),
+        chats: join(saivageDir, "tmp", "chats"),
+        inspectorWorkspace: join(saivageDir, "tmp", "inspector-workspace"),
+        work: join(saivageDir, "tmp", "work"),
+      },
+    },
+    router: router as AgentContext["router"],
+    mcpRuntime: { getAllTools: () => [] } as AgentContext["mcpRuntime"],
+    agentId: "reviewer-1",
+    role: "reviewer",
+    modelSpec: "test/model",
+  };
+}
+
+function makeReviewInput(id: string, objective: string): WorkerInput {
+  return {
+    stageId: "stage-1",
+    task: {
+      id,
+      type: "review",
+      assigned_to: "reviewer",
+      description: objective,
+      checklist: [{ description: "review the stage", required: true }],
+      dependencies: [],
+      status: "pending",
+      tags: [],
+      attempt: 1,
+      max_attempts: 3,
+    },
+  };
+}

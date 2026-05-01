@@ -203,6 +203,8 @@ export async function bootstrap(
 export function createChildSpawner(
   runtime: SaivageRuntime,
 ): ChildSpawner {
+  const stageReviewers = new Map<string, { agent: ReviewerAgent; ctx: AgentContext }>();
+
   return async (
     role: import("../agents/types.js").AgentRole,
     input: unknown,
@@ -220,6 +222,7 @@ export function createChildSpawner(
     };
 
     let agent: Agent;
+    let trackingAgentId = ctx.agentId;
     let taskId: string | undefined;
 
     switch (role) {
@@ -262,9 +265,20 @@ export function createChildSpawner(
 
       case "reviewer": {
         const workerInput = input as import("../agents/types.js").WorkerInput;
-        agent = new ReviewerAgent(ctx, workerInput, {
+        const stageId = workerInput.stageId ?? "unknown-stage";
+        const existing = stageReviewers.get(stageId);
+        if (existing) {
+          agent = existing.agent;
+          trackingAgentId = existing.ctx.agentId;
+          taskId = workerInput.task?.id;
+          break;
+        }
+
+        const reviewer = new ReviewerAgent(ctx, workerInput, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
         });
+        agent = reviewer;
+        stageReviewers.set(stageId, { agent: reviewer, ctx });
         taskId = workerInput.task?.id;
         break;
       }
@@ -281,11 +295,13 @@ export function createChildSpawner(
         return { kind: "failure", reason: `Unknown agent role: ${role}` };
     }
 
-    tracker.agentStarted(ctx.agentId, role as AgentState["agent_type"], taskId);
-    runtime.agentRegistry.set(ctx.agentId, agent as unknown as import("../agents/base.js").BaseAgent);
+      tracker.agentStarted(trackingAgentId, role as AgentState["agent_type"], taskId);
+      runtime.agentRegistry.set(trackingAgentId, agent as unknown as import("../agents/base.js").BaseAgent);
 
     try {
-      const result = await agent.run();
+      const result = role === "reviewer" && agent instanceof ReviewerAgent
+        ? await agent.review(input as import("../agents/types.js").WorkerInput)
+        : await agent.run();
 
       // Publish events for significant results
       if (role === "manager") {
@@ -297,8 +313,8 @@ export function createChildSpawner(
 
       return result;
     } finally {
-      tracker.agentStopped(ctx.agentId);
-      runtime.agentRegistry.delete(ctx.agentId);
+      tracker.agentStopped(trackingAgentId);
+      runtime.agentRegistry.delete(trackingAgentId);
     }
   };
 }

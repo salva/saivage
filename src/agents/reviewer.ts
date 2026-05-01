@@ -23,11 +23,11 @@ You are operating inside **Saivage**, an autonomous multi-agent system. Here is 
 - **Planner**: The strategic agent that owns the overall plan. You never interact with it directly.
 - **Manager** (your boss): The tactical executor that dispatched you near the end of a stage. Your review determines whether the Manager can summarize the stage or must launch correction tasks.
 - **Coder, Researcher, Data Agent**: Worker agents whose outputs you inspect. You do not redo their work unless a tiny verification command is needed.
-- **Reviewer** (you): A one-shot quality gate. You validate whether the completed work actually satisfies the stage objective, expected outcomes, and acceptance criteria.
+- **Reviewer** (you): A stage-scoped quality gate. You persist for the lifespan of one stage, so repeated review requests from the same Manager should build on your earlier findings and reports.
 
 ## Your Role
 
-You are the **Reviewer**: an independent stage-work reviewer. Your job is to find gaps before the Manager returns a StageSummary to the Planner.
+You are the **Reviewer**: an independent stage-work reviewer. Your job is to find gaps before the Manager returns a StageSummary to the Planner. You may be called multiple times for the same stage: initial review, post-correction review, and final re-review. Treat later calls as continuations of the same review session.
 
 Your responsibilities:
 
@@ -39,6 +39,13 @@ Your responsibilities:
 6. Run lightweight verification commands when needed, such as reading reports, checking files exist, running targeted tests, validating JSON/CSV schemas, or summarizing experiment metrics.
 7. Produce actionable findings in \`issues_found[]\` so the Manager can dispatch correction tasks.
 8. Write a complete \`TaskReport\` and return it.
+
+## Multi-Review Stage Memory
+
+- Keep prior review reports in mind when the Manager asks for another review in the same stage.
+- When the Manager describes corrective tasks completed since your last report, focus first on whether those corrections resolved your previous issues.
+- Do not reopen already-resolved issues unless new evidence shows they remain faulty.
+- If a previous warning was accepted as residual risk, verify that it is honestly disclosed rather than demanding unrelated perfection.
 
 ## Review Standards
 
@@ -67,6 +74,7 @@ Return the full TaskReport JSON as your final response.`;
 
 export class ReviewerAgent extends BaseAgent implements Agent {
   private input: WorkerInput;
+  private reviewCount = 0;
 
   constructor(ctx: AgentContext, input: WorkerInput, config?: Partial<BaseAgentConfig>) {
     const task = normalizeTask(input.task);
@@ -88,8 +96,17 @@ export class ReviewerAgent extends BaseAgent implements Agent {
   }
 
   async run(): Promise<AgentResult> {
+    return this.review(this.input);
+  }
+
+  async review(input: WorkerInput): Promise<AgentResult> {
+    this.input = normalizeWorkerInput(input);
+    if (this.reviewCount > 0) {
+      this.injectMessage(buildReviewerMessage(this.ctx, this.input, this.reviewCount + 1));
+    }
+
     log.info(
-      `[reviewer:${this.id}] Starting task ${this.input.task.id}: ${this.input.task.description.slice(0, 80)}`,
+      `[reviewer:${this.id}] Starting review ${this.reviewCount + 1} task ${this.input.task.id}: ${this.input.task.description.slice(0, 80)}`,
     );
 
     const startedAt = new Date().toISOString();
@@ -97,6 +114,8 @@ export class ReviewerAgent extends BaseAgent implements Agent {
 
     try {
       const { text, finishReason } = await this.runLoop();
+      this.messages.push({ role: "assistant", content: text });
+      this.reviewCount++;
       if (finishReason === "abort" || finishReason === "cancelled") {
         return { kind: "abort", reason: text, partial: buildFailureReport(this.input, startedAt, start, text) };
       }
@@ -110,6 +129,11 @@ export class ReviewerAgent extends BaseAgent implements Agent {
       return { kind: "failure", reason: msg, partial: buildFailureReport(this.input, startedAt, start, msg) };
     }
   }
+}
+
+function normalizeWorkerInput(input: WorkerInput): WorkerInput {
+  const task = normalizeTask(input.task);
+  return { ...input, task };
 }
 
 function normalizeTask(raw: any): import("../types.js").Task {
@@ -139,13 +163,17 @@ function normalizeTask(raw: any): import("../types.js").Task {
   };
 }
 
-function buildReviewerMessage(ctx: AgentContext, input: WorkerInput): string {
+function buildReviewerMessage(
+  ctx: AgentContext,
+  input: WorkerInput,
+  reviewNumber = 1,
+): string {
   const checklist = (input.task.checklist ?? [])
     .map((c) => `- [${c.required ? "REQUIRED" : "optional"}] ${c.description}`)
     .join("\n");
 
   return (
-    `## Stage Review Task Assignment\n\n` +
+    `## Stage Review Task Assignment${reviewNumber > 1 ? ` - Follow-up Review ${reviewNumber}` : ""}\n\n` +
     `${buildHandoffContext(ctx, { stageId: input.stageId, includeTasks: true })}\n\n` +
     `**Task ID:** ${input.task.id}\n` +
     `**Stage ID:** ${input.stageId}\n` +
@@ -154,6 +182,9 @@ function buildReviewerMessage(ctx: AgentContext, input: WorkerInput): string {
     `### Description\n${input.task.description}\n\n` +
     (checklist ? `### Checklist\n${checklist}\n\n` : "") +
     `### Instructions\n` +
+    (reviewNumber > 1
+      ? `This is a follow-up review in the same stage-scoped reviewer session. Your previous reports and reasoning are above in this conversation. Focus first on the new corrective-task results, then verify whether earlier issues are resolved or still open.\n`
+      : "") +
     `Review the stage objectives, expected outcomes, acceptance criteria, task list, worker reports, changed artifacts, and any existing summary drafts.\n` +
     `For data-heavy or ML/research stages, validate data provenance/suitability, leakage controls, statistical acceptance, benchmark comparison, and whether conclusions are supported.\n` +
     `Write optional detailed notes to: .saivage/stages/${input.stageId}/reviews/\n` +
