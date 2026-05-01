@@ -9,6 +9,7 @@ import { loadConfig, type SaivageConfig } from "../config.js";
 import { ModelRouter } from "../providers/router.js";
 import { McpRuntime } from "../mcp/runtime.js";
 import { registerBuiltinServices } from "../mcp/builtins.js";
+import { createPromptInjectionCop } from "../security/prompt-injection-cop.js";
 import { getOAuthApiKey, hasOAuthCredentials } from "../auth/index.js";
 import { cleanStash } from "../runtime/stash.js";
 
@@ -121,7 +122,7 @@ export async function bootstrap(
 
   // 4. Initialize MCP runtime + builtin services
   const mcpRuntime = new McpRuntime(config.runtime);
-  registerBuiltinServices(mcpRuntime);
+  registerBuiltinServices(mcpRuntime, { promptInjectionCop: createPromptInjectionCop(config, router) });
   await startConfiguredMcpServers(mcpRuntime, config);
   mcpRuntime.startMonitoring();
 

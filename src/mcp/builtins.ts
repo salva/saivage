@@ -21,12 +21,15 @@ import { createHash } from "node:crypto";
 import { exec, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { log } from "../log.js";
+import type { PromptInjectionCop, PromptInjectionScanResult } from "../security/prompt-injection-cop.js";
+import { disabledCop } from "../security/prompt-injection-cop.js";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 const MAX_OUTPUT = 100 * 1024; // 100 KB
 const MAX_FETCH_CHARS = 200_000;
 const MAX_DOWNLOAD_BYTES = 250 * 1024 * 1024;
+const MAX_SCAN_DECODE_BYTES = 1_000_000;
 
 function projectRoot(): string {
   return process.env["PROJECT_ROOT"] ?? process.cwd();
@@ -102,6 +105,45 @@ interface DownloadSuccess {
   sha256: string;
   headers: Record<string, string>;
   attempts: DownloadAttempt[];
+  prompt_injection_scan?: PromptInjectionScanResult;
+}
+
+interface BuiltinServicesOptions {
+  promptInjectionCop?: PromptInjectionCop;
+}
+
+function isTextLikeContentType(contentType: string | undefined): boolean {
+  if (!contentType) return false;
+  return /\b(text|json|xml|csv|html|javascript|ecmascript|markdown|yaml|toml|plain)\b/i.test(contentType);
+}
+
+function looksTextLike(buffer: Buffer): boolean {
+  const sample = buffer.subarray(0, Math.min(buffer.byteLength, 8192));
+  if (sample.length === 0) return false;
+  let printable = 0;
+  for (const byte of sample) {
+    if (byte === 0) return false;
+    if (byte === 9 || byte === 10 || byte === 13 || (byte >= 32 && byte <= 126) || byte >= 128) printable++;
+  }
+  return printable / sample.length > 0.85;
+}
+
+function bufferToScannableText(buffer: Buffer, contentType: string | undefined): string | null {
+  if (!isTextLikeContentType(contentType) && !looksTextLike(buffer)) return null;
+  return buffer.subarray(0, Math.min(buffer.byteLength, MAX_SCAN_DECODE_BYTES)).toString("utf-8");
+}
+
+async function scanUntrustedText(
+  scanner: PromptInjectionCop,
+  source: string,
+  content: string,
+  contentType?: string,
+): Promise<PromptInjectionScanResult> {
+  const scan = await scanner.scan({ source, content, contentType });
+  if (!scan.allowed) {
+    throw new Error(`Prompt injection blocked: ${scan.reason}`);
+  }
+  return scan;
 }
 
 async function downloadUrl(
@@ -112,6 +154,7 @@ async function downloadUrl(
     headers?: Record<string, string>;
     attempts: DownloadAttempt[];
     attemptNumber: number;
+    promptInjectionCop: PromptInjectionCop;
   },
 ): Promise<DownloadSuccess | null> {
   const response = await fetch(url, {
@@ -145,6 +188,28 @@ async function downloadUrl(
     return null;
   }
 
+  const scannableText = bufferToScannableText(buffer, response.headers.get("content-type") ?? undefined);
+  let promptInjectionScan: PromptInjectionScanResult = {
+    allowed: true,
+    verdict: "allow",
+    reason: "download appears to be binary/non-text content; prompt-injection scan not applicable",
+    confidence: 0,
+    scanner: "skipped",
+  };
+  if (scannableText !== null) {
+    try {
+      promptInjectionScan = await scanUntrustedText(
+        options.promptInjectionCop,
+        url.toString(),
+        scannableText,
+        response.headers.get("content-type") ?? undefined,
+      );
+    } catch (err) {
+      attempt.error = err instanceof Error ? err.message : String(err);
+      return null;
+    }
+  }
+
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, buffer);
   return {
@@ -154,6 +219,7 @@ async function downloadUrl(
     sha256: createHash("sha256").update(buffer).digest("hex"),
     headers: responseHeaders,
     attempts: options.attempts,
+    prompt_injection_scan: promptInjectionScan,
   };
 }
 
@@ -369,7 +435,8 @@ const dataTools: ToolEntry[] = [
   },
 ];
 
-const dataHandler: InProcessToolHandler = async (toolName, args) => {
+function createDataHandler(promptInjectionCop: PromptInjectionCop): InProcessToolHandler {
+  return async (toolName, args) => {
   switch (toolName) {
     case "web_search": {
       const query = String(args.query ?? "").trim();
@@ -401,14 +468,27 @@ const dataHandler: InProcessToolHandler = async (toolName, args) => {
       const maxChars = Math.min(Math.max(Number(args.max_chars ?? MAX_FETCH_CHARS), 1_000), 1_000_000);
       const response = await fetch(url, { headers: { "User-Agent": "Saivage/0.1 data-agent" } });
       const text = await response.text();
+      const content = text.slice(0, maxChars);
+      let promptInjectionScan: PromptInjectionScanResult;
+      try {
+        promptInjectionScan = await scanUntrustedText(
+          promptInjectionCop,
+          url.toString(),
+          content,
+          response.headers.get("content-type") ?? undefined,
+        );
+      } catch (err) {
+        return { content: { error: err instanceof Error ? err.message : String(err), url: url.toString() }, isError: true };
+      }
       return {
         content: {
           url: url.toString(),
           status: response.status,
           ok: response.ok,
           headers: headersObject(response.headers),
-          content: text.slice(0, maxChars),
+          content,
           truncated: text.length > maxChars,
+          prompt_injection_scan: promptInjectionScan,
         },
         isError: false,
       };
@@ -420,14 +500,27 @@ const dataHandler: InProcessToolHandler = async (toolName, args) => {
       const response = await fetch(url, { headers: { "User-Agent": "Saivage/0.1 data-agent" } });
       const html = await response.text();
       const text = stripHtml(html);
+      const content = text.slice(0, maxChars);
+      let promptInjectionScan: PromptInjectionScanResult;
+      try {
+        promptInjectionScan = await scanUntrustedText(
+          promptInjectionCop,
+          url.toString(),
+          content,
+          response.headers.get("content-type") ?? undefined,
+        );
+      } catch (err) {
+        return { content: { error: err instanceof Error ? err.message : String(err), url: url.toString() }, isError: true };
+      }
       return {
         content: {
           url: url.toString(),
           status: response.status,
           ok: response.ok,
           headers: headersObject(response.headers),
-          text: text.slice(0, maxChars),
+          text: content,
           truncated: text.length > maxChars,
+          prompt_injection_scan: promptInjectionScan,
         },
         isError: false,
       };
@@ -444,6 +537,7 @@ const dataHandler: InProcessToolHandler = async (toolName, args) => {
           headers: args.headers as Record<string, string> | undefined,
           attempts,
           attemptNumber: 1,
+          promptInjectionCop,
         });
         if (result) return { content: result, isError: false };
       } catch (err) {
@@ -473,7 +567,7 @@ const dataHandler: InProcessToolHandler = async (toolName, args) => {
 
         for (let attemptNumber = 1; attemptNumber <= retriesPerUrl; attemptNumber++) {
           try {
-            const result = await downloadUrl(url, outPath, { maxBytes, headers, attempts, attemptNumber });
+            const result = await downloadUrl(url, outPath, { maxBytes, headers, attempts, attemptNumber, promptInjectionCop });
             if (result) {
               if (manifestPath) {
                 mkdirSync(dirname(manifestPath), { recursive: true });
@@ -508,7 +602,8 @@ const dataHandler: InProcessToolHandler = async (toolName, args) => {
     default:
       return { content: { error: `Unknown data tool: ${toolName}` }, isError: true };
   }
-};
+  };
+}
 
 // ─── Git ────────────────────────────────────────────────────────────────────
 
@@ -751,10 +846,11 @@ const lockTools: ToolEntry[] = [
  * Register all built-in services as in-process handlers on the MCP runtime.
  * No subprocess spawning — all operations run directly in the Node.js process.
  */
-export function registerBuiltinServices(mcpRuntime: McpRuntime): void {
+export function registerBuiltinServices(mcpRuntime: McpRuntime, options: BuiltinServicesOptions = {}): void {
+  const promptInjectionCop = options.promptInjectionCop ?? disabledCop();
   mcpRuntime.registerInProcess("filesystem", filesystemTools, filesystemHandler);
   mcpRuntime.registerInProcess("shell", shellTools, shellHandler);
-  mcpRuntime.registerInProcess("data", dataTools, dataHandler);
+  mcpRuntime.registerInProcess("data", dataTools, createDataHandler(promptInjectionCop));
   mcpRuntime.registerInProcess("git", gitTools, gitHandler);
   mcpRuntime.registerInProcess("skills", skillsTools, skillsHandler);
 

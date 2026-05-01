@@ -77,6 +77,14 @@ const configSchema = z.object({
     })
     .default({}),
 
+  security: z
+    .object({
+      injectionScanner: z.boolean().default(true),
+      injectionModel: z.string().default("github-copilot/gpt-5-mini"),
+      maxScanLengthBytes: z.number().default(100_000),
+    })
+    .default({}),
+
   telegram: z
     .object({
       botToken: z.string().default(""),

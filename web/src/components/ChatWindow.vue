@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, nextTick, watch } from "vue";
 import { useWebSocket } from "../composables/useWebSocket";
+import { renderMarkdown } from "../utils/markdown";
 
 interface Message {
   id: number;
@@ -105,38 +106,6 @@ function formatTime(d: Date): string {
   return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
-/** Minimal markdown to HTML for assistant messages */
-function renderMd(text: string): string {
-  let s = text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-
-  // Fenced code blocks
-  s = s.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, _lang, code) =>
-    '<pre class="md-code-block"><code>' + code.replace(/\n$/, "") + '</code></pre>'
-  );
-
-  // Inline code
-  s = s.replace(/`([^`]+)`/g, '<code class="md-code">$1</code>');
-
-  // Headers
-  s = s.replace(/^### (.+)$/gm, '<strong class="md-h3">$1</strong>');
-  s = s.replace(/^## (.+)$/gm, '<strong class="md-h2">$1</strong>');
-  s = s.replace(/^# (.+)$/gm, '<strong class="md-h1">$1</strong>');
-
-  // Bold + italic
-  s = s.replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>");
-  s = s.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-
-  // Bullet lists
-  s = s.replace(/^[-*] (.+)$/gm, '<span class="md-bullet">$1</span>');
-
-  // Numbered lists
-  s = s.replace(/^\d+\. (.+)$/gm, '<span class="md-bullet">$1</span>');
-
-  return s;
-}
 </script>
 
 <template>
@@ -156,7 +125,7 @@ function renderMd(text: string): string {
           <span class="msg-role">{{ msg.role }}</span>
           <span class="msg-time">{{ formatTime(msg.timestamp) }}</span>
         </div>
-        <div v-if="msg.role === 'assistant'" class="msg-content" v-html="renderMd(msg.content)"></div>
+        <div v-if="msg.role === 'assistant'" class="msg-content" v-html="renderMarkdown(msg.content)"></div>
         <div v-else class="msg-content">{{ msg.content }}</div>
       </div>
       <div v-if="thinking" class="msg assistant">

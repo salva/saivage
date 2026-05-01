@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import JsonHighlight from "./JsonHighlight.vue";
+import { renderMarkdown } from "../utils/markdown";
 
 const props = withDefaults(defineProps<{
   content: string;
@@ -30,6 +31,11 @@ const parsed = computed<ParsedContent>(() => {
   if (embedded) return embedded;
 
   return { kind: "text", text: content };
+});
+
+const renderedMarkdown = computed(() => {
+  if (parsed.value.kind !== "text") return "";
+  return renderMarkdown(parsed.value.text);
 });
 
 function extractEmbeddedJson(value: string): ParsedContent | null {
@@ -65,7 +71,7 @@ function firstJsonStart(value: string): number {
     :max-height="maxHeight"
     class="formatted-json"
   />
-  <div v-else class="formatted-text">{{ parsed.text }}</div>
+  <div v-else class="formatted-text" v-html="renderedMarkdown"></div>
 </template>
 
 <style scoped>
@@ -77,5 +83,16 @@ function firstJsonStart(value: string): number {
 .formatted-text {
   white-space: pre-wrap;
   word-break: break-word;
+  line-height: 1.5;
 }
+
+.formatted-text :deep(strong) { color: #e6edf3; font-weight: 600; }
+.formatted-text :deep(em) { font-style: italic; }
+.formatted-text :deep(.md-h1) { display: block; font-size: 16px; margin: 8px 0 4px; }
+.formatted-text :deep(.md-h2) { display: block; font-size: 14px; margin: 6px 0 3px; }
+.formatted-text :deep(.md-h3) { display: block; font-size: 13px; margin: 4px 0 2px; }
+.formatted-text :deep(.md-code) { background: #0d1117; color: #79c0ff; padding: 1px 5px; border-radius: 3px; font-family: monospace; font-size: 12px; }
+.formatted-text :deep(.md-code-block) { background: #0d1117; padding: 10px 12px; border-radius: 6px; margin: 6px 0; overflow-x: auto; font-size: 12px; line-height: 1.5; white-space: pre; }
+.formatted-text :deep(.md-code-block code) { font-family: monospace; color: #c9d1d9; }
+.formatted-text :deep(.md-bullet) { display: block; padding-left: 8px; }
 </style>
