@@ -94,6 +94,7 @@ function tokenize(json: string): Token[] {
 const tokens = computed<Token[]>(() => {
   try {
     const formatted = JSON.stringify(props.data, null, 2);
+    if (formatted === undefined) return [{ type: "string", text: "undefined" }];
     return tokenize(formatted);
   } catch {
     return [{ type: "string", text: String(props.data) }];

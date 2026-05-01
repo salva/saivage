@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch, nextTick } from "vue";
+import FormattedContent from "./FormattedContent.vue";
 
 interface AgentState {
   agent_type: string;
@@ -359,7 +360,9 @@ const filteredSessions = computed(() => {
               <div class="entry-bar" :class="entry.role">
                 <span class="entry-role-label">{{ entry.role === 'assistant' ? 'Thinking' : entry.role === 'user' ? 'Context' : 'System' }}</span>
               </div>
-              <div class="entry-content text-content" :class="entry.role">{{ entry.content }}</div>
+              <div class="entry-content text-content" :class="entry.role">
+                <FormattedContent :content="entry.content" max-height="420px" />
+              </div>
             </template>
 
             <!-- Tool calls -->
@@ -369,7 +372,9 @@ const filteredSessions = computed(() => {
                 <span class="tool-name">{{ entry.tool }}</span>
                 <span class="tool-chevron" :class="{ collapsed: collapsedTools.has(idx) }">&#9660;</span>
               </div>
-              <div v-if="!collapsedTools.has(idx)" class="entry-content tool-content">{{ entry.content }}</div>
+              <div v-if="!collapsedTools.has(idx)" class="entry-content tool-content">
+                <FormattedContent :content="entry.content" max-height="300px" />
+              </div>
             </template>
 
             <!-- Tool results -->
@@ -380,7 +385,9 @@ const filteredSessions = computed(() => {
                 <span class="tool-result-preview">{{ truncate(entry.content.split('\n')[0], 80) }}</span>
                 <span class="tool-chevron" :class="{ collapsed: collapsedTools.has(idx) }">&#9660;</span>
               </div>
-              <div v-if="!collapsedTools.has(idx)" class="entry-content tool-content" :class="{ 'error-content': entry.kind === 'tool_error' }">{{ entry.content }}</div>
+              <div v-if="!collapsedTools.has(idx)" class="entry-content tool-content" :class="{ 'error-content': entry.kind === 'tool_error' }">
+                <FormattedContent :content="entry.content" max-height="300px" />
+              </div>
             </template>
           </div>
 
@@ -414,7 +421,9 @@ const filteredSessions = computed(() => {
               <span class="msg-time">{{ formatTime(msg.timestamp) }}</span>
               <span v-if="msg.event" class="msg-event-type">{{ msg.event.type }}</span>
             </div>
-            <div class="msg-content" :class="{ 'msg-tool': isToolMessage(parseContent(msg.content)) }">{{ parseContent(msg.content) }}</div>
+            <div class="msg-content" :class="{ 'msg-tool': isToolMessage(parseContent(msg.content)) }">
+              <FormattedContent :content="parseContent(msg.content)" max-height="360px" />
+            </div>
           </div>
         </div>
       </template>
@@ -504,7 +513,7 @@ const filteredSessions = computed(() => {
 
 .entry-content {
   font-size: 13px; line-height: 1.55; padding: 6px 12px; border-radius: 6px;
-  white-space: pre-wrap; word-break: break-word; margin-bottom: 4px;
+  margin-bottom: 4px;
 }
 
 .text-content.assistant { background: #0d1117; color: #c9d1d9; border-left: 3px solid #3fb950; }
