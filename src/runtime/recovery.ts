@@ -223,6 +223,12 @@ export class RuntimeTracker {
     this.flush();
   }
 
+  /** Persist a heartbeat for an active agent without changing lifecycle state. */
+  agentActivity(agentId: string): void {
+    if (!this.agents.has(agentId)) return;
+    this.flush();
+  }
+
   /** Update the current stage ID and persist. */
   setCurrentStage(stageId: string | null): void {
     this.currentStageId = stageId;

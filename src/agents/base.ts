@@ -62,6 +62,8 @@ export interface BaseAgentConfig {
   initialMessage?: string;
   /** Abort signal shared with the runtime. */
   abortSignal?: { aborted: boolean };
+  /** Notify the runtime that this agent is still making progress. */
+  onActivity?: (agentId: string) => void;
 }
 
 /**
@@ -83,6 +85,7 @@ export class BaseAgent {
   private selfCheckState: SelfCheckState;
   private compactionConfig: CompactionConfig;
   private abortSignal?: { aborted: boolean };
+  private onActivity?: (agentId: string) => void;
 
   constructor(ctx: AgentContext, config: BaseAgentConfig) {
     this.id = ctx.agentId;
@@ -127,6 +130,7 @@ export class BaseAgent {
     };
 
     this.abortSignal = config.abortSignal;
+    this.onActivity = config.onActivity;
 
     // Set initial message
     if (config.initialMessage) {
@@ -177,7 +181,9 @@ export class BaseAgent {
       // Make LLM call
       let response: ChatResponse;
       try {
+        this.recordActivity();
         response = await this.callLLM();
+        this.recordActivity();
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         log.error(`[agent:${this.role}:${this.id}] LLM call failed: ${msg}`);
@@ -209,11 +215,13 @@ export class BaseAgent {
       this.messages.push({ role: "assistant", content: assistantBlocks });
 
       // Process tool calls through dispatcher
+      this.recordActivity();
       const dispatchResult = await this.dispatcher.processToolCalls(
         response.toolCalls,
         this.ctx,
         this.abortSignal,
       );
+      this.recordActivity();
 
       // Build tool result message
       const resultBlocks: ContentBlock[] = dispatchResult.toolResults.map(
@@ -419,6 +427,10 @@ export class BaseAgent {
       `[Result stashed to disk — too large for context window (${content.length} chars)]\n` +
       `Use read_stash(path="${path}") to read portions of this result.`
     );
+  }
+
+  private recordActivity(): void {
+    this.onActivity?.(this.id);
   }
 }
 

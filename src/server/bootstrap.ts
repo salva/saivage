@@ -226,42 +226,54 @@ export function createChildSpawner(
       case "manager": {
         const managerInput = input as import("../agents/types.js").ManagerInput;
         const managerSpawner = createChildSpawner(runtime);
-        agent = new ManagerAgent(ctx, managerInput, managerSpawner);
+        agent = new ManagerAgent(ctx, managerInput, managerSpawner, {
+          onActivity: (agentId) => tracker.agentActivity(agentId),
+        });
         tracker.setCurrentStage(managerInput.stage?.id ?? null);
         break;
       }
 
       case "coder": {
         const workerInput = input as import("../agents/types.js").WorkerInput;
-        agent = new CoderAgent(ctx, workerInput);
+        agent = new CoderAgent(ctx, workerInput, {
+          onActivity: (agentId) => tracker.agentActivity(agentId),
+        });
         taskId = workerInput.task?.id;
         break;
       }
 
       case "researcher": {
         const workerInput = input as import("../agents/types.js").WorkerInput;
-        agent = new ResearcherAgent(ctx, workerInput);
+        agent = new ResearcherAgent(ctx, workerInput, {
+          onActivity: (agentId) => tracker.agentActivity(agentId),
+        });
         taskId = workerInput.task?.id;
         break;
       }
 
       case "data_agent": {
         const workerInput = input as import("../agents/types.js").WorkerInput;
-        agent = new DataAgent(ctx, workerInput);
+        agent = new DataAgent(ctx, workerInput, {
+          onActivity: (agentId) => tracker.agentActivity(agentId),
+        });
         taskId = workerInput.task?.id;
         break;
       }
 
       case "reviewer": {
         const workerInput = input as import("../agents/types.js").WorkerInput;
-        agent = new ReviewerAgent(ctx, workerInput);
+        agent = new ReviewerAgent(ctx, workerInput, {
+          onActivity: (agentId) => tracker.agentActivity(agentId),
+        });
         taskId = workerInput.task?.id;
         break;
       }
 
       case "inspector": {
         const inspectorInput = input as import("../agents/types.js").InspectorInput;
-        agent = new InspectorAgent(ctx, inspectorInput);
+        agent = new InspectorAgent(ctx, inspectorInput, {
+          onActivity: (agentId) => tracker.agentActivity(agentId),
+        });
         break;
       }
 
@@ -312,6 +324,7 @@ export async function runPlanner(
   const childSpawner = createChildSpawner(runtime);
   const planner = new PlannerAgent(ctx, childSpawner, {
     abortSignal: options.abortSignal,
+    onActivity: (agentId) => tracker.agentActivity(agentId),
   });
 
   tracker.agentStarted(ctx.agentId, "planner");

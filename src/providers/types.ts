@@ -30,6 +30,7 @@ export interface ChatRequest {
   maxTokens?: number;
   temperature?: number;
   stopSequences?: string[];
+  signal?: AbortSignal;
 }
 
 export interface ToolCallResult {

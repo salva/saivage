@@ -221,7 +221,9 @@ export class CopilotProvider extends BaseProvider {
       max_output_tokens: request.maxTokens ?? 8192,
       ...(tools && tools.length > 0 ? { tools } : {}),
       ...(request.temperature != null ? { temperature: request.temperature } : {}),
-    } as OpenAI.Responses.ResponseCreateParamsNonStreaming);
+    } as OpenAI.Responses.ResponseCreateParamsNonStreaming,
+    request.signal ? { signal: request.signal } : undefined,
+    );
 
     let content = response.output_text ?? "";
     const toolCalls: ToolCallResult[] = [];
@@ -272,7 +274,9 @@ export class CopilotProvider extends BaseProvider {
       ...(tools && tools.length > 0 ? { tools } : {}),
       ...(request.temperature != null ? { temperature: request.temperature } : {}),
       ...(request.stopSequences ? { stop: request.stopSequences } : {}),
-    } as OpenAI.ChatCompletionCreateParamsNonStreaming);
+    } as OpenAI.ChatCompletionCreateParamsNonStreaming,
+    request.signal ? { signal: request.signal } : undefined,
+    );
 
     const choice = response.choices[0];
     if (!choice) throw new Error("No choices returned");
@@ -412,7 +416,9 @@ export class CopilotProvider extends BaseProvider {
       ...(tools && tools.length > 0 ? { tools } : {}),
       ...(request.temperature != null ? { temperature: request.temperature } : {}),
       ...(request.stopSequences ? { stop_sequences: request.stopSequences } : {}),
-    });
+    },
+    request.signal ? { signal: request.signal } : undefined,
+    );
 
     let content = "";
     const toolCalls: ToolCallResult[] = [];

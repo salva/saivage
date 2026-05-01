@@ -46,7 +46,9 @@ export class OpenAIProvider extends BaseProvider {
       ...(request.stopSequences
         ? { stop: request.stopSequences }
         : {}),
-    });
+    },
+    request.signal ? { signal: request.signal } : undefined,
+    );
 
     const choice = response.choices[0];
     if (!choice) throw new Error("No choices returned from OpenAI");

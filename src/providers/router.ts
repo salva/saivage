@@ -12,13 +12,15 @@ import { LlamaCppProvider } from "./llamacpp.js";
 import { getOAuthApiKey, hasOAuthCredentials } from "../auth/index.js";
 import { log } from "../log.js";
 
+const PROVIDER_REQUEST_TIMEOUT_MS = 300_000;
+
 /** Lightweight LLM call metrics (replaces v1 telemetry module). */
 function recordLlmCall(_spec: string, _data: Record<string, unknown>): void {
   // Metrics are logged via the log module; no separate telemetry store needed.
 }
 
 /**
- * Maps OAuth provider IDs → pi-ai provider names.
+ * Maps OAuth provider IDs -> pi-ai provider names.
  * Also used to decide which pi-ai provider to register for each OAuth credential.
  */
 const OAUTH_TO_PI: Record<string, string> = {
@@ -27,7 +29,7 @@ const OAUTH_TO_PI: Record<string, string> = {
 };
 
 /**
- * Maps Saivage provider names → OAuth provider IDs (for resolveApiKey).
+ * Maps Saivage provider names -> OAuth provider IDs (for resolveApiKey).
  */
 const PROVIDER_TO_OAUTH: Record<string, string> = {
   "openai-codex": "openai-codex",
@@ -172,12 +174,19 @@ export class ModelRouter {
 
       try {
         const t0 = Date.now();
+        const controller = new AbortController();
+        let timeoutId: ReturnType<typeof setTimeout> | undefined;
         const response = await Promise.race([
-          provider.chat({ ...request, model }),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error(`Request timed out after 300s`)), 300_000),
-          ),
-        ]);
+          provider.chat({ ...request, model, signal: controller.signal }),
+          new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(() => {
+              controller.abort();
+              reject(new Error(`Request timed out after ${PROVIDER_REQUEST_TIMEOUT_MS / 1000}s`));
+            }, PROVIDER_REQUEST_TIMEOUT_MS);
+          }),
+        ]).finally(() => {
+          if (timeoutId) clearTimeout(timeoutId);
+        });
         recordLlmCall(spec, {
           inputTokens: response.usage?.inputTokens,
           outputTokens: response.usage?.outputTokens,
@@ -186,7 +195,7 @@ export class ModelRouter {
         // If we failed over, stick to this provider
         if (spec !== request.modelSpec) {
           this.stickyFailovers.set(request.modelSpec, spec);
-          log.info(`Model switch: ${request.modelSpec} → ${spec} (primary failed, using failover)`);
+          log.info(`Model switch: ${request.modelSpec} -> ${spec} (primary failed, using failover)`);
         }
         return response;
       } catch (err) {
@@ -195,7 +204,7 @@ export class ModelRouter {
         recordLlmCall(spec, { error: true, timeout: isTimeout });
         log.warn(`Provider "${providerName}" (model: ${spec}) failed: ${errMsg}`);
 
-        // Non-retryable errors that apply regardless of provider — propagate immediately
+        // Non-retryable errors that apply regardless of provider - propagate immediately
         const isContextOverflow =
           errMsg.includes("exceeds the context window") ||
           errMsg.includes("context_length_exceeded");
@@ -235,7 +244,7 @@ export class ModelRouter {
   clearStickyFailover(modelSpec: string): void {
     const was = this.stickyFailovers.get(modelSpec);
     if (was) {
-      log.info(`Model switch: ${was} → ${modelSpec} (retrying primary after cooldown)`);
+      log.info(`Model switch: ${was} -> ${modelSpec} (retrying primary after cooldown)`);
     }
     this.stickyFailovers.delete(modelSpec);
   }

@@ -126,6 +126,7 @@ export class OpenAICodexProvider extends BaseProvider {
       method: "POST",
       headers,
       body: JSON.stringify(body),
+      signal: request.signal,
     });
 
     if (!response.ok) {

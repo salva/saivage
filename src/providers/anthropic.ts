@@ -40,7 +40,9 @@ export class AnthropicProvider extends BaseProvider {
       ...(request.stopSequences
         ? { stop_sequences: request.stopSequences }
         : {}),
-    });
+    },
+    request.signal ? { signal: request.signal } : undefined,
+    );
 
     let content = "";
     const toolCalls: ToolCallResult[] = [];
