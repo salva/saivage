@@ -222,22 +222,30 @@ export class ModelRouter {
   private buildChain(modelSpec: string): string[] {
     // If we have a sticky failover, use that first
     const sticky = this.stickyFailovers.get(modelSpec);
-    const chain = [modelSpec];
+    const chain: string[] = [];
 
     if (sticky && sticky !== modelSpec) {
-      chain.unshift(sticky);
+      chain.push(sticky);
     }
 
-    // Look up failover by full spec first, then by provider-only key
+    this.appendFailoverChain(modelSpec, chain, new Set<string>());
+    return chain;
+  }
+
+  private appendFailoverChain(modelSpec: string, chain: string[], expanded: Set<string>): void {
+    if (!chain.includes(modelSpec)) chain.push(modelSpec);
+    if (expanded.has(modelSpec)) return;
+    expanded.add(modelSpec);
+
+    // Look up failover by full spec first, then by provider-only key.
     const { provider: providerName, model } = parseModelId(modelSpec);
     const failovers = this.failoverChains[modelSpec] ?? this.failoverChains[providerName];
-    if (failovers) {
-      // Expand provider-only failover entries to full specs using the same model
-      const expanded = failovers.map((f) => (f.includes("/") ? f : `${f}/${model}`));
-      chain.push(...expanded.filter((f) => !chain.includes(f)));
-    }
+    if (!failovers) return;
 
-    return chain;
+    // Expand provider-only failover entries to full specs using the same model.
+    for (const fallback of failovers) {
+      this.appendFailoverChain(fallback.includes("/") ? fallback : `${fallback}/${model}`, chain, expanded);
+    }
   }
 
   /** Reset sticky failover for a model */

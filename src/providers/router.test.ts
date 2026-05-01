@@ -50,4 +50,21 @@ describe("ModelRouter", () => {
     // Ollama is always registered
     expect(providers).toContain("ollama");
   });
+
+  it("follows model-specific failover chains recursively", () => {
+    const router = new ModelRouter(makeConfig({
+      failover: {
+        "github-copilot/gpt-5.5": ["github-copilot/gpt-5.4"],
+        "github-copilot/gpt-5.4": ["github-copilot/claude-sonnet-4.6"],
+      },
+    }));
+
+    const chain = (router as unknown as { buildChain(modelSpec: string): string[] }).buildChain("github-copilot/gpt-5.5");
+
+    expect(chain).toEqual([
+      "github-copilot/gpt-5.5",
+      "github-copilot/gpt-5.4",
+      "github-copilot/claude-sonnet-4.6",
+    ]);
+  });
 });
