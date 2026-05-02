@@ -15,6 +15,7 @@ import { cleanStash } from "../runtime/stash.js";
 
 import { EventBus } from "../events/bus.js";
 import { PlanService } from "../mcp/plan-server.js";
+import { NoteService } from "../mcp/notes-server.js";
 import {
   loadProject,
   discoverProject,
@@ -205,6 +206,14 @@ export async function bootstrap(
       log.info("[v2] Shutdown complete");
     },
   };
+
+  const noteService = new NoteService(project.paths.notes);
+  mcpRuntime.registerInProcess(
+    "notes",
+    NoteService.getToolSchemas(),
+    (toolName: string, args: Record<string, unknown>) =>
+      noteService.handleToolCall(toolName, args),
+  );
 
   supervisor = new RuntimeSupervisor(config, { router, agentRegistry });
   runtime.supervisor = supervisor;

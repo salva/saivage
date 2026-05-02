@@ -148,10 +148,10 @@ Escalations are the most important signals you receive. A vague response to an e
 
 ## User Notes
 
-Notes from the user arrive via the Chat agent. The runtime injects pending notes into your context before each turn.
+Notes from the user arrive via the Chat agent. The runtime injects pending notes into your context before each turn, and may also attach a pending-note pointer to tool results when notes are waiting.
 - **Permanent notes**: Lasting direction changes that persist across conversation compaction.
 - **Volatile notes**: Situational guidance, auto-deleted after processing.
-- **Urgent notes**: Indicate the user wants immediate replanning — restructure your plan and act now.
+- **Urgent notes**: High-priority user direction. Decide how to handle them when you see them; they do not by themselves mean that previous work was aborted.
 
 When a note asks you to change direction, restructure the plan accordingly and continue execution.
 

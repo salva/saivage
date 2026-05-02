@@ -17,6 +17,7 @@ import type { ChatChannel } from "../channels/types.js";
 import type { EventBus, EventFilter } from "../events/bus.js";
 import { chatSessionId } from "../ids.js";
 import { writeDoc, readDocOrNull, readDocLenient, ensureDir } from "../store/documents.js";
+import { createUserNote } from "../runtime/notes.js";
 import {
   ChatLogSchema,
   PlanSchema,
@@ -80,16 +81,16 @@ You are **Saivage's human interface**. Your responsibilities:
 When the user gives direction about what the system should do, you MUST create a note:
 
 - **Direction changes** (change strategy, focus on X, ignore Y): Create a **permanent note** — it persists across conversation compaction and replanning.
-- **Urgent changes** (stop current work, replan NOW, abort stage): Create an **urgent note** — it triggers immediate replanning. The Planner will interrupt its current stage to process it.
-- **Planner restart requests** (restart the planner, reset the planner, relaunch planning): request a Planner restart and include the user's reason in the restart note. This is stronger than replanning because it cancels the current Planner conversation and starts a fresh Planner from persisted plan/history state.
+- **High-priority direction** (replan soon, change current strategy, reconsider priorities): Create an **urgent note** — it marks the note as high priority for the Planner. It does not interrupt the Planner or any worker by itself.
+- **Planner restart requests** (restart the planner, reset the planner, relaunch planning, abort current stage): request a Planner restart and include the user's reason in the restart note. This is the explicit interrupt path because it cancels the current Planner conversation and starts a fresh Planner from persisted plan/history state.
 - **Contextual observations** (FYI, suggestion, heads-up): Create a regular (volatile) note — it will be processed on the Planner's next turn.
 
-Always confirm to the user that their instruction has been relayed and how: "I've created an urgent note for the Planner. It will replan on its next turn."
+Always confirm to the user that their instruction has been relayed and how: "I've created an urgent note for the Planner. It will decide how to handle it when it next sees pending notes."
 
 ## Tools Available
 
 - \`run_inspector(request)\` — Dispatch the Inspector for deep analysis. The request must include: \`id\`, \`scope\`, \`questions\`. Returns an \`InspectionReport\`.
-- \`create_note(content, permanent?, urgent?)\` — Create a note for the Planner.
+- \`create_note(content, permanent?, urgent?)\` — Create a note for the Planner. Urgent marks priority; it does not interrupt running work.
 - **Plan MCP tools** (read-only): \`plan_get()\`, \`plan_get_stage(stage_id)\`, \`plan_get_current_stage()\`, \`plan_get_history(last_n?)\`.
 - **Filesystem tools** (read-only access preferred) — for reading project state.
 
@@ -100,10 +101,10 @@ Users may use these shortcuts:
 - \`/status\` — Current system status (running agents, current stage, recent completions).
 - \`/plan\` — Show the current plan (all stages with status).
 - \`/history\` — Show completed/failed stages.
-- \`/replan\` — Create an urgent note telling the Planner to replan.
+- \`/replan\` — Create an urgent note asking the Planner to replan when it next handles notes.
 - \`/restart-planner [reason]\` — Explicitly cancel the current Planner turn and immediately restart it with the provided reason.
 - \`/note <text>\` — Create a volatile note for the Planner.
-- \`/note! <text>\` — Create an urgent note for the Planner.
+- \`/note! <text>\` — Create a high-priority note for the Planner.
 - \`/notep <text>\` — Create a permanent note for the Planner.
 
 ## Guidelines
@@ -398,26 +399,14 @@ export class ChatAgent extends BaseAgent implements Agent {
   }
 
   private async cmdNote(content: string, permanent: boolean, urgent: boolean): Promise<string> {
-    const { writeDoc: writeDocFn, ensureDir: ensureDirFn } = await import("../store/documents.js");
-    const { noteId } = await import("../ids.js");
-    const { UserNoteSchema } = await import("../types.js");
-
-    const notesDir = this.ctx.project.paths.notes;
-    ensureDirFn(notesDir);
-
-    const id = noteId();
-    const note = {
-      id,
+    const note = createUserNote({
+      notesDir: this.ctx.project.paths.notes,
       channel: this.input.channel,
-      session_id: this.input.sessionId,
+      sessionId: this.input.sessionId,
       content,
-      created_at: new Date().toISOString(),
       permanent,
       urgent,
-    };
-
-    const notePath = join(notesDir, `${id}.json`);
-    writeDocFn(notePath, note, UserNoteSchema);
+    });
 
     const flags = [
       permanent ? "permanent" : null,
@@ -425,7 +414,7 @@ export class ChatAgent extends BaseAgent implements Agent {
     ].filter(Boolean).join(", ");
 
     const flagStr = flags ? ` (${flags})` : "";
-    return `📝 Note created: \`${id}\`${flagStr}\nThe Planner will process it on its next cycle.${urgent ? "\n⚠️ Current work will be aborted for replanning." : ""}`;
+    return `📝 Note created: \`${note.id}\`${flagStr}\nThe Planner will decide how to handle it when it next sees pending notes.${urgent ? "\nMarked high priority; no running work was interrupted." : ""}`;
   }
 
   private async cmdRestartPlanner(reason: string): Promise<string> {

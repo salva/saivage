@@ -15,7 +15,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { PlanService } from "../mcp/plan-server.js";
+import { NoteService } from "../mcp/notes-server.js";
 import { NoteManager } from "./notes.js";
+import { Dispatcher } from "./dispatcher.js";
 import { writeDoc, readDoc, ensureDir } from "../store/documents.js";
 import {
   PlanSchema,
@@ -639,6 +641,93 @@ describe("NoteManager", () => {
     const cleaned = noteManager.cleanupStaleNotes();
     expect(cleaned).toBe(1);
     expect(existsSync(join(notesDir, "note-stale.json"))).toBe(false);
+  });
+
+  it("peekUnacknowledgedNotes does not mark notes for acknowledgment", () => {
+    writeNote({
+      id: "note-1",
+      channel: "test",
+      session_id: "s1",
+      content: "pending",
+      created_at: new Date().toISOString(),
+      permanent: false,
+      urgent: false,
+    });
+
+    const notes = noteManager.peekUnacknowledgedNotes();
+    noteManager.acknowledgeNotes();
+
+    expect(notes).toHaveLength(1);
+    expect(existsSync(join(notesDir, "note-1.json"))).toBe(true);
+  });
+});
+
+describe("NoteService", () => {
+  it("creates urgent notes without interrupt side effects", async () => {
+    const notesDir = join(tmpDir, "notes");
+    const service = new NoteService(notesDir);
+
+    const result = await service.handleToolCall("create_note", {
+      content: "please re-evaluate soon",
+      urgent: true,
+      permanent: true,
+      channel: "telegram",
+      session_id: "telegram-1",
+    });
+
+    expect(result.isError).toBe(false);
+    const content = result.content as Record<string, unknown>;
+    expect(content.urgent).toBe(true);
+    expect(content.planner_pointer_pending).toBe(true);
+    expect(content).not.toHaveProperty("planner_wakeup_requested");
+
+    const note = readDoc(join(notesDir, `${content.id}.json`), UserNoteSchema);
+    expect(note.content).toBe("please re-evaluate soon");
+    expect(note.urgent).toBe(true);
+    expect(note.permanent).toBe(true);
+  });
+});
+
+describe("Dispatcher pending note pointers", () => {
+  it("attaches pending note metadata to Planner tool results", async () => {
+    const project = makeProjectContext(tmpDir);
+    ensureDir(project.paths.notes);
+    writeDoc(
+      join(project.paths.notes, "note-1.json"),
+      {
+        id: "note-1",
+        channel: "telegram",
+        session_id: "telegram-1",
+        content: "consider a slower refresh experiment",
+        created_at: new Date().toISOString(),
+        permanent: false,
+        urgent: true,
+      },
+      UserNoteSchema,
+    );
+
+    const dispatcher = new Dispatcher({
+      getAllTools: () => [{ name: "noop", description: "Noop", inputSchema: {}, service: "test" }],
+      callTool: async () => ({ ok: true }),
+    } as any);
+
+    const result = await dispatcher.processToolCalls(
+      [{ id: "tool-1", name: "noop", input: {} }],
+      {
+        project,
+        router: {} as any,
+        mcpRuntime: {} as any,
+        agentId: "planner-1",
+        role: "planner",
+        modelSpec: "test/model",
+      },
+    );
+
+    const content = JSON.parse(result.toolResults[0].content);
+    expect(content.ok).toBe(true);
+    expect(content.__saivage_pending_user_notes.count).toBe(1);
+    expect(content.__saivage_pending_user_notes.urgent_count).toBe(1);
+    expect(content.__saivage_pending_user_notes.notes[0].id).toBe("note-1");
   });
 });
 

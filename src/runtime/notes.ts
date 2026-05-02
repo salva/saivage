@@ -8,9 +8,35 @@
 
 import { join } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
-import { readDoc, writeDoc, deleteDoc } from "../store/documents.js";
+import { readDoc, writeDoc, deleteDoc, ensureDir } from "../store/documents.js";
 import { UserNoteSchema, type UserNote } from "../types.js";
+import { noteId } from "../ids.js";
 import { log } from "../log.js";
+
+export interface CreateUserNoteInput {
+  notesDir: string;
+  channel: string;
+  sessionId: string;
+  content: string;
+  permanent: boolean;
+  urgent: boolean;
+}
+
+export function createUserNote(input: CreateUserNoteInput): UserNote {
+  ensureDir(input.notesDir);
+  const id = noteId();
+  const note: UserNote = {
+    id,
+    channel: input.channel,
+    session_id: input.sessionId,
+    content: input.content,
+    created_at: new Date().toISOString(),
+    permanent: input.permanent,
+    urgent: input.urgent,
+  };
+  writeDoc(join(input.notesDir, `${id}.json`), note, UserNoteSchema);
+  return note;
+}
 
 /**
  * Manages the lifecycle of user notes.
@@ -28,6 +54,18 @@ export class NoteManager {
    * Get all unacknowledged notes for injection into the Planner's context.
    */
   getUnacknowledgedNotes(): UserNote[] {
+    const notes = this.peekUnacknowledgedNotes();
+
+    // Track for acknowledgment
+    this.pendingAcknowledgment = notes.map((n) => n.id);
+
+    return notes;
+  }
+
+  /**
+   * Get all unacknowledged notes without marking them pending for acknowledgment.
+   */
+  peekUnacknowledgedNotes(): UserNote[] {
     if (!existsSync(this.notesDir)) return [];
 
     const files = readdirSync(this.notesDir).filter((f) =>
@@ -46,10 +84,7 @@ export class NoteManager {
       }
     }
 
-    // Track for acknowledgment
-    this.pendingAcknowledgment = notes.map((n) => n.id);
-
-    return notes;
+    return notes.sort((a, b) => a.created_at.localeCompare(b.created_at));
   }
 
   /**
