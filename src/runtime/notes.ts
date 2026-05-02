@@ -76,6 +76,7 @@ export class NoteManager {
     for (const file of files) {
       try {
         const note = readDoc(join(this.notesDir, file), UserNoteSchema);
+        if (isPlannerSelfNote(note)) continue;
         if (!note.acknowledged_at) {
           notes.push(note);
         }
@@ -101,6 +102,7 @@ export class NoteManager {
     for (const file of files) {
       try {
         const note = readDoc(join(this.notesDir, file), UserNoteSchema);
+        if (isPlannerSelfNote(note)) continue;
         if (note.permanent) {
           notes.push(note);
         }
@@ -208,4 +210,8 @@ export class NoteManager {
 
     return cleaned;
   }
+}
+
+function isPlannerSelfNote(note: UserNote): boolean {
+  return note.channel === "planner";
 }

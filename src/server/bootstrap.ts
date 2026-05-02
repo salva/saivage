@@ -346,6 +346,9 @@ export function createChildSpawner(
       return result;
     } finally {
       tracker.agentStopped(trackingAgentId);
+      if (role === "manager") {
+        tracker.setCurrentStage(null);
+      }
       runtime.agentRegistry.delete(trackingAgentId);
     }
   };

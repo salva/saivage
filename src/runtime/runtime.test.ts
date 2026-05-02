@@ -49,6 +49,7 @@ import {
   recoverFromCrash,
   createRuntimeState,
   writeRuntimeState,
+  RuntimeTracker,
 } from "./recovery.js";
 import type { ProjectContext } from "../store/project.js";
 import { RuntimeSupervisor } from "./supervisor.js";
@@ -549,6 +550,21 @@ describe("NoteManager", () => {
     expect(notes[0].id).toBe("note-1");
   });
 
+  it("does not inject Planner-authored self notes", () => {
+    writeNote({
+      id: "note-planner-self",
+      channel: "planner",
+      session_id: "s1",
+      content: "Stay blocked forever",
+      created_at: new Date().toISOString(),
+      permanent: true,
+      urgent: true,
+    });
+
+    expect(noteManager.getUnacknowledgedNotes()).toHaveLength(0);
+    expect(noteManager.getPermanentNotes()).toHaveLength(0);
+  });
+
   it("acknowledgeNotes sets acknowledged_at and deletes volatile", () => {
     writeNote({
       id: "note-1",
@@ -909,6 +925,37 @@ describe("Abort", () => {
 // ─── Crash Recovery ──────────────────────────────────────────────────────────
 
 describe("Crash Recovery", () => {
+  it("writeRuntimeState mirrors the compatibility runtime-state path", () => {
+    const statePath = join(tmpDir, ".saivage", "tmp", "state", "runtime.json");
+    const legacyPath = join(tmpDir, ".saivage", "runtime", "runtime-state.json");
+    const state: RuntimeState = {
+      status: "running",
+      current_stage_id: "stg-1",
+      active_agents: [],
+      started_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      pid: process.pid,
+    };
+
+    writeRuntimeState(statePath, state);
+
+    expect(existsSync(statePath)).toBe(true);
+    expect(existsSync(legacyPath)).toBe(true);
+    expect(readDoc(legacyPath, RuntimeStateSchema).current_stage_id).toBe("stg-1");
+  });
+
+  it("RuntimeTracker can clear stale current stage after manager exit", () => {
+    const statePath = join(tmpDir, "runtime.json");
+    const tracker = new RuntimeTracker(statePath);
+
+    tracker.setCurrentStage("stg-1");
+    expect(readDoc(statePath, RuntimeStateSchema).current_stage_id).toBe("stg-1");
+
+    tracker.setCurrentStage(null);
+
+    expect(readDoc(statePath, RuntimeStateSchema).current_stage_id).toBeNull();
+  });
+
   it("isAnotherInstanceRunning returns false for stale PID", () => {
     const statePath = join(tmpDir, "runtime.json");
     writeDoc(

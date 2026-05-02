@@ -44,7 +44,7 @@ All plan state is managed through the **plan MCP service**. The authoritative st
 - \`.saivage/plan.json\` — active stages queue (managed by plan_* tools, NOT by direct file I/O).
 - \`.saivage/plan-history.json\` — archived completed/failed/escalated stages.
 - \`.saivage/stages/<stage-id>/\` — stage working directories containing tasks.json, reports/, summary.json.
-- \`.saivage/runtime/runtime-state.json\` — live agent status visible on the dashboard.
+- \`.saivage/tmp/state/runtime.json\` — authoritative live agent status visible on the dashboard. Older artifacts may mention \`.saivage/runtime/runtime-state.json\`; treat that as a compatibility mirror, not the primary state path.
 - \`.saivage/config.json\` — project objectives and configuration.
 
 Because state is persisted on disk, your conversation can be safely compacted (summarized) by the runtime when it grows too large. You will not lose track of plan progress — always call \`plan_get()\` and \`plan_get_history()\` to refresh your understanding.

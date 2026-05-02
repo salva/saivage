@@ -5,7 +5,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { readDoc, readDocOrNull, writeDoc } from "../store/documents.js";
 import {
   RuntimeStateSchema,
@@ -174,6 +174,18 @@ export function writeRuntimeState(
   state: RuntimeState,
 ): void {
   writeDoc(path, state, RuntimeStateSchema);
+
+  const legacyPath = legacyRuntimeStatePath(path);
+  if (legacyPath && legacyPath !== path) {
+    writeDoc(legacyPath, state, RuntimeStateSchema);
+  }
+}
+
+function legacyRuntimeStatePath(path: string): string | null {
+  if (!path.endsWith(join("tmp", "state", "runtime.json"))) return null;
+
+  const saivageDir = dirname(dirname(dirname(path)));
+  return join(saivageDir, "runtime", "runtime-state.json");
 }
 
 /**
@@ -194,7 +206,7 @@ export function createRuntimeState(
 
 /**
  * Tracks agent lifecycle and persists runtime state to disk.
- * Used by bootstrap to keep `runtime-state.json` accurate for the dashboard.
+ * Used by bootstrap to keep the runtime state accurate for the dashboard.
  */
 export class RuntimeTracker {
   private agents = new Map<string, AgentState>();
