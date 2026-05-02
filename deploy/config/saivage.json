@@ -14,6 +14,15 @@
       "baseUrl": "http://localhost:11434"
     }
   },
+  "modelEquivalents": {
+    "github-copilot/gpt-5.2": ["openai-codex/gpt-5.2"],
+    "github-copilot/gpt-5.2-codex": ["openai-codex/gpt-5.2-codex"],
+    "github-copilot/gpt-5.3-codex": ["openai-codex/gpt-5.3-codex"],
+    "github-copilot/gpt-5.4": ["openai-codex/gpt-5.4"],
+    "github-copilot/gpt-5.4-mini": ["openai-codex/gpt-5.4-mini"],
+    "github-copilot/gpt-5.5": ["openai-codex/gpt-5.4"],
+    "github-copilot/claude-sonnet-4.6": ["openai-codex/gpt-5.3-codex"]
+  },
   "server": {
     "port": 8080,
     "host": "0.0.0.0"

@@ -54,6 +54,8 @@ const configSchema = z.object({
 
   failover: z.record(z.string(), z.array(z.string())).default({}),
 
+  modelEquivalents: z.record(z.string(), z.array(z.string())).default({}),
+
   server: z
     .object({
       port: z.number().default(8080),
@@ -82,6 +84,16 @@ const configSchema = z.object({
       injectionScanner: z.boolean().default(true),
       injectionModel: z.string().default("github-copilot/gpt-5-mini"),
       maxScanLengthBytes: z.number().default(100_000),
+    })
+    .default({}),
+
+  supervisor: z
+    .object({
+      enabled: z.boolean().default(true),
+      model: z.string().default("github-copilot/gpt-5-mini"),
+      intervalMs: z.number().default(20 * 60 * 1000),
+      consecutiveStuckVerdicts: z.number().default(3),
+      logLines: z.number().default(400),
     })
     .default({}),
 
@@ -205,6 +217,7 @@ export function writeDefaultConfig(projectRoot?: string): void {
       llamacpp: { baseUrl: "http://localhost:8080" },
     },
     failover: {},
+    modelEquivalents: {},
     server: { port: 8080, host: "0.0.0.0" },
     agent: { maxConcurrentAgents: 3 },
     notifications: {

@@ -21,6 +21,8 @@ import {
   type ProjectContext,
 } from "../store/project.js";
 import { recoverFromCrash, writeRuntimeState, createRuntimeState, isAnotherInstanceRunning, RuntimeTracker } from "../runtime/recovery.js";
+import { RuntimeSupervisor } from "../runtime/supervisor.js";
+import { consumeShutdownHandoff, writeShutdownSummary } from "../runtime/shutdown-handoff.js";
 import { PlannerAgent } from "../agents/planner.js";
 import { ManagerAgent } from "../agents/manager.js";
 import { CoderAgent } from "../agents/coder.js";
@@ -47,6 +49,8 @@ export interface SaivageRuntime {
   plannerControl: PlannerControl;
   /** Live agent instances for conversation inspection. */
   agentRegistry: Map<string, import("../agents/base.js").BaseAgent>;
+  /** Background log-only supervisor for stuck-agent detection. */
+  supervisor: RuntimeSupervisor | null;
   /** Stop the runtime gracefully. */
   shutdown: () => Promise<void>;
 }
@@ -172,6 +176,7 @@ export async function bootstrap(
   const tracker = new RuntimeTracker(project.paths.runtimeState);
   const agentRegistry = new Map<string, import("../agents/base.js").BaseAgent>();
   const plannerControl = new PlannerControl();
+  let supervisor: RuntimeSupervisor | null = null;
 
   const runtime: SaivageRuntime = {
     config,
@@ -183,8 +188,15 @@ export async function bootstrap(
     tracker,
     plannerControl,
     agentRegistry,
+    supervisor: null,
     shutdown: async () => {
       log.info("[v2] Shutting down...");
+      try {
+        writeShutdownSummary(project);
+      } catch (err) {
+        log.warn(`[shutdown] Failed to save shutdown summary: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      supervisor?.stop();
       await mcpRuntime.shutdown();
       eventBus.clear();
       const finalState = createRuntimeState();
@@ -193,6 +205,16 @@ export async function bootstrap(
       log.info("[v2] Shutdown complete");
     },
   };
+
+  supervisor = new RuntimeSupervisor(config, { router, agentRegistry });
+  runtime.supervisor = supervisor;
+  supervisor.start();
+
+  const shutdownHandoff = consumeShutdownHandoff(project);
+  if (shutdownHandoff) {
+    const noteId = await createPlannerNote(runtime, shutdownHandoff, "shutdown-handoff");
+    log.info(`[shutdown] Created restart handoff note ${noteId}`);
+  }
 
   return runtime;
 }

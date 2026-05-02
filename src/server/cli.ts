@@ -184,6 +184,35 @@ program
     }
   });
 
+// --- Shutdown Handoff ---
+program
+  .command("request-shutdown <project-path>")
+  .description("Record a shutdown/restart reason for the next Planner session")
+  .option("-r, --reason <reason>", "Reason to give the Planner after restart")
+  .option("--reason-stdin", "Read the shutdown reason from stdin")
+  .option("--requested-by <name>", "Who or what requested the shutdown", "external")
+  .action(async (projectPath: string, opts) => {
+    const { resolve } = await import("node:path");
+    const { loadProject } = await import("../store/project.js");
+    const { writeShutdownRequest } = await import("../runtime/shutdown-handoff.js");
+
+    try {
+      const project = loadProject(resolve(projectPath));
+      const stdinReason = opts.reasonStdin ? await readAllStdin() : "";
+      const reason = String(opts.reason ?? stdinReason).trim();
+      if (!reason) {
+        console.error("Error: provide --reason or --reason-stdin.");
+        process.exitCode = 1;
+        return;
+      }
+      writeShutdownRequest(project, reason, opts.requestedBy ?? "external");
+      console.log(`Shutdown request recorded: ${reason}`);
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    }
+  });
+
 // --- Inspect ---
 program
   .command("inspect <project-path> <scope>")
@@ -455,3 +484,11 @@ program
   });
 
 program.parse();
+
+async function readAllStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString("utf-8");
+}

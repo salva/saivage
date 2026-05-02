@@ -5,6 +5,7 @@
  */
 
 import { BaseAgent, type BaseAgentConfig } from "./base.js";
+import type { LlmResponseSource } from "./base.js";
 import type {
   AgentContext,
   AgentResult,
@@ -245,13 +246,13 @@ export class ChatAgent extends BaseAgent implements Agent {
     ch.sendEvent?.({ type: "thinking" });
 
     // Run one LLM turn
-    const { text } = await this.runLoop();
+    const { text, source } = await this.runLoop();
 
     // Send response to user
-    await this.channel.send(text);
+    await this.sendAssistantResponse(text, source);
 
     // Record assistant response
-    this.recordMessage("assistant", text);
+    this.recordMessage("assistant", text, undefined, source);
 
     // Persist chat log
     await this.saveChatLog();
@@ -464,15 +465,26 @@ export class ChatAgent extends BaseAgent implements Agent {
     role: "user" | "assistant" | "system",
     content: string,
     event?: SystemEvent,
+    source?: LlmResponseSource,
   ): void {
     this.chatLog.messages.push({
       id: chatSessionId(), // reusing for unique msg ID
       role,
       content,
       timestamp: new Date().toISOString(),
+      ...source,
       event,
     });
     this.chatLog.updated_at = new Date().toISOString();
+  }
+
+  private async sendAssistantResponse(content: string, source?: LlmResponseSource): Promise<void> {
+    const eventChannel = this.channel as ChatChannel & { sendEvent?: (e: Record<string, unknown>) => void };
+    if (eventChannel.sendEvent) {
+      eventChannel.sendEvent({ type: "message", content, ...source });
+      return;
+    }
+    await this.channel.send(content);
   }
 
   private async saveChatLog(): Promise<void> {

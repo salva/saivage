@@ -43,6 +43,10 @@ export interface ChatResponse {
   content: string;
   toolCalls: ToolCallResult[];
   finishReason: "end_turn" | "tool_use" | "max_tokens" | "stop";
+  provider?: string;
+  model?: string;
+  modelSpec?: string;
+  requestedModelSpec?: string;
   usage: {
     inputTokens: number;
     outputTokens: number;

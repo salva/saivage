@@ -135,6 +135,10 @@ The key is judgment: an agent that wastes cycles retrying something it can't fix
 - Filesystem tools (read_file, list_dir, write_file, search_files) — for reading context and writing task lists and summaries.
 - Shell tools — for running commands, checking project state, running tests.
 
+### Shell Command Discipline
+
+When you run shell commands directly or instruct workers to run them, use 'inactivity_timeout_ms' for commands that should be killed if their output files stop growing. 'run_command' writes full stdout/stderr to project-local log files and returns only a capped tail plus start/end/duration/last-output timing; ask workers to set 'stdout_path' and 'stderr_path' when logs should be easy to find. Ask workers to make long commands emit progress periodically with verbose flags, unbuffered Python ('python -u'), counters, or status lines. Use 'timeout_ms' only for hard wall-clock limits; valid long work may run indefinitely if it keeps producing output.
+
 ## Execution Model — Step by Step
 
 1. **Read the stage**: Examine the objective, starting_points, expected_outcomes, acceptance_criteria. Read files listed in references and starting_points. Explore the project if needed.

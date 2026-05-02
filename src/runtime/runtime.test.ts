@@ -3,7 +3,7 @@
  * Plan MCP service, crash recovery, notes, self-check, compaction, dispatcher.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   mkdtempSync,
   rmSync,
@@ -49,6 +49,9 @@ import {
   writeRuntimeState,
 } from "./recovery.js";
 import type { ProjectContext } from "../store/project.js";
+import { RuntimeSupervisor } from "./supervisor.js";
+import { log } from "../log.js";
+import type { SaivageConfig } from "../config.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -92,6 +95,180 @@ function makeProjectContext(root: string): ProjectContext {
       inspectorWorkspace: join(saivageDir, "tmp", "inspector-workspace"),
       work: join(saivageDir, "tmp", "work"),
     },
+  };
+}
+
+// ─── Runtime Supervisor ────────────────────────────────────────────────────
+
+describe("RuntimeSupervisor", () => {
+  it("uses a no-tool log-only model request and does not cancel before threshold", async () => {
+    log.warn("supervisor test synthetic retry loop warning");
+    const requests: any[] = [];
+    const router = {
+      chat: vi.fn(async (request: any) => {
+        requests.push(request);
+        return {
+          content: JSON.stringify({ stuck: true, confidence: 0.9, reason: "retry loop", evidence: ["warning"] }),
+          toolCalls: [],
+          finishReason: "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      }),
+    };
+    const cancel = vi.fn();
+    const agentRegistry = new Map<string, any>([
+      ["coder-1", { role: "coder", cancel }],
+    ]);
+    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry });
+
+    await supervisor.checkOnce();
+    await supervisor.checkOnce();
+
+    expect(cancel).not.toHaveBeenCalled();
+    expect(router.chat).toHaveBeenCalledTimes(2);
+    expect(requests[0].modelSpec).toBe("github-copilot/gpt-5-mini");
+    expect(requests[0].tools).toBeUndefined();
+    expect(requests[0].messages[0].content).toContain("Recent Saivage logs");
+    expect(requests[0].messages[0].content).toContain("supervisor test synthetic retry loop warning");
+    expect(requests[0].messages[0].content).not.toContain("Runtime summary");
+  });
+
+  it("cancels the lowest-level running agent after three stuck verdicts", async () => {
+    const router = {
+      chat: vi.fn(async () => ({
+        content: JSON.stringify({ stuck: true, confidence: 0.95, reason: "persistent retry loop", evidence: [] }),
+        toolCalls: [],
+        finishReason: "end_turn",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      })),
+    };
+    const managerCancel = vi.fn();
+    const coderCancel = vi.fn();
+    const agentRegistry = new Map<string, any>([
+      ["manager-1", { role: "manager", cancel: managerCancel }],
+      ["coder-1", { role: "coder", cancel: coderCancel }],
+    ]);
+    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry });
+
+    await supervisor.checkOnce();
+    await supervisor.checkOnce();
+    await supervisor.checkOnce();
+
+    expect(coderCancel).toHaveBeenCalledTimes(1);
+    expect(managerCancel).not.toHaveBeenCalled();
+  });
+
+  it("resets the stuck counter on a not-stuck verdict", async () => {
+    const verdicts = [true, true, false, true];
+    const router = {
+      chat: vi.fn(async () => ({
+        content: JSON.stringify({ stuck: verdicts.shift() ?? true, confidence: 0.9, reason: "verdict", evidence: [] }),
+        toolCalls: [],
+        finishReason: "end_turn",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      })),
+    };
+    const cancel = vi.fn();
+    const agentRegistry = new Map<string, any>([
+      ["coder-1", { role: "coder", cancel }],
+    ]);
+    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry });
+
+    await supervisor.checkOnce();
+    await supervisor.checkOnce();
+    await supervisor.checkOnce();
+    await supervisor.checkOnce();
+
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it("does not cancel agents when the only reported problem is provider throttling", async () => {
+    log.warn("Provider \"github-copilot\" rate-limited, trying next");
+    const router = {
+      chat: vi.fn(async () => ({
+        content: JSON.stringify({
+          stuck: true,
+          confidence: 0.95,
+          reason: "GitHub Copilot is returning 429 rate limit responses",
+          evidence: ["provider throttling"],
+        }),
+        toolCalls: [],
+        finishReason: "end_turn",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      })),
+    };
+    const cancel = vi.fn();
+    const agentRegistry = new Map<string, any>([
+      ["coder-1", { role: "coder", cancel }],
+    ]);
+    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry });
+
+    await supervisor.checkOnce();
+    await supervisor.checkOnce();
+    await supervisor.checkOnce();
+
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it("does not cancel agents when the only reported problem is long-running external work", async () => {
+    log.info("shell run_command external process still running for training experiment");
+    const router = {
+      chat: vi.fn(async () => ({
+        content: JSON.stringify({
+          stuck: true,
+          confidence: 0.9,
+          reason: "A long-running shell command is still running for a training job",
+          evidence: ["external process in progress", "benchmark command still running"],
+        }),
+        toolCalls: [],
+        finishReason: "end_turn",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      })),
+    };
+    const cancel = vi.fn();
+    const agentRegistry = new Map<string, any>([
+      ["coder-1", { role: "coder", cancel }],
+    ]);
+    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry });
+
+    await supervisor.checkOnce();
+    await supervisor.checkOnce();
+    await supervisor.checkOnce();
+
+    expect(cancel).not.toHaveBeenCalled();
+  });
+});
+function makeSupervisorConfig(overrides: Partial<SaivageConfig["supervisor"]> = {}): SaivageConfig {
+  return {
+    models: {},
+    modelEquivalents: {},
+    providers: {},
+    failover: {},
+    server: { port: 8080, host: "0.0.0.0" },
+    agent: { maxConcurrentAgents: 3 },
+    runtime: {
+      maxServices: 50,
+      restartOnCrash: true,
+      continuousImprovement: true,
+      healthCheckIntervalMs: 30_000,
+      idleShutdownMs: 300_000,
+    },
+    security: {
+      injectionScanner: true,
+      injectionModel: "github-copilot/gpt-5-mini",
+      maxScanLengthBytes: 100_000,
+    },
+    supervisor: {
+      enabled: true,
+      model: "github-copilot/gpt-5-mini",
+      intervalMs: 20 * 60 * 1000,
+      consecutiveStuckVerdicts: 3,
+      logLines: 400,
+      ...overrides,
+    },
+    telegram: { botToken: "", allowedUserIds: [] },
+    notifications: { channels: [], filters: { min_severity: "info", categories: [] } },
+    mcpServers: {},
   };
 }
 

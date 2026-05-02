@@ -32,6 +32,8 @@ export interface ProjectContext {
     research: string;
     tmp: string;
     runtimeState: string;
+    shutdownRequest: string;
+    shutdownSummary: string;
     chats: string;
     inspectorWorkspace: string;
     work: string;
@@ -70,6 +72,8 @@ export function loadProject(projectRoot: string): ProjectContext {
     research: join(projectRoot, "research"),
     tmp: join(saivageDir, "tmp"),
     runtimeState: join(saivageDir, "tmp", "state", "runtime.json"),
+    shutdownRequest: join(saivageDir, "tmp", "state", "shutdown-request.json"),
+    shutdownSummary: join(saivageDir, "tmp", "state", "shutdown-summary.json"),
     chats: join(saivageDir, "tmp", "chats"),
     inspectorWorkspace: join(saivageDir, "tmp", "inspector-workspace"),
     work: join(saivageDir, "tmp", "work"),

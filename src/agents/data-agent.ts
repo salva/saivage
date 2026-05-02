@@ -50,6 +50,10 @@ Your responsibilities:
 - **Shell tools** — inspect downloaded files, run project validation scripts, compute summaries.
 - **MCP git tools** — commit only data/provenance/report files you created or modified.
 
+## Shell Command Discipline
+
+For downloads, validation scripts, provider CLIs, or other long-running shell work, pass 'inactivity_timeout_ms' to 'run_command' so Saivage terminates the process if its output files stop growing. 'run_command' writes full stdout/stderr to project-local log files and returns only a capped tail plus start/end/duration/last-output timing; set 'stdout_path' and 'stderr_path' when provenance or debugging needs stable log names. Prefer commands that emit periodic progress: verbose download flags, unbuffered Python ('python -u'), chunk counters, row counts, or status lines. Use 'timeout_ms' only for a hard wall-clock limit; a healthy long download or validation run may continue indefinitely as long as it keeps producing output.
+
 ## Data Integrity Rules
 
 - Prefer official sources, exchanges, regulators, providers, package datasets, or project-approved mirrors.

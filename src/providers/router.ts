@@ -41,11 +41,13 @@ const PROVIDER_TO_OAUTH: Record<string, string> = {
 export class ModelRouter {
   private providers = new Map<string, ModelProvider>();
   private failoverChains: Record<string, string[]>;
+  private modelEquivalents: Map<string, string[]>;
   private modelAssignments: Record<string, string>;
   private stickyFailovers = new Map<string, string>();
 
   constructor(config: SaivageConfig) {
     this.failoverChains = config.failover;
+    this.modelEquivalents = buildModelEquivalenceIndex(config.modelEquivalents);
     this.modelAssignments = config.models as Record<string, string>;
     this.initProviders(config);
   }
@@ -197,7 +199,13 @@ export class ModelRouter {
           this.stickyFailovers.set(request.modelSpec, spec);
           log.info(`Model switch: ${request.modelSpec} -> ${spec} (primary failed, using failover)`);
         }
-        return response;
+        return {
+          ...response,
+          provider: providerName,
+          model,
+          modelSpec: spec,
+          requestedModelSpec: request.modelSpec,
+        };
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         const isTimeout = errMsg.includes("timed out");
@@ -237,6 +245,10 @@ export class ModelRouter {
     if (expanded.has(modelSpec)) return;
     expanded.add(modelSpec);
 
+    for (const equivalent of this.modelEquivalents.get(modelSpec) ?? []) {
+      this.appendFailoverChain(equivalent, chain, expanded);
+    }
+
     // Look up failover by full spec first, then by provider-only key.
     const { provider: providerName, model } = parseModelId(modelSpec);
     const failovers = this.failoverChains[modelSpec] ?? this.failoverChains[providerName];
@@ -256,4 +268,20 @@ export class ModelRouter {
     }
     this.stickyFailovers.delete(modelSpec);
   }
+}
+
+function buildModelEquivalenceIndex(groups: Record<string, string[]>): Map<string, string[]> {
+  const index = new Map<string, string[]>();
+  for (const [primary, alternatives] of Object.entries(groups)) {
+    const members = unique([primary, ...alternatives]);
+    for (const member of members) {
+      const existing = index.get(member) ?? [];
+      index.set(member, unique([...existing, ...members.filter((candidate) => candidate !== member)]));
+    }
+  }
+  return index;
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
 }

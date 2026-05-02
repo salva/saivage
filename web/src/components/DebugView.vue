@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
+import { AlertTriangle, Braces, Clock, RefreshCw } from "lucide-vue-next";
 import JsonHighlight from "./JsonHighlight.vue";
 
 interface ErrorEntry {
@@ -23,6 +24,7 @@ const stateData = ref<Record<string, unknown> | null>(null);
 const errors = ref<ErrorEntry[]>([]);
 const timeline = ref<TimelineEvent[]>([]);
 const expandedSections = ref<Set<string>>(new Set(["runtime"]));
+const loading = ref(false);
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 async function fetchState() {
@@ -52,10 +54,10 @@ async function fetchTimeline() {
   } catch { /* ignore */ }
 }
 
-function fetchAll() {
-  fetchState();
-  fetchErrors();
-  fetchTimeline();
+async function fetchAll() {
+  loading.value = true;
+  await Promise.all([fetchState(), fetchErrors(), fetchTimeline()]);
+  loading.value = false;
 }
 
 onMounted(() => {
@@ -68,39 +70,29 @@ onUnmounted(() => {
 });
 
 function toggleSection(key: string) {
-  if (expandedSections.value.has(key)) {
-    expandedSections.value.delete(key);
-  } else {
-    expandedSections.value.add(key);
-  }
+  const next = new Set(expandedSections.value);
+  if (next.has(key)) next.delete(key); else next.add(key);
+  expandedSections.value = next;
 }
 
 function severityColor(severity: string): string {
   switch (severity) {
-    case "error": return "#f85149";
-    case "warning": return "#d29922";
-    case "info": return "#58a6ff";
-    default: return "#8b949e";
+    case "error": return "var(--danger)";
+    case "warning": return "var(--warn)";
+    case "info": return "var(--accent)";
+    default: return "var(--text-muted)";
   }
 }
 
 function eventColor(type: string): string {
-  if (type.includes("completed")) return "#3fb950";
-  if (type.includes("failed") || type.includes("escalated")) return "#f85149";
-  if (type.includes("started")) return "#58a6ff";
-  return "#8b949e";
+  if (type.includes("completed")) return "var(--accent-2)";
+  if (type.includes("failed") || type.includes("escalated")) return "var(--danger)";
+  if (type.includes("started")) return "var(--accent)";
+  return "var(--text-muted)";
 }
 
-function eventIcon(type: string): string {
-  if (type.includes("completed")) return "✓";
-  if (type.includes("failed")) return "✗";
-  if (type.includes("escalated")) return "⬆";
-  if (type.includes("started")) return "▶";
-  return "•";
-}
-
-function formatTime(ts: string): string {
-  return new Date(ts).toLocaleString();
+function formatTime(ts?: string): string {
+  return ts ? new Date(ts).toLocaleString() : "unknown";
 }
 
 const STATE_SECTIONS = [
@@ -110,117 +102,307 @@ const STATE_SECTIONS = [
   { key: "config", label: "Project Config" },
   { key: "saivage_config", label: "Saivage Config" },
 ];
+
+const tabItems = computed(() => [
+  { id: "state", label: "State", icon: Braces, count: STATE_SECTIONS.length },
+  { id: "errors", label: "Errors", icon: AlertTriangle, count: errors.value.length },
+  { id: "timeline", label: "Timeline", icon: Clock, count: timeline.value.length },
+] as const);
 </script>
 
 <template>
-  <div class="debug-view">
-    <div class="debug-tabs">
-      <button class="dtab" :class="{ active: activeTab === 'state' }" @click="activeTab = 'state'">State</button>
-      <button class="dtab" :class="{ active: activeTab === 'errors' }" @click="activeTab = 'errors'">
-        Errors <span v-if="errors.length" class="err-badge">{{ errors.length }}</span>
-      </button>
-      <button class="dtab" :class="{ active: activeTab === 'timeline' }" @click="activeTab = 'timeline'">Timeline</button>
-    </div>
-
-    <!-- State -->
-    <div v-if="activeTab === 'state'" class="debug-content">
-      <div v-if="!stateData" class="debug-empty">Loading state data…</div>
-      <template v-if="stateData">
-        <div
-          v-for="section in STATE_SECTIONS"
-          :key="section.key"
-          class="state-section"
+  <section class="debug-view">
+    <div class="debug-toolbar">
+      <div class="debug-tabs">
+        <button
+          v-for="tab in tabItems"
+          :key="tab.id"
+          class="dtab"
+          :class="{ active: activeTab === tab.id }"
+          @click="activeTab = tab.id"
         >
-          <div class="section-header" @click="toggleSection(section.key)">
-            <span class="section-expand">{{ expandedSections.has(section.key) ? '▼' : '▶' }}</span>
-            <span class="section-label">{{ section.label }}</span>
-            <span class="section-hint" v-if="!stateData[section.key]">null</span>
-          </div>
-          <JsonHighlight
-            v-if="expandedSections.has(section.key) && stateData[section.key]"
-            :data="stateData[section.key]"
-            max-height="400px"
-          />
-        </div>
-      </template>
+          <component :is="tab.icon" :size="15" />
+          <span>{{ tab.label }}</span>
+          <strong>{{ tab.count }}</strong>
+        </button>
+      </div>
+      <button class="console-button refresh" @click="fetchAll" :disabled="loading" title="Refresh debug data">
+        <RefreshCw :size="15" />
+        <span>Refresh</span>
+      </button>
     </div>
 
-    <!-- Errors -->
-    <div v-if="activeTab === 'errors'" class="debug-content">
+    <div v-if="activeTab === 'state'" class="debug-content state-grid">
+      <div v-if="!stateData" class="debug-empty">Loading state data...</div>
+      <section
+        v-for="section in STATE_SECTIONS"
+        v-else
+        :key="section.key"
+        class="state-section"
+      >
+        <button class="state-header" @click="toggleSection(section.key)">
+          <span>{{ expandedSections.has(section.key) ? 'open' : 'closed' }}</span>
+          <strong>{{ section.label }}</strong>
+          <em v-if="!stateData[section.key]">null</em>
+        </button>
+        <JsonHighlight
+          v-if="expandedSections.has(section.key) && stateData[section.key]"
+          :data="stateData[section.key]"
+          max-height="520px"
+        />
+      </section>
+    </div>
+
+    <div v-if="activeTab === 'errors'" class="debug-content list-content">
       <div v-if="errors.length === 0" class="debug-empty">No errors recorded</div>
-      <div v-for="(err, i) in errors" :key="i" class="error-card">
+      <article v-for="(err, i) in errors" :key="i" class="error-card">
         <div class="error-header">
-          <span class="error-severity" :style="{ color: severityColor(err.severity) }">{{ err.severity }}</span>
-          <span class="error-type">{{ err.type }}</span>
-          <span class="error-source">{{ err.source }}</span>
-          <span v-if="err.timestamp" class="error-time">{{ formatTime(err.timestamp) }}</span>
+          <span class="severity" :style="{ color: severityColor(err.severity) }">{{ err.severity }}</span>
+          <strong>{{ err.type }}</strong>
+          <code>{{ err.source }}</code>
+          <time>{{ formatTime(err.timestamp) }}</time>
         </div>
-        <div class="error-message">{{ err.message }}</div>
-        <JsonHighlight v-if="err.details" :data="err.details" max-height="200px" />
-      </div>
+        <p>{{ err.message }}</p>
+        <JsonHighlight v-if="err.details" :data="err.details" max-height="240px" />
+      </article>
     </div>
 
-    <!-- Timeline -->
-    <div v-if="activeTab === 'timeline'" class="debug-content">
+    <div v-if="activeTab === 'timeline'" class="debug-content list-content">
       <div v-if="timeline.length === 0" class="debug-empty">No events recorded</div>
-      <div v-for="(ev, i) in timeline" :key="i" class="timeline-item">
-        <div class="tl-marker">
-          <span class="tl-icon" :style="{ color: eventColor(ev.type) }">{{ eventIcon(ev.type) }}</span>
-          <span v-if="i < timeline.length - 1" class="tl-line"></span>
+      <article v-for="(ev, i) in timeline" :key="i" class="timeline-row">
+        <span class="timeline-dot" :style="{ background: eventColor(ev.type) }"></span>
+        <div>
+          <header>
+            <strong :style="{ color: eventColor(ev.type) }">{{ ev.type }}</strong>
+            <code>{{ ev.source }}</code>
+            <time>{{ formatTime(ev.timestamp) }}</time>
+          </header>
+          <p>{{ ev.description }}</p>
         </div>
-        <div class="tl-content">
-          <div class="tl-header">
-            <span class="tl-type" :style="{ color: eventColor(ev.type) }">{{ ev.type }}</span>
-            <span class="tl-source">{{ ev.source }}</span>
-            <span class="tl-time">{{ formatTime(ev.timestamp) }}</span>
-          </div>
-          <div class="tl-desc">{{ ev.description }}</div>
-        </div>
-      </div>
+      </article>
     </div>
-  </div>
+  </section>
 </template>
 
 <style scoped>
-.debug-view { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
+.debug-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+}
 
-.debug-tabs { display: flex; gap: 4px; padding: 12px 16px; border-bottom: 1px solid #21262d; background: #161b22; flex-shrink: 0; }
-.dtab { background: none; border: none; color: #8b949e; font-size: 13px; padding: 4px 12px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
-.dtab:hover { color: #c9d1d9; background: #21262d; }
-.dtab.active { color: #58a6ff; background: #0d1117; font-weight: 600; }
-.err-badge { font-size: 10px; background: #f85149; color: #fff; padding: 1px 5px; border-radius: 8px; }
+.debug-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
+}
 
-.debug-content { flex: 1; overflow-y: auto; padding: 16px; }
-.debug-empty { font-size: 14px; color: #484f58; text-align: center; padding: 48px; }
+.debug-tabs {
+  display: flex;
+  gap: 7px;
+  min-width: 0;
+}
 
-/* State sections */
-.state-section { margin-bottom: 8px; background: #161b22; border: 1px solid #21262d; border-radius: 6px; overflow: hidden; }
-.section-header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer; }
-.section-header:hover { background: #21262d; }
-.section-expand { font-size: 10px; color: #484f58; width: 14px; }
-.section-label { font-size: 13px; font-weight: 600; color: #c9d1d9; }
-.section-hint { font-size: 11px; color: #484f58; font-style: italic; margin-left: auto; }
+.dtab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+}
 
+.dtab:hover,
+.dtab.active {
+  color: var(--text);
+  background: var(--surface-2);
+}
 
-/* Errors */
-.error-card { background: #161b22; border: 1px solid #21262d; border-radius: 6px; padding: 12px; margin-bottom: 8px; }
-.error-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
-.error-severity { font-size: 11px; font-weight: 700; text-transform: uppercase; }
-.error-type { font-size: 11px; color: #8b949e; background: #21262d; padding: 1px 6px; border-radius: 3px; }
-.error-source { font-size: 12px; font-family: monospace; color: #58a6ff; }
-.error-time { font-size: 11px; color: #484f58; margin-left: auto; }
-.error-message { font-size: 13px; color: #c9d1d9; line-height: 1.4; }
+.dtab.active {
+  border-color: var(--accent);
+}
 
+.dtab span {
+  font-size: 12px;
+}
 
-/* Timeline */
-.timeline-item { display: flex; gap: 12px; }
-.tl-marker { display: flex; flex-direction: column; align-items: center; width: 20px; flex-shrink: 0; }
-.tl-icon { font-size: 14px; font-weight: 700; }
-.tl-line { width: 2px; flex: 1; background: #21262d; margin: 4px 0; }
-.tl-content { padding-bottom: 16px; min-width: 0; flex: 1; }
-.tl-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
-.tl-type { font-size: 11px; font-weight: 600; }
-.tl-source { font-size: 12px; font-family: monospace; color: #58a6ff; }
-.tl-time { font-size: 11px; color: #484f58; margin-left: auto; }
-.tl-desc { font-size: 12px; color: #8b949e; line-height: 1.4; }
+.dtab strong {
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.refresh {
+  padding: 0 10px;
+}
+
+.debug-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.state-grid {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.state-section,
+.error-card,
+.timeline-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  overflow: hidden;
+}
+
+.state-header {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 42px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  padding: 0 12px;
+  text-align: left;
+}
+
+.state-header:hover {
+  background: var(--surface-2);
+}
+
+.state-header span,
+.state-header em {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-style: normal;
+  font-family: var(--mono);
+}
+
+.state-header strong {
+  font-size: 13px;
+}
+
+.list-content {
+  max-width: 1080px;
+  width: 100%;
+}
+
+.error-card {
+  margin-bottom: 9px;
+  padding: 12px;
+}
+
+.error-header {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.severity {
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.error-header strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+code {
+  color: #9dd2ff;
+  background: var(--bg);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+time {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.error-card p,
+.timeline-row p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.error-card :deep(.json-hl) {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.timeline-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  margin-bottom: 8px;
+  padding: 12px;
+}
+
+.timeline-dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 4px;
+  border-radius: 50%;
+}
+
+.timeline-row header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 5px;
+}
+
+.timeline-row header strong {
+  font-size: 12px;
+}
+
+.debug-empty {
+  display: grid;
+  place-items: center;
+  min-height: 220px;
+  color: var(--text-faint);
+  font-size: 14px;
+}
+
+@media (max-width: 780px) {
+  .debug-toolbar {
+    flex-direction: column;
+  }
+
+  .debug-tabs {
+    overflow-x: auto;
+  }
+
+  time {
+    margin-left: 0;
+  }
+}
 </style>

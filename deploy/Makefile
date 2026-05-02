@@ -5,6 +5,7 @@ ARCH           ?= amd64
 SAIVAGE_PORT   ?= 8080
 TARGET_PROJECT_ROOT ?= $(shell if [ -d "$(CURDIR)/../../target" ]; then cd "$(CURDIR)/../../target" && pwd; fi)
 TARGET_PROJECT_MOUNT ?= /work/target
+SHUTDOWN_REASON ?= Application code changed; rebuilding and restarting Saivage
 SCRIPTS        := scripts
 PROJECT_ROOT   := $(shell cd .. && pwd)
 # SSH alias configured by provision.sh in ~/.ssh/config
@@ -12,7 +13,7 @@ SSH            := ssh saivage
 
 export CONTAINER_NAME DIST RELEASE ARCH PROJECT_ROOT TARGET_PROJECT_ROOT TARGET_PROJECT_MOUNT
 
-.PHONY: create provision configure start stop restart status logs shell ip \
+.PHONY: create provision configure start stop restart record-shutdown status logs shell ip \
         info dashboard chat test deploy destroy \
         start-container stop-container restart-container help
 
@@ -46,7 +47,12 @@ stop:
 	@$(SSH) "sudo systemctl stop saivage"
 
 restart:
+	@$(MAKE) --no-print-directory record-shutdown SHUTDOWN_REASON="$(SHUTDOWN_REASON)"
 	@$(SSH) "sudo systemctl restart saivage"
+
+record-shutdown:
+	@printf '%s' "$(SHUTDOWN_REASON)" | $(SSH) "cd /opt/saivage && node dist/cli.js request-shutdown $(TARGET_PROJECT_MOUNT) --requested-by deploy --reason-stdin" || \
+		echo "WARN: could not record shutdown reason; restarting anyway"
 
 status:
 	@$(SSH) "sudo systemctl status saivage"
@@ -88,6 +94,7 @@ deploy:
 	@echo "==> Refreshing systemd unit..."
 	@$(SSH) "sudo cp /opt/saivage/deploy/saivage.service /etc/systemd/system/saivage.service && sudo systemctl daemon-reload"
 	@echo "==> Restarting daemon..."
+	@$(MAKE) --no-print-directory record-shutdown SHUTDOWN_REASON="$(SHUTDOWN_REASON)"
 	@$(SSH) "sudo systemctl restart saivage"
 	@echo "==> Deploy complete."
 

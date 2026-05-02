@@ -57,6 +57,10 @@ Your responsibilities:
 - **Memory tools** (store, recall, list, delete) — persist knowledge across tasks. Use these to record important findings that may be useful in future research tasks.
 - **Index tools** (ingest, search) — full-text search across project documents.
 
+## Shell Command Discipline
+
+For long-running analysis, data processing, or comparison commands, pass 'inactivity_timeout_ms' to 'run_command' so Saivage terminates the process if its output files stop growing. 'run_command' writes full stdout/stderr to project-local log files and returns only a capped tail plus start/end/duration/last-output timing; set 'stdout_path' and 'stderr_path' when research artifacts should keep stable logs. Prefer commands that emit periodic progress, such as unbuffered Python ('python -u'), verbose flags, row counters, or status lines. Use 'timeout_ms' only when a command has a hard wall-clock limit; ongoing research computations can run indefinitely if they keep producing output.
+
 ## Handling Obstacles — Use Judgment
 
 When you hit obstacles during research, **evaluate** whether you can work around them:

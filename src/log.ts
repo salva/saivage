@@ -1,5 +1,12 @@
 type LogLevel = "debug" | "info" | "warn" | "error";
 
+export interface LogEntry {
+  timestamp: string;
+  level: LogLevel;
+  message: string;
+  formatted: string;
+}
+
 const LEVELS: Record<LogLevel, number> = {
   debug: 0,
   info: 1,
@@ -8,14 +15,25 @@ const LEVELS: Record<LogLevel, number> = {
 };
 
 let currentLevel: LogLevel = "info";
+const LOG_BUFFER_LIMIT = 2_000;
+const logBuffer: LogEntry[] = [];
 
 function shouldLog(level: LogLevel): boolean {
   return LEVELS[level] >= LEVELS[currentLevel];
 }
 
-function fmt(level: LogLevel, msg: string): string {
-  const ts = new Date().toISOString();
-  return `${ts} [${level.toUpperCase()}] ${msg}`;
+function record(level: LogLevel, msg: string): string {
+  const timestamp = new Date().toISOString();
+  const formatted = `${timestamp} [${level.toUpperCase()}] ${msg}`;
+  logBuffer.push({ timestamp, level, message: msg, formatted });
+  if (logBuffer.length > LOG_BUFFER_LIMIT) {
+    logBuffer.splice(0, logBuffer.length - LOG_BUFFER_LIMIT);
+  }
+  return formatted;
+}
+
+export function getRecentLogs(limit = 400): LogEntry[] {
+  return logBuffer.slice(-Math.max(0, limit));
 }
 
 export const log = {
@@ -23,15 +41,19 @@ export const log = {
     currentLevel = level;
   },
   debug(msg: string) {
-    if (shouldLog("debug")) console.debug(fmt("debug", msg));
+    const formatted = record("debug", msg);
+    if (shouldLog("debug")) console.debug(formatted);
   },
   info(msg: string) {
-    if (shouldLog("info")) console.log(fmt("info", msg));
+    const formatted = record("info", msg);
+    if (shouldLog("info")) console.log(formatted);
   },
   warn(msg: string) {
-    if (shouldLog("warn")) console.warn(fmt("warn", msg));
+    const formatted = record("warn", msg);
+    if (shouldLog("warn")) console.warn(formatted);
   },
   error(msg: string) {
-    if (shouldLog("error")) console.error(fmt("error", msg));
+    const formatted = record("error", msg);
+    if (shouldLog("error")) console.error(formatted);
   },
 };

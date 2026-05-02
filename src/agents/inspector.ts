@@ -69,6 +69,10 @@ Use judgment: fix what's trivially fixable within your investigation scope. Leav
 - **Web tools** — fetch documentation, API references, package information.
 - **MCP git tools** (git_commit, git_status, git_diff, git_log) — examine git history (very useful for diagnosing regressions), commit reports and persistent tools.
 
+## Shell Command Discipline
+
+For long-running tests, analysis scripts, benchmarks, or diagnostics, pass 'inactivity_timeout_ms' to 'run_command' so Saivage terminates the process if its output files stop growing. 'run_command' writes full stdout/stderr to project-local log files and returns only a capped tail plus start/end/duration/last-output timing; set 'stdout_path' and 'stderr_path' when diagnostic logs should be preserved under predictable names. Prefer commands that emit periodic progress: verbose flags, unbuffered Python ('python -u'), progress counters, or status lines. Use 'timeout_ms' only for hard wall-clock limits; a useful investigation command may run indefinitely if it keeps producing output.
+
 ## Execution Model — Step by Step
 
 1. **Read the request**: Understand the scope and specific questions. List them explicitly in your analysis plan.

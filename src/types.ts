@@ -293,6 +293,35 @@ export const RuntimeStateSchema = z.object({
 });
 export type RuntimeState = z.infer<typeof RuntimeStateSchema>;
 
+export const ShutdownRequestSchema = z.object({
+  reason: z.string().min(1),
+  requested_by: z.string().default("external"),
+  requested_at: z.string(),
+});
+export type ShutdownRequest = z.infer<typeof ShutdownRequestSchema>;
+
+export const ShutdownSummarySchema = z.object({
+  reason: z.string(),
+  requested_by: z.string(),
+  requested_at: z.string().nullable(),
+  shutdown_started_at: z.string(),
+  completed_at: z.string(),
+  duration_ms: z.number(),
+  pid: z.number(),
+  runtime_status: z.string().nullable(),
+  runtime_started_at: z.string().nullable(),
+  runtime_updated_at: z.string().nullable(),
+  uptime_ms: z.number().nullable(),
+  current_stage_id: z.string().nullable(),
+  active_agents: z.array(AgentStateSchema.extend({ elapsed_ms: z.number().nullable() })),
+  plan: z.object({
+    current_stage_id: z.string().nullable(),
+    pending_stages: z.number(),
+    history_stages: z.number(),
+  }).nullable(),
+});
+export type ShutdownSummary = z.infer<typeof ShutdownSummarySchema>;
+
 // ─── 12. Chat Log ───────────────────────────────────────────────────────────
 
 export const SystemEventSchema = z.object({
@@ -317,6 +346,10 @@ export const ChatMessageSchema = z.object({
   role: z.enum(["user", "assistant", "system"]),
   content: z.string(),
   timestamp: z.string(),
+  provider: z.string().optional(),
+  model: z.string().optional(),
+  modelSpec: z.string().optional(),
+  requestedModelSpec: z.string().optional(),
   event: SystemEventSchema.optional(),
   note_id: z.string().optional(),
   inspector_request_id: z.string().optional(),

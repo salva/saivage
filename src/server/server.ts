@@ -128,6 +128,7 @@ export async function startServer(
     return {
       agent_id: agentId,
       role: agent.role,
+      started_at: agent.startedAt,
       message_count: agent.messageCount,
       entries: agent.getConversationSnapshot(),
     };

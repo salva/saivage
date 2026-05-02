@@ -30,6 +30,9 @@ interface RuntimeConfig {
   failover: {
     [provider: string]: string[];    // fallback chain, e.g. "anthropic": ["openai"]
   };
+  modelEquivalents: {
+    [modelSpec: string]: string[];   // bidirectional equivalent model specs, e.g. "github-copilot/gpt-5.4": ["openai-codex/gpt-5.4"]
+  };
   server: {
     port: number;                    // default: 8080
     host: string;                    // default: "0.0.0.0"

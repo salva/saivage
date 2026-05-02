@@ -45,9 +45,42 @@ import { log } from "../log.js";
 /** A single entry in the serialized conversation snapshot for the dashboard. */
 export interface ConversationEntry {
   role: "user" | "assistant" | "system";
-  kind: "text" | "tool_call" | "tool_result" | "tool_error";
+  kind:
+    | "text"
+    | "activity"
+    | "model_issue"
+    | "model_repair"
+    | "model_recovered"
+    | "tool_call"
+    | "tool_result"
+    | "tool_error";
   content: string;
   tool?: string;
+  timestamp?: string;
+  provider?: string;
+  model?: string;
+  modelSpec?: string;
+  requestedModelSpec?: string;
+}
+
+export interface LlmResponseSource {
+  provider?: string;
+  model?: string;
+  modelSpec?: string;
+  requestedModelSpec?: string;
+}
+
+const MAX_DIAGNOSTIC_ENTRIES = 30;
+
+function describeToolUseBlocks(blocks: ContentBlock[]): string {
+  const names = blocks.map((block) => block.name ?? "unknown");
+  const counts = new Map<string, number>();
+  for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1);
+  const summary = Array.from(counts.entries())
+    .map(([name, count]) => count === 1 ? name : `${name} x${count}`)
+    .join(", ");
+  const noun = blocks.length === 1 ? "tool" : "tools";
+  return `Using ${blocks.length} ${noun}: ${summary}`;
 }
 
 /** Configuration for creating a BaseAgent. */
@@ -86,6 +119,10 @@ export class BaseAgent {
   private compactionConfig: CompactionConfig;
   private abortSignal?: { aborted: boolean };
   private onActivity?: (agentId: string) => void;
+  private diagnostics: ConversationEntry[] = [];
+  private messageTimestamps: string[] = [];
+  private messageSources: (LlmResponseSource | undefined)[] = [];
+  readonly startedAt = new Date().toISOString();
 
   constructor(ctx: AgentContext, config: BaseAgentConfig) {
     this.id = ctx.agentId;
@@ -134,7 +171,7 @@ export class BaseAgent {
 
     // Set initial message
     if (config.initialMessage) {
-      this.messages.push({
+      this.pushMessage({
         role: "user",
         content: config.initialMessage,
       });
@@ -150,7 +187,7 @@ export class BaseAgent {
    * Run the main conversation loop.
    * Subclasses should call this and interpret the result.
    */
-  async runLoop(): Promise<{ text: string; finishReason: string }> {
+  async runLoop(): Promise<{ text: string; finishReason: string; source?: LlmResponseSource }> {
     while (!this.cancelled) {
       // Check for abort
       if (this.abortSignal?.aborted) {
@@ -169,13 +206,13 @@ export class BaseAgent {
           };
         }
 
-        this.messages = await compactConversation(
+        this.replaceMessages(await compactConversation(
           this.systemPrompt,
           this.messages,
           this.ctx.router,
           this.compactionConfig,
           this.compactionState,
-        );
+        ));
       }
 
       // Make LLM call
@@ -196,7 +233,7 @@ export class BaseAgent {
 
       // No tool calls → agent is done
       if (response.toolCalls.length === 0) {
-        return { text: response.content, finishReason: response.finishReason };
+        return { text: response.content, finishReason: response.finishReason, source: responseSource(response) };
       }
 
       // Build assistant message with tool-use blocks
@@ -212,7 +249,7 @@ export class BaseAgent {
           input: tc.input,
         });
       }
-      this.messages.push({ role: "assistant", content: assistantBlocks });
+      this.pushMessage({ role: "assistant", content: assistantBlocks }, undefined, responseSource(response));
 
       // Process tool calls through dispatcher
       this.recordActivity();
@@ -232,12 +269,12 @@ export class BaseAgent {
           is_error: r.isError,
         }),
       );
-      this.messages.push({ role: "user", content: resultBlocks });
+      this.pushMessage({ role: "user", content: resultBlocks });
 
       // Record tool-call round for self-check
       if (recordToolCallRound(this.selfCheckState)) {
         const checkMsg = selfCheckMessage(this.selfCheckState.frequency);
-        this.messages.push({ role: "user", content: checkMsg });
+        this.pushMessage({ role: "user", content: checkMsg });
       }
 
       if (dispatchResult.aborted) {
@@ -250,7 +287,7 @@ export class BaseAgent {
 
   /** Inject a message into the conversation (e.g., for notes). */
   injectMessage(text: string): void {
-    this.messages.push({ role: "user", content: text });
+    this.pushMessage({ role: "user", content: text });
   }
 
   /** Get the current message count. */
@@ -262,13 +299,26 @@ export class BaseAgent {
   getConversationSnapshot(): ConversationEntry[] {
     const entries: ConversationEntry[] = [];
 
-    for (const msg of this.messages) {
+    for (const [index, msg] of this.messages.entries()) {
+      const timestamp = this.messageTimestamps[index];
+      const source = msg.role === "assistant" ? this.messageSources[index] : undefined;
       if (typeof msg.content === "string") {
-        entries.push({ role: msg.role, kind: "text", content: msg.content });
+        entries.push({ role: msg.role, kind: "text", content: msg.content, timestamp, ...source });
       } else if (Array.isArray(msg.content)) {
+        const textBlocks = msg.content.filter((block) => block.type === "text" && block.text);
+        const toolUseBlocks = msg.content.filter((block) => block.type === "tool_use");
+        if (msg.role === "assistant" && textBlocks.length === 0 && toolUseBlocks.length > 0) {
+          entries.push({
+            role: "assistant",
+            kind: "activity",
+            content: describeToolUseBlocks(toolUseBlocks),
+            timestamp,
+            ...source,
+          });
+        }
         for (const block of msg.content) {
           if (block.type === "text" && block.text) {
-            entries.push({ role: msg.role, kind: "text", content: block.text });
+            entries.push({ role: msg.role, kind: "text", content: block.text, timestamp, ...source });
           } else if (block.type === "tool_use") {
             const inputStr = typeof block.input === "string"
               ? block.input
@@ -278,6 +328,8 @@ export class BaseAgent {
               kind: "tool_call",
               tool: block.name ?? "unknown",
               content: inputStr.length > 2000 ? inputStr.slice(0, 2000) + "\n…(truncated)" : inputStr,
+              timestamp,
+              ...source,
             });
           } else if (block.type === "tool_result") {
             const text = block.content ?? block.text ?? "";
@@ -286,12 +338,13 @@ export class BaseAgent {
               kind: block.is_error ? "tool_error" : "tool_result",
               tool: block.tool_use_id,
               content: text.length > 3000 ? text.slice(0, 3000) + "\n…(truncated)" : text,
+              timestamp,
             });
           }
         }
       }
     }
-    return entries;
+    return [...entries, ...this.diagnostics];
   }
 
   // ─── Protected ──────────────────────────────────────────────────────────
@@ -317,13 +370,20 @@ export class BaseAgent {
       }
 
       try {
-        return await this.ctx.router.chat({
+        const response = await this.ctx.router.chat({
           modelSpec: this.ctx.modelSpec,
           model: this.ctx.modelSpec.split("/")[1] ?? this.ctx.modelSpec,
           system: this.systemPrompt,
           messages: this.messages,
           tools: tools.length > 0 ? tools : undefined,
         });
+        if (attempt > 0) {
+          this.addDiagnostic(
+            "model_recovered",
+            `Model service recovered after ${attempt} failed ${attempt === 1 ? "attempt" : "attempts"}.`,
+          );
+        }
+        return response;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
 
@@ -339,16 +399,25 @@ export class BaseAgent {
           const reason = isContextOverflow
             ? "context window exceeded"
             : "orphaned tool_result";
+          if (isMaxCompactionsReached(this.compactionState, this.compactionConfig)) {
+            const failure = `Cannot repair malformed model request after ${this.compactionState.compactionCount} compactions (${reason}). Aborting this agent so the parent can handle the failure.`;
+            this.addDiagnostic("model_issue", failure);
+            throw new Error(failure);
+          }
+          this.addDiagnostic(
+            "model_repair",
+            `Model request issue detected (${reason}). Compacting/regenerating conversation context and retrying without adding this diagnostic to the prompt.`,
+          );
           log.warn(
             `[agent:${this.role}:${this.id}] ${reason} — compacting and retrying`,
           );
-          this.messages = await compactConversation(
+          this.replaceMessages(await compactConversation(
             this.systemPrompt,
             this.messages,
             this.ctx.router,
             this.compactionConfig,
             this.compactionState,
-          );
+          ));
           continue;
         }
 
@@ -360,11 +429,15 @@ export class BaseAgent {
         log.warn(
           `[agent:${this.role}:${this.id}] LLM failed (attempt ${attempt + 1}): ${msg} — retrying in ${Math.round(delaySec)}s`,
         );
+        this.addDiagnostic(
+          "model_issue",
+          `Temporary model service issue on attempt ${attempt + 1}. Retrying in ${Math.round(delaySec)}s. Error: ${truncateDiagnostic(msg)}`,
+        );
 
         // Clear sticky failovers so the router retries the primary model
         this.ctx.router.clearStickyFailover(this.ctx.modelSpec);
 
-        await new Promise((r) => setTimeout(r, delaySec * 1000));
+        await this.sleepWithCancellation(delaySec * 1000);
       }
     }
   }
@@ -432,6 +505,50 @@ export class BaseAgent {
   private recordActivity(): void {
     this.onActivity?.(this.id);
   }
+
+  private addDiagnostic(kind: ConversationEntry["kind"], content: string): void {
+    this.diagnostics.push({ role: "system", kind, content, timestamp: new Date().toISOString() });
+    if (this.diagnostics.length > MAX_DIAGNOSTIC_ENTRIES) {
+      this.diagnostics.splice(0, this.diagnostics.length - MAX_DIAGNOSTIC_ENTRIES);
+    }
+    this.recordActivity();
+  }
+
+  private pushMessage(message: Message, timestamp = new Date().toISOString(), source?: LlmResponseSource): void {
+    this.messages.push(message);
+    this.messageTimestamps.push(timestamp);
+    this.messageSources.push(source);
+  }
+
+  private replaceMessages(messages: Message[], timestamp = new Date().toISOString()): void {
+    this.messages = messages;
+    this.messageTimestamps = messages.map(() => timestamp);
+    this.messageSources = messages.map(() => undefined);
+  }
+
+  private async sleepWithCancellation(ms: number): Promise<void> {
+    const deadline = Date.now() + ms;
+    while (!this.cancelled && !this.abortSignal?.aborted && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(1_000, deadline - Date.now())));
+    }
+    if (this.cancelled || this.abortSignal?.aborted) {
+      throw new Error("Agent cancelled");
+    }
+  }
+}
+
+function truncateDiagnostic(value: string, max = 700): string {
+  return value.length <= max ? value : `${value.slice(0, max)}…`;
+}
+
+function responseSource(response: ChatResponse): LlmResponseSource | undefined {
+  if (!response.modelSpec && !response.provider && !response.model) return undefined;
+  return {
+    provider: response.provider,
+    model: response.model,
+    modelSpec: response.modelSpec,
+    requestedModelSpec: response.requestedModelSpec,
+  };
 }
 
 // ─── Dispatch Tool Schemas (role-aware) ─────────────────────────────────

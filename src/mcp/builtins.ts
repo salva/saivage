@@ -10,23 +10,29 @@
 import type { McpRuntime, InProcessToolHandler } from "./runtime.js";
 import type { ToolEntry } from "./registry.js";
 import {
+  closeSync,
+  createWriteStream,
   readFileSync,
+  readSync,
   writeFileSync,
   readdirSync,
   mkdirSync,
   existsSync,
+  openSync,
+  statSync,
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { createHash } from "node:crypto";
-import { exec, execFile } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { promisify } from "node:util";
 import { log } from "../log.js";
 import type { PromptInjectionCop, PromptInjectionScanResult } from "../security/prompt-injection-cop.js";
 import { disabledCop } from "../security/prompt-injection-cop.js";
 
-const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 const MAX_OUTPUT = 100 * 1024; // 100 KB
+const PROCESS_KILL_GRACE_MS = 2_000;
+const OUTPUT_GROWTH_POLL_MS = 1_000;
 const MAX_FETCH_CHARS = 200_000;
 const MAX_DOWNLOAD_BYTES = 250 * 1024 * 1024;
 const MAX_SCAN_DECODE_BYTES = 1_000_000;
@@ -312,7 +318,30 @@ const shellTools: ToolEntry[] = [
       properties: {
         command: { type: "string" },
         cwd: { type: "string" },
-        timeout: { type: "number" },
+        timeout_ms: {
+          type: "number",
+          description: "Optional command timeout in milliseconds. Omit or set 0 for no timeout.",
+        },
+        timeout: {
+          type: "number",
+          description: "Deprecated alias for timeout_ms, in milliseconds.",
+        },
+        inactivity_timeout_ms: {
+          type: "number",
+          description: "Optional no-output timeout in milliseconds. If stdout/stderr are silent for this long, Saivage terminates the command. Omit or set 0 to disable.",
+        },
+        idle_timeout_ms: {
+          type: "number",
+          description: "Deprecated alias for inactivity_timeout_ms, in milliseconds.",
+        },
+        stdout_path: {
+          type: "string",
+          description: "Optional project-relative file path for full stdout. Defaults to .saivage/tmp/command-logs/...",
+        },
+        stderr_path: {
+          type: "string",
+          description: "Optional project-relative file path for full stderr. Defaults to .saivage/tmp/command-logs/...",
+        },
       },
       required: ["command"],
     },
@@ -326,34 +355,252 @@ const shellHandler: InProcessToolHandler = async (toolName, args) => {
 
   const command = args.command as string;
   const cwd = args.cwd ? resolvePath(args.cwd as string) : projectRoot();
-  const timeout = (args.timeout as number | undefined) ?? 60_000;
+  const timeout = parseOptionalTimeoutMs(args, ["timeout_ms", "timeout"], "timeout_ms");
+  const inactivityTimeout = parseOptionalTimeoutMs(
+    args,
+    ["inactivity_timeout_ms", "idle_timeout_ms"],
+    "inactivity_timeout_ms",
+  );
+  const outputPaths = resolveCommandLogPaths(args);
 
-  try {
-    const { stdout, stderr } = await execAsync(command, {
+  const result = await runShellCommand(command, cwd, timeout, inactivityTimeout, outputPaths);
+  return { content: result, isError: false };
+};
+
+function parseOptionalTimeoutMs(
+  args: Record<string, unknown>,
+  keys: string[],
+  label: string,
+): number | undefined {
+  const raw = keys.map((key) => args[key]).find((value) => value !== undefined && value !== null);
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0) {
+    throw new Error(`${label} must be a non-negative finite number of milliseconds`);
+  }
+  const timeout = Math.floor(raw);
+  return timeout === 0 ? undefined : timeout;
+}
+
+async function runShellCommand(
+  command: string,
+  cwd: string,
+  timeoutMs: number | undefined,
+  inactivityTimeoutMs: number | undefined,
+  outputPaths: CommandLogPaths,
+): Promise<CommandResult> {
+  return new Promise((resolve, reject) => {
+    const startedAtMs = Date.now();
+    const startedAt = new Date(startedAtMs).toISOString();
+    mkdirSync(dirname(outputPaths.stdoutAbs), { recursive: true });
+    mkdirSync(dirname(outputPaths.stderrAbs), { recursive: true });
+    const stdoutStream = createWriteStream(outputPaths.stdoutAbs, { flags: "w" });
+    const stderrStream = createWriteStream(outputPaths.stderrAbs, { flags: "w" });
+    const child = spawn(command, {
       cwd,
-      timeout,
-      maxBuffer: MAX_OUTPUT,
+      shell: true,
+      detached: process.platform !== "win32",
       env: { ...process.env, PROJECT_ROOT: projectRoot() },
     });
-    return { content: { stdout, stderr, exitCode: 0 }, isError: false };
-  } catch (err: unknown) {
-    const e = err as { stdout?: string; stderr?: string; code?: number; killed?: boolean };
-    if (e.killed) {
-      return {
-        content: { stdout: e.stdout ?? "", stderr: `Command timed out after ${timeout}ms`, exitCode: 124 },
-        isError: false,
-      };
-    }
-    return {
-      content: {
-        stdout: e.stdout ?? "",
-        stderr: e.stderr ?? "",
-        exitCode: typeof e.code === "number" ? e.code : 1,
-      },
-      isError: false, // non-zero exit is not an MCP error
+
+    let timeoutKind: "total" | "inactivity" | null = null;
+    let totalTimer: ReturnType<typeof setTimeout> | null = null;
+    let growthTimer: ReturnType<typeof setInterval> | null = null;
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastOutputBytes = 0;
+    let lastGrowthAt = startedAtMs;
+    let lastOutputAt: string | null = null;
+
+    const recordOutput = (chunk: Buffer | string) => {
+      lastOutputBytes += Buffer.byteLength(chunk);
+      lastGrowthAt = Date.now();
+      lastOutputAt = new Date(lastGrowthAt).toISOString();
     };
+
+    const clearTimers = () => {
+      if (totalTimer) clearTimeout(totalTimer);
+      if (growthTimer) clearInterval(growthTimer);
+      if (killTimer) clearTimeout(killTimer);
+    };
+
+    const terminate = (kind: "total" | "inactivity") => {
+      if (timeoutKind) return;
+      timeoutKind = kind;
+      terminateChild(child);
+      killTimer = setTimeout(() => terminateChild(child, "SIGKILL"), PROCESS_KILL_GRACE_MS);
+    };
+
+    const checkOutputGrowth = () => {
+      if (!inactivityTimeoutMs) return;
+      const outputBytes = Math.max(
+        lastOutputBytes,
+        safeFileSize(outputPaths.stdoutAbs) + safeFileSize(outputPaths.stderrAbs),
+      );
+      if (outputBytes > lastOutputBytes) {
+        lastOutputBytes = outputBytes;
+        lastGrowthAt = Date.now();
+        return;
+      }
+      if (Date.now() - lastGrowthAt >= inactivityTimeoutMs) terminate("inactivity");
+    };
+
+    if (timeoutMs) totalTimer = setTimeout(() => terminate("total"), timeoutMs);
+    if (inactivityTimeoutMs) growthTimer = setInterval(checkOutputGrowth, growthPollInterval(inactivityTimeoutMs));
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      recordOutput(chunk);
+      stdoutStream.write(chunk);
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      recordOutput(chunk);
+      stderrStream.write(chunk);
+    });
+
+    stdoutStream.on("error", (err) => {
+      clearTimers();
+      terminateChild(child, "SIGKILL");
+      reject(err);
+    });
+    stderrStream.on("error", (err) => {
+      clearTimers();
+      terminateChild(child, "SIGKILL");
+      reject(err);
+    });
+
+    child.on("error", (err) => {
+      clearTimers();
+      reject(err);
+    });
+
+    child.on("close", async (code) => {
+      clearTimers();
+      const completedAtMs = Date.now();
+      const completedAt = new Date(completedAtMs).toISOString();
+      await Promise.all([finishStream(stdoutStream), finishStream(stderrStream)]);
+      const stdout = readFileTail(outputPaths.stdoutAbs, MAX_OUTPUT);
+      let stderr = readFileTail(outputPaths.stderrAbs, MAX_OUTPUT);
+      const stdoutBytes = safeFileSize(outputPaths.stdoutAbs);
+      const stderrBytes = safeFileSize(outputPaths.stderrAbs);
+      if (stdoutBytes > MAX_OUTPUT) stderr = appendTimeoutMessage(stderr, `[Saivage returned only the last ${MAX_OUTPUT} bytes of stdout; full log: ${outputPaths.stdoutRel}]`);
+      if (stderrBytes > MAX_OUTPUT) stderr = appendTimeoutMessage(stderr, `[Saivage returned only the last ${MAX_OUTPUT} bytes of stderr; full log: ${outputPaths.stderrRel}]`);
+      const base = {
+        stdout,
+        stderr,
+        stdout_path: outputPaths.stdoutRel,
+        stderr_path: outputPaths.stderrRel,
+        stdout_bytes: stdoutBytes,
+        stderr_bytes: stderrBytes,
+        started_at: startedAt,
+        completed_at: completedAt,
+        duration_ms: completedAtMs - startedAtMs,
+        last_output_at: lastOutputAt,
+      };
+      if (timeoutKind === "total") {
+        resolve({ ...base, stderr: appendTimeoutMessage(stderr, `Command timed out after ${timeoutMs}ms`), exitCode: 124 });
+        return;
+      }
+      if (timeoutKind === "inactivity") {
+        resolve({
+          ...base,
+          stderr: appendTimeoutMessage(
+            stderr,
+            `Command output files did not grow for ${inactivityTimeoutMs}ms and the process was terminated (last output: ${lastOutputAt ?? "never"})`,
+          ),
+          exitCode: 124,
+        });
+        return;
+      }
+      resolve({ ...base, exitCode: code ?? 1 });
+    });
+  });
+}
+
+function appendTimeoutMessage(stderr: string, message: string): string {
+  return stderr ? `${stderr}\n${message}` : message;
+}
+
+interface CommandLogPaths {
+  stdoutAbs: string;
+  stderrAbs: string;
+  stdoutRel: string;
+  stderrRel: string;
+}
+
+interface CommandResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  stdout_path: string;
+  stderr_path: string;
+  stdout_bytes: number;
+  stderr_bytes: number;
+  started_at: string;
+  completed_at: string;
+  duration_ms: number;
+  last_output_at: string | null;
+}
+
+function resolveCommandLogPaths(args: Record<string, unknown>): CommandLogPaths {
+  const id = `${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const stdoutAbs = typeof args.stdout_path === "string"
+    ? resolvePath(args.stdout_path)
+    : resolvePath(`.saivage/tmp/command-logs/${id}.stdout.log`);
+  const stderrAbs = typeof args.stderr_path === "string"
+    ? resolvePath(args.stderr_path)
+    : resolvePath(`.saivage/tmp/command-logs/${id}.stderr.log`);
+  return {
+    stdoutAbs,
+    stderrAbs,
+    stdoutRel: relative(projectRoot(), stdoutAbs),
+    stderrRel: relative(projectRoot(), stderrAbs),
+  };
+}
+
+function safeFileSize(path: string): number {
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0;
   }
-};
+}
+
+function growthPollInterval(inactivityTimeoutMs: number): number {
+  return Math.max(25, Math.min(OUTPUT_GROWTH_POLL_MS, Math.floor(inactivityTimeoutMs / 4) || 25));
+}
+
+function readFileTail(path: string, maxBytes: number): string {
+  const size = safeFileSize(path);
+  if (size === 0) return "";
+  const length = Math.min(size, maxBytes);
+  const buffer = Buffer.alloc(length);
+  const fd = openSync(path, "r");
+  try {
+    readSync(fd, buffer, 0, length, size - length);
+  } finally {
+    closeSync(fd);
+  }
+  return buffer.toString("utf-8");
+}
+
+function finishStream(stream: NodeJS.WritableStream): Promise<void> {
+  const writable = stream as NodeJS.WritableStream & { writableEnded?: boolean; writableFinished?: boolean };
+  if (writable.writableEnded || writable.writableFinished) return Promise.resolve();
+  return new Promise((resolve) => {
+    stream.once("finish", () => resolve());
+    stream.end();
+  });
+}
+
+function terminateChild(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals = "SIGTERM"): void {
+  if (process.platform !== "win32" && child.pid) {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // Fall through to killing the direct child.
+    }
+  }
+  child.kill(signal);
+}
 
 // ─── Data Acquisition ───────────────────────────────────────────────────────
 

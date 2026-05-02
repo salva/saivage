@@ -31,6 +31,7 @@ describe("config", () => {
       expect(config.server.port).toBe(8080);
       expect(config.agent.maxConcurrentAgents).toBe(3);
       expect(config.models.orchestrator).toBe("anthropic/claude-sonnet-4-20250514");
+      expect(config.modelEquivalents).toEqual({});
     });
   });
 });

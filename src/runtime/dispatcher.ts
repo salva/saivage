@@ -240,7 +240,7 @@ export class Dispatcher {
       return {
         toolUseId: tc.id,
         content,
-        isError: result.kind === "failure",
+        isError: result.kind === "failure" || result.kind === "abort",
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

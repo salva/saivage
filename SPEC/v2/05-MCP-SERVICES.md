@@ -111,11 +111,16 @@ Execute a shell command and return output.
 |-----------|------|----------|---------|-------------|
 | `command` | string | yes | — | Shell command to run |
 | `cwd` | string | no | project root | Working directory |
-| `timeout` | number | no | 60000 | Timeout in ms |
+| `timeout_ms` | number | no | none | Hard wall-clock timeout in ms; `0` disables |
+| `timeout` | number | no | none | Deprecated alias for `timeout_ms` |
+| `inactivity_timeout_ms` | number | no | none | No-output-growth timeout in ms; terminates when stdout/stderr log files do not grow for this long; `0` disables |
+| `idle_timeout_ms` | number | no | none | Deprecated alias for `inactivity_timeout_ms` |
+| `stdout_path` | string | no | auto | Project-relative file path for full stdout log |
+| `stderr_path` | string | no | auto | Project-relative file path for full stderr log |
 
-**Returns:** `{ stdout: string, stderr: string, exitCode: number }`
+**Returns:** `{ stdout: string, stderr: string, exitCode: number, stdout_path: string, stderr_path: string, stdout_bytes: number, stderr_bytes: number, started_at: string, completed_at: string, duration_ms: number, last_output_at: string | null }`
 
-**Limits:** Output truncated at 100KB. Throws on timeout.
+**Limits:** Full output is written to project-local log files. Returned `stdout`/`stderr` are capped tails of those logs. Timeouts return `exitCode: 124` and include the timeout reason in `stderr`, including the last observed output timestamp for inactivity timeouts. Long-running commands should emit periodic stdout/stderr and set `inactivity_timeout_ms` when no log growth means the process is unhealthy.
 
 ---
 

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, nextTick, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
+import { SendHorizontal, Wifi, WifiOff } from "lucide-vue-next";
 import { useWebSocket } from "../composables/useWebSocket";
 import { renderMarkdown } from "../utils/markdown";
 
@@ -8,6 +9,10 @@ interface Message {
   role: "user" | "assistant" | "system";
   content: string;
   timestamp: Date;
+  provider?: string;
+  model?: string;
+  modelSpec?: string;
+  requestedModelSpec?: string;
 }
 
 const messages = ref<Message[]>([]);
@@ -18,6 +23,7 @@ const sessionId = ref<string | null>(null);
 let msgId = 0;
 
 const { connected, events, send } = useWebSocket();
+const sessionLabel = computed(() => sessionId.value ? sessionId.value.slice(0, 14) : "new session");
 
 watch(() => events.value.length, () => {
   const ev = events.value[events.value.length - 1];
@@ -47,6 +53,10 @@ watch(() => events.value.length, () => {
       role: "assistant",
       content: ev.content as string,
       timestamp: new Date(),
+      provider: ev.provider as string | undefined,
+      model: ev.model as string | undefined,
+      modelSpec: ev.modelSpec as string | undefined,
+      requestedModelSpec: ev.requestedModelSpec as string | undefined,
     });
     scrollToBottom();
   } else if (ev.type === "system" || ev.type === "event") {
@@ -74,6 +84,10 @@ async function loadHistory(sid: string) {
         role: msg.role,
         content: msg.content,
         timestamp: new Date(msg.timestamp),
+        provider: msg.provider,
+        model: msg.model,
+        modelSpec: msg.modelSpec,
+        requestedModelSpec: msg.requestedModelSpec,
       });
     }
     scrollToBottom();
@@ -106,101 +120,286 @@ function formatTime(d: Date): string {
   return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
+function roleLabel(role: Message["role"]): string {
+  if (role === "assistant") return "Saivage";
+  if (role === "system") return "Event";
+  return "You";
+}
+
+function modelLabel(msg: Message): string {
+  return msg.modelSpec ?? (msg.provider && msg.model ? `${msg.provider}/${msg.model}` : "");
+}
 </script>
 
 <template>
-  <div class="chat-window">
-    <div class="chat-header">
-      <span class="chat-title">Chat</span>
-      <span class="conn-badge" :class="{ online: connected }">{{ connected ? 'connected' : 'disconnected' }}</span>
-      <span v-if="sessionId" class="session-badge">{{ sessionId.slice(0, 12) }}</span>
+  <section class="chat-window">
+    <div class="panel-heading chat-heading">
+      <div>
+        <h2>Command Stream</h2>
+        <span>{{ sessionLabel }}</span>
+      </div>
+      <div class="connection" :class="{ online: connected }">
+        <Wifi v-if="connected" :size="15" />
+        <WifiOff v-else :size="15" />
+        <span>{{ connected ? 'connected' : 'offline' }}</span>
+      </div>
     </div>
 
     <div class="chat-body" ref="chatBody">
       <div v-if="messages.length === 0 && !thinking" class="chat-empty">
-        Send a message to interact with the Saivage assistant.
+        <div class="empty-title">Ready for operator input</div>
+        <div class="empty-copy">Ask for status, add a note, or steer the current run.</div>
       </div>
-      <div v-for="msg in messages" :key="msg.id" class="msg" :class="msg.role">
+
+      <article v-for="msg in messages" :key="msg.id" class="msg" :class="msg.role">
         <div class="msg-meta">
-          <span class="msg-role">{{ msg.role }}</span>
+          <span class="msg-role">{{ roleLabel(msg.role) }}</span>
+          <span v-if="msg.role === 'assistant' && modelLabel(msg)" class="model-chip">{{ modelLabel(msg) }}</span>
           <span class="msg-time">{{ formatTime(msg.timestamp) }}</span>
         </div>
         <div v-if="msg.role === 'assistant'" class="msg-content" v-html="renderMarkdown(msg.content)"></div>
         <div v-else class="msg-content">{{ msg.content }}</div>
-      </div>
-      <div v-if="thinking" class="msg assistant">
-        <div class="msg-meta"><span class="msg-role">assistant</span></div>
+      </article>
+
+      <article v-if="thinking" class="msg assistant compact">
+        <div class="msg-meta"><span class="msg-role">Saivage</span></div>
         <div class="msg-content thinking-dots"><span></span><span></span><span></span></div>
-      </div>
+      </article>
     </div>
 
     <form class="chat-input" @submit.prevent="sendMessage">
       <input
         v-model="inputText"
         type="text"
-        placeholder="Type a message…"
+        placeholder="Send a runtime instruction or question"
         :disabled="!connected"
         autocomplete="off"
       />
-      <button type="submit" :disabled="!connected || !inputText.trim()">Send</button>
+      <button class="send-btn" type="submit" :disabled="!connected || !inputText.trim()" title="Send message">
+        <SendHorizontal :size="17" />
+        <span>Send</span>
+      </button>
     </form>
-  </div>
+  </section>
 </template>
 
 <style scoped>
-.chat-window { display: flex; flex-direction: column; height: 100%; background: #0d1117; }
+.chat-window {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg);
+}
 
-.chat-header { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid #21262d; flex-shrink: 0; }
-.chat-title { font-size: 14px; font-weight: 600; color: #c9d1d9; }
-.conn-badge { font-size: 11px; padding: 2px 8px; border-radius: 10px; color: #f85149; background: rgba(248, 81, 73, 0.1); }
-.conn-badge.online { color: #3fb950; background: rgba(63, 185, 80, 0.1); }
-.session-badge { font-size: 10px; color: #8b949e; font-family: monospace; }
-.session-badge { font-size: 10px; font-family: monospace; color: #8b949e; margin-left: auto; }
+.chat-heading > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
 
-.chat-body { flex: 1; overflow-y: auto; padding: 16px; }
-.chat-empty { color: #484f58; font-size: 14px; text-align: center; padding: 48px 16px; }
+.chat-heading span {
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
 
-.msg { margin-bottom: 12px; max-width: 85%; }
-.msg.user { margin-left: auto; }
-.msg.assistant { margin-right: auto; }
-.msg.system { margin-left: auto; margin-right: auto; max-width: 90%; }
+.connection {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--danger);
+  font-size: 12px;
+}
 
-.msg-meta { display: flex; gap: 8px; margin-bottom: 3px; }
-.msg-role { font-size: 11px; font-weight: 600; text-transform: uppercase; }
-.msg.user .msg-role { color: #58a6ff; }
-.msg.assistant .msg-role { color: #3fb950; }
-.msg.system .msg-role { color: #d29922; }
-.msg-time { font-size: 10px; color: #484f58; }
+.connection.online {
+  color: var(--accent-2);
+}
 
-.msg-content { font-size: 13px; line-height: 1.5; padding: 8px 12px; border-radius: 8px; white-space: pre-wrap; word-break: break-word; }
-.msg.user .msg-content { background: #1f6feb; color: #fff; border-bottom-right-radius: 2px; }
-.msg.assistant .msg-content { background: #161b22; color: #c9d1d9; border: 1px solid #21262d; border-bottom-left-radius: 2px; }
-.msg.system .msg-content { background: rgba(210, 153, 34, 0.08); color: #d29922; font-size: 12px; text-align: center; border-radius: 4px; border: 1px solid rgba(210, 153, 34, 0.15); }
-.msg.system .msg-content.stage-event { text-align: left; font-size: 11px; }
+.chat-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 20px;
+}
 
-/* Thinking dots */
-.thinking-dots { display: flex; gap: 4px; padding: 12px 16px !important; }
-.thinking-dots span { width: 8px; height: 8px; background: #8b949e; border-radius: 50%; animation: dot-pulse 1.4s ease-in-out infinite; }
+.chat-empty {
+  display: grid;
+  align-content: center;
+  min-height: 180px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.empty-title {
+  color: var(--text);
+  font-weight: 650;
+}
+
+.empty-copy {
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+.msg {
+  width: min(780px, 92%);
+  margin-bottom: 14px;
+}
+
+.msg.user {
+  margin-left: auto;
+}
+
+.msg.system {
+  width: min(860px, 96%);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.msg-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.msg-role {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.msg.assistant .msg-role { color: var(--accent-2); }
+.msg.user .msg-role { color: var(--accent); }
+.msg.system .msg-role { color: var(--warn); }
+
+.msg-time {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
+.model-chip {
+  overflow: hidden;
+  max-width: min(360px, 55vw);
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.msg-content {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  color: var(--text);
+  background: var(--surface-1);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg.user .msg-content {
+  border-color: rgba(106, 166, 255, 0.36);
+  background: rgba(106, 166, 255, 0.14);
+}
+
+.msg.system .msg-content {
+  border-color: rgba(224, 169, 68, 0.35);
+  color: #efc977;
+  background: rgba(224, 169, 68, 0.08);
+  font-size: 12px;
+}
+
+.thinking-dots {
+  display: inline-flex;
+  gap: 5px;
+  width: auto;
+  padding: 12px 14px !important;
+}
+
+.thinking-dots span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: dot-pulse 1.4s ease-in-out infinite;
+}
+
 .thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
 .thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
-@keyframes dot-pulse { 0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); } 40% { opacity: 1; transform: scale(1); } }
 
-/* Markdown in assistant messages */
-.msg.assistant .msg-content :deep(strong) { color: #e6edf3; font-weight: 600; }
+@keyframes dot-pulse {
+  0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
+  40% { opacity: 1; transform: scale(1); }
+}
+
+.msg.assistant .msg-content :deep(strong) { color: #eef4fb; font-weight: 650; }
 .msg.assistant .msg-content :deep(em) { font-style: italic; }
 .msg.assistant .msg-content :deep(.md-h1) { display: block; font-size: 16px; margin: 8px 0 4px; }
 .msg.assistant .msg-content :deep(.md-h2) { display: block; font-size: 14px; margin: 6px 0 3px; }
 .msg.assistant .msg-content :deep(.md-h3) { display: block; font-size: 13px; margin: 4px 0 2px; }
-.msg.assistant .msg-content :deep(.md-code) { background: #0d1117; color: #79c0ff; padding: 1px 5px; border-radius: 3px; font-family: monospace; font-size: 12px; }
-.msg.assistant .msg-content :deep(.md-code-block) { background: #0d1117; padding: 10px 12px; border-radius: 6px; margin: 6px 0; overflow-x: auto; font-size: 12px; line-height: 1.5; white-space: pre; }
-.msg.assistant .msg-content :deep(.md-code-block code) { font-family: monospace; color: #c9d1d9; }
+.msg.assistant .msg-content :deep(.md-code) { background: var(--bg); color: #9dd2ff; padding: 1px 5px; border-radius: 3px; font-family: var(--mono); font-size: 12px; }
+.msg.assistant .msg-content :deep(.md-code-block) { background: var(--bg); padding: 10px 12px; border-radius: 6px; margin: 6px 0; overflow-x: auto; font-size: 12px; line-height: 1.5; white-space: pre; }
+.msg.assistant .msg-content :deep(.md-code-block code) { font-family: var(--mono); color: var(--text); }
 .msg.assistant .msg-content :deep(.md-bullet) { display: block; padding-left: 8px; }
 
-.chat-input { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid #21262d; background: #161b22; flex-shrink: 0; }
-.chat-input input { flex: 1; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 8px 12px; color: #c9d1d9; font-size: 13px; outline: none; }
-.chat-input input:focus { border-color: #58a6ff; }
-.chat-input input:disabled { opacity: 0.5; }
-.chat-input button { background: #238636; color: #fff; border: none; border-radius: 6px; padding: 8px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
-.chat-input button:hover:not(:disabled) { background: #2ea043; }
-.chat-input button:disabled { opacity: 0.5; cursor: default; }
+.chat-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 14px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-1);
+}
+
+.chat-input input {
+  min-width: 0;
+  height: 38px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  padding: 0 12px;
+  outline: none;
+  color: var(--text);
+  background: var(--bg);
+  font-size: 13px;
+}
+
+.chat-input input:focus {
+  border-color: var(--accent);
+}
+
+.send-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 38px;
+  min-width: 92px;
+  border: 1px solid rgba(41, 199, 138, 0.45);
+  border-radius: 7px;
+  color: #e8fff5;
+  background: #16875c;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.send-btn:hover:not(:disabled) {
+  background: #1a9b6a;
+}
+
+.send-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
 </style>

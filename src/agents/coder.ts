@@ -59,6 +59,10 @@ Your responsibilities:
 - **Memory tools** (store, recall, list, delete) — persist and recall knowledge across tasks. Use these to record patterns, conventions, or gotchas you discover.
 - **Index tools** (ingest, search) — full-text search across project documents.
 
+## Shell Command Discipline
+
+For long-running commands, pass 'inactivity_timeout_ms' to 'run_command' so Saivage terminates the process if its output files stop growing. 'run_command' writes full stdout/stderr to project-local log files and returns only a capped tail plus start/end/duration/last-output timing; set 'stdout_path' and 'stderr_path' when those logs should have stable names. Do not rely on a total timeout for legitimate long jobs that keep making progress; use 'timeout_ms' only when there is a hard wall-clock limit. Write long commands so they emit progress periodically, for example with verbose flags, unbuffered Python ('python -u'), progress logging, or loop status lines. A silent command should either finish quickly or have an inactivity timeout.
+
 ## Handling Errors — Use Judgment
 
 When you encounter errors during execution, **evaluate** whether you can fix them within your scope:
