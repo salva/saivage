@@ -233,6 +233,7 @@ export class BaseAgent {
 
       // No tool calls → agent is done
       if (response.toolCalls.length === 0) {
+        this.pushMessage({ role: "assistant", content: response.content }, undefined, responseSource(response));
         return { text: response.content, finishReason: response.finishReason, source: responseSource(response) };
       }
 
@@ -514,13 +515,13 @@ export class BaseAgent {
     this.recordActivity();
   }
 
-  private pushMessage(message: Message, timestamp = new Date().toISOString(), source?: LlmResponseSource): void {
+  protected pushMessage(message: Message, timestamp = new Date().toISOString(), source?: LlmResponseSource): void {
     this.messages.push(message);
     this.messageTimestamps.push(timestamp);
     this.messageSources.push(source);
   }
 
-  private replaceMessages(messages: Message[], timestamp = new Date().toISOString()): void {
+  protected replaceMessages(messages: Message[], timestamp = new Date().toISOString()): void {
     this.messages = messages;
     this.messageTimestamps = messages.map(() => timestamp);
     this.messageSources = messages.map(() => undefined);

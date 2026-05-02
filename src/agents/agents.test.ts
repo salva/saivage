@@ -12,6 +12,9 @@ import { checkConvention, getConvention } from "./conventions.js";
 import { writeDoc, ensureDir } from "../store/documents.js";
 import { SkillIndexSchema } from "../types.js";
 import { ReviewerAgent } from "./reviewer.js";
+import { ChatAgent } from "./chat.js";
+import { EventBus } from "../events/bus.js";
+import type { ChatChannel } from "../channels/types.js";
 import type { AgentContext, WorkerInput } from "./types.js";
 import type { ChatRequest, ChatResponse } from "../providers/types.js";
 
@@ -275,6 +278,56 @@ describe("ReviewerAgent", () => {
   });
 });
 
+describe("ChatAgent", () => {
+  it("serializes incoming user messages for one session", async () => {
+    const firstResponse = deferred<void>();
+    const firstRouterCall = deferred<void>();
+    const routerCalls: ChatRequest[] = [];
+    const router = {
+      getMaxContextTokens: () => 200_000,
+      chat: async (request: ChatRequest): Promise<ChatResponse> => {
+        routerCalls.push(request);
+        if (routerCalls.length === 1) {
+          firstRouterCall.resolve();
+          await firstResponse.promise;
+        }
+        return {
+          content: `response ${routerCalls.length}`,
+          toolCalls: [],
+          finishReason: "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+
+    const channel = new TestChatChannel();
+    const agent = new ChatAgent(
+      makeChatContext(tmpDir, router),
+      { channel: "telegram", sessionId: "telegram-1" },
+      channel,
+      new EventBus(),
+    );
+
+    const runPromise = agent.run();
+    await channel.waitForHandler();
+
+    const firstMessage = channel.receive("first");
+    const secondMessage = channel.receive("second");
+    await firstRouterCall.promise;
+
+    expect(routerCalls).toHaveLength(1);
+
+    firstResponse.resolve(undefined);
+    await Promise.all([firstMessage, secondMessage]);
+
+    expect(routerCalls).toHaveLength(2);
+    expect(channel.sent).toEqual(["response 1", "response 2"]);
+
+    channel.close();
+    await runPromise;
+  });
+});
+
 function makeReviewerContext(root: string, router: unknown): AgentContext {
   const saivageDir = join(root, ".saivage");
   ensureDir(saivageDir);
@@ -313,6 +366,62 @@ function makeReviewerContext(root: string, router: unknown): AgentContext {
     role: "reviewer",
     modelSpec: "test/model",
   };
+}
+
+function makeChatContext(root: string, router: unknown): AgentContext {
+  const ctx = makeReviewerContext(root, router);
+  return {
+    ...ctx,
+    agentId: "chat-1",
+    role: "chat",
+  };
+}
+
+class TestChatChannel implements ChatChannel {
+  sent: string[] = [];
+  private messageHandler?: (message: string) => void | Promise<void>;
+  private closeHandler?: () => void;
+  private handlerReady = deferred<void>();
+
+  send(message: string): void {
+    this.sent.push(message);
+  }
+
+  onMessage(handler: (message: string) => void | Promise<void>): void {
+    this.messageHandler = handler;
+    this.handlerReady.resolve();
+  }
+
+  onClose(handler: () => void): void {
+    this.closeHandler = handler;
+  }
+
+  close(): void {
+    this.closeHandler?.();
+  }
+
+  waitForHandler(): Promise<void> {
+    return this.handlerReady.promise;
+  }
+
+  receive(message: string): Promise<void> {
+    if (!this.messageHandler) throw new Error("No message handler registered");
+    return Promise.resolve(this.messageHandler(message));
+  }
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
 }
 
 function makeReviewInput(id: string, objective: string): WorkerInput {

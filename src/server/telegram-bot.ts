@@ -8,7 +8,7 @@
 import { Bot } from "grammy";
 import { TelegramChannel } from "../channels/telegram.js";
 import { ChatAgent } from "../agents/chat.js";
-import { chatSessionId, agentId } from "../ids.js";
+import { agentId } from "../ids.js";
 import { log } from "../log.js";
 import type { SaivageRuntime } from "./bootstrap.js";
 
@@ -51,7 +51,7 @@ export async function startTelegramBot(
     const existing = sessions.get(chatId);
     if (existing) return existing;
 
-    const sessionId = chatSessionId();
+    const sessionId = telegramSessionId(chatId);
 
     const sendFn = async (text: string, parseMode?: "HTML") => {
       try {
@@ -61,6 +61,7 @@ export async function startTelegramBot(
         });
       } catch (err) {
         log.error(`[telegram] Failed to send message to ${chatId}: ${err}`);
+        throw err;
       }
     };
 
@@ -112,7 +113,7 @@ export async function startTelegramBot(
     const userId = ctx.from?.id;
 
     // Access control
-    if (allowedUserIds.size > 0 && userId && !allowedUserIds.has(userId)) {
+    if (allowedUserIds.size > 0 && (!userId || !allowedUserIds.has(userId))) {
       log.warn(`[telegram] Rejected message from unauthorized user ${userId}`);
       return;
     }
@@ -128,6 +129,13 @@ export async function startTelegramBot(
   bot.catch((err) => {
     log.error(`[telegram] Bot error: ${err.message}`);
   });
+
+  if (allowedUserIds.size > 0) {
+    for (const userId of allowedUserIds) getOrCreateSession(userId);
+    log.info(`[telegram] Pre-subscribed ${allowedUserIds.size} allowed user(s) for project notifications`);
+  } else {
+    log.warn("[telegram] No allowedUserIds configured; project notifications begin only after a chat sends a message");
+  }
 
   // Start long polling
   log.info("[telegram] Starting Telegram bot (long polling)...");
@@ -147,4 +155,8 @@ export async function startTelegramBot(
       sessions.clear();
     },
   };
+}
+
+function telegramSessionId(chatId: number): string {
+  return `telegram-${String(chatId).replace(/^-/, "m")}`;
 }

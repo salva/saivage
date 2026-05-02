@@ -137,6 +137,7 @@ export class ChatAgent extends BaseAgent implements Agent {
   private unsubscribe?: () => void;
   private chatLog: ChatLog;
   private chatDir: string;
+  private messageQueue: Promise<void> = Promise.resolve();
 
   constructor(
     ctx: AgentContext,
@@ -173,6 +174,7 @@ export class ChatAgent extends BaseAgent implements Agent {
       updated_at: new Date().toISOString(),
       messages: [],
     };
+    this.loadExistingChatLog();
 
     // Subscribe to event bus for notifications
     this.unsubscribe = eventBus.subscribe(
@@ -193,12 +195,16 @@ export class ChatAgent extends BaseAgent implements Agent {
       // Set up message handling
       return new Promise<AgentResult>((resolve) => {
         // Handle incoming user messages
-        this.channel.onMessage(async (message) => {
-          try {
-            await this.handleUserMessage(message);
-          } catch (err) {
-            log.error(`[chat:${this.id}] Message handling error: ${err}`);
-          }
+        this.channel.onMessage((message) => {
+          this.messageQueue = this.messageQueue
+            .catch((err) => {
+              log.error(`[chat:${this.id}] Previous message handling failed: ${err}`);
+            })
+            .then(() => this.handleUserMessage(message))
+            .catch((err) => {
+              log.error(`[chat:${this.id}] Message handling error: ${err}`);
+            });
+          return this.messageQueue;
         });
 
         // Handle channel close
@@ -480,7 +486,7 @@ export class ChatAgent extends BaseAgent implements Agent {
 
   private async sendAssistantResponse(content: string, source?: LlmResponseSource): Promise<void> {
     const eventChannel = this.channel as ChatChannel & { sendEvent?: (e: Record<string, unknown>) => void };
-    if (eventChannel.sendEvent) {
+    if (this.input.channel !== "telegram" && eventChannel.sendEvent) {
       eventChannel.sendEvent({ type: "message", content, ...source });
       return;
     }
@@ -492,12 +498,38 @@ export class ChatAgent extends BaseAgent implements Agent {
     await writeDoc(logPath, this.chatLog, ChatLogSchema);
   }
 
+  private loadExistingChatLog(): void {
+    const logPath = join(this.chatDir, `${this.input.sessionId}.json`);
+    const existing = readDocOrNull(logPath, ChatLogSchema);
+    if (!existing) return;
+
+    this.chatLog = existing;
+    for (const message of existing.messages) {
+      this.pushMessage(
+        { role: message.role, content: message.content },
+        message.timestamp,
+        message.role === "assistant" ? sourceFromChatMessage(message) : undefined,
+      );
+    }
+    log.info(`[chat:${this.id}] Loaded ${existing.messages.length} previous messages for ${this.input.channel}:${this.input.sessionId}`);
+  }
+
   private cleanup(): void {
     if (this.unsubscribe) {
       this.unsubscribe();
       this.unsubscribe = undefined;
     }
   }
+}
+
+function sourceFromChatMessage(message: ChatMessage): LlmResponseSource | undefined {
+  if (!message.modelSpec && !message.provider && !message.model) return undefined;
+  return {
+    provider: message.provider,
+    model: message.model,
+    modelSpec: message.modelSpec,
+    requestedModelSpec: message.requestedModelSpec,
+  };
 }
 
 function formatEventNotification(event: SystemEvent): string {

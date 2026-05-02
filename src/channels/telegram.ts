@@ -10,6 +10,7 @@
  * only "message" events reach the user; internal events are ignored.
  */
 import type { ChatChannel } from "./types.js";
+import { log } from "../log.js";
 
 /** Callback to send a message back to the Telegram user */
 export type TelegramSendFn = (
@@ -23,7 +24,11 @@ const TG_MAX_LENGTH = 4096;
 
 /** Escape characters that are special in Telegram HTML */
 function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 /**
@@ -31,27 +36,24 @@ function escapeHtml(s: string): string {
  * Handles: fenced code blocks, inline code, bold, italic, links, headers.
  */
 function markdownToTelegramHtml(md: string): string {
-  // 1. Fenced code blocks: ```lang\n...\n``` → <pre><code>...</code></pre>
-  let html = md.replace(
-    /```(?:\w*)\n([\s\S]*?)```/g,
-    (_m, code: string) => `<pre><code>${escapeHtml(code.trimEnd())}</code></pre>`,
-  );
+  const codeBlocks: string[] = [];
+  let html = md.replace(/```(?:\w*)\n([\s\S]*?)```/g, (_m, code: string) => {
+    const placeholder = `\x00CODE_BLOCK_${codeBlocks.length}\x00`;
+    codeBlocks.push(`<pre><code>${escapeHtml(code.trimEnd())}</code></pre>`);
+    return placeholder;
+  });
 
-  // 2. Process line by line for inline formatting
-  html = html.replace(
-    /(<pre><code>[\s\S]*?<\/code><\/pre>)/g,
-    "\x00$1\x00",
-  );
+  html = escapeHtml(html);
   const parts = html.split("\x00");
 
   const processed = parts.map((part) => {
-    // Don't touch code blocks
-    if (part.startsWith("<pre><code>")) return part;
+    const codeMatch = /^CODE_BLOCK_(\d+)$/.exec(part);
+    if (codeMatch) return codeBlocks[Number(codeMatch[1])] ?? "";
 
     let text = part;
 
     // Inline code: `...` → <code>...</code>
-    text = text.replace(/`([^`]+)`/g, (_m, code: string) => `<code>${escapeHtml(code)}</code>`);
+    text = text.replace(/`([^`]+)`/g, "<code>$1</code>");
 
     // Bold: **...** → <b>...</b>
     text = text.replace(/\*\*(.+?)\*\*/g, "<b>$1</b>");
@@ -82,6 +84,7 @@ export class TelegramChannel implements ChatChannel {
     | ((message: string) => void | Promise<void>)
     | null = null;
   private closeHandler: (() => void) | null = null;
+  private pendingMessages: string[] = [];
   private closed = false;
 
   constructor(
@@ -128,11 +131,23 @@ export class TelegramChannel implements ChatChannel {
 
   /** Push a user message into the chat agent */
   pushMessage(text: string): void {
-    this.messageHandler?.(text);
+    if (!this.messageHandler) {
+      this.pendingMessages.push(text);
+      return;
+    }
+    void Promise.resolve(this.messageHandler(text)).catch((err) => {
+      log.error(`[telegram] Unhandled message handler error: ${err}`);
+    });
   }
 
   onMessage(handler: (message: string) => void | Promise<void>): void {
     this.messageHandler = handler;
+    const pending = this.pendingMessages.splice(0);
+    for (const message of pending) {
+      void Promise.resolve(this.messageHandler(message)).catch((err) => {
+        log.error(`[telegram] Unhandled queued message handler error: ${err}`);
+      });
+    }
   }
 
   onClose(handler: () => void): void {
