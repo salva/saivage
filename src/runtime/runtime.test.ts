@@ -622,8 +622,37 @@ describe("NoteManager", () => {
     ];
 
     const formatted = noteManager.formatNotesForInjection(notes);
+    expect(formatted).toContain("ordered oldest to newest");
     expect(formatted).toContain("[URGENT]");
     expect(formatted).toContain("Focus on tests");
+  });
+
+  it("formatNotesForInjection places newer conflicting notes later", () => {
+    const formatted = noteManager.formatNotesForInjection([
+      {
+        id: "new-note",
+        channel: "telegram",
+        session_id: "s1",
+        content: "New specific docs request",
+        created_at: "2026-05-02T11:00:00Z",
+        permanent: true,
+        urgent: true,
+      },
+      {
+        id: "old-note",
+        channel: "telegram",
+        session_id: "s1",
+        content: "Old broad research policy",
+        created_at: "2026-05-01T11:00:00Z",
+        permanent: true,
+        urgent: false,
+      },
+    ]);
+
+    expect(formatted.indexOf("Old broad research policy")).toBeLessThan(
+      formatted.indexOf("New specific docs request"),
+    );
+    expect(formatted).toContain("newer and more specific user notes as overriding older, broader notes");
   });
 
   it("cleanupStaleNotes removes acknowledged volatile notes", () => {

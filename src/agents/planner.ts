@@ -206,6 +206,8 @@ export class PlannerAgent extends BaseAgent implements Agent {
           return { kind: "failure", reason: text };
         }
 
+        this.noteManager.acknowledgeNotes();
+
         // Only accept completion if planner explicitly says PLAN_COMPLETE
         // on its own line — not just as part of a sentence
         if (/^\s*PLAN_COMPLETE\s*$/m.test(text)) {
@@ -259,9 +261,6 @@ export class PlannerAgent extends BaseAgent implements Agent {
 
     const formatted = this.noteManager.formatNotesForInjection(allNotes);
     this.injectMessage(formatted);
-
-    // Acknowledge the notes (uses internal pending list from getUnacknowledgedNotes)
-    this.noteManager.acknowledgeNotes();
 
     log.info(
       `[planner:${this.id}] Injected ${allNotes.length} note(s) into context`,

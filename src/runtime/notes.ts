@@ -153,7 +153,11 @@ export class NoteManager {
   formatNotesForInjection(notes: UserNote[]): string {
     if (notes.length === 0) return "";
 
-    const parts = notes.map((note) => {
+    const orderedNotes = [...notes].sort((a, b) =>
+      a.created_at.localeCompare(b.created_at),
+    );
+
+    const parts = orderedNotes.map((note) => {
       const urgentTag = note.urgent ? " [URGENT]" : "";
       const permanentTag = note.permanent ? " [PERMANENT]" : "";
       return (
@@ -166,7 +170,12 @@ export class NoteManager {
       );
     });
 
-    return parts.join("\n\n");
+    return [
+      "--- USER NOTES FOR PLANNER ---",
+      "These notes are ordered oldest to newest. Treat newer and more specific user notes as overriding older, broader notes when they conflict. Urgent means high priority for your next planning decision; it does not mean running work was interrupted unless an explicit Planner restart/abort note says so.",
+      ...parts,
+      "--- END USER NOTES ---",
+    ].join("\n\n");
   }
 
   /**
