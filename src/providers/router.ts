@@ -210,7 +210,7 @@ export class ModelRouter {
         const errMsg = err instanceof Error ? err.message : String(err);
         const isTimeout = errMsg.includes("timed out");
         recordLlmCall(spec, { error: true, timeout: isTimeout });
-        log.warn(`Provider "${providerName}" (model: ${spec}) failed: ${errMsg}`);
+        log.warn(`Provider "${providerName}" (model: ${model}) failed: ${errMsg}`);
 
         // Non-retryable errors that apply regardless of provider - propagate immediately
         const isContextOverflow =
@@ -224,7 +224,7 @@ export class ModelRouter {
       }
     }
 
-    throw new Error(`All providers failed for model "${request.modelSpec}"`);
+    throw new Error(`All providers failed for ${describeRequestedModel(request.modelSpec)}`);
   }
 
   private buildChain(modelSpec: string): string[] {
@@ -268,6 +268,11 @@ export class ModelRouter {
     }
     this.stickyFailovers.delete(modelSpec);
   }
+}
+
+function describeRequestedModel(modelSpec: string): string {
+  const { provider, model } = parseModelId(modelSpec);
+  return `model "${model}" via provider "${provider}"`;
 }
 
 function buildModelEquivalenceIndex(groups: Record<string, string[]>): Map<string, string[]> {

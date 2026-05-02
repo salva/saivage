@@ -142,6 +142,23 @@ describe("ModelRouter", () => {
     expect(response.modelSpec).toBe("fallback/model-b");
     expect(response.requestedModelSpec).toBe("primary/model-a");
   });
+
+  it("reports provider and model separately when all providers fail", async () => {
+    const router = new ModelRouter(makeConfig());
+    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
+    providers.clear();
+
+    providers.set("github-copilot", makeProvider("github-copilot", vi.fn(async () => {
+      throw new Error("service unavailable");
+    })));
+
+    await expect(router.chat({
+      modelSpec: "github-copilot/gpt-5.4",
+      model: "gpt-5.4",
+      system: "system",
+      messages: [],
+    })).rejects.toThrow('All providers failed for model "gpt-5.4" via provider "github-copilot"');
+  });
 });
 
 function makeProvider(name: string, chat: ModelProvider["chat"]): ModelProvider {
