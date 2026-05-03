@@ -10,6 +10,7 @@ import type {
   ContentBlock,
 } from "./types.js";
 import { getGitHubCopilotBaseUrl } from "../auth/github-copilot.js";
+import { responsesFunctionCallItemId } from "./responses-ids.js";
 
 type ResponsesInputItem =
   | { role: "user"; content: Array<{ type: "input_text"; text: string }> }
@@ -365,7 +366,7 @@ export class CopilotProvider extends BaseProvider {
         } else if (block.type === "tool_use" && block.id && block.name) {
           result.push({
             type: "function_call",
-            id: `fc_${block.id}`,
+            id: responsesFunctionCallItemId(block.id),
             call_id: block.id,
             name: block.name,
             arguments: JSON.stringify(block.input ?? {}),

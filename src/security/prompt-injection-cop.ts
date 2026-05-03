@@ -23,7 +23,7 @@ export interface PromptInjectionCop {
   scan(request: PromptInjectionScanRequest): Promise<PromptInjectionScanResult>;
 }
 
-const DEFAULT_SCAN_MODEL = "github-copilot/gpt-5-mini";
+const DEFAULT_SCAN_MODEL = "github-copilot/gpt-5.4";
 const DEFAULT_MAX_SCAN_CHARS = 100_000;
 
 const BLOCK_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [

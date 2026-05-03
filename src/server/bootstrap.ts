@@ -420,10 +420,11 @@ const CONTINUOUS_IMPROVEMENT_PROMPT =
   `On this cycle:\n` +
   `1. Call plan_get() and plan_get_history() to confirm the current state.\n` +
   `2. Re-read the project objectives and recent results to identify the next highest-value objective-aligned experiment or blocker.\n` +
-  `3. If the project is an ML/research project, prefer a research -> data/features -> implementation -> evaluation -> comparison cycle: find a promising model/data idea, implement a bounded experiment, retrieve required data, run honest evaluation, update the leaderboard/reporting, and compare against prior models.\n` +
-  `4. Only create maintenance, QA, documentation, or hardening stages when they directly unblock or improve the reliability of the objective-aligned experiment loop.\n` +
-  `5. Create at least one concrete, bounded next stage with plan_add_stage() or plan_set_stages().\n` +
-  `6. Dispatch the next stage with run_manager().\n\n` +
+  `3. If the project is an ML/research project, first assess whether the dataset is large, complete, high-quality, and auditable enough for model work. If not, prioritize data acquisition, repair, provenance, quality reporting, and snapshot freezing before additional model tuning.\n` +
+  `4. Once the data foundation is credible, prefer a research -> data/features -> implementation -> evaluation -> comparison cycle: find a promising model/data idea, implement a bounded experiment, retrieve required data, run honest evaluation, update the leaderboard/reporting, and compare against prior models.\n` +
+  `5. Only create maintenance, QA, documentation, or hardening stages when they directly unblock or improve the reliability of the objective-aligned experiment loop.\n` +
+  `6. Create at least one concrete, bounded next stage with plan_add_stage() or plan_set_stages().\n` +
+  `7. Dispatch the next stage with run_manager().\n\n` +
   `Only say PLAN_COMPLETE if continuous-improvement mode has been disabled by runtime configuration or shutdown is requested.`;
 
 function buildRestartPrompt(request: PlannerRestartRequest): string {

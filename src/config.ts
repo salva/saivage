@@ -82,7 +82,7 @@ const configSchema = z.object({
   security: z
     .object({
       injectionScanner: z.boolean().default(true),
-      injectionModel: z.string().default("github-copilot/gpt-5-mini"),
+      injectionModel: z.string().default("github-copilot/gpt-5.4"),
       maxScanLengthBytes: z.number().default(100_000),
     })
     .default({}),
@@ -90,7 +90,7 @@ const configSchema = z.object({
   supervisor: z
     .object({
       enabled: z.boolean().default(true),
-      model: z.string().default("github-copilot/gpt-5-mini"),
+      model: z.string().default("github-copilot/gpt-5.4"),
       intervalMs: z.number().default(20 * 60 * 1000),
       consecutiveStuckVerdicts: z.number().default(3),
       logLines: z.number().default(400),

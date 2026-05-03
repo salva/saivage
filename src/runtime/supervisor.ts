@@ -5,7 +5,7 @@ import type { BaseAgent } from "../agents/base.js";
 import type { AgentRole } from "../agents/types.js";
 import { log } from "../log.js";
 
-const DEFAULT_MODEL = "github-copilot/gpt-5-mini";
+const DEFAULT_MODEL = "github-copilot/gpt-5.4";
 const DEFAULT_INTERVAL_MS = 20 * 60 * 1000;
 const DEFAULT_THRESHOLD = 3;
 const DEFAULT_LOG_LINES = 400;

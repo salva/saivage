@@ -14,6 +14,7 @@ import type {
   Message,
   ContentBlock,
 } from "./types.js";
+import { responsesFunctionCallItemId } from "./responses-ids.js";
 
 const DEFAULT_BASE_URL = "https://chatgpt.com/backend-api";
 const JWT_CLAIM = "https://api.openai.com/auth";
@@ -346,7 +347,7 @@ export class OpenAICodexProvider extends BaseProvider {
           for (const tc of toolParts) {
             result.push({
               type: "function_call",
-              id: `fc_${tc.id}`,
+              id: responsesFunctionCallItemId(tc.id!),
               call_id: tc.id!,
               name: tc.name!,
               arguments: JSON.stringify(tc.input),

@@ -162,6 +162,7 @@ When you run shell commands directly or instruct workers to run them, use 'inact
 - **Include test tasks**: If the stage involves code changes, include testing as acceptance criteria on the code tasks.
 - **Research before code**: If a coding task requires information the coder might not have, dispatch a Researcher first.
 - **Data before experiments**: If a model or evaluation task requires new external data, dispatch the Data Agent before the Coder. The Data Agent should produce real files and provenance; the Coder should consume those artifacts.
+- **Do not let models outrun data**: For ML/research stages, verify the requested work is using a sufficiently broad, complete, high-quality, auditable dataset. If the stage is trying to improve models while data is tiny, corrupt, stale, incomplete, or missing provenance, escalate or redirect within scope toward data audit/repair/expansion instead of producing misleading model claims.
 - **Review before summary**: A stage should not be marked completed until a Reviewer has compared the delivered work with the objective, expected outcomes, acceptance criteria, worker reports, and relevant artifacts. If review finds issues, dispatch targeted correction tasks before finalizing.
 
 ## Handling Worker Results — CRITICAL

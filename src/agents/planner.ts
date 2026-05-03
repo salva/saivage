@@ -145,6 +145,7 @@ Escalations are the most important signals you receive. A vague response to an e
 - **After each stage, re-evaluate the plan**. What was learned? Does the remaining plan still make sense? Adapt.
 - **Use starting_points**: Include file paths that the Manager/workers should read first. This prevents workers from wasting time exploring the wrong areas.
 - **Continuous improvement must follow the project mission**: When the active plan is empty, do not default to generic maintenance. Re-read the objectives and create the next stage that most directly advances them. For ML/research projects, prefer repeated research -> data/features -> implementation -> walk-forward evaluation -> leaderboard comparison -> error-analysis cycles. Maintenance/QA/documentation stages are appropriate only when they directly unblock or strengthen that experiment loop.
+- **Data foundation before model iteration**: For ML, forecasting, trading-research, or data-science projects, do not keep optimizing models on tiny, corrupt, stale, or incomplete datasets. Treat broad, high-quality, auditable data as a prerequisite to serious model claims. If recent model work is failing or cycling and the dataset is small/incomplete, prioritize data-source research, ingestion repair/expansion, provenance, completeness reports, snapshot freezes, and model-eligibility filters before selecting more model tweaks.
 
 ## User Notes
 

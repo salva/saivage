@@ -129,7 +129,7 @@ describe("RuntimeSupervisor", () => {
 
     expect(cancel).not.toHaveBeenCalled();
     expect(router.chat).toHaveBeenCalledTimes(2);
-    expect(requests[0].modelSpec).toBe("github-copilot/gpt-5-mini");
+    expect(requests[0].modelSpec).toBe("github-copilot/gpt-5.4");
     expect(requests[0].tools).toBeUndefined();
     expect(requests[0].messages[0].content).toContain("Recent Saivage logs");
     expect(requests[0].messages[0].content).toContain("supervisor test synthetic retry loop warning");
@@ -258,12 +258,12 @@ function makeSupervisorConfig(overrides: Partial<SaivageConfig["supervisor"]> = 
     },
     security: {
       injectionScanner: true,
-      injectionModel: "github-copilot/gpt-5-mini",
+      injectionModel: "github-copilot/gpt-5.4",
       maxScanLengthBytes: 100_000,
     },
     supervisor: {
       enabled: true,
-      model: "github-copilot/gpt-5-mini",
+      model: "github-copilot/gpt-5.4",
       intervalMs: 20 * 60 * 1000,
       consecutiveStuckVerdicts: 3,
       logLines: 400,

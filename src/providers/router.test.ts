@@ -109,6 +109,25 @@ describe("ModelRouter", () => {
     ]);
   });
 
+  it("does not carry provider-only failover onto models with explicit equivalents", () => {
+    const router = new ModelRouter(makeConfig({
+      modelEquivalents: {
+        "github-copilot/claude-sonnet-4.6": ["openai-codex/gpt-5.3-codex"],
+      },
+      failover: {
+        "github-copilot": ["openai-codex"],
+      },
+    }));
+
+    const chain = (router as unknown as { buildChain(modelSpec: string): string[] }).buildChain("github-copilot/claude-sonnet-4.6");
+
+    expect(chain).toEqual([
+      "github-copilot/claude-sonnet-4.6",
+      "openai-codex/gpt-5.3-codex",
+    ]);
+    expect(chain).not.toContain("openai-codex/claude-sonnet-4.6");
+  });
+
   it("returns metadata for the actual provider and model used", async () => {
     const router = new ModelRouter(makeConfig({
       failover: {

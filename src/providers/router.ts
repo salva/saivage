@@ -256,6 +256,9 @@ export class ModelRouter {
 
     // Expand provider-only failover entries to full specs using the same model.
     for (const fallback of failovers) {
+      if (!fallback.includes("/") && this.modelEquivalents.has(modelSpec)) {
+        continue;
+      }
       this.appendFailoverChain(fallback.includes("/") ? fallback : `${fallback}/${model}`, chain, expanded);
     }
   }
