@@ -25,6 +25,7 @@ import { ChatAgent } from "../agents/chat.js";
 import { chatSessionId, agentId } from "../ids.js";
 import { WebSocketChannel } from "../channels/websocket.js";
 import { log } from "../log.js";
+import { NoteManager } from "../runtime/notes.js";
 
 export interface ServerOptions {
   port: number;
@@ -137,11 +138,17 @@ export async function startServer(
   // ─── Config API ─────────────────────────────────────────────────────────
 
   app.get("/api/config", async () => {
-    const { project_name, objectives, provider } = runtime.project.config;
+    const { project_name, objectives } = runtime.project.config;
+    const plannerRoute = runtime.routing.resolve("planner");
+    const chatRoute = runtime.routing.resolve("chat");
     return {
       project_name,
       objectives,
-      provider,
+      provider: plannerRoute.modelSpec,
+      routing: {
+        planner: plannerRoute,
+        chat: chatRoute,
+      },
     };
   });
 
@@ -167,6 +174,37 @@ export async function startServer(
       ),
     ).filter(Boolean);
     return { reports };
+  });
+
+  // ─── Notes API ─────────────────────────────────────────────────────────
+
+  app.get("/api/notes", async () => {
+    const noteManager = new NoteManager(runtime.project.paths.notes);
+    return { notes: noteManager.listNotes() };
+  });
+
+  app.post("/api/notes/:noteId/acknowledge", async (req, reply) => {
+    const { noteId } = req.params as { noteId: string };
+    const noteManager = new NoteManager(runtime.project.paths.notes);
+    const result = noteManager.acknowledgeNote(noteId);
+    if (!result) {
+      return reply.status(404).send({ error: "Note not found" });
+    }
+    return result;
+  });
+
+  app.delete("/api/notes/:noteId", async (req, reply) => {
+    const { noteId } = req.params as { noteId: string };
+    const noteManager = new NoteManager(runtime.project.paths.notes);
+    if (!noteManager.deleteNote(noteId)) {
+      return reply.status(404).send({ error: "Note not found" });
+    }
+    return { deleted: true };
+  });
+
+  app.delete("/api/notes", async () => {
+    const noteManager = new NoteManager(runtime.project.paths.notes);
+    return { deleted: noteManager.clearNotes() };
   });
 
   // ─── Chat Sessions API ─────────────────────────────────────────────────
@@ -530,7 +568,7 @@ export async function startServer(
       mcpRuntime: runtime.mcpRuntime,
       agentId: agentId(),
       role: "chat" as const,
-      modelSpec: resolveModelSpec(runtime),
+      ...resolveChatRoute(runtime),
     };
 
     const chatAgent = new ChatAgent(
@@ -572,17 +610,6 @@ export async function startServer(
   };
 }
 
-function resolveModelSpec(runtime: SaivageRuntime): string {
-  // Chat-specific model from project config overrides
-  const overrides = runtime.project.config.model_overrides;
-  if (overrides?.chat) return overrides.chat;
-  // Chat model from runtime config (saivage.json) — ideally a cheaper/faster model
-  const chatModel = runtime.config.models?.chat;
-  if (chatModel) return chatModel;
-  // Fallback to default provider
-  return runtime.project.config.provider ?? "openai-codex/gpt-5.3-codex";
-}
-
 function getEventFilter(runtime: SaivageRuntime) {
   const filters = runtime.project.config.notifications?.filters;
   if (!filters) return undefined;
@@ -591,5 +618,14 @@ function getEventFilter(runtime: SaivageRuntime) {
     allowedTypes: filters.categories?.length
       ? filters.categories
       : undefined,
+  };
+}
+
+function resolveChatRoute(runtime: SaivageRuntime) {
+  const route = runtime.routing.resolve("chat");
+  return {
+    modelSpec: route.modelSpec,
+    authProfileKey: route.authProfile,
+    accountRef: route.accountRef,
   };
 }

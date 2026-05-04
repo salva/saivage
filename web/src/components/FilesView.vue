@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { ChevronLeft, FileJson, FileText, Folder, FolderOpen, RefreshCw } from "lucide-vue-next";
+import { CheckCheck, ChevronLeft, FileJson, FileText, Folder, FolderOpen, RefreshCw, StickyNote, Trash2 } from "lucide-vue-next";
 import JsonHighlight from "./JsonHighlight.vue";
 import FormattedContent from "./FormattedContent.vue";
 
@@ -11,9 +11,23 @@ interface FileEntry {
   modified?: string;
 }
 
+interface UserNote {
+  id: string;
+  channel: string;
+  session_id: string;
+  content: string;
+  created_at: string;
+  permanent: boolean;
+  urgent: boolean;
+  acknowledged_at?: string;
+}
+
 const currentPath = ref("");
 const entries = ref<FileEntry[]>([]);
 const fileContent = ref<{ path: string; content: string; size: number; type: string; truncated: boolean } | null>(null);
+const notes = ref<UserNote[]>([]);
+const notesLoading = ref(false);
+const noteActionBusy = ref<string | null>(null);
 const loading = ref(false);
 const pathStack = ref<string[]>([""]);
 
@@ -29,9 +43,26 @@ async function fetchDir(path: string) {
         return a.name.localeCompare(b.name);
       });
       currentPath.value = path;
+      if (path === "notes") {
+        await fetchNotes();
+      } else {
+        notes.value = [];
+      }
     }
   } catch { /* ignore */ }
   loading.value = false;
+}
+
+async function fetchNotes() {
+  notesLoading.value = true;
+  try {
+    const res = await fetch("/api/notes");
+    if (res.ok) {
+      const data = await res.json();
+      notes.value = data.notes ?? [];
+    }
+  } catch { /* ignore */ }
+  notesLoading.value = false;
 }
 
 async function openEntry(entry: FileEntry) {
@@ -51,6 +82,36 @@ async function loadFile(path: string) {
     if (res.ok) fileContent.value = await res.json();
   } catch { /* ignore */ }
   loading.value = false;
+}
+
+async function acknowledgeNote(noteId: string) {
+  noteActionBusy.value = `ack:${noteId}`;
+  try {
+    await fetch(`/api/notes/${encodeURIComponent(noteId)}/acknowledge`, { method: "POST" });
+    await fetchNotes();
+    await fetchDir("notes");
+  } catch { /* ignore */ }
+  noteActionBusy.value = null;
+}
+
+async function deleteNote(noteId: string) {
+  noteActionBusy.value = `delete:${noteId}`;
+  try {
+    await fetch(`/api/notes/${encodeURIComponent(noteId)}`, { method: "DELETE" });
+    await fetchNotes();
+    await fetchDir("notes");
+  } catch { /* ignore */ }
+  noteActionBusy.value = null;
+}
+
+async function clearNotes() {
+  noteActionBusy.value = "clear";
+  try {
+    await fetch("/api/notes", { method: "DELETE" });
+    await fetchNotes();
+    await fetchDir("notes");
+  } catch { /* ignore */ }
+  noteActionBusy.value = null;
 }
 
 function goUp() {
@@ -97,6 +158,8 @@ const directoryStats = computed(() => {
   const dirs = entries.value.filter((entry) => entry.type === "dir").length;
   return { dirs, files: entries.value.length - dirs };
 });
+
+const isNotesView = computed(() => currentPath.value === "notes");
 
 function parseJson(content: string): unknown {
   try { return JSON.parse(content); } catch { return content; }
@@ -149,13 +212,82 @@ function parseJson(content: string): unknown {
     </aside>
 
     <section class="content-panel">
-      <div v-if="!fileContent" class="content-empty">
+      <div v-if="isNotesView && !fileContent" class="notes-panel">
+        <div class="content-header notes-header">
+          <div>
+            <strong>Notes Queue</strong>
+            <span>{{ notes.length }} note{{ notes.length === 1 ? '' : 's' }}</span>
+          </div>
+          <div class="notes-actions">
+            <button class="icon-button" @click="fetchNotes" title="Refresh notes">
+              <RefreshCw :size="15" />
+            </button>
+            <button class="danger-button" :disabled="notes.length === 0 || noteActionBusy === 'clear'" @click="clearNotes">
+              <Trash2 :size="14" />
+              <span>Clear all</span>
+            </button>
+          </div>
+        </div>
+
+        <div v-if="notesLoading" class="content-empty">
+          <StickyNote :size="38" />
+          <strong>Loading notes...</strong>
+        </div>
+
+        <div v-else-if="notes.length === 0" class="content-empty">
+          <StickyNote :size="38" />
+          <strong>No active notes</strong>
+          <span>The planner note queue is empty.</span>
+        </div>
+
+        <div v-else class="notes-list">
+          <article v-for="note in notes" :key="note.id" class="note-card" :class="{ urgent: note.urgent, acknowledged: !!note.acknowledged_at }">
+            <div class="note-meta">
+              <div class="note-tags">
+                <span class="note-chip">{{ note.channel }}</span>
+                <span class="note-chip">{{ note.permanent ? 'permanent' : 'volatile' }}</span>
+                <span v-if="note.urgent" class="note-chip urgent">urgent</span>
+                <span v-if="note.acknowledged_at" class="note-chip ok">acknowledged</span>
+              </div>
+              <span class="tree-size">{{ new Date(note.created_at).toLocaleString() }}</span>
+            </div>
+
+            <div class="note-title-row">
+              <strong>{{ note.id }}</strong>
+              <span class="tree-size">session {{ note.session_id }}</span>
+            </div>
+
+            <pre class="note-content">{{ note.content }}</pre>
+
+            <div class="note-card-actions">
+              <button
+                class="secondary-button"
+                :disabled="!!note.acknowledged_at || noteActionBusy === `ack:${note.id}`"
+                @click="acknowledgeNote(note.id)"
+              >
+                <CheckCheck :size="14" />
+                <span>{{ note.permanent ? 'Acknowledge' : 'Dismiss' }}</span>
+              </button>
+              <button
+                class="danger-button"
+                :disabled="noteActionBusy === `delete:${note.id}`"
+                @click="deleteNote(note.id)"
+              >
+                <Trash2 :size="14" />
+                <span>Delete</span>
+              </button>
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <div v-else-if="!fileContent" class="content-empty">
         <FolderOpen :size="38" />
         <strong>Select an artifact</strong>
         <span>Browse persisted plans, notes, reports, logs, and runtime state.</span>
       </div>
 
-      <template v-if="fileContent">
+      <template v-else>
         <div class="content-header">
           <div>
             <strong>{{ fileContent.path }}</strong>
@@ -323,6 +455,12 @@ function parseJson(content: string): unknown {
   overflow: hidden;
 }
 
+.notes-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .content-empty {
   display: grid;
   place-items: center;
@@ -372,6 +510,119 @@ function parseJson(content: string): unknown {
 .content-header span {
   color: var(--text-muted);
   font-size: 11px;
+}
+
+.notes-header {
+  border-bottom: 1px solid var(--border);
+}
+
+.notes-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.secondary-button,
+.danger-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.secondary-button:hover,
+.danger-button:hover {
+  background: var(--surface-2);
+}
+
+.secondary-button:disabled,
+.danger-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.danger-button {
+  color: #ff8f8f;
+  border-color: rgba(255, 143, 143, 0.25);
+}
+
+.notes-list {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  overflow-y: auto;
+}
+
+.note-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-1);
+}
+
+.note-card.urgent {
+  border-color: rgba(255, 173, 90, 0.34);
+}
+
+.note-card.acknowledged {
+  opacity: 0.88;
+}
+
+.note-meta,
+.note-title-row,
+.note-card-actions,
+.note-tags {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.note-tags {
+  justify-content: flex-start;
+}
+
+.note-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.note-chip.urgent {
+  color: #ffb067;
+  border-color: rgba(255, 176, 103, 0.3);
+}
+
+.note-chip.ok {
+  color: #8be0a4;
+  border-color: rgba(139, 224, 164, 0.3);
+}
+
+.note-content {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
 }
 
 .console-pill.warn {

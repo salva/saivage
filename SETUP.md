@@ -2,8 +2,6 @@
 
 Complete instructions for setting up Saivage in an LXC container on a fresh Linux host, including configuring a target project for the agent to work on.
 
-If you are working in this workspace and want Saivage to operate on the sibling `target` repo, use [deploy/DEPLOYMENT.md](deploy/DEPLOYMENT.md) for the exact container flow.
-
 ## Prerequisites
 
 - **Host OS**: Ubuntu 24.04+ (tested on 25.10 questing)

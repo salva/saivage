@@ -133,6 +133,11 @@ export class ReviewerAgent extends BaseAgent implements Agent {
       return { kind: "failure", reason: msg, partial: buildFailureReport(this.input, startedAt, start, msg) };
     }
   }
+
+  protected override validateFinalResponse(): string | null {
+    if (this.hasUsedAnyTool()) return null;
+    return "Invalid final review response: you have not used any tools to inspect evidence yet.";
+  }
 }
 
 function normalizeWorkerInput(input: WorkerInput): WorkerInput {

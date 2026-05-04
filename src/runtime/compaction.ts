@@ -34,6 +34,8 @@ export interface CompactionConfig {
   maxCompactions: number;
   /** Model spec to use for summarization (cheap model). */
   summaryModelSpec: string;
+  /** Timeout for the summarization LLM call in ms. Default: 1_200_000 (20 min). */
+  summaryTimeoutMs?: number;
 }
 
 export interface CompactionState {
@@ -93,9 +95,10 @@ export async function compactConversation(
 
   // Serialize conversation for summarization
   const serialized = serializeForSummary(messages);
+  const timeoutMs = config.summaryTimeoutMs ?? 1_200_000;
 
   try {
-    const response = await router.chat({
+    const chatPromise = router.chat({
       modelSpec: config.summaryModelSpec,
       model: config.summaryModelSpec.split("/")[1] ?? config.summaryModelSpec,
       system: "You are a conversation summarizer. Produce a concise continuation summary.",
@@ -104,6 +107,8 @@ export async function compactConversation(
       ],
       maxTokens: 4000,
     });
+
+    const response = await raceTimeout(chatPromise, timeoutMs);
 
     const summary = response.content;
 
@@ -158,4 +163,18 @@ function serializeForSummary(messages: Message[]): string {
     }
   }
   return parts.join("\n");
+}
+
+/** Race a promise against a timeout. Rejects with a descriptive error on timeout. */
+function raceTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`Compaction summarization timed out after ${ms}ms`)),
+      ms,
+    );
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
 }

@@ -37,17 +37,21 @@ import type { ServiceEntry } from "../mcp/registry.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
 import { agentId } from "../ids.js";
 import { log } from "../log.js";
+import { ModelRoutingResolver } from "../routing/resolver.js";
 
 /** Saivage runtime context — returned by bootstrap. */
 export interface SaivageRuntime {
   config: SaivageConfig;
   router: ModelRouter;
+  routing: ModelRoutingResolver;
   mcpRuntime: McpRuntime;
   eventBus: EventBus;
   planService: PlanService;
   project: ProjectContext;
   tracker: RuntimeTracker;
   plannerControl: PlannerControl;
+  /** Dedicated runtime directives injected into the next Planner startup. */
+  plannerStartupDirectives: string[];
   /** Live agent instances for conversation inspection. */
   agentRegistry: Map<string, import("../agents/base.js").BaseAgent>;
   /** Background log-only supervisor for stuck-agent detection. */
@@ -119,6 +123,11 @@ export async function bootstrap(
   // 2. Load project-local runtime config
   const config = loadConfig(true, project.projectRoot);
   log.info("[v2] Config loaded");
+  const routing = new ModelRoutingResolver(project.config, {
+    ...config,
+    supervisorModel: config.supervisor.model,
+    securityModel: config.security.injectionModel,
+  });
 
   // 3. Initialize model router + OAuth
   const router = new ModelRouter(config);
@@ -127,7 +136,9 @@ export async function bootstrap(
 
   // 4. Initialize MCP runtime + builtin services
   const mcpRuntime = new McpRuntime(config.runtime);
-  registerBuiltinServices(mcpRuntime, { promptInjectionCop: createPromptInjectionCop(config, router) });
+  registerBuiltinServices(mcpRuntime, {
+    promptInjectionCop: createPromptInjectionCop(config, router, routing.resolve("security").modelSpec),
+  });
   await startConfiguredMcpServers(mcpRuntime, config);
   mcpRuntime.startMonitoring();
 
@@ -182,12 +193,14 @@ export async function bootstrap(
   const runtime: SaivageRuntime = {
     config,
     router,
+    routing,
     mcpRuntime,
     eventBus,
     planService,
     project,
     tracker,
     plannerControl,
+    plannerStartupDirectives: [],
     agentRegistry,
     supervisor: null,
     shutdown: async () => {
@@ -215,14 +228,14 @@ export async function bootstrap(
       noteService.handleToolCall(toolName, args),
   );
 
-  supervisor = new RuntimeSupervisor(config, { router, agentRegistry });
+  supervisor = new RuntimeSupervisor(config, { router, agentRegistry }, routing.resolve("supervisor").modelSpec);
   runtime.supervisor = supervisor;
   supervisor.start();
 
   const shutdownHandoff = consumeShutdownHandoff(project);
   if (shutdownHandoff) {
-    const noteId = await createPlannerNote(runtime, shutdownHandoff, "shutdown-handoff");
-    log.info(`[shutdown] Created restart handoff note ${noteId}`);
+    queuePlannerDirective(runtime, shutdownHandoff);
+    log.info("[shutdown] Loaded restart handoff directive for next planner session");
   }
 
   return runtime;
@@ -250,7 +263,7 @@ export function createChildSpawner(
       mcpRuntime,
       agentId: agentId(),
       role,
-      modelSpec: resolveModelSpec(project, role),
+      ...resolveAgentRoute(runtime, role),
     };
 
     let agent: Agent;
@@ -369,7 +382,8 @@ export async function runPlanner(
     mcpRuntime,
     agentId: agentId(),
     role: "planner",
-    modelSpec: resolveModelSpec(project, "planner"),
+    ...resolveAgentRoute(runtime, "planner"),
+    startupDirectives: runtime.plannerStartupDirectives.splice(0),
   };
 
   const childSpawner = createChildSpawner(runtime);
@@ -437,30 +451,8 @@ function buildRestartPrompt(request: PlannerRestartRequest): string {
   );
 }
 
-async function createPlannerNote(
-  runtime: SaivageRuntime,
-  content: string,
-  sessionId: string,
-): Promise<string> {
-  const { writeDoc, ensureDir } = await import("../store/documents.js");
-  const { noteId } = await import("../ids.js");
-  const { UserNoteSchema } = await import("../types.js");
-  const { join } = await import("node:path");
-
-  const notesDir = runtime.project.paths.notes;
-  ensureDir(notesDir);
-  const id = noteId();
-  const note = {
-    id,
-    channel: "system",
-    session_id: sessionId,
-    content,
-    created_at: new Date().toISOString(),
-    permanent: false,
-    urgent: true,
-  };
-  writeDoc(join(notesDir, `${id}.json`), note, UserNoteSchema);
-  return id;
+function queuePlannerDirective(runtime: SaivageRuntime, content: string): void {
+  runtime.plannerStartupDirectives.push(content);
 }
 
 /**
@@ -500,16 +492,12 @@ export async function runPlannerWithRecovery(
       const restartRequest = runtime.plannerControl.consumeRestartRequest() ?? restartDuringRun;
 
       if (restartRequest) {
-        const noteId = await createPlannerNote(
-          runtime,
-          buildRestartPrompt(restartRequest),
-          "planner-restart",
-        );
+        queuePlannerDirective(runtime, buildRestartPrompt(restartRequest));
         await runtime.eventBus.publish({
           type: "plan_updated",
-          summary: `Planner restart requested by ${restartRequest.requestedBy}. Restart note ${noteId} created.`,
+          summary: `Planner restart requested by ${restartRequest.requestedBy}. Restart directive queued.`,
         });
-        log.info(`[recovery] Restarting planner immediately after explicit request (${noteId})`);
+        log.info("[recovery] Restarting planner immediately after explicit request");
         continue;
       }
 
@@ -531,17 +519,13 @@ export async function runPlannerWithRecovery(
           return result;
         }
 
-        const noteId = await createPlannerNote(
-          runtime,
-          CONTINUOUS_IMPROVEMENT_PROMPT,
-          "continuous-improvement",
-        );
+        queuePlannerDirective(runtime, CONTINUOUS_IMPROVEMENT_PROMPT);
         await runtime.eventBus.publish({
           type: "plan_updated",
-          summary: `Planner completed the active plan. Continuous-improvement note ${noteId} created; restarting Planner.`,
+          summary: "Planner completed the active plan. Continuous-improvement directive queued; restarting Planner.",
           timestamp: new Date().toISOString(),
         });
-        log.info(`[recovery] PLAN_COMPLETE detected; continuous-improvement mode is enabled. Restarting planner (${noteId})`);
+        log.info("[recovery] PLAN_COMPLETE detected; continuous-improvement mode is enabled. Restarting planner");
         continue;
       }
 
@@ -573,8 +557,8 @@ export async function runPlannerWithRecovery(
 
       if (cancelled) break;
 
-      const id = await createPlannerNote(runtime, RECOVERY_PROMPT, "recovery");
-      log.info(`[recovery] Created recovery note ${id}`);
+      queuePlannerDirective(runtime, RECOVERY_PROMPT);
+      log.info("[recovery] Queued recovery directive for the next planner session");
     }
 
     log.info("[recovery] Recovery loop cancelled — shutting down");
@@ -586,35 +570,6 @@ export async function runPlannerWithRecovery(
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-function resolveModelSpec(
-  project: ProjectContext,
-  role: string,
-): string {
-  // Check per-role model override in project config (config.json)
-  const overrides = project.config.model_overrides;
-  if (overrides?.[role]) return overrides[role];
-
-  // Check role-based models from runtime config (saivage.json)
-  // Map agent roles to config model keys
-  const roleToModelKey: Record<string, string> = {
-    planner: "orchestrator",
-    manager: "orchestrator",
-    coder: "coder",
-    researcher: "researcher",
-    data_agent: "data_agent",
-    reviewer: "reviewer",
-    inspector: "orchestrator",
-    chat: "chat",
-  };
-  const runtimeConfig = loadConfig(false, project.projectRoot);
-  const modelKey = roleToModelKey[role] ?? role;
-  const modelFromConfig = (runtimeConfig.models as Record<string, string>)?.[modelKey];
-  if (modelFromConfig) return modelFromConfig;
-
-  // Fallback to default provider
-  return project.config.provider ?? "openai-codex/gpt-5.3-codex";
-}
 
 async function startConfiguredMcpServers(
   mcpRuntime: McpRuntime,
@@ -670,6 +625,15 @@ async function injectOAuthTokens(router: ModelRouter): Promise<void> {
       }
     }
   }
+}
+
+function resolveAgentRoute(runtime: SaivageRuntime, role: string): Pick<AgentContext, "modelSpec" | "authProfileKey" | "accountRef"> {
+  const route = runtime.routing.resolve(role);
+  return {
+    modelSpec: route.modelSpec,
+    authProfileKey: route.authProfile,
+    accountRef: route.accountRef,
+  };
 }
 
 async function publishAgentResult(

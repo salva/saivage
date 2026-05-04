@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { loadConfig, expandHome } from "./config.js";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
 
@@ -32,6 +32,27 @@ describe("config", () => {
       expect(config.agent.maxConcurrentAgents).toBe(3);
       expect(config.models.orchestrator).toBe("anthropic/claude-sonnet-4-20250514");
       expect(config.modelEquivalents).toEqual({});
+    });
+
+    it("parses provider accounts and default account routing config", () => {
+      const saivageRoot = join(projectRoot, ".saivage");
+      mkdirSync(saivageRoot, { recursive: true });
+      writeFileSync(join(saivageRoot, "saivage.json"), JSON.stringify({
+        providers: {
+          "github-copilot": {
+            defaultAccount: "main",
+            accounts: {
+              main: {
+                authProfile: "github-copilot-main",
+              },
+            },
+          },
+        },
+      }, null, 2));
+
+      const config = loadConfig(true, projectRoot);
+      expect(config.providers["github-copilot"]?.defaultAccount).toBe("main");
+      expect(config.providers["github-copilot"]?.accounts.main?.authProfile).toBe("github-copilot-main");
     });
   });
 });

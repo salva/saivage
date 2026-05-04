@@ -26,6 +26,10 @@ program
       project_name: opts.name ?? "my-project",
       objectives: opts.objectives ?? [],
       provider: "openai-codex/gpt-5.3-codex",
+      routing: {
+        roles: {},
+        profiles: {},
+      },
       notifications: {
         channels: [] as ("telegram" | "web")[],
         filters: {
@@ -242,7 +246,9 @@ program
         mcpRuntime: runtime.mcpRuntime,
         agentId: agentId(),
         role: "inspector" as const,
-        modelSpec: runtime.project.config.provider ?? "openai-codex/gpt-5.3-codex",
+        modelSpec: runtime.routing.resolve("inspector").modelSpec,
+        authProfileKey: runtime.routing.resolve("inspector").authProfile,
+        accountRef: runtime.routing.resolve("inspector").accountRef,
       };
 
       const inspector = new InspectorAgent(ctx, { request });
@@ -365,6 +371,7 @@ program
   .command("login [project-path]")
   .description("Authenticate with an LLM provider via OAuth")
   .option("--provider <provider>", "OAuth provider ID", "openai-codex")
+  .option("--profile <profile>", "Named auth profile to save credentials under")
   .action(async (projectPath: string | undefined, opts) => {
     const { resolve } = await import("node:path");
     const { discoverProject } = await import("../store/project.js");
@@ -414,13 +421,14 @@ program
         onProgress: (msg) => console.log(msg),
       });
 
-      const profileKey = `${providerId}-${creds.accountId ?? "default"}`;
+      const profileKey = (opts.profile as string | undefined) ?? `${providerId}-${creds.accountId ?? "default"}`;
       saveProfile(profileKey, {
         type: "oauth",
         provider: providerId,
         access: creds.access,
         refresh: creds.refresh,
         expires: creds.expires,
+        accountId: creds.accountId,
         email: creds.email,
       });
 
@@ -438,6 +446,7 @@ program
   .command("logout [project-path]")
   .description("Remove stored OAuth credentials")
   .option("--provider <provider>", "OAuth provider ID to remove")
+  .option("--profile <profile>", "Exact auth profile key to remove")
   .action(async (projectPath: string | undefined, opts) => {
     const { resolve } = await import("node:path");
     const { discoverProject } = await import("../store/project.js");
@@ -456,8 +465,16 @@ program
 
     const store = loadProfiles();
     const providerId = opts.provider as string | undefined;
+    const profileKey = opts.profile as string | undefined;
 
-    if (providerId) {
+    if (profileKey) {
+      if (!store.profiles[profileKey]) {
+        console.log(`No credentials found for profile ${profileKey}.`);
+        return;
+      }
+      delete store.profiles[profileKey];
+      console.log(`Removed credential profile ${profileKey}.`);
+    } else if (providerId) {
       const toRemove = Object.entries(store.profiles)
         .filter(([, p]) => p.provider === providerId)
         .map(([k]) => k);

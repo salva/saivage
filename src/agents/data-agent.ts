@@ -115,6 +115,11 @@ export class DataAgent extends BaseAgent implements Agent {
       return { kind: "failure", reason: msg, partial: buildFailureReport(this.input, startedAt, start, msg) };
     }
   }
+
+  protected override validateFinalResponse(): string | null {
+    if (this.hasUsedAnyTool()) return null;
+    return "Invalid final task response: you have not used any tools for this data task yet.";
+  }
 }
 
 function normalizeTask(raw: any): import("../types.js").Task {

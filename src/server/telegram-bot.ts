@@ -34,14 +34,13 @@ export async function startTelegramBot(
     { channel: TelegramChannel; sessionId: string }
   >();
 
-  function resolveModelSpec(): string {
-    // Chat-specific model override
-    const overrides = runtime.project.config.model_overrides;
-    if (overrides?.chat) return overrides.chat;
-    // Chat model from runtime config (saivage.json) — ideally a cheaper/faster model
-    const chatModel = runtime.config.models?.chat;
-    if (chatModel) return chatModel;
-    return runtime.project.config.provider ?? "openai-codex/gpt-5.3-codex";
+  function resolveChatRoute() {
+    const route = runtime.routing.resolve("chat");
+    return {
+      modelSpec: route.modelSpec,
+      authProfileKey: route.authProfile,
+      accountRef: route.accountRef,
+    };
   }
 
   function getOrCreateSession(chatId: number): {
@@ -73,7 +72,7 @@ export async function startTelegramBot(
       mcpRuntime: runtime.mcpRuntime,
       agentId: agentId(),
       role: "chat" as const,
-      modelSpec: resolveModelSpec(),
+      ...resolveChatRoute(),
     };
 
     const eventFilter = runtime.config.notifications?.filters

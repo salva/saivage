@@ -1,7 +1,7 @@
 /**
  * Saivage — Agent Base Class
  * Wraps LLM provider calls, assembles context (system prompt + skills + references),
- * manages the conversation loop, tool execution, compaction, self-check, and stash.
+ * manages the conversation loop, tool execution, compaction, and stash.
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -26,12 +26,6 @@ import {
   type CompactionConfig,
   type CompactionState,
 } from "../runtime/compaction.js";
-import {
-  createSelfCheckState,
-  recordToolCallRound,
-  selfCheckMessage,
-  type SelfCheckState,
-} from "../runtime/self-check.js";
 import {
   resolveSkills,
   formatSkillsForPrompt,
@@ -72,6 +66,14 @@ export interface LlmResponseSource {
 
 const MAX_DIAGNOSTIC_ENTRIES = 30;
 
+const VISIBLE_EXECUTION_STYLE_PROMPT = `## Visible Execution Style
+
+- In any response that includes one or more tool calls, begin the SAME response with a short explanation of what you are about to do.
+- Keep that explanation concise and concrete: say what you are checking/changing, why it matters, and what outcome you expect.
+- Do NOT wait for a separate text-only turn. Combine the explanation and the tool calls in one response.
+- If several tool calls belong to one batch, summarize the batch once instead of narrating each call.
+- Keep these explanations brief so they improve trace readability without creating extra churn.`;
+
 function describeToolUseBlocks(blocks: ContentBlock[]): string {
   const names = blocks.map((block) => block.name ?? "unknown");
   const counts = new Map<string, number>();
@@ -102,9 +104,10 @@ export interface BaseAgentConfig {
 /**
  * Base class for all v2 agents.
  * Implements the conversation loop with LLM calls, tool execution,
- * compaction, self-check, and stash.
+ * compaction and stash.
  */
 export class BaseAgent {
+  private static readonly MAX_INVALID_FINAL_RESPONSES = 3;
   readonly id: string;
   readonly role: AgentRole;
 
@@ -115,13 +118,14 @@ export class BaseAgent {
   private dispatcher: Dispatcher;
   private hasChildSpawner = false;
   private compactionState: CompactionState = { compactionCount: 0 };
-  private selfCheckState: SelfCheckState;
   private compactionConfig: CompactionConfig;
   private abortSignal?: { aborted: boolean };
   private onActivity?: (agentId: string) => void;
   private diagnostics: ConversationEntry[] = [];
   private messageTimestamps: string[] = [];
   private messageSources: (LlmResponseSource | undefined)[] = [];
+  private toolCallNames: string[] = [];
+  private invalidFinalResponseCount = 0;
   readonly startedAt = new Date().toISOString();
 
   constructor(ctx: AgentContext, config: BaseAgentConfig) {
@@ -139,9 +143,11 @@ export class BaseAgent {
       : [];
 
     const skillBlock = formatSkillsForPrompt(skills);
-    this.systemPrompt = skillBlock
-      ? `${config.systemPrompt}\n\n${skillBlock}`
-      : config.systemPrompt;
+    this.systemPrompt = [
+      config.systemPrompt,
+      VISIBLE_EXECUTION_STYLE_PROMPT,
+      skillBlock,
+    ].filter(Boolean).join("\n\n");
 
     // Initialize dispatcher
     this.dispatcher = new Dispatcher(ctx.mcpRuntime);
@@ -150,12 +156,7 @@ export class BaseAgent {
       this.hasChildSpawner = true;
     }
 
-    // Initialize self-check
     const agentConfig = ctx.project.config.agents?.[ctx.role];
-    this.selfCheckState = createSelfCheckState(
-      ctx.role,
-      agentConfig?.self_check_frequency,
-    );
 
     // Initialize compaction config
     const contextWindow = ctx.router.getMaxContextTokens(ctx.modelSpec);
@@ -233,9 +234,29 @@ export class BaseAgent {
 
       // No tool calls → agent is done
       if (response.toolCalls.length === 0) {
+        const finalResponseIssue = this.validateFinalResponse(response.content);
         this.pushMessage({ role: "assistant", content: response.content }, undefined, responseSource(response));
+        if (finalResponseIssue) {
+          this.invalidFinalResponseCount += 1;
+          this.addDiagnostic("model_repair", finalResponseIssue);
+          if (this.invalidFinalResponseCount >= BaseAgent.MAX_INVALID_FINAL_RESPONSES) {
+            return {
+              text: `Agent terminated after ${this.invalidFinalResponseCount} invalid final responses: ${finalResponseIssue}`,
+              finishReason: "error",
+              source: responseSource(response),
+            };
+          }
+          this.pushMessage({
+            role: "user",
+            content: `${finalResponseIssue} Continue the task by using the required tools and return a final result only after real execution evidence exists.`,
+          });
+          continue;
+        }
         return { text: response.content, finishReason: response.finishReason, source: responseSource(response) };
       }
+
+      this.invalidFinalResponseCount = 0;
+      this.toolCallNames.push(...response.toolCalls.map((tc) => tc.name));
 
       // Build assistant message with tool-use blocks
       const assistantBlocks: ContentBlock[] = [];
@@ -271,12 +292,6 @@ export class BaseAgent {
         }),
       );
       this.pushMessage({ role: "user", content: resultBlocks });
-
-      // Record tool-call round for self-check
-      if (recordToolCallRound(this.selfCheckState)) {
-        const checkMsg = selfCheckMessage(this.selfCheckState.frequency);
-        this.pushMessage({ role: "user", content: checkMsg });
-      }
 
       if (dispatchResult.aborted) {
         return { text: "Aborted during tool execution", finishReason: "abort" };
@@ -351,19 +366,22 @@ export class BaseAgent {
   // ─── Protected ──────────────────────────────────────────────────────────
 
   /** Make an LLM call with current conversation state.
-   *  Retries indefinitely on transient errors with exponential backoff
-   *  (30s initial, x1.5, max 20min). Context overflow triggers compaction
-   *  and immediate retry instead of backoff.
+   *  Retries on transient errors with exponential backoff
+   *  (30s initial, x1.5, max 20min, max 50 attempts). Context overflow
+   *  triggers compaction and immediate retry instead of backoff.
    */
   protected async callLLM(): Promise<ChatResponse> {
     const tools = this.getToolSchemas();
     const BASE_DELAY_S = 30;
     const BACKOFF_MULT = 1.5;
     const MAX_DELAY_S = 20 * 60; // 20 minutes
+    const MAX_TRANSIENT_RETRIES = 500; // non-throttling errors only
 
     log.info(
       `[agent:${this.role}:${this.id}] Calling LLM with ${tools.length} tools, ${this.messages.length} messages`,
     );
+
+    let nonThrottleAttempts = 0;
 
     for (let attempt = 0; ; attempt++) {
       if (this.cancelled || this.abortSignal?.aborted) {
@@ -377,6 +395,8 @@ export class BaseAgent {
           system: this.systemPrompt,
           messages: this.messages,
           tools: tools.length > 0 ? tools : undefined,
+          authProfileKey: this.ctx.authProfileKey,
+          accountRef: this.ctx.accountRef,
         });
         if (attempt > 0) {
           this.addDiagnostic(
@@ -389,15 +409,8 @@ export class BaseAgent {
         const msg = err instanceof Error ? err.message : String(err);
 
         // Context overflow → compact and retry immediately (no backoff)
-        const isContextOverflow =
-          msg.includes("exceeds the context window") ||
-          msg.includes("context_length_exceeded");
-        const isOrphanedToolResult =
-          msg.includes("No tool call found for function call output") ||
-          msg.includes("tool_use_id");
-
-        if (isContextOverflow || isOrphanedToolResult) {
-          const reason = isContextOverflow
+        if (isContextOverflowError(msg) || isOrphanedToolResultError(msg)) {
+          const reason = isContextOverflowError(msg)
             ? "context window exceeded"
             : "orphaned tool_result";
           if (isMaxCompactionsReached(this.compactionState, this.compactionConfig)) {
@@ -422,17 +435,35 @@ export class BaseAgent {
           continue;
         }
 
-        // All other errors → exponential backoff, retry forever
+        // Non-retryable errors (invalid tool calls, etc.) — propagate immediately
+        if (isNonRetryableError(msg)) {
+          throw err;
+        }
+
+        const throttled = isThrottlingError(msg);
+
+        // Only count non-throttling errors toward the retry cap
+        if (!throttled) {
+          nonThrottleAttempts++;
+          if (nonThrottleAttempts >= MAX_TRANSIENT_RETRIES) {
+            const failure = `LLM call failed after ${nonThrottleAttempts} non-throttling attempts. Last error: ${truncateDiagnostic(msg)}`;
+            this.addDiagnostic("model_issue", failure);
+            throw new Error(failure);
+          }
+        }
+
+        // Transient errors → exponential backoff
         const delaySec = Math.min(
           BASE_DELAY_S * Math.pow(BACKOFF_MULT, attempt),
           MAX_DELAY_S,
         );
+        const label = throttled ? "throttled" : "failed";
         log.warn(
-          `[agent:${this.role}:${this.id}] LLM failed (attempt ${attempt + 1}): ${msg} — retrying in ${Math.round(delaySec)}s`,
+          `[agent:${this.role}:${this.id}] LLM ${label} (attempt ${attempt + 1}): ${msg} — retrying in ${Math.round(delaySec)}s`,
         );
         this.addDiagnostic(
           "model_issue",
-          `Temporary model service issue on attempt ${attempt + 1}. Retrying in ${Math.round(delaySec)}s. Error: ${truncateDiagnostic(msg)}`,
+          `${throttled ? "Provider throttling" : "Temporary model service issue"} on attempt ${attempt + 1}. Retrying in ${Math.round(delaySec)}s. Error: ${truncateDiagnostic(msg)}`,
         );
 
         // Clear sticky failovers so the router retries the primary model
@@ -443,10 +474,14 @@ export class BaseAgent {
     }
   }
 
-  /** Get available tool schemas for this agent. */
+  /** Get available tool schemas for this agent, filtered by role. */
   protected getToolSchemas(): ToolSchema[] {
     const allTools = this.ctx.mcpRuntime.getAllTools();
-    const schemas: ToolSchema[] = allTools.map((t: RuntimeToolEntry) => ({
+    const roleFilter = ROLE_TOOL_FILTER[this.role];
+    const filtered = roleFilter
+      ? allTools.filter((t: RuntimeToolEntry) => roleFilter(t.name, t.service))
+      : allTools;
+    const schemas: ToolSchema[] = filtered.map((t: RuntimeToolEntry) => ({
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema,
@@ -484,6 +519,23 @@ export class BaseAgent {
     }
 
     return schemas;
+  }
+
+  protected validateFinalResponse(_text: string): string | null {
+    return null;
+  }
+
+  protected getToolCallNames(): readonly string[] {
+    return this.toolCallNames;
+  }
+
+  protected hasUsedAnyTool(): boolean {
+    return this.toolCallNames.length > 0;
+  }
+
+  protected hasUsedToolNamed(...toolNames: string[]): boolean {
+    const allowed = new Set(toolNames);
+    return this.toolCallNames.some((name) => allowed.has(name));
   }
 
   // ─── Private ────────────────────────────────────────────────────────────
@@ -540,6 +592,29 @@ export class BaseAgent {
 
 function truncateDiagnostic(value: string, max = 700): string {
   return value.length <= max ? value : `${value.slice(0, max)}…`;
+}
+
+// ─── Error Classification (regex-based, provider-agnostic) ──────────────
+
+const CONTEXT_OVERFLOW_RE = /context.{0,20}(window|length)|exceeds?.{0,20}(context|token|limit)|max.{0,10}tokens?.{0,10}exceed|too many tokens/i;
+const ORPHANED_TOOL_RE = /no tool.{0,20}(call|use).{0,20}found|orphaned tool|tool_use_id.{0,20}not found|unexpected tool.{0,5}result/i;
+const NON_RETRYABLE_RE = /consecutive invalid tool calls|agent cancelled/i;
+const THROTTLING_RE = /rate[- ]?limit|throttl|too many requests|\b429\b|quota.{0,20}(exhaust|exceed)|capacity|overloaded|temporarily unavailable|resource.{0,10}exhaust|server.{0,10}busy/i;
+
+function isContextOverflowError(msg: string): boolean {
+  return CONTEXT_OVERFLOW_RE.test(msg);
+}
+
+function isOrphanedToolResultError(msg: string): boolean {
+  return ORPHANED_TOOL_RE.test(msg);
+}
+
+function isNonRetryableError(msg: string): boolean {
+  return NON_RETRYABLE_RE.test(msg);
+}
+
+function isThrottlingError(msg: string): boolean {
+  return THROTTLING_RE.test(msg);
 }
 
 function responseSource(response: ChatResponse): LlmResponseSource | undefined {
@@ -714,3 +789,50 @@ const ROLE_DISPATCH_TOOLS: Record<string, ToolSchema[]> = {
 function getDispatchToolsForRole(role: AgentRole): ToolSchema[] {
   return ROLE_DISPATCH_TOOLS[role] ?? [];
 }
+
+// ─── Role-Based Tool Filtering ──────────────────────────────────────────
+
+/** Read-only tools safe for roles that should not modify the project. */
+const READ_ONLY_TOOLS = new Set([
+  "read_file", "list_dir", "search_files", "git_status", "git_log", "git_diff",
+  "list_skills", "read_skill",
+]);
+
+/** Tools that only the planner (and manager for delegation) should use. */
+const PLAN_TOOLS = new Set([
+  "read_plan", "update_plan", "complete_stage", "escalate",
+  "read_note", "list_notes", "acknowledge_note",
+]);
+
+/** Tools workers (coder/researcher/data_agent) do NOT need. */
+const WORKER_EXCLUDED_TOOLS = new Set([
+  ...PLAN_TOOLS,
+  // Skills management — workers consume skills, not manage them
+  "create_skill", "update_skill",
+]);
+
+/**
+ * Role → tool filter function. Returns true if the tool is allowed.
+ * Roles without an entry get all available tools (no filtering).
+ */
+const ROLE_TOOL_FILTER: Partial<Record<AgentRole, (toolName: string, service: string) => boolean>> = {
+  // Planner: plan tools + read-only filesystem + notes + skills — no shell, no write_file
+  planner: (name, _service) =>
+    PLAN_TOOLS.has(name) || READ_ONLY_TOOLS.has(name) ||
+    name === "read_stash" ||
+    name === "write_note" || name === "list_notes" || name === "acknowledge_note" || name === "read_note",
+
+  // Inspector: read-only tools only
+  inspector: (name, _service) =>
+    READ_ONLY_TOOLS.has(name) || name === "run_command" || name === "read_stash" ||
+    name === "web_search" || name === "fetch_url" || name === "fetch_page_text",
+
+  // Reviewer: read-only + shell (for running tests)
+  reviewer: (name, _service) =>
+    READ_ONLY_TOOLS.has(name) || name === "run_command" || name === "read_stash",
+
+  // Workers: everything except plan management
+  coder: (name, _service) => !WORKER_EXCLUDED_TOOLS.has(name),
+  researcher: (name, _service) => !WORKER_EXCLUDED_TOOLS.has(name),
+  data_agent: (name, _service) => !WORKER_EXCLUDED_TOOLS.has(name),
+};

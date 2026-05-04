@@ -306,6 +306,13 @@ export class ManagerAgent extends BaseAgent implements Agent {
       return { kind: "failure", reason: msg, partial: summary };
     }
   }
+
+  protected override validateFinalResponse(): string | null {
+    if (this.hasUsedToolNamed("run_coder", "run_researcher", "run_data_agent", "run_reviewer")) {
+      return null;
+    }
+    return "Invalid final stage response: you have not dispatched any worker yet.";
+  }
 }
 
 /** Normalize a stage object that may have missing fields from LLM output. */

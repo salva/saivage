@@ -48,6 +48,12 @@ export interface AgentContext {
   role: AgentRole;
   /** Model spec to use (e.g. "openai-codex/gpt-5.3-codex"). */
   modelSpec: string;
+  /** Optional exact auth profile to use for the selected provider. */
+  authProfileKey?: string;
+  /** Optional provider account reference (provider.account). */
+  accountRef?: string;
+  /** Runtime-supplied startup directives for the current agent instance. */
+  startupDirectives?: string[];
 }
 
 /** Inputs for each agent type. */

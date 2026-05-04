@@ -82,7 +82,6 @@ interface ProjectConfig {
   agents?: {                         // per-role runtime config (all optional, defaults apply)
     [role: string]: {                // e.g. "planner", "manager", "coder"
       compaction_threshold_pct?: number;  // default: 80 (% of context window)
-      self_check_frequency?: number;      // tool-call rounds before self-check
       max_compactions?: number;           // max compactions before forced termination (default: 3)
     };
   };

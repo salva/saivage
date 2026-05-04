@@ -51,11 +51,12 @@ const SUSPICIOUS_PATTERNS = [
 export function createPromptInjectionCop(
   config: SaivageConfig,
   router: ModelRouter,
+  modelSpecOverride?: string,
 ): PromptInjectionCop {
   const security = config.security;
   if (!security.injectionScanner) return disabledCop();
   return new DefaultPromptInjectionCop(router, {
-    modelSpec: copilotOnlyModel(security.injectionModel ?? DEFAULT_SCAN_MODEL),
+    modelSpec: copilotOnlyModel(modelSpecOverride ?? security.injectionModel ?? DEFAULT_SCAN_MODEL),
     maxScanChars: security.maxScanLengthBytes ?? DEFAULT_MAX_SCAN_CHARS,
   });
 }

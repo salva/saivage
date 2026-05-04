@@ -4,14 +4,16 @@
  */
 
 import { z } from "zod";
+import { projectRoutingSchema } from "./routing/resolver.js";
 
 // ─── 1. Project Config ──────────────────────────────────────────────────────
 
 export const ProjectConfigSchema = z.object({
   project_name: z.string(),
   objectives: z.array(z.string()),
-  provider: z.string(),
+  provider: z.string().optional(),
   model_overrides: z.record(z.string(), z.string()).optional(),
+  routing: projectRoutingSchema.optional(),
   notifications: z.object({
     channels: z.array(z.enum(["telegram", "web"])),
     filters: z.object({
@@ -36,7 +38,6 @@ export const ProjectConfigSchema = z.object({
       z.string(),
       z.object({
         compaction_threshold_pct: z.number().default(80),
-        self_check_frequency: z.number().optional(),
         max_compactions: z.number().default(3),
       }),
     )

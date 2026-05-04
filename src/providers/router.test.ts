@@ -178,6 +178,23 @@ describe("ModelRouter", () => {
       messages: [],
     })).rejects.toThrow('All providers failed for model "gpt-5.4" via provider "github-copilot"');
   });
+
+  it("prefers account-scoped api keys over provider defaults", async () => {
+    const router = new ModelRouter(makeConfig({
+      providers: {
+        "github-copilot": {
+          apiKey: "provider-key",
+          defaultAccount: "main",
+          accounts: {
+            main: { apiKey: "account-key" },
+          },
+        },
+      },
+    }));
+
+    await expect(router.resolveApiKey("github-copilot", { accountRef: "github-copilot.main" })).resolves.toBe("account-key");
+    await expect(router.resolveApiKey("github-copilot")).resolves.toBe("account-key");
+  });
 });
 
 function makeProvider(name: string, chat: ModelProvider["chat"]): ModelProvider {

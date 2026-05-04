@@ -22,6 +22,11 @@ export interface CreateUserNoteInput {
   urgent: boolean;
 }
 
+export interface NoteMutationResult {
+  note: UserNote;
+  deleted: boolean;
+}
+
 export function createUserNote(input: CreateUserNoteInput): UserNote {
   ensureDir(input.notesDir);
   const id = noteId();
@@ -66,52 +71,65 @@ export class NoteManager {
    * Get all unacknowledged notes without marking them pending for acknowledgment.
    */
   peekUnacknowledgedNotes(): UserNote[] {
-    if (!existsSync(this.notesDir)) return [];
-
-    const files = readdirSync(this.notesDir).filter((f) =>
-      f.endsWith(".json"),
-    );
-    const notes: UserNote[] = [];
-
-    for (const file of files) {
-      try {
-        const note = readDoc(join(this.notesDir, file), UserNoteSchema);
-        if (isPlannerSelfNote(note)) continue;
-        if (!note.acknowledged_at) {
-          notes.push(note);
-        }
-      } catch {
-        // Skip malformed files
-      }
-    }
-
-    return notes.sort((a, b) => a.created_at.localeCompare(b.created_at));
+    return this.readAllNotes()
+      .filter((note) => !note.acknowledged_at)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
   }
 
   /**
    * Get all permanent notes (for re-injection after compaction).
    */
   getPermanentNotes(): UserNote[] {
-    if (!existsSync(this.notesDir)) return [];
+    return this.readAllNotes().filter((note) => note.permanent);
+  }
 
-    const files = readdirSync(this.notesDir).filter((f) =>
-      f.endsWith(".json"),
-    );
-    const notes: UserNote[] = [];
+  listNotes(): UserNote[] {
+    return this.readAllNotes().sort((a, b) => b.created_at.localeCompare(a.created_at));
+  }
 
-    for (const file of files) {
-      try {
-        const note = readDoc(join(this.notesDir, file), UserNoteSchema);
-        if (isPlannerSelfNote(note)) continue;
-        if (note.permanent) {
-          notes.push(note);
-        }
-      } catch {
-        // Skip malformed files
+  acknowledgeNote(noteId: string): NoteMutationResult | null {
+    const path = join(this.notesDir, `${noteId}.json`);
+    if (!existsSync(path)) return null;
+
+    try {
+      const note = readDoc(path, UserNoteSchema);
+      this.pendingAcknowledgment = this.pendingAcknowledgment.filter((pending) => pending !== noteId);
+
+      if (note.permanent) {
+        const updated = note.acknowledged_at
+          ? note
+          : { ...note, acknowledged_at: new Date().toISOString() };
+        writeDoc(path, updated, UserNoteSchema);
+        return { note: updated, deleted: false };
       }
-    }
 
-    return notes;
+      deleteDoc(path);
+      return { note, deleted: true };
+    } catch {
+      return null;
+    }
+  }
+
+  deleteNote(noteId: string): boolean {
+    const path = join(this.notesDir, `${noteId}.json`);
+    if (!existsSync(path)) return false;
+
+    try {
+      deleteDoc(path);
+      this.pendingAcknowledgment = this.pendingAcknowledgment.filter((pending) => pending !== noteId);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  clearNotes(): number {
+    const noteIds = this.listNotes().map((note) => note.id);
+    let deleted = 0;
+    for (const noteId of noteIds) {
+      if (this.deleteNote(noteId)) deleted += 1;
+    }
+    return deleted;
   }
 
   /**
@@ -209,6 +227,27 @@ export class NoteManager {
     }
 
     return cleaned;
+  }
+
+  private readAllNotes(): UserNote[] {
+    if (!existsSync(this.notesDir)) return [];
+
+    const files = readdirSync(this.notesDir).filter((f) =>
+      f.endsWith(".json"),
+    );
+    const notes: UserNote[] = [];
+
+    for (const file of files) {
+      try {
+        const note = readDoc(join(this.notesDir, file), UserNoteSchema);
+        if (isPlannerSelfNote(note)) continue;
+        notes.push(note);
+      } catch {
+        // Skip malformed files
+      }
+    }
+
+    return notes;
   }
 }
 

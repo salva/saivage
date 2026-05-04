@@ -2,13 +2,9 @@ import { z } from "zod";
 import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { runtimeProviderConfigSchema } from "./routing/resolver.js";
 
 // --- Schema ---
-
-const providerConfigSchema = z.object({
-  apiKey: z.string().optional(),
-  baseUrl: z.string().optional(),
-});
 
 const notificationFiltersSchema = z.object({
   min_severity: z.enum(["info", "warning", "error"]).default("info"),
@@ -50,7 +46,7 @@ const configSchema = z.object({
     })
     .default({ orchestrator: "anthropic/claude-sonnet-4-20250514" }),
 
-  providers: z.record(z.string(), providerConfigSchema).default({}),
+  providers: z.record(z.string(), runtimeProviderConfigSchema).default({}),
 
   failover: z.record(z.string(), z.array(z.string())).default({}),
 

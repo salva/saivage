@@ -134,6 +134,9 @@ export class McpRuntime {
     );
   }
 
+  /** Default timeout for in-process tool handlers (5 minutes). */
+  private static readonly IN_PROCESS_TIMEOUT_MS = 300_000;
+
   /** Call a tool on a service (lazy-start) */
   async callTool(
     serviceName: string,
@@ -146,7 +149,11 @@ export class McpRuntime {
       if (!inProc.available) {
         throw new Error(`Service "${serviceName}" is registered but unavailable`);
       }
-      const result = await inProc.handler(toolName, args);
+      const result = await withTimeout(
+        inProc.handler(toolName, args),
+        McpRuntime.IN_PROCESS_TIMEOUT_MS,
+        `Tool "${toolName}" on "${serviceName}" timed out after ${McpRuntime.IN_PROCESS_TIMEOUT_MS}ms`,
+      );
       if (result.isError) {
         throw new Error(
           `Tool "${toolName}" on "${serviceName}" returned error: ${JSON.stringify(result.content)}`,
@@ -273,4 +280,15 @@ export class McpRuntime {
       }
     }
   }
+}
+
+/** Race a promise against a timeout. Rejects with the given message on timeout. */
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
 }

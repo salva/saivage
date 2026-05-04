@@ -41,6 +41,7 @@ export interface AuthProfile {
   access: string;
   refresh: string;
   expires: number;
+  accountId?: string;
   email?: string;
 }
 

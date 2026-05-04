@@ -9,6 +9,7 @@ const DEFAULT_MODEL = "github-copilot/gpt-5.4";
 const DEFAULT_INTERVAL_MS = 20 * 60 * 1000;
 const DEFAULT_THRESHOLD = 3;
 const DEFAULT_LOG_LINES = 400;
+const FORCE_CANCEL_DELAY_MS = 600_000; // re-cancel after 10 minutes if agent didn't stop
 
 const ROLE_ABORT_PRIORITY: AgentRole[] = [
   "reviewer",
@@ -43,9 +44,10 @@ export class RuntimeSupervisor {
   constructor(
     config: SaivageConfig,
     private readonly context: SupervisorRuntimeContext,
+    modelSpecOverride?: string,
   ) {
     this.enabled = config.supervisor.enabled;
-    this.modelSpec = config.supervisor.model ?? DEFAULT_MODEL;
+    this.modelSpec = modelSpecOverride ?? config.supervisor.model ?? DEFAULT_MODEL;
     this.intervalMs = config.supervisor.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.threshold = config.supervisor.consecutiveStuckVerdicts ?? DEFAULT_THRESHOLD;
     this.logLines = config.supervisor.logLines ?? DEFAULT_LOG_LINES;
@@ -99,6 +101,17 @@ export class RuntimeSupervisor {
           `[supervisor] Aborting ${target.role}:${target.agentId} after ${this.consecutiveStuck} consecutive stuck verdicts`,
         );
         target.agent.cancel();
+
+        // Schedule a forceful re-cancel in case the agent is blocked on I/O
+        const agentId = target.agentId;
+        setTimeout(() => {
+          const stillRegistered = this.context.agentRegistry.get(agentId);
+          if (stillRegistered) {
+            log.warn(`[supervisor] Agent ${target.role}:${agentId} still registered after cancel — re-cancelling`);
+            stillRegistered.cancel();
+          }
+        }, FORCE_CANCEL_DELAY_MS).unref();
+
         this.consecutiveStuck = 0;
       }
     } catch (err) {
@@ -171,7 +184,8 @@ function parseVerdict(content: string, providerName: string): SupervisorVerdict 
     };
   }
 
-  const stuck = Boolean((parsed as Record<string, unknown>).stuck);
+  const stuckRaw = (parsed as Record<string, unknown>).stuck;
+  const stuck = stuckRaw === true; // strict: only boolean true counts
   const confidence = typeof (parsed as Record<string, unknown>).confidence === "number"
     ? (parsed as Record<string, number>).confidence
     : undefined;

@@ -9,8 +9,10 @@ import { PiAiProvider } from "./pi-ai.js";
 import { CopilotProvider } from "./copilot.js";
 import { OllamaProvider } from "./ollama.js";
 import { LlamaCppProvider } from "./llamacpp.js";
-import { getOAuthApiKey, hasOAuthCredentials } from "../auth/index.js";
+import { getOAuthApiKey, getProfileByKey, hasOAuthCredentials } from "../auth/index.js";
 import { log } from "../log.js";
+import type { RuntimeProviderAccountLike, RuntimeProviderConfigLike } from "../routing/resolver.js";
+import { parseAccountRef } from "../routing/resolver.js";
 
 const PROVIDER_REQUEST_TIMEOUT_MS = 300_000;
 
@@ -44,60 +46,32 @@ export class ModelRouter {
   private modelEquivalents: Map<string, string[]>;
   private modelAssignments: Record<string, string>;
   private stickyFailovers = new Map<string, string>();
+  private providerConfigs: Record<string, RuntimeProviderConfigLike>;
 
   constructor(config: SaivageConfig) {
     this.failoverChains = config.failover;
     this.modelEquivalents = buildModelEquivalenceIndex(config.modelEquivalents);
     this.modelAssignments = config.models as Record<string, string>;
+    this.providerConfigs = config.providers as Record<string, RuntimeProviderConfigLike>;
     this.initProviders(config);
   }
 
   private initProviders(config: SaivageConfig): void {
-    const providerConfigs = config.providers;
+    void config;
 
-    if (hasOAuthCredentials("github-copilot")) {
-      this.providers.set("github-copilot", new CopilotProvider());
-    }
+    const knownProviders = [
+      "github-copilot",
+      "anthropic",
+      "openai",
+      "openai-codex",
+      "ollama",
+      "llamacpp",
+    ];
 
-    // Register pi-ai backed providers for all available OAuth credentials
-    for (const [oauthId, piProvider] of Object.entries(OAUTH_TO_PI)) {
-      if (hasOAuthCredentials(oauthId)) {
-        this.providers.set(piProvider, new PiAiProvider(piProvider));
-      }
-    }
-
-    // Anthropic: also register via direct API key / env var
-    const anthropicCfg = providerConfigs["anthropic"];
-    if (!this.providers.has("anthropic") && (anthropicCfg?.apiKey || process.env["ANTHROPIC_API_KEY"])) {
-      const p = new PiAiProvider("anthropic");
-      p.setApiKey(anthropicCfg?.apiKey ?? process.env["ANTHROPIC_API_KEY"]!);
-      this.providers.set("anthropic", p);
-    }
-
-    // OpenAI (standard api.openai.com): direct API key / env var
-    const openaiCfg = providerConfigs["openai"];
-    if (!this.providers.has("openai") && (openaiCfg?.apiKey || process.env["OPENAI_API_KEY"])) {
-      const p = new PiAiProvider("openai");
-      p.setApiKey(openaiCfg?.apiKey ?? process.env["OPENAI_API_KEY"]!);
-      this.providers.set("openai", p);
-    }
-
-    // OpenAI Codex: API key / env var fallback (also usable via OAuth)
-    const openaiCodexCfg = providerConfigs["openai-codex"];
-    if (!this.providers.has("openai-codex") && (openaiCodexCfg?.apiKey || process.env["OPENAI_CODEX_API_KEY"])) {
-      const p = new PiAiProvider("openai-codex");
-      p.setApiKey(openaiCodexCfg?.apiKey ?? process.env["OPENAI_CODEX_API_KEY"]!);
-      this.providers.set("openai-codex", p);
-    }
-
-    // Ollama: always registered (local, no auth)
-    const ollamaCfg = providerConfigs["ollama"];
-    this.providers.set("ollama", new OllamaProvider(ollamaCfg?.baseUrl));
-
-    // llama.cpp: register if configured or env var present
-    const llamacppCfg = providerConfigs["llamacpp"];
-    if (llamacppCfg?.baseUrl || process.env["LLAMACPP_BASE_URL"]) {
-      this.providers.set("llamacpp", new LlamaCppProvider(llamacppCfg?.baseUrl));
+    for (const providerName of knownProviders) {
+      if (!this.shouldRegisterProvider(providerName)) continue;
+      const provider = this.createProvider(providerName);
+      if (provider) this.providers.set(providerName, provider);
     }
   }
 
@@ -105,8 +79,31 @@ export class ModelRouter {
    * Resolve API key for a provider, trying OAuth credentials if no static key.
    * Called lazily before each request so token refresh happens on demand.
    */
-  async resolveApiKey(providerName: string): Promise<string | null> {
+  async resolveApiKey(
+    providerName: string,
+    options: { authProfileKey?: string; accountRef?: string } = {},
+  ): Promise<string | null> {
     const oauthId = PROVIDER_TO_OAUTH[providerName] ?? providerName;
+
+    if (options.authProfileKey) {
+      const explicitProfile = getProfileByKey(options.authProfileKey);
+      if (explicitProfile?.provider === oauthId) {
+        const key = await getOAuthApiKey(oauthId, { profileKey: options.authProfileKey });
+        if (key) return key;
+      }
+    }
+
+    const accountConfig = this.getRequestedAccountConfig(providerName, options);
+    if (accountConfig?.authProfile) {
+      const profiledKey = await getOAuthApiKey(oauthId, { profileKey: accountConfig.authProfile });
+      if (profiledKey) return profiledKey;
+    }
+
+    if (accountConfig?.apiKey) return accountConfig.apiKey;
+
+    const providerConfig = this.providerConfigs[providerName];
+    if (providerConfig?.apiKey) return providerConfig.apiKey;
+
     return getOAuthApiKey(oauthId);
   }
 
@@ -127,7 +124,7 @@ export class ModelRouter {
 
   /** List model IDs exposed by a registered provider, when supported. */
   async listModels(providerName: string): Promise<string[]> {
-    const provider = this.providers.get(providerName);
+    const provider = this.getProviderForRequest(providerName);
     if (!provider?.listModels) return [];
 
     if (provider.setApiKey) {
@@ -141,7 +138,7 @@ export class ModelRouter {
   /** Get context window size (tokens) for a model spec like "github-copilot/gpt-5.3-codex" */
   getMaxContextTokens(modelSpec: string): number {
     const { provider: providerName, model } = parseModelId(modelSpec);
-    const provider = this.providers.get(providerName);
+    const provider = this.getProviderForRequest(providerName);
     return provider?.maxContextTokens(model) ?? 200_000;
   }
 
@@ -151,7 +148,7 @@ export class ModelRouter {
 
     for (const spec of chain) {
       const { provider: providerName, model } = parseModelId(spec);
-      const provider = this.providers.get(providerName);
+      const provider = this.getProviderForRequest(providerName, request);
 
       if (!provider) {
         log.warn(`Provider "${providerName}" not registered, skipping`);
@@ -162,7 +159,7 @@ export class ModelRouter {
       // Copilot tokens are short-lived (~30 min) and getOAuthApiKey()
       // handles auto-refresh transparently.
       if (provider.setApiKey) {
-        const oauthKey = await this.resolveApiKey(providerName);
+        const oauthKey = await this.resolveApiKey(providerName, request);
         if (oauthKey) {
           provider.setApiKey(oauthKey);
         }
@@ -270,6 +267,105 @@ export class ModelRouter {
       log.info(`Model switch: ${was} -> ${modelSpec} (retrying primary after cooldown)`);
     }
     this.stickyFailovers.delete(modelSpec);
+  }
+
+  private shouldRegisterProvider(providerName: string): boolean {
+    const cfg = this.providerConfigs[providerName];
+    const hasAccounts = Object.keys(cfg?.accounts ?? {}).length > 0;
+
+    switch (providerName) {
+      case "github-copilot":
+        return !!cfg || hasAccounts || hasOAuthCredentials("github-copilot");
+      case "anthropic":
+        return !!cfg || hasAccounts || hasOAuthCredentials("anthropic") || !!process.env["ANTHROPIC_API_KEY"];
+      case "openai":
+        return !!cfg || hasAccounts || !!process.env["OPENAI_API_KEY"];
+      case "openai-codex":
+        return !!cfg || hasAccounts || hasOAuthCredentials("openai-codex") || !!process.env["OPENAI_CODEX_API_KEY"];
+      case "ollama":
+        return true;
+      case "llamacpp":
+        return !!cfg || hasAccounts || !!process.env["LLAMACPP_BASE_URL"];
+      default:
+        return !!cfg || hasAccounts;
+    }
+  }
+
+  private createProvider(providerName: string, accountName?: string): ModelProvider | undefined {
+    const accountConfig = accountName ? this.getAccountConfig(providerName, accountName) : undefined;
+    const providerConfig = this.providerConfigs[providerName];
+    const apiKey = accountConfig?.apiKey ?? providerConfig?.apiKey;
+    const baseUrl = accountConfig?.baseUrl ?? providerConfig?.baseUrl;
+
+    switch (providerName) {
+      case "github-copilot":
+        return new CopilotProvider(apiKey);
+      case "anthropic": {
+        const provider = new PiAiProvider("anthropic");
+        if (apiKey) provider.setApiKey(apiKey);
+        return provider;
+      }
+      case "openai": {
+        const provider = new PiAiProvider("openai");
+        if (apiKey) provider.setApiKey(apiKey);
+        return provider;
+      }
+      case "openai-codex": {
+        const provider = new PiAiProvider("openai-codex");
+        if (apiKey) provider.setApiKey(apiKey);
+        return provider;
+      }
+      case "ollama":
+        return new OllamaProvider(baseUrl);
+      case "llamacpp":
+        return new LlamaCppProvider(baseUrl ?? process.env["LLAMACPP_BASE_URL"]);
+      default:
+        return undefined;
+    }
+  }
+
+  private getProviderForRequest(
+    providerName: string,
+    request?: { authProfileKey?: string; accountRef?: string },
+  ): ModelProvider | undefined {
+    const accountName = this.resolveRequestedAccountName(providerName, request);
+    if (!accountName) return this.providers.get(providerName);
+
+    const key = `${providerName}#${accountName}`;
+    const existing = this.providers.get(key);
+    if (existing) return existing;
+
+    const provider = this.createProvider(providerName, accountName);
+    if (!provider) return this.providers.get(providerName);
+    this.providers.set(key, provider);
+    return provider;
+  }
+
+  private resolveRequestedAccountName(
+    providerName: string,
+    request?: { authProfileKey?: string; accountRef?: string },
+  ): string | undefined {
+    if (request?.authProfileKey) return undefined;
+    if (request?.accountRef) {
+      const parsed = parseAccountRef(request.accountRef.includes(".") ? request.accountRef : `${providerName}.${request.accountRef}`);
+      if (parsed.provider === providerName) return parsed.account;
+    }
+
+    const defaultAccount = this.providerConfigs[providerName]?.defaultAccount;
+    if (defaultAccount && this.getAccountConfig(providerName, defaultAccount)) return defaultAccount;
+    return undefined;
+  }
+
+  private getRequestedAccountConfig(
+    providerName: string,
+    request?: { authProfileKey?: string; accountRef?: string },
+  ): RuntimeProviderAccountLike | undefined {
+    const accountName = this.resolveRequestedAccountName(providerName, request);
+    return accountName ? this.getAccountConfig(providerName, accountName) : undefined;
+  }
+
+  private getAccountConfig(providerName: string, accountName: string): RuntimeProviderAccountLike | undefined {
+    return this.providerConfigs[providerName]?.accounts?.[accountName];
   }
 }
 

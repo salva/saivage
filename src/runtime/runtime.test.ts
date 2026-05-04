@@ -1,6 +1,6 @@
 /**
  * Tests for Phase 2: Runtime Core
- * Plan MCP service, crash recovery, notes, self-check, compaction, dispatcher.
+ * Plan MCP service, crash recovery, notes, compaction, dispatcher.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -30,11 +30,6 @@ import {
   type UserNote,
   type RuntimeState,
 } from "../types.js";
-import {
-  createSelfCheckState,
-  recordToolCallRound,
-  selfCheckMessage,
-} from "./self-check.js";
 import {
   shouldCompact,
   isMaxCompactionsReached,
@@ -688,6 +683,85 @@ describe("NoteManager", () => {
     expect(existsSync(join(notesDir, "note-stale.json"))).toBe(false);
   });
 
+  it("listNotes returns newest notes first", () => {
+    writeNote({
+      id: "note-old",
+      channel: "test",
+      session_id: "s1",
+      content: "old",
+      created_at: "2026-05-01T10:00:00Z",
+      permanent: false,
+      urgent: false,
+    });
+    writeNote({
+      id: "note-new",
+      channel: "test",
+      session_id: "s1",
+      content: "new",
+      created_at: "2026-05-02T10:00:00Z",
+      permanent: true,
+      urgent: true,
+    });
+
+    const notes = noteManager.listNotes();
+    expect(notes.map((note) => note.id)).toEqual(["note-new", "note-old"]);
+  });
+
+  it("acknowledgeNote keeps permanent notes and dismisses volatile notes", () => {
+    writeNote({
+      id: "note-volatile",
+      channel: "test",
+      session_id: "s1",
+      content: "volatile",
+      created_at: new Date().toISOString(),
+      permanent: false,
+      urgent: false,
+    });
+    writeNote({
+      id: "note-permanent",
+      channel: "test",
+      session_id: "s1",
+      content: "permanent",
+      created_at: new Date().toISOString(),
+      permanent: true,
+      urgent: false,
+    });
+
+    const volatileResult = noteManager.acknowledgeNote("note-volatile");
+    const permanentResult = noteManager.acknowledgeNote("note-permanent");
+
+    expect(volatileResult?.deleted).toBe(true);
+    expect(existsSync(join(notesDir, "note-volatile.json"))).toBe(false);
+    expect(permanentResult?.deleted).toBe(false);
+    expect(permanentResult?.note.acknowledged_at).toBeDefined();
+  });
+
+  it("deleteNote and clearNotes remove notes from disk", () => {
+    writeNote({
+      id: "note-delete",
+      channel: "test",
+      session_id: "s1",
+      content: "delete me",
+      created_at: new Date().toISOString(),
+      permanent: false,
+      urgent: false,
+    });
+    writeNote({
+      id: "note-clear",
+      channel: "test",
+      session_id: "s1",
+      content: "clear me",
+      created_at: new Date().toISOString(),
+      permanent: true,
+      urgent: false,
+    });
+
+    expect(noteManager.deleteNote("note-delete")).toBe(true);
+    expect(existsSync(join(notesDir, "note-delete.json"))).toBe(false);
+    expect(noteManager.clearNotes()).toBe(1);
+    expect(noteManager.listNotes()).toHaveLength(0);
+  });
+
   it("peekUnacknowledgedNotes does not mark notes for acknowledgment", () => {
     writeNote({
       id: "note-1",
@@ -773,49 +847,6 @@ describe("Dispatcher pending note pointers", () => {
     expect(content.__saivage_pending_user_notes.count).toBe(1);
     expect(content.__saivage_pending_user_notes.urgent_count).toBe(1);
     expect(content.__saivage_pending_user_notes.notes[0].id).toBe("note-1");
-  });
-});
-
-// ─── Self-Check ──────────────────────────────────────────────────────────────
-
-describe("Self-Check", () => {
-  it("triggers at correct frequency", () => {
-    const state = createSelfCheckState("coder"); // frequency 15
-    expect(state.frequency).toBe(15);
-
-    for (let i = 0; i < 14; i++) {
-      expect(recordToolCallRound(state)).toBe(false);
-    }
-    expect(recordToolCallRound(state)).toBe(true); // 15th round
-    expect(state.roundsSinceCheck).toBe(0); // reset
-
-    // Next cycle
-    for (let i = 0; i < 14; i++) {
-      expect(recordToolCallRound(state)).toBe(false);
-    }
-    expect(recordToolCallRound(state)).toBe(true);
-  });
-
-  it("respects custom frequency", () => {
-    const state = createSelfCheckState("planner", 5);
-    expect(state.frequency).toBe(5);
-
-    for (let i = 0; i < 4; i++) {
-      expect(recordToolCallRound(state)).toBe(false);
-    }
-    expect(recordToolCallRound(state)).toBe(true);
-  });
-
-  it("disabled for chat (frequency 0)", () => {
-    const state = createSelfCheckState("chat");
-    for (let i = 0; i < 100; i++) {
-      expect(recordToolCallRound(state)).toBe(false);
-    }
-  });
-
-  it("selfCheckMessage includes frequency", () => {
-    const msg = selfCheckMessage(15);
-    expect(msg).toContain("15 tool-call rounds");
   });
 });
 

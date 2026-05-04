@@ -31,6 +31,8 @@ export interface ChatRequest {
   temperature?: number;
   stopSequences?: string[];
   signal?: AbortSignal;
+  authProfileKey?: string;
+  accountRef?: string;
 }
 
 export interface ToolCallResult {

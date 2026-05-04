@@ -272,14 +272,20 @@ export class PlannerAgent extends BaseAgent implements Agent {
 function buildPlannerMessage(ctx: AgentContext): string {
   const config = ctx.project.config;
   const objectives = config.objectives ?? [];
+  const startupDirectives = ctx.startupDirectives ?? [];
 
   const objList = objectives.length > 0
     ? objectives.map((o: string) => `- ${o}`).join("\n")
     : "(No objectives specified in config — read the project and determine objectives)";
 
+  const runtimeDirectiveBlock = startupDirectives.length > 0
+    ? `### Runtime Directives\n${startupDirectives.map((directive) => `- ${directive}`).join("\n")}\n\n`
+    : "";
+
   return (
     `## Project Planning Session\n\n` +
     `${buildHandoffContext(ctx)}\n\n` +
+    `${runtimeDirectiveBlock}` +
     `**Project Root:** ${ctx.project.projectRoot}\n` +
     `**Saivage Dir:** ${ctx.project.saivageDir}\n\n` +
     `### Project Objectives\n${objList}\n\n` +

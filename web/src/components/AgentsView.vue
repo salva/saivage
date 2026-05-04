@@ -67,6 +67,22 @@ interface AgentConversation {
   entries: ConversationEntry[];
 }
 
+interface StepBlock {
+  kind: "step";
+  id: string;
+  lead: ConversationEntry;
+  toolCalls: ConversationEntry[];
+  toolResults: ConversationEntry[];
+}
+
+interface SingleBlock {
+  kind: "single";
+  id: string;
+  entry: ConversationEntry;
+}
+
+type ConversationBlock = StepBlock | SingleBlock;
+
 type SelectionKind = "agent" | "chat";
 
 const activeAgents = ref<AgentState[]>([]);
@@ -79,7 +95,7 @@ const loading = ref(false);
 const activeTab = ref<"active" | "history">("active");
 const now = ref(Date.now());
 const threadBody = ref<HTMLElement | null>(null);
-const collapsedTools = ref<Set<number>>(new Set());
+const expandedDetails = ref<Set<string>>(new Set());
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let clockTimer: ReturnType<typeof setInterval> | null = null;
 let agentPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -99,7 +115,16 @@ async function fetchData() {
       const data = await chatsRes.json();
       chatSessions.value = data.sessions ?? [];
     }
+    maybeSelectDefaultConversation();
   } catch { /* ignore */ }
+}
+
+function maybeSelectDefaultConversation() {
+  if (selectionKind.value || loading.value) return;
+  const firstActiveAgent = activeAgents.value[0];
+  if (firstActiveAgent) {
+    void loadAgentConversation(firstActiveAgent.agent_id);
+  }
 }
 
 async function loadAgentConversation(agentId: string) {
@@ -123,7 +148,7 @@ async function loadAgentConversation(agentId: string) {
   selectionKind.value = "agent";
   selectedSession.value = null;
   loading.value = true;
-  collapsedTools.value = new Set();
+  expandedDetails.value = new Set();
   try {
     const res = await fetch(`/api/agents/${agentId}/conversation`);
     if (res.ok) {
@@ -142,7 +167,7 @@ async function loadSession(sessionId: string) {
   selectionKind.value = "chat";
   selectedAgent.value = null;
   loading.value = true;
-  collapsedTools.value = new Set();
+  expandedDetails.value = new Set();
   stopAgentPolling();
   try {
     const res = await fetch(`/api/chats/${sessionId}`);
@@ -176,10 +201,10 @@ function scrollToBottom() {
   if (threadBody.value) threadBody.value.scrollTop = threadBody.value.scrollHeight;
 }
 
-function toggleToolCollapse(index: number) {
-  const next = new Set(collapsedTools.value);
-  if (next.has(index)) next.delete(index); else next.add(index);
-  collapsedTools.value = next;
+function toggleDetails(id: string) {
+  const next = new Set(expandedDetails.value);
+  if (next.has(id)) next.delete(id); else next.add(id);
+  expandedDetails.value = next;
 }
 
 onMounted(() => {
@@ -243,7 +268,7 @@ function kindLabel(kind: string): string {
 
 function entryRoleLabel(entry: ConversationEntry): string {
   if (entry.kind !== "text") return kindLabel(entry.kind);
-  if (entry.role === "assistant") return "Thinking";
+  if (entry.role === "assistant") return "Reasoning";
   if (entry.role === "user") return "Context";
   return "System";
 }
@@ -284,6 +309,73 @@ function entryTone(entry: ConversationEntry): string {
   if (entry.kind === "model_recovered" || entry.kind === "tool_result") return "ok";
   if (entry.kind === "tool_call" || entry.kind === "activity") return "accent";
   return entry.role;
+}
+
+function isAssistantLead(entry: ConversationEntry): boolean {
+  return (entry.kind === "text" && entry.role === "assistant") || entry.kind === "activity";
+}
+
+const groupedAgentEntries = computed<ConversationBlock[]>(() => {
+  const entries = selectedAgent.value?.entries ?? [];
+  const blocks: ConversationBlock[] = [];
+
+  for (let index = 0; index < entries.length;) {
+    const entry = entries[index];
+    if (isAssistantLead(entry)) {
+      const toolCalls: ConversationEntry[] = [];
+      const toolResults: ConversationEntry[] = [];
+      let nextIndex = index + 1;
+
+      while (nextIndex < entries.length) {
+        const next = entries[nextIndex];
+        if (next.kind === "tool_call") {
+          toolCalls.push(next);
+          nextIndex += 1;
+          continue;
+        }
+        if (next.kind === "tool_result" || next.kind === "tool_error") {
+          toolResults.push(next);
+          nextIndex += 1;
+          continue;
+        }
+        break;
+      }
+
+      blocks.push({
+        kind: "step",
+        id: `step-${index}`,
+        lead: entry,
+        toolCalls,
+        toolResults,
+      });
+      index = nextIndex;
+      continue;
+    }
+
+    blocks.push({
+      kind: "single",
+      id: `entry-${index}`,
+      entry,
+    });
+    index += 1;
+  }
+
+  return blocks;
+});
+
+function hasDetails(block: StepBlock): boolean {
+  return block.toolCalls.length > 0 || block.toolResults.length > 0;
+}
+
+function detailSummary(block: StepBlock): string {
+  const parts: string[] = [];
+  if (block.toolCalls.length > 0) parts.push(`${block.toolCalls.length} call${block.toolCalls.length === 1 ? "" : "s"}`);
+  if (block.toolResults.length > 0) parts.push(`${block.toolResults.length} result${block.toolResults.length === 1 ? "" : "s"}`);
+  return parts.join(" · ") || "No tool details";
+}
+
+function detailsOpen(id: string): boolean {
+  return expandedDetails.value.has(id);
 }
 
 const filteredSessions = computed(() => chatSessions.value.filter(session => session.message_count > 0));
@@ -347,7 +439,7 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
       <div v-if="!selectedAgent && !selectedSession && !loading" class="thread-empty">
         <Bot :size="42" />
         <strong>Select a conversation</strong>
-        <span>Watch active agents, model repairs, tool calls, and chat sessions.</span>
+        <span>Watch active agents, reasoning traces, model repairs, and chat sessions.</span>
       </div>
 
       <div v-if="loading" class="thread-empty">
@@ -366,44 +458,86 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
 
         <div class="thread-body" ref="threadBody">
           <article
-            v-for="(entry, idx) in selectedAgent.entries"
-            :key="idx"
+            v-for="block in groupedAgentEntries"
+            :key="block.id"
             class="entry"
-            :class="entryTone(entry)"
+            :class="block.kind === 'step' ? entryTone(block.lead) : entryTone(block.entry)"
           >
-            <template v-if="isTextLikeEntry(entry)">
+            <template v-if="block.kind === 'step'">
               <div class="entry-label">
-                <span>{{ entryRoleLabel(entry) }}</span>
-                <em v-if="modelLabel(entry)" class="model-chip">{{ modelLabel(entry) }}</em>
-                <time v-if="entry.timestamp" :title="new Date(entry.timestamp).toLocaleString()">{{ entryTime(entry) }}</time>
+                <span>{{ entryRoleLabel(block.lead) }}</span>
+                <em v-if="modelLabel(block.lead)" class="model-chip">{{ modelLabel(block.lead) }}</em>
+                <time v-if="block.lead.timestamp" :title="new Date(block.lead.timestamp).toLocaleString()">{{ entryTime(block.lead) }}</time>
+              </div>
+              <div class="entry-content text-entry reasoning-entry">
+                <FormattedContent :content="block.lead.content" max-height="460px" />
+              </div>
+              <div v-if="hasDetails(block)" class="step-tools">
+                <button class="tool-header step-summary" @click="toggleDetails(block.id)">
+                  <Wrench :size="14" />
+                  <strong>{{ detailSummary(block) }}</strong>
+                  <span>{{ detailsOpen(block.id) ? 'hide mechanics' : 'show mechanics' }}</span>
+                </button>
+                <div v-if="detailsOpen(block.id)" class="step-details">
+                  <template v-for="(entry, idx) in block.toolCalls" :key="`${block.id}-call-${idx}`">
+                    <button class="tool-header detail-item">
+                      <Wrench :size="14" />
+                      <strong>{{ entry.tool }}</strong>
+                      <em v-if="modelLabel(entry)" class="model-chip">{{ modelLabel(entry) }}</em>
+                      <time v-if="entry.timestamp">{{ entryTime(entry) }}</time>
+                    </button>
+                    <div class="entry-content tool-content detail-body">
+                      <FormattedContent :content="entry.content" max-height="320px" />
+                    </div>
+                  </template>
+
+                  <template v-for="(entry, idx) in block.toolResults" :key="`${block.id}-result-${idx}`">
+                    <button class="tool-header result detail-item" :class="{ error: entry.kind === 'tool_error' }">
+                      <strong>{{ kindLabel(entry.kind) }}</strong>
+                      <time v-if="entry.timestamp">{{ entryTime(entry) }}</time>
+                      <p>{{ truncate(entry.content.split('\n')[0], 100) }}</p>
+                    </button>
+                    <div class="entry-content tool-content detail-body" :class="{ error: entry.kind === 'tool_error' }">
+                      <FormattedContent :content="entry.content" max-height="320px" />
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </template>
+
+            <template v-else-if="isTextLikeEntry(block.entry)">
+              <div class="entry-label">
+                <span>{{ entryRoleLabel(block.entry) }}</span>
+                <em v-if="modelLabel(block.entry)" class="model-chip">{{ modelLabel(block.entry) }}</em>
+                <time v-if="block.entry.timestamp" :title="new Date(block.entry.timestamp).toLocaleString()">{{ entryTime(block.entry) }}</time>
               </div>
               <div class="entry-content text-entry">
-                <FormattedContent :content="entry.content" max-height="460px" />
+                <FormattedContent :content="block.entry.content" max-height="460px" />
               </div>
             </template>
 
-            <template v-if="entry.kind === 'tool_call'">
-              <button class="tool-header" @click="toggleToolCollapse(idx)">
+            <template v-else-if="block.entry.kind === 'tool_call'">
+              <button class="tool-header" @click="toggleDetails(block.id)">
                 <Wrench :size="14" />
-                <strong>{{ entry.tool }}</strong>
-                <em v-if="modelLabel(entry)" class="model-chip">{{ modelLabel(entry) }}</em>
-                <time v-if="entry.timestamp">{{ entryTime(entry) }}</time>
-                <span>{{ collapsedTools.has(idx) ? 'open' : 'close' }}</span>
+                <strong>{{ block.entry.tool }}</strong>
+                <em v-if="modelLabel(block.entry)" class="model-chip">{{ modelLabel(block.entry) }}</em>
+                <time v-if="block.entry.timestamp">{{ entryTime(block.entry) }}</time>
+                <span>{{ detailsOpen(block.id) ? 'hide details' : 'show details' }}</span>
               </button>
-              <div v-if="!collapsedTools.has(idx)" class="entry-content tool-content">
-                <FormattedContent :content="entry.content" max-height="320px" />
+              <div v-if="detailsOpen(block.id)" class="entry-content tool-content">
+                <FormattedContent :content="block.entry.content" max-height="320px" />
               </div>
             </template>
 
-            <template v-if="entry.kind === 'tool_result' || entry.kind === 'tool_error'">
-              <button class="tool-header result" :class="{ error: entry.kind === 'tool_error' }" @click="toggleToolCollapse(idx)">
-                <strong>{{ kindLabel(entry.kind) }}</strong>
-                <time v-if="entry.timestamp">{{ entryTime(entry) }}</time>
-                <p>{{ truncate(entry.content.split('\n')[0], 100) }}</p>
-                <span>{{ collapsedTools.has(idx) ? 'open' : 'close' }}</span>
+            <template v-else-if="block.entry.kind === 'tool_result' || block.entry.kind === 'tool_error'">
+              <button class="tool-header result" :class="{ error: block.entry.kind === 'tool_error' }" @click="toggleDetails(block.id)">
+                <strong>{{ kindLabel(block.entry.kind) }}</strong>
+                <time v-if="block.entry.timestamp">{{ entryTime(block.entry) }}</time>
+                <p>{{ truncate(block.entry.content.split('\n')[0], 100) }}</p>
+                <span>{{ detailsOpen(block.id) ? 'hide details' : 'show details' }}</span>
               </button>
-              <div v-if="!collapsedTools.has(idx)" class="entry-content tool-content" :class="{ error: entry.kind === 'tool_error' }">
-                <FormattedContent :content="entry.content" max-height="320px" />
+              <div v-if="detailsOpen(block.id)" class="entry-content tool-content" :class="{ error: block.entry.kind === 'tool_error' }">
+                <FormattedContent :content="block.entry.content" max-height="320px" />
               </div>
             </template>
           </article>
@@ -723,6 +857,11 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
   padding: 9px 11px;
 }
 
+.reasoning-entry {
+  border-color: rgba(157, 132, 255, 0.32);
+  background: rgba(157, 132, 255, 0.08);
+}
+
 .entry.user .text-entry,
 .chat-msg.user .text-entry {
   border-color: rgba(106, 166, 255, 0.35);
@@ -757,6 +896,30 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
 .tool-header:hover {
   border-color: var(--border-strong);
   background: var(--surface-2);
+}
+
+.step-tools {
+  margin-top: 7px;
+}
+
+.step-summary {
+  justify-content: space-between;
+}
+
+.step-details {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+  padding-left: 10px;
+  border-left: 2px solid rgba(255, 255, 255, 0.08);
+}
+
+.detail-item {
+  cursor: default;
+}
+
+.detail-body {
+  margin-top: -2px;
 }
 
 .tool-header strong {

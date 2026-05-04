@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import {
   Activity,
   Bot,
@@ -33,9 +33,20 @@ const tabs: TabConfig[] = [
   { id: "debug", label: "Debug", description: "State, errors, timeline", icon: Bug },
 ];
 
-const activeTab = ref<Tab>("dashboard");
+const activeTab = ref<Tab>("agents");
 const focusStageId = ref<string | null>(null);
+const projectPath = ref("…");
 const activeTabConfig = computed(() => tabs.find((tab) => tab.id === activeTab.value) ?? tabs[0]);
+
+onMounted(async () => {
+  try {
+    const res = await fetch("/health");
+    if (res.ok) {
+      const data = await res.json();
+      projectPath.value = data.project ?? "unknown";
+    }
+  } catch { /* keep placeholder */ }
+});
 
 function selectTab(tab: Tab) {
   activeTab.value = tab;
@@ -84,7 +95,7 @@ function handleNavigate(tab: string, focusId?: string) {
           <h1>{{ activeTabConfig.label }}</h1>
         </div>
         <div class="header-meta">
-          <span class="console-pill">/work/target</span>
+          <span class="console-pill">{{ projectPath }}</span>
           <span class="console-pill">live</span>
         </div>
       </header>

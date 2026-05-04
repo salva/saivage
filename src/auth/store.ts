@@ -67,6 +67,11 @@ export function saveProfile(key: string, profile: AuthProfile): void {
   saveProfiles(store);
 }
 
+export function getProfileByKey(profileKey: string): AuthProfile | null {
+  const store = loadProfiles();
+  return store.profiles[profileKey] ?? null;
+}
+
 // --- Credential resolution (auto-refresh) ---
 
 /**
@@ -74,16 +79,18 @@ export function saveProfile(key: string, profile: AuthProfile): void {
  * Automatically refreshes expired tokens and persists updated credentials.
  * Returns null if no credentials exist for this provider.
  */
-export async function getOAuthApiKey(providerId: string): Promise<string | null> {
+export async function getOAuthApiKey(
+  providerId: string,
+  options: { profileKey?: string } = {},
+): Promise<string | null> {
   const provider = providers.get(providerId);
   if (!provider) return null;
 
   const store = loadProfiles();
 
-  // Find first matching profile for this provider
-  const entry = Object.entries(store.profiles).find(
-    ([, p]) => p.provider === providerId,
-  );
+  const entry = options.profileKey
+    ? resolveProfileEntry(store, providerId, options.profileKey)
+    : Object.entries(store.profiles).find(([, p]) => p.provider === providerId);
   if (!entry) return null;
 
   const [key, profile] = entry;
@@ -123,6 +130,12 @@ export function hasOAuthCredentials(providerId: string): boolean {
   return Object.values(store.profiles).some((p) => p.provider === providerId);
 }
 
+export function hasOAuthProfile(profileKey: string, providerId?: string): boolean {
+  const profile = getProfileByKey(profileKey);
+  if (!profile) return false;
+  return providerId ? profile.provider === providerId : true;
+}
+
 /**
  * Map OAuth provider IDs to the Saivage provider names they authenticate.
  * openai-codex → openai (uses the same API with the access token)
@@ -132,4 +145,14 @@ export function oauthToProviderName(oauthId: string): string {
   if (oauthId === "openai-codex") return "openai";
   if (oauthId === "github-copilot") return "copilot";
   return oauthId;
+}
+
+function resolveProfileEntry(
+  store: AuthProfileStore,
+  providerId: string,
+  profileKey: string,
+): [string, AuthProfile] | undefined {
+  const profile = store.profiles[profileKey];
+  if (!profile || profile.provider !== providerId) return undefined;
+  return [profileKey, profile];
 }

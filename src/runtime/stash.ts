@@ -4,7 +4,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, resolve, relative } from "node:path";
 import { saivageDir } from "../config.js";
 import { log } from "../log.js";
 
@@ -37,7 +37,8 @@ export function readStash(filepath: string, offset = 0, length = 10_000): { cont
   // Security: only allow reading from the stash directory
   const stashRoot = resolve(stashDir());
   const resolved = resolve(filepath);
-  if (resolved !== stashRoot && !resolved.startsWith(`${stashRoot}/`)) {
+  const rel = relative(stashRoot, resolved);
+  if (rel.startsWith("..") || resolve(stashRoot, rel) !== resolved) {
     throw new Error(`read_stash only works on stashed files under ${stashRoot}`);
   }
   const full = readFileSync(filepath, "utf-8");

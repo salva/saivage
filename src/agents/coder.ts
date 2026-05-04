@@ -201,6 +201,11 @@ export class CoderAgent extends BaseAgent implements Agent {
       };
     }
   }
+
+  protected override validateFinalResponse(): string | null {
+    if (this.hasUsedAnyTool()) return null;
+    return "Invalid final task response: you have not used any tools for this task yet.";
+  }
 }
 
 /** Normalize a task object that may have alternate field names from LLM output. */

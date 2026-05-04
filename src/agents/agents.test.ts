@@ -13,9 +13,11 @@ import { writeDoc, ensureDir } from "../store/documents.js";
 import { SkillIndexSchema } from "../types.js";
 import { ReviewerAgent } from "./reviewer.js";
 import { ChatAgent } from "./chat.js";
+import { CoderAgent } from "./coder.js";
+import { ManagerAgent } from "./manager.js";
 import { EventBus } from "../events/bus.js";
 import type { ChatChannel } from "../channels/types.js";
-import type { AgentContext, WorkerInput } from "./types.js";
+import type { AgentContext, ManagerInput, WorkerInput } from "./types.js";
 import type { ChatRequest, ChatResponse } from "../providers/types.js";
 
 let tmpDir: string;
@@ -240,7 +242,15 @@ describe("ReviewerAgent", () => {
       getMaxContextTokens: () => 200_000,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         calls.push(request);
-        const reviewNumber = calls.length;
+        const reviewNumber = Math.ceil(calls.length / 2);
+        if (calls.length % 2 === 1) {
+          return {
+            content: `Inspecting evidence for review ${reviewNumber}.`,
+            toolCalls: [{ id: `tool-${reviewNumber}`, name: "test_tool", input: {} }],
+            finishReason: "tool_use",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
         return {
           content: JSON.stringify({
             task_id: `review-${reviewNumber}`,
@@ -263,15 +273,18 @@ describe("ReviewerAgent", () => {
       },
     };
 
-    const ctx = makeReviewerContext(tmpDir, router);
+    const ctx = makeReviewerContext(tmpDir, router, {
+      getAllTools: () => [{ name: "test_tool", description: "test", inputSchema: {}, service: "test" }],
+      callTool: async () => ({ ok: true }),
+    });
     const firstInput = makeReviewInput("review-1", "Initial review");
     const agent = new ReviewerAgent(ctx, firstInput);
 
     await agent.review(firstInput);
     await agent.review(makeReviewInput("review-2", "Recheck blocker after corrective task t2"));
 
-    expect(calls).toHaveLength(2);
-    const secondMessages = JSON.stringify(calls[1].messages);
+    expect(calls).toHaveLength(4);
+    const secondMessages = JSON.stringify(calls[3].messages);
     expect(secondMessages).toContain("first review found blocker");
     expect(secondMessages).toContain("Follow-up Review 2");
     expect(secondMessages).toContain("Recheck blocker after corrective task t2");
@@ -328,7 +341,149 @@ describe("ChatAgent", () => {
   });
 });
 
-function makeReviewerContext(root: string, router: unknown): AgentContext {
+describe("Execution guards", () => {
+  it("retries coder when it tries to finish before any tool use", async () => {
+    const calls: ChatRequest[] = [];
+    const router = {
+      getMaxContextTokens: () => 200_000,
+      chat: async (request: ChatRequest): Promise<ChatResponse> => {
+        calls.push(request);
+        if (calls.length === 1) {
+          return {
+            content: JSON.stringify({
+              task_id: "task-1",
+              stage_id: "stage-1",
+              status: "failed",
+              summary: "I did not execute anything.",
+              failure_reason: "I did not execute anything.",
+            }),
+            toolCalls: [],
+            finishReason: "end_turn",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        if (calls.length === 2) {
+          return {
+            content: "I am inspecting a file before returning the report.",
+            toolCalls: [{ id: "tool-1", name: "test_tool", input: {} }],
+            finishReason: "tool_use",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        return {
+          content: JSON.stringify({
+            task_id: "task-1",
+            stage_id: "stage-1",
+            status: "completed",
+            summary: "Used a tool and completed the task.",
+          }),
+          toolCalls: [],
+          finishReason: "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+
+    const agent = new CoderAgent(
+      makeReviewerContext(tmpDir, router, {
+        getAllTools: () => [{ name: "test_tool", description: "test", inputSchema: {}, service: "test" }],
+        callTool: async () => ({ ok: true }),
+      }),
+      makeWorkerInput("task-1", "Do one thing"),
+    );
+
+    const result = await agent.run();
+
+    expect(result.kind).toBe("success");
+    expect(calls).toHaveLength(3);
+    expect(JSON.stringify(calls[1].messages)).toContain("Invalid final task response");
+  });
+
+  it("retries manager when it tries to finish before dispatching a worker", async () => {
+    const calls: ChatRequest[] = [];
+    const router = {
+      getMaxContextTokens: () => 200_000,
+      chat: async (request: ChatRequest): Promise<ChatResponse> => {
+        calls.push(request);
+        if (calls.length === 1) {
+          return {
+            content: JSON.stringify({
+              stage_id: "stage-1",
+              result: "escalated",
+              summary: "I did not dispatch any worker.",
+              escalation: {
+                stage_id: "stage-1",
+                reason: "No work attempted.",
+                attempted_remediations: [],
+                created_at: new Date().toISOString(),
+              },
+            }),
+            toolCalls: [],
+            finishReason: "end_turn",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        if (calls.length === 2) {
+          return {
+            content: "I am dispatching a coder now.",
+            toolCalls: [{ id: "dispatch-1", name: "run_coder", input: { task: {}, stageId: "stage-1" } }],
+            finishReason: "tool_use",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        return {
+          content: JSON.stringify({
+            stage_id: "stage-1",
+            result: "completed",
+            summary: "Dispatched worker and completed the stage.",
+            tasks_completed: 1,
+            tasks_failed: 0,
+            total_tasks: 1,
+            outcomes_achieved: ["done"],
+            outcomes_missed: [],
+            issues: [],
+          }),
+          toolCalls: [],
+          finishReason: "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+
+    const agent = new ManagerAgent(
+      makeReviewerContext(tmpDir, router),
+      makeManagerInput(),
+      async () => ({
+        kind: "success",
+        data: {
+          task_id: "task-1",
+          stage_id: "stage-1",
+          agent: "coder",
+          status: "completed",
+          summary: "done",
+          checklist_results: [],
+          files_modified: [],
+          files_created: [],
+          tests_added: [],
+          tests_run: [],
+          commits: [],
+          issues_found: [],
+          started_at: new Date().toISOString(),
+          completed_at: new Date().toISOString(),
+          duration_ms: 1,
+        },
+      }),
+    );
+
+    const result = await agent.run();
+
+    expect(result.kind).toBe("success");
+    expect(calls).toHaveLength(3);
+    expect(JSON.stringify(calls[1].messages)).toContain("Invalid final stage response");
+  });
+});
+
+function makeReviewerContext(root: string, router: unknown, mcpRuntimeOverride?: Partial<AgentContext["mcpRuntime"]>): AgentContext {
   const saivageDir = join(root, ".saivage");
   ensureDir(saivageDir);
   ensureDir(join(saivageDir, "skills"));
@@ -361,7 +516,11 @@ function makeReviewerContext(root: string, router: unknown): AgentContext {
       },
     },
     router: router as AgentContext["router"],
-    mcpRuntime: { getAllTools: () => [] } as AgentContext["mcpRuntime"],
+    mcpRuntime: {
+      getAllTools: () => [],
+      callTool: async () => ({ ok: true }),
+      ...mcpRuntimeOverride,
+    } as AgentContext["mcpRuntime"],
     agentId: "reviewer-1",
     role: "reviewer",
     modelSpec: "test/model",
@@ -438,6 +597,38 @@ function makeReviewInput(id: string, objective: string): WorkerInput {
       tags: [],
       attempt: 1,
       max_attempts: 3,
+    },
+  };
+}
+
+function makeWorkerInput(id: string, objective: string): WorkerInput {
+  return {
+    stageId: "stage-1",
+    task: {
+      id,
+      type: "code",
+      assigned_to: "coder",
+      description: objective,
+      checklist: [{ description: "do the task", required: true }],
+      dependencies: [],
+      status: "pending",
+      tags: [],
+      attempt: 1,
+      max_attempts: 3,
+    },
+  };
+}
+
+function makeManagerInput(): ManagerInput {
+  return {
+    stage: {
+      id: "stage-1",
+      objective: "Complete one stage",
+      starting_points: [],
+      expected_outcomes: ["done"],
+      acceptance_criteria: ["worker dispatched"],
+      references: [],
+      tags: [],
     },
   };
 }

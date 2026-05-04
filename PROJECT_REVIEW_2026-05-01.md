@@ -16,7 +16,7 @@ The main risks found are:
 4. Some services are registered as stubs while appearing as normal tools. This makes agents waste turns discovering at runtime that web, memory, index, and lock are unavailable.
 5. Provider integration is improving, but provider capabilities are still spread across provider classes and runtime assumptions instead of a single capability model.
 6. Tests cover important primitives, but there is little end-to-end coverage for chat commands, Planner restart control, provider model listing, and agent handoff context.
-7. Deployment is now functional for `target`, but deployment defaults and runtime configuration are still partly encoded in scripts rather than validated as an explicit environment profile.
+7. Deployment is functional, but deployment defaults and runtime configuration are still partly encoded in scripts rather than validated as an explicit environment profile.
 
 ## Findings
 
@@ -99,7 +99,7 @@ Recommended direction:
 
 ### 8. Deployment Profiles
 
-The LXC setup is now documented for `target`, but deployment remains a mix of Make variables, script defaults, and generated service files.
+The LXC setup is documented, but deployment remains a mix of Make variables, script defaults, and generated service files.
 
 Recommended direction:
 

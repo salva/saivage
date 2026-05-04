@@ -9,12 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 SAIVAGE_SRC="${PROJECT_ROOT:-$(dirname "$PROJECT_DIR")}"
 if [[ -z "${TARGET_PROJECT_ROOT:-}" ]]; then
-    DEFAULT_TARGET="$(dirname "$SAIVAGE_SRC")/target"
-    if [[ -d "$DEFAULT_TARGET" ]]; then
-        TARGET_PROJECT_ROOT="$DEFAULT_TARGET"
-    else
-        TARGET_PROJECT_ROOT=""
-    fi
+    TARGET_PROJECT_ROOT=""
 fi
 TARGET_PROJECT_MOUNT="${TARGET_PROJECT_MOUNT:-/work/target}"
 TARGET_PROJECT_MOUNT_REL="${TARGET_PROJECT_MOUNT#/}"
