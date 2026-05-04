@@ -237,7 +237,13 @@ export class BaseAgent {
       // No tool calls → agent is done
       if (response.toolCalls.length === 0) {
         const finalResponseIssue = this.validateFinalResponse(response.content);
-        this.pushMessage({ role: "assistant", content: response.content }, undefined, responseSource(response));
+        const assistantContent: string | ContentBlock[] = response.reasoning
+          ? [
+              { type: "thinking", thinking: response.reasoning, thinking_signature: "reasoning_content" },
+              ...(response.content ? [{ type: "text", text: response.content } as ContentBlock] : []),
+            ]
+          : response.content;
+        this.pushMessage({ role: "assistant", content: assistantContent }, undefined, responseSource(response));
         if (finalResponseIssue) {
           this.invalidFinalResponseCount += 1;
           this.addDiagnostic("model_repair", finalResponseIssue);
@@ -262,6 +268,13 @@ export class BaseAgent {
 
       // Build assistant message with tool-use blocks
       const assistantBlocks: ContentBlock[] = [];
+      if (response.reasoning) {
+        assistantBlocks.push({
+          type: "thinking",
+          thinking: response.reasoning,
+          thinking_signature: "reasoning_content",
+        });
+      }
       if (response.content) {
         assistantBlocks.push({ type: "text", text: response.content });
       }

@@ -84,16 +84,16 @@ export class PiAiProvider extends BaseProvider {
 
     // Try exact match first
     let model = _getModel(this.piProvider, modelId);
-    if (model) return model;
+    if (model) return this.withProviderCompat(model);
 
     // Search by ID in case the key doesn't match exactly
     const models = _getModels(this.piProvider);
     model = models.find((m) => m.id === modelId);
-    if (model) return model;
+    if (model) return this.withProviderCompat(model);
 
     // Fuzzy prefix match (e.g., "gpt-4o" matches "gpt-4o-2024-11-20")
     model = models.find((m) => modelId.startsWith(m.id) || m.id.startsWith(modelId));
-    if (model) return model;
+    if (model) return this.withProviderCompat(model);
 
     // Synthesise a model entry for IDs the provider serves but pi-ai
     // doesn't know about yet (e.g. kimi-k2.6 when only k2.5 is catalogued).
@@ -102,10 +102,34 @@ export class PiAiProvider extends BaseProvider {
     const prefix = modelId.replace(/[.\-][\d]+$/, "");
     const sibling = models.find((m) => m.id.startsWith(prefix));
     if (sibling) {
-      return { ...sibling, id: modelId } as Model<Api>;
+      return this.withProviderCompat({ ...sibling, id: modelId } as Model<Api>);
     }
 
     return undefined;
+  }
+
+  private withProviderCompat(model: Model<Api>): Model<Api> {
+    // OpenCode's Kimi K2.x deployment rejects replayed assistant tool-call
+    // messages while thinking is enabled unless every assistant message has
+    // a `reasoning_content` field. pi-ai already supports this compat flag,
+    // but as of 0.73.0 only auto-enables it for DeepSeek-style endpoints.
+    if (this.isOpenCodeKimi(model)) {
+      return {
+        ...model,
+        compat: {
+          ...(model.compat as Record<string, unknown> | undefined),
+          requiresReasoningContentOnAssistantMessages: true,
+        },
+      } as Model<Api>;
+    }
+    return model;
+  }
+
+  private isOpenCodeKimi(model: Model<Api>): boolean {
+    return (
+      (this.piProvider === "opencode" || this.piProvider === "opencode-go") &&
+      /kimi-k2/i.test(model.id)
+    );
   }
 
   // ── Saivage → pi-ai conversion ───────────────────────
@@ -156,10 +180,19 @@ export class PiAiProvider extends BaseProvider {
             }
           }
         } else if (m.role === "assistant") {
-          const content: (TextContent | ToolCall)[] = [];
+          const content: (TextContent | ThinkingContent | ToolCall)[] = [];
           for (const b of blocks) {
             if (b.type === "text" && b.text) {
               content.push({ type: "text", text: b.text });
+            } else if (b.type === "thinking") {
+              const thinking = b.thinking ?? b.text ?? b.content ?? "";
+              if (thinking) {
+                content.push({
+                  type: "thinking",
+                  thinking,
+                  thinkingSignature: b.thinking_signature ?? "reasoning_content",
+                });
+              }
             } else if (b.type === "tool_use") {
               content.push({
                 type: "toolCall",

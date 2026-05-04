@@ -6,8 +6,10 @@ export interface Message {
 }
 
 export interface ContentBlock {
-  type: "text" | "tool_use" | "tool_result" | "image";
+  type: "text" | "thinking" | "tool_use" | "tool_result" | "image";
   text?: string;
+  thinking?: string;
+  thinking_signature?: string;
   id?: string;
   name?: string;
   input?: unknown;
