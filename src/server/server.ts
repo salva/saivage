@@ -93,6 +93,35 @@ export async function startServer(
     wildcard: true,
   });
 
+  // Serve VitePress docs from docs/.vitepress/dist/ at /docs/.
+  // The docs are built by `npm run docs:build` and are entirely optional —
+  // skip mounting if the directory hasn't been built yet so the server
+  // still starts in dev / fresh-checkout scenarios.
+  const docsDistPath = thisDir.includes("/src/")
+    ? join(thisDir, "..", "..", "docs", ".vitepress", "dist")
+    : join(thisDir, "..", "docs", ".vitepress", "dist");
+  if (existsSync(docsDistPath)) {
+    await app.register(fastifyStatic, {
+      root: docsDistPath,
+      prefix: "/docs/",
+      decorateReply: false,
+      wildcard: false,
+      index: ["index.html"],
+    });
+    log.info(`[server] docs mounted at /docs/ from ${docsDistPath}`);
+  } else {
+    log.info(`[server] docs not built (run 'npm run docs:build') — /docs/ disabled`);
+    // Tiny placeholder so the dashboard link doesn't 404 silently.
+    app.get("/docs/", async (_req, reply) => {
+      reply.type("text/html").send(
+        "<!doctype html><meta charset=\"utf-8\"><title>Saivage docs</title>" +
+        "<style>body{font:14px/1.5 system-ui;margin:3rem auto;max-width:38rem;color:#222}</style>" +
+        "<h1>Documentation not built</h1>" +
+        "<p>Run <code>npm run docs:build</code> in the project root, then reload this page.</p>",
+      );
+    });
+  }
+
   // ─── Health ─────────────────────────────────────────────────────────────
 
   app.get("/health", async () => {

@@ -25,3 +25,8 @@ tmp/
 
 # Logs
 *.log
+
+# VitePress / TypeDoc generated docs
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+docs/api/

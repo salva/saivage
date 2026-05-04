@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { apiFetch, apiFetchJson } from "./utils/api";
 import {
   Activity,
+  BookOpen,
   Bot,
   Bug,
   FolderTree,
@@ -180,6 +181,19 @@ watch([runtimeStatus, runtimeStage, activeTabConfig], ([status, stage, tab]) => 
         </button>
       </nav>
 
+      <a
+        class="nav-item docs-link"
+        href="/docs/"
+        target="_blank"
+        rel="noopener"
+        title="Open documentation in a new tab"
+        aria-label="Open documentation in a new tab"
+      >
+        <BookOpen :size="18" />
+        <span>Docs</span>
+        <span class="hotkey" aria-hidden="true">↗</span>
+      </a>
+
       <button
         class="nav-item help-toggle"
         type="button"
@@ -340,6 +354,8 @@ watch([runtimeStatus, runtimeStage, activeTabConfig], ([status, stage, tab]) => 
   color: var(--text-muted);
   cursor: pointer;
   text-align: left;
+  text-decoration: none;
+  box-sizing: border-box;
 }
 
 .nav-item:hover {

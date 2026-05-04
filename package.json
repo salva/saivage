@@ -17,7 +17,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src/",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "docs:api": "typedoc && node docs/.vitepress/scripts/sanitize-typedoc.mjs",
+    "docs:dev": "npm run docs:api && vitepress dev docs",
+    "docs:build": "npm run docs:api && vitepress build docs",
+    "docs:preview": "vitepress preview docs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
@@ -37,7 +41,11 @@
     "eslint": "^9.25.0",
     "tsup": "^8.4.0",
     "tsx": "^4.21.0",
+    "typedoc": "^0.28.19",
+    "typedoc-plugin-markdown": "^4.11.0",
+    "typedoc-vitepress-theme": "^1.1.2",
     "typescript": "^5.8.3",
+    "vitepress": "^1.6.4",
     "vitest": "^3.1.1"
   }
 }
