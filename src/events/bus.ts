@@ -81,6 +81,7 @@ export class EventBus {
   async publish(event: SystemEvent): Promise<void> {
     log.info(`[event-bus] Publishing: ${event.type} — ${event.summary.slice(0, 80)}`);
 
+    const deliveries: Promise<unknown>[] = [];
     for (const sub of this.subscriptions.values()) {
       if (!passesFilter(event, sub.filter)) continue;
 
@@ -94,11 +95,39 @@ export class EventBus {
         continue;
       }
 
-      try {
-        await sub.handler(event);
-      } catch (err) {
-        log.error(`[event-bus] Handler error for ${sub.id}: ${err}`);
-      }
+      // Deliver in parallel and bound each handler with a timeout so a
+      // single hung subscriber (slow Telegram send, network stall) cannot
+      // stall the publisher or block other subscribers.
+      deliveries.push(this.deliverWithTimeout(sub, event));
+    }
+
+    if (deliveries.length > 0) {
+      await Promise.allSettled(deliveries);
+    }
+  }
+
+  private static readonly HANDLER_TIMEOUT_MS = 5000;
+
+  private async deliverWithTimeout(
+    sub: Subscription,
+    event: SystemEvent,
+  ): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const timeout = new Promise<void>((_resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`handler timed out after ${EventBus.HANDLER_TIMEOUT_MS}ms`)),
+        EventBus.HANDLER_TIMEOUT_MS,
+      );
+    });
+    try {
+      await Promise.race([
+        Promise.resolve().then(() => sub.handler(event)),
+        timeout,
+      ]);
+    } catch (err) {
+      log.error(`[event-bus] Handler error for ${sub.id}: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 

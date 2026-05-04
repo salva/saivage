@@ -199,6 +199,10 @@ export class PlannerAgent extends BaseAgent implements Agent {
 
         const { text, finishReason } = await this.runLoop();
 
+        // Always acknowledge notes on any exit path so they don't
+        // get re-injected indefinitely after restarts.
+        this.noteManager.acknowledgeNotes();
+
         if (finishReason === "abort" || finishReason === "cancelled") {
           return { kind: "abort", reason: text };
         }
@@ -206,8 +210,6 @@ export class PlannerAgent extends BaseAgent implements Agent {
         if (finishReason === "max_compactions" || finishReason === "error") {
           return { kind: "failure", reason: text };
         }
-
-        this.noteManager.acknowledgeNotes();
 
         // Only accept completion if planner explicitly says PLAN_COMPLETE
         // on its own line — not just as part of a sentence

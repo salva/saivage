@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { apiFetch, apiFetchJson } from "./utils/api";
 import {
   Activity,
   Bot,
@@ -23,29 +24,41 @@ interface TabConfig {
   label: string;
   description: string;
   icon: LucideIcon;
+  hotkey: string;
 }
 
 const tabs: TabConfig[] = [
-  { id: "dashboard", label: "Dashboard", description: "Live control room", icon: LayoutDashboard },
-  { id: "plan", label: "Plan", description: "Stages and evidence", icon: ListChecks },
-  { id: "agents", label: "Agents", description: "Worker conversations", icon: Bot },
-  { id: "files", label: "Files", description: "Saivage artifacts", icon: FolderTree },
-  { id: "debug", label: "Debug", description: "State, errors, timeline", icon: Bug },
+  { id: "dashboard", label: "Dashboard", description: "Live control room", icon: LayoutDashboard, hotkey: "1" },
+  { id: "plan", label: "Plan", description: "Stages and evidence", icon: ListChecks, hotkey: "2" },
+  { id: "agents", label: "Agents", description: "Worker conversations", icon: Bot, hotkey: "3" },
+  { id: "files", label: "Files", description: "Saivage artifacts", icon: FolderTree, hotkey: "4" },
+  { id: "debug", label: "Debug", description: "State, errors, timeline", icon: Bug, hotkey: "5" },
 ];
 
 const activeTab = ref<Tab>("agents");
 const focusStageId = ref<string | null>(null);
 const projectPath = ref("…");
+const chatRef = ref<InstanceType<typeof ChatWindow> | null>(null);
+const showHelp = ref(false);
+const runtimeStatus = ref<string>("");
+const runtimeStage = ref<string>("");
 const activeTabConfig = computed(() => tabs.find((tab) => tab.id === activeTab.value) ?? tabs[0]);
 
 onMounted(async () => {
   try {
-    const res = await fetch("/health");
+    const res = await apiFetch("/health");
     if (res.ok) {
       const data = await res.json();
       projectPath.value = data.project ?? "unknown";
     }
   } catch { /* keep placeholder */ }
+  window.addEventListener("keydown", onGlobalKeydown);
+  startTitleSync();
+});
+
+onUnmounted(() => {
+  window.removeEventListener("keydown", onGlobalKeydown);
+  stopTitleSync();
 });
 
 function selectTab(tab: Tab) {
@@ -58,6 +71,84 @@ function handleNavigate(tab: string, focusId?: string) {
     focusStageId.value = focusId;
   }
 }
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  const tag = target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+}
+
+function onGlobalKeydown(event: KeyboardEvent) {
+  if (event.altKey || event.ctrlKey || event.metaKey) return;
+  if (event.key === "Escape" && showHelp.value) {
+    showHelp.value = false;
+    event.preventDefault();
+    return;
+  }
+  // Don't intercept while typing in a form control.
+  if (isTypingTarget(event.target)) return;
+
+  if (event.key === "?" || (event.shiftKey && event.key === "/")) {
+    showHelp.value = !showHelp.value;
+    event.preventDefault();
+    return;
+  }
+  if (event.key === "/") {
+    activeTab.value = "dashboard";
+    event.preventDefault();
+    // Allow the dashboard to render before focusing.
+    requestAnimationFrame(() => chatRef.value?.focusInput?.());
+    return;
+  }
+  const match = tabs.find((t) => t.hotkey === event.key);
+  if (match) {
+    activeTab.value = match.id;
+    event.preventDefault();
+  }
+}
+
+// --- Document title sync ---------------------------------------------------
+
+let titleTimer: ReturnType<typeof setInterval> | null = null;
+
+async function pollTitleStatus() {
+  try {
+    const data = await apiFetchJson<{ status?: string; phase?: string; currentStage?: { id?: string } | null }>(
+      "/api/state",
+    );
+    runtimeStatus.value = (data.status ?? data.phase ?? "").toString();
+    runtimeStage.value = data.currentStage?.id ?? "";
+  } catch (err) {
+    // Distinguish auth errors so the title reflects them.
+    if (err && typeof err === "object" && "status" in err && (err as { status: number }).status === 401) {
+      runtimeStatus.value = "unauthorized";
+      runtimeStage.value = "";
+      return;
+    }
+    runtimeStatus.value = "";
+    runtimeStage.value = "";
+  }
+}
+
+function startTitleSync() {
+  pollTitleStatus();
+  titleTimer = setInterval(pollTitleStatus, 8000);
+}
+
+function stopTitleSync() {
+  if (titleTimer) clearInterval(titleTimer);
+  titleTimer = null;
+}
+
+watch([runtimeStatus, runtimeStage, activeTabConfig], ([status, stage, tab]) => {
+  const parts: string[] = ["Saivage"];
+  if (status === "unauthorized") parts.push("⚠ unauthorized");
+  else if (status) parts.push(status);
+  if (stage) parts.push(stage);
+  parts.push(`· ${tab.label}`);
+  document.title = parts.join(" · ").replace("· ·", "·");
+}, { immediate: true });
 </script>
 
 <template>
@@ -79,13 +170,26 @@ function handleNavigate(tab: string, focusId?: string) {
           :key="tab.id"
           class="nav-item"
           :class="{ active: activeTab === tab.id }"
-          :title="tab.label"
+          :title="`${tab.label} (press ${tab.hotkey})`"
+          :aria-label="`${tab.label} (shortcut ${tab.hotkey})`"
           @click="selectTab(tab.id)"
         >
           <component :is="tab.icon" :size="18" />
           <span>{{ tab.label }}</span>
+          <span class="hotkey" aria-hidden="true">{{ tab.hotkey }}</span>
         </button>
       </nav>
+
+      <button
+        class="nav-item help-toggle"
+        type="button"
+        title="Keyboard shortcuts (press ?)"
+        aria-label="Show keyboard shortcuts"
+        @click="showHelp = true"
+      >
+        <span aria-hidden="true" class="help-glyph">?</span>
+        <span>Shortcuts</span>
+      </button>
     </aside>
 
     <section class="workspace">
@@ -102,7 +206,7 @@ function handleNavigate(tab: string, focusId?: string) {
 
       <main class="main">
         <section v-show="activeTab === 'dashboard'" class="dashboard-grid">
-          <ChatWindow class="chat" />
+          <ChatWindow ref="chatRef" class="chat" />
           <StatusPanel class="status" @navigate="handleNavigate" />
         </section>
         <PlanView
@@ -116,6 +220,48 @@ function handleNavigate(tab: string, focusId?: string) {
         <DebugView v-if="activeTab === 'debug'" class="full-view" />
       </main>
     </section>
+
+    <div
+      v-if="showHelp"
+      class="help-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="shortcuts-title"
+      @click.self="showHelp = false"
+    >
+      <div class="help-card">
+        <header>
+          <h2 id="shortcuts-title">Keyboard shortcuts</h2>
+          <button type="button" class="console-button" aria-label="Close shortcuts" @click="showHelp = false">Close</button>
+        </header>
+        <dl>
+          <div v-for="tab in tabs" :key="tab.id">
+            <dt><kbd>{{ tab.hotkey }}</kbd></dt>
+            <dd>Open {{ tab.label }}</dd>
+          </div>
+          <div>
+            <dt><kbd>/</kbd></dt>
+            <dd>Focus the chat input</dd>
+          </div>
+          <div>
+            <dt><kbd>Enter</kbd></dt>
+            <dd>Send chat message</dd>
+          </div>
+          <div>
+            <dt><kbd>Shift</kbd> + <kbd>Enter</kbd></dt>
+            <dd>Insert newline in chat</dd>
+          </div>
+          <div>
+            <dt><kbd>?</kbd></dt>
+            <dd>Toggle this help overlay</dd>
+          </div>
+          <div>
+            <dt><kbd>Esc</kbd></dt>
+            <dd>Close this overlay</dd>
+          </div>
+        </dl>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -214,6 +360,92 @@ function handleNavigate(tab: string, focusId?: string) {
 .nav-item span {
   font-size: 13px;
   font-weight: 560;
+}
+
+.nav-item .hotkey {
+  margin-left: auto;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-1);
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.help-toggle {
+  margin: auto 10px 12px;
+  color: var(--text-muted);
+}
+.help-toggle .help-glyph {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.help-overlay {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(5, 8, 12, 0.65);
+  z-index: 50;
+}
+.help-card {
+  width: min(440px, 90vw);
+  max-height: 80vh;
+  overflow: auto;
+  padding: 18px 20px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface-1);
+  color: var(--text);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+.help-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.help-card h2 { margin: 0; font-size: 15px; }
+.help-card dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 16px;
+  margin: 0;
+}
+.help-card dl > div { display: contents; }
+.help-card dt {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.help-card dd {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  align-self: center;
+}
+.help-card kbd {
+  display: inline-block;
+  padding: 2px 7px;
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--bg);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text);
 }
 
 .workspace {

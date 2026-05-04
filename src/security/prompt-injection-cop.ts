@@ -56,7 +56,7 @@ export function createPromptInjectionCop(
   const security = config.security;
   if (!security.injectionScanner) return disabledCop();
   return new DefaultPromptInjectionCop(router, {
-    modelSpec: copilotOnlyModel(modelSpecOverride ?? security.injectionModel ?? DEFAULT_SCAN_MODEL),
+    modelSpec: modelSpecOverride ?? security.injectionModel ?? DEFAULT_SCAN_MODEL,
     maxScanChars: security.maxScanLengthBytes ?? DEFAULT_MAX_SCAN_CHARS,
   });
 }
@@ -165,17 +165,6 @@ export function scanHeuristically(content: string): PromptInjectionScanResult {
     confidence: 0.65,
     scanner: "heuristic",
   };
-}
-
-function copilotOnlyModel(modelSpec: string): string {
-  try {
-    const { provider } = parseModelId(modelSpec);
-    if (provider === "github-copilot") return modelSpec;
-  } catch {
-    // Fall through to default.
-  }
-  log.warn(`[prompt-injection-cop] scanner model "${modelSpec}" is not a GitHub Copilot model; using ${DEFAULT_SCAN_MODEL}`);
-  return DEFAULT_SCAN_MODEL;
 }
 
 function shouldAskModel(content: string): boolean {

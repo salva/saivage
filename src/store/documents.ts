@@ -3,7 +3,19 @@
  * Generic JSON CRUD with atomic writes and Zod validation.
  */
 
-import { readFileSync, writeFileSync, renameSync, unlinkSync, readdirSync, mkdirSync, existsSync } from "node:fs";
+import {
+  readFileSync,
+  writeFileSync,
+  renameSync,
+  unlinkSync,
+  readdirSync,
+  mkdirSync,
+  existsSync,
+  openSync,
+  closeSync,
+  fsyncSync,
+  statSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import type { z, ZodTypeAny } from "zod";
 
@@ -43,8 +55,13 @@ export function readDocLenient<S extends ZodTypeAny>(
 }
 
 /**
- * Write a JSON document atomically (tmp + rename).
+ * Write a JSON document atomically (tmp + fsync + rename + fsync parent).
  * Validates against the Zod schema before writing.
+ *
+ * The fsync calls make this durable against power loss: without them, the
+ * rename can be ordered before the data hits disk on some filesystems,
+ * leaving an empty file after reboot. Cost is one extra syscall per write,
+ * which is acceptable for the volume of state writes Saivage performs.
  */
 export function writeDoc<T>(
   path: string,
@@ -54,8 +71,28 @@ export function writeDoc<T>(
   const validated = schema.parse(data);
   const tmp = path + ".tmp";
   ensureParentDir(path);
-  writeFileSync(tmp, JSON.stringify(validated, null, 2) + "\n", "utf-8");
+  const payload = JSON.stringify(validated, null, 2) + "\n";
+
+  // Write + fsync the data file before renaming so the rename can't be
+  // committed before the bytes reach the disk.
+  const fd = openSync(tmp, "w");
+  try {
+    writeFileSync(fd, payload, "utf-8");
+    try { fsyncSync(fd); } catch { /* fsync may fail on tmpfs / Windows */ }
+  } finally {
+    closeSync(fd);
+  }
+
   renameSync(tmp, path);
+
+  // fsync the directory so the rename itself is durable.
+  try {
+    const dirFd = openSync(dirname(path), "r");
+    try { fsyncSync(dirFd); } catch { /* not supported on every FS */ }
+    finally { closeSync(dirFd); }
+  } catch {
+    // Some platforms (Windows) don't allow opening directories for fsync.
+  }
 }
 
 /**
@@ -116,4 +153,34 @@ export function ensureDir(dirPath: string): void {
 /** Ensure the parent directory of a path exists. */
 function ensureParentDir(filePath: string): void {
   ensureDir(dirname(filePath));
+}
+
+/**
+ * Sweep orphan `*.tmp` files left behind by interrupted `writeDoc` calls.
+ *
+ * `writeDoc` writes a tmp file then renames it. If the process dies between
+ * those steps the tmp file survives forever. This walks `dirPath` (one level)
+ * and removes `*.tmp` files older than `maxAgeMs`. Returns the number removed.
+ */
+export function sweepStaleTempFiles(
+  dirPath: string,
+  maxAgeMs: number = 5 * 60 * 1000,
+): number {
+  if (!existsSync(dirPath)) return 0;
+  const cutoff = Date.now() - maxAgeMs;
+  let removed = 0;
+  let entries: string[];
+  try { entries = readdirSync(dirPath); } catch { return 0; }
+  for (const name of entries) {
+    if (!name.endsWith(".tmp")) continue;
+    const fp = join(dirPath, name);
+    try {
+      const st = statSync(fp);
+      if (st.isFile() && st.mtimeMs < cutoff) {
+        unlinkSync(fp);
+        removed += 1;
+      }
+    } catch { /* concurrent delete or permission — ignore */ }
+  }
+  return removed;
 }

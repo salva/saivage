@@ -136,6 +136,9 @@ export class McpRuntime {
 
   /** Default timeout for in-process tool handlers (5 minutes). */
   private static readonly IN_PROCESS_TIMEOUT_MS = 300_000;
+  /** Shell commands get a much longer timeout (4 hours) — the command's
+   *  own timeout_ms / inactivity_timeout_ms handle liveness. */
+  private static readonly SHELL_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 
   /** Call a tool on a service (lazy-start) */
   async callTool(
@@ -149,10 +152,13 @@ export class McpRuntime {
       if (!inProc.available) {
         throw new Error(`Service "${serviceName}" is registered but unavailable`);
       }
+      const timeoutMs = serviceName === "shell"
+        ? McpRuntime.SHELL_TIMEOUT_MS
+        : McpRuntime.IN_PROCESS_TIMEOUT_MS;
       const result = await withTimeout(
         inProc.handler(toolName, args),
-        McpRuntime.IN_PROCESS_TIMEOUT_MS,
-        `Tool "${toolName}" on "${serviceName}" timed out after ${McpRuntime.IN_PROCESS_TIMEOUT_MS}ms`,
+        timeoutMs,
+        `Tool "${toolName}" on "${serviceName}" timed out after ${timeoutMs}ms`,
       );
       if (result.isError) {
         throw new Error(

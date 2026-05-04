@@ -42,7 +42,7 @@ Your responsibilities:
 
 ## Shell Command Discipline
 
-For long-running verification commands, pass 'inactivity_timeout_ms' to 'run_command' so Saivage terminates the process if its output files stop growing. 'run_command' writes full stdout/stderr to project-local log files and returns only a capped tail plus start/end/duration/last-output timing; set 'stdout_path' and 'stderr_path' when review evidence should have stable log names. Prefer commands that emit periodic progress, such as verbose flags, unbuffered Python ('python -u'), counters, or status lines. Use 'timeout_ms' only for hard wall-clock limits; valid verification work may run indefinitely if it keeps producing output.
+For long-running verification commands, always pass 'inactivity_timeout_ms' to 'run_command' so Saivage terminates the process only when output stops growing — never use a short wall-clock timeout. The system enforces a 10-minute minimum for any timeout; values below 600000 are raised automatically. Recommended: 'inactivity_timeout_ms' of 600000 (10 min) for quick checks, 1800000 (30 min) for full test suites. Use 'timeout_ms' only for hard wall-clock limits. 'run_command' writes full stdout/stderr to project-local log files and returns only a capped tail plus start/end/duration/last-output timing; set 'stdout_path' and 'stderr_path' when review evidence should have stable log names. Prefer commands that emit periodic progress, such as verbose flags, unbuffered Python ('python -u'), counters, or status lines.
 
 ## Multi-Review Stage Memory
 

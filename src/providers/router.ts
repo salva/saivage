@@ -16,6 +16,13 @@ import { parseAccountRef } from "../routing/resolver.js";
 
 const PROVIDER_REQUEST_TIMEOUT_MS = 300_000;
 
+/** Per-model health state for exponential recovery. */
+interface ModelHealth {
+  consecutiveFailures: number;
+  disabledUntil: number;   // epoch ms — model is skipped until this time
+  backoffMs: number;       // current backoff duration (grows × BACKOFF_MULTIPLIER each failure)
+}
+
 /** Lightweight LLM call metrics (replaces v1 telemetry module). */
 function recordLlmCall(_spec: string, _data: Record<string, unknown>): void {
   // Metrics are logged via the log module; no separate telemetry store needed.
@@ -45,8 +52,17 @@ export class ModelRouter {
   private failoverChains: Record<string, string[]>;
   private modelEquivalents: Map<string, string[]>;
   private modelAssignments: Record<string, string>;
-  private stickyFailovers = new Map<string, string>();
   private providerConfigs: Record<string, RuntimeProviderConfigLike>;
+
+  // ── Model health tracking (exponential recovery) ──────────────────────
+  private modelHealth = new Map<string, ModelHealth>();
+
+  /** Initial cooldown after a model's first failure. */
+  private static readonly INITIAL_BACKOFF_MS = 15_000;
+  /** Backoff multiplier after each subsequent failure. */
+  private static readonly BACKOFF_MULTIPLIER = 1.5;
+  /** Maximum cooldown duration (10 minutes). */
+  private static readonly MAX_BACKOFF_MS = 10 * 60 * 1000;
 
   constructor(config: SaivageConfig) {
     this.failoverChains = config.failover;
@@ -64,6 +80,8 @@ export class ModelRouter {
       "anthropic",
       "openai",
       "openai-codex",
+      "opencode",
+      "opencode-go",
       "ollama",
       "llamacpp",
     ];
@@ -142,97 +160,175 @@ export class ModelRouter {
     return provider?.maxContextTokens(model) ?? 200_000;
   }
 
-  /** Chat with failover */
+  /**
+   * Chat with exponential-recovery failover.
+   *
+   * 1. Build the full failover chain (primary → fallback₁ → fallback₂ → …)
+   * 2. Filter out models whose disabledUntil is still in the future
+   * 3. Try the first available model; on failure mark it disabled and move on
+   * 4. On success reset that model's health to pristine
+   *
+   * Each model tracks its own consecutive failure count and backoff duration.
+   * After the first failure the cooldown is short (15 s), then grows × 1.5
+   * each time, capped at 10 min. A single success resets fully.
+   */
   async chat(request: ChatRequest & { modelSpec: string }): Promise<ChatResponse> {
     const chain = this.buildChain(request.modelSpec);
+    const now = Date.now();
+    let lastError: Error | undefined;
 
     for (const spec of chain) {
+      const health = this.getHealth(spec);
+
+      // Skip models still in cooldown
+      if (health.disabledUntil > now) {
+        const remainSec = Math.round((health.disabledUntil - now) / 1000);
+        log.info(`[router] Skipping ${spec} (disabled for ${remainSec}s more)`);
+        continue;
+      }
+
+      // Resolve provider
       const { provider: providerName, model } = parseModelId(spec);
       const provider = this.getProviderForRequest(providerName, request);
-
       if (!provider) {
         log.warn(`Provider "${providerName}" not registered, skipping`);
         continue;
       }
-
-      // Always resolve fresh OAuth API key before each request.
-      // Copilot tokens are short-lived (~30 min) and getOAuthApiKey()
-      // handles auto-refresh transparently.
       if (provider.setApiKey) {
         const oauthKey = await this.resolveApiKey(providerName, request);
-        if (oauthKey) {
-          provider.setApiKey(oauthKey);
-        }
+        if (oauthKey) provider.setApiKey(oauthKey);
       }
-
-      const rateLimit = provider.getRateLimitStatus();
-      if (rateLimit.limited) {
-        log.warn(`Provider "${providerName}" rate-limited, trying next`);
+      if (provider.getRateLimitStatus().limited) {
+        log.warn(`Provider "${providerName}" rate-limited, skipping`);
         continue;
       }
 
-      try {
-        const t0 = Date.now();
-        const controller = new AbortController();
-        let timeoutId: ReturnType<typeof setTimeout> | undefined;
-        const response = await Promise.race([
-          provider.chat({ ...request, model, signal: controller.signal }),
-          new Promise<never>((_, reject) => {
-            timeoutId = setTimeout(() => {
-              controller.abort();
-              reject(new Error(`Request timed out after ${PROVIDER_REQUEST_TIMEOUT_MS / 1000}s`));
-            }, PROVIDER_REQUEST_TIMEOUT_MS);
-          }),
-        ]).finally(() => {
-          if (timeoutId) clearTimeout(timeoutId);
-        });
-        recordLlmCall(spec, {
-          inputTokens: response.usage?.inputTokens,
-          outputTokens: response.usage?.outputTokens,
-          latencyMs: Date.now() - t0,
-        });
-        // If we failed over, stick to this provider
-        if (spec !== request.modelSpec) {
-          this.stickyFailovers.set(request.modelSpec, spec);
-          log.info(`Model switch: ${request.modelSpec} -> ${spec} (primary failed, using failover)`);
+      // Attempt the call
+      const result = await this.callProvider(spec, provider, model, request);
+
+      if (result.ok) {
+        // Success — reset health for this model
+        if (health.consecutiveFailures > 0) {
+          log.info(`[router] ${spec} recovered after ${health.consecutiveFailures} failure(s)`);
         }
-        return {
+        this.resetHealth(spec);
+        return result.response;
+      }
+
+      // Non-retryable → propagate immediately (context overflow, etc.)
+      if (result.nonRetryable) throw result.error;
+
+      // Record failure, apply exponential cooldown
+      lastError = result.error;
+      this.recordFailure(spec, health);
+    }
+
+    const summary = `All providers failed for ${describeRequestedModel(request.modelSpec)}`;
+    if (lastError) {
+      throw new Error(`${summary}: ${lastError.message}`, { cause: lastError });
+    }
+    throw new Error(summary);
+  }
+
+  // ── Provider call ─────────────────────────────────────────────────────
+
+  /**
+   * Single provider call with timeout.
+   * Returns a result object — never throws for retryable errors.
+   */
+  private async callProvider(
+    spec: string,
+    provider: ModelProvider,
+    model: string,
+    request: ChatRequest & { modelSpec: string },
+  ): Promise<{ ok: true; response: ChatResponse } | { ok: false; error: Error; nonRetryable?: boolean }> {
+    try {
+      const t0 = Date.now();
+      const controller = new AbortController();
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      const response = await Promise.race([
+        provider.chat({ ...request, model, signal: controller.signal }),
+        new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(() => {
+            controller.abort();
+            reject(new Error(`Request timed out after ${PROVIDER_REQUEST_TIMEOUT_MS / 1000}s`));
+          }, PROVIDER_REQUEST_TIMEOUT_MS);
+        }),
+      ]).finally(() => {
+        if (timeoutId) clearTimeout(timeoutId);
+      });
+      recordLlmCall(spec, {
+        inputTokens: response.usage?.inputTokens,
+        outputTokens: response.usage?.outputTokens,
+        latencyMs: Date.now() - t0,
+      });
+      const { provider: providerName } = parseModelId(spec);
+      return {
+        ok: true,
+        response: {
           ...response,
           provider: providerName,
           model,
           modelSpec: spec,
           requestedModelSpec: request.modelSpec,
-        };
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        const isTimeout = errMsg.includes("timed out");
-        recordLlmCall(spec, { error: true, timeout: isTimeout });
-        log.warn(`Provider "${providerName}" (model: ${model}) failed: ${errMsg}`);
+        },
+      };
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      const errMsg = error.message;
+      recordLlmCall(spec, { error: true, timeout: errMsg.includes("timed out") });
+      log.warn(`[router] ${spec} failed: ${errMsg}`);
 
-        // Non-retryable errors that apply regardless of provider - propagate immediately
-        const isContextOverflow =
-          errMsg.includes("exceeds the context window") ||
-          errMsg.includes("context_length_exceeded");
-        if (isContextOverflow) {
-          throw err;
-        }
+      const nonRetryable =
+        errMsg.includes("exceeds the context window") ||
+        errMsg.includes("context_length_exceeded");
 
-        continue;
+      return { ok: false, error, nonRetryable };
+    }
+  }
+
+  // ── Model health ──────────────────────────────────────────────────────
+
+  private getHealth(spec: string): ModelHealth {
+    let h = this.modelHealth.get(spec);
+    if (!h) {
+      h = { consecutiveFailures: 0, disabledUntil: 0, backoffMs: ModelRouter.INITIAL_BACKOFF_MS };
+      this.modelHealth.set(spec, h);
+    }
+    return h;
+  }
+
+  private recordFailure(spec: string, health: ModelHealth): void {
+    health.consecutiveFailures++;
+    health.disabledUntil = Date.now() + health.backoffMs;
+    log.warn(
+      `[router] ${spec} disabled for ${Math.round(health.backoffMs / 1000)}s ` +
+      `(${health.consecutiveFailures} consecutive failure${health.consecutiveFailures > 1 ? "s" : ""})`,
+    );
+    // Grow backoff for next time
+    health.backoffMs = Math.min(
+      health.backoffMs * ModelRouter.BACKOFF_MULTIPLIER,
+      ModelRouter.MAX_BACKOFF_MS,
+    );
+  }
+
+  private resetHealth(spec: string): void {
+    this.modelHealth.delete(spec);
+  }
+
+  /** Force-reset health for all models in a failover chain (used by agent retry logic). */
+  resetModelHealth(modelSpec: string): void {
+    const chain = this.buildChain(modelSpec);
+    for (const spec of chain) {
+      if (this.modelHealth.has(spec)) {
+        log.info(`[router] Resetting health for ${spec}`);
+        this.modelHealth.delete(spec);
       }
     }
-
-    throw new Error(`All providers failed for ${describeRequestedModel(request.modelSpec)}`);
   }
 
   private buildChain(modelSpec: string): string[] {
-    // If we have a sticky failover, use that first
-    const sticky = this.stickyFailovers.get(modelSpec);
     const chain: string[] = [];
-
-    if (sticky && sticky !== modelSpec) {
-      chain.push(sticky);
-    }
-
     this.appendFailoverChain(modelSpec, chain, new Set<string>());
     return chain;
   }
@@ -260,15 +356,6 @@ export class ModelRouter {
     }
   }
 
-  /** Reset sticky failover for a model */
-  clearStickyFailover(modelSpec: string): void {
-    const was = this.stickyFailovers.get(modelSpec);
-    if (was) {
-      log.info(`Model switch: ${was} -> ${modelSpec} (retrying primary after cooldown)`);
-    }
-    this.stickyFailovers.delete(modelSpec);
-  }
-
   private shouldRegisterProvider(providerName: string): boolean {
     const cfg = this.providerConfigs[providerName];
     const hasAccounts = Object.keys(cfg?.accounts ?? {}).length > 0;
@@ -282,6 +369,10 @@ export class ModelRouter {
         return !!cfg || hasAccounts || !!process.env["OPENAI_API_KEY"];
       case "openai-codex":
         return !!cfg || hasAccounts || hasOAuthCredentials("openai-codex") || !!process.env["OPENAI_CODEX_API_KEY"];
+      case "opencode":
+        return !!cfg || hasAccounts || !!process.env["OPENCODE_API_KEY"];
+      case "opencode-go":
+        return !!cfg || hasAccounts || !!process.env["OPENCODE_API_KEY"];
       case "ollama":
         return true;
       case "llamacpp":
@@ -312,6 +403,16 @@ export class ModelRouter {
       }
       case "openai-codex": {
         const provider = new PiAiProvider("openai-codex");
+        if (apiKey) provider.setApiKey(apiKey);
+        return provider;
+      }
+      case "opencode": {
+        const provider = new PiAiProvider("opencode");
+        if (apiKey) provider.setApiKey(apiKey);
+        return provider;
+      }
+      case "opencode-go": {
+        const provider = new PiAiProvider("opencode-go");
         if (apiKey) provider.setApiKey(apiKey);
         return provider;
       }

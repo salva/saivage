@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from "vue";
 import { CheckCheck, ChevronLeft, FileJson, FileText, Folder, FolderOpen, RefreshCw, StickyNote, Trash2 } from "lucide-vue-next";
 import JsonHighlight from "./JsonHighlight.vue";
 import FormattedContent from "./FormattedContent.vue";
+import { apiFetch } from "../utils/api";
 
 interface FileEntry {
   name: string;
@@ -35,7 +36,7 @@ async function fetchDir(path: string) {
   loading.value = true;
   fileContent.value = null;
   try {
-    const res = await fetch(`/api/files?path=${encodeURIComponent(path)}`);
+    const res = await apiFetch(`/api/files?path=${encodeURIComponent(path)}`);
     if (res.ok) {
       const data = await res.json();
       entries.value = (data.entries ?? []).sort((a: FileEntry, b: FileEntry) => {
@@ -56,7 +57,7 @@ async function fetchDir(path: string) {
 async function fetchNotes() {
   notesLoading.value = true;
   try {
-    const res = await fetch("/api/notes");
+    const res = await apiFetch("/api/notes");
     if (res.ok) {
       const data = await res.json();
       notes.value = data.notes ?? [];
@@ -78,7 +79,7 @@ async function openEntry(entry: FileEntry) {
 async function loadFile(path: string) {
   loading.value = true;
   try {
-    const res = await fetch(`/api/files/content?path=${encodeURIComponent(path)}`);
+    const res = await apiFetch(`/api/files/content?path=${encodeURIComponent(path)}`);
     if (res.ok) fileContent.value = await res.json();
   } catch { /* ignore */ }
   loading.value = false;
@@ -87,7 +88,7 @@ async function loadFile(path: string) {
 async function acknowledgeNote(noteId: string) {
   noteActionBusy.value = `ack:${noteId}`;
   try {
-    await fetch(`/api/notes/${encodeURIComponent(noteId)}/acknowledge`, { method: "POST" });
+    await apiFetch(`/api/notes/${encodeURIComponent(noteId)}/acknowledge`, { method: "POST" });
     await fetchNotes();
     await fetchDir("notes");
   } catch { /* ignore */ }
@@ -97,7 +98,7 @@ async function acknowledgeNote(noteId: string) {
 async function deleteNote(noteId: string) {
   noteActionBusy.value = `delete:${noteId}`;
   try {
-    await fetch(`/api/notes/${encodeURIComponent(noteId)}`, { method: "DELETE" });
+    await apiFetch(`/api/notes/${encodeURIComponent(noteId)}`, { method: "DELETE" });
     await fetchNotes();
     await fetchDir("notes");
   } catch { /* ignore */ }
@@ -107,7 +108,7 @@ async function deleteNote(noteId: string) {
 async function clearNotes() {
   noteActionBusy.value = "clear";
   try {
-    await fetch("/api/notes", { method: "DELETE" });
+    await apiFetch("/api/notes", { method: "DELETE" });
     await fetchNotes();
     await fetchDir("notes");
   } catch { /* ignore */ }
@@ -171,19 +172,20 @@ function parseJson(content: string): unknown {
     <aside class="file-tree-panel">
       <div class="panel-heading tree-heading">
         <h2>Artifacts</h2>
-        <button class="icon-button" @click="fetchDir(currentPath)" title="Refresh directory">
-          <RefreshCw :size="15" />
+        <button class="icon-button" @click="fetchDir(currentPath)" title="Refresh directory" aria-label="Refresh directory">
+          <RefreshCw :size="15" :class="{ spin: loading }" />
         </button>
       </div>
 
       <div class="path-bar">
-        <button v-if="pathStack.length > 1" class="icon-button" @click="goUp" title="Go up">
+        <button v-if="pathStack.length > 1" class="icon-button" @click="goUp" title="Go up" aria-label="Go to parent directory">
           <ChevronLeft :size="16" />
         </button>
         <div class="breadcrumbs">
           <button
             v-for="bc in breadcrumbs"
             :key="bc.index"
+            :aria-label="`Open ${bc.label}`"
             @click="goToPathIndex(bc.index)"
           >{{ bc.label }}</button>
         </div>
@@ -219,8 +221,8 @@ function parseJson(content: string): unknown {
             <span>{{ notes.length }} note{{ notes.length === 1 ? '' : 's' }}</span>
           </div>
           <div class="notes-actions">
-            <button class="icon-button" @click="fetchNotes" title="Refresh notes">
-              <RefreshCw :size="15" />
+            <button class="icon-button" @click="fetchNotes" title="Refresh notes" aria-label="Refresh notes">
+              <RefreshCw :size="15" :class="{ spin: notesLoading }" />
             </button>
             <button class="danger-button" :disabled="notes.length === 0 || noteActionBusy === 'clear'" @click="clearNotes">
               <Trash2 :size="14" />

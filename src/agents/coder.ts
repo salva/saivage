@@ -61,7 +61,7 @@ Your responsibilities:
 
 ## Shell Command Discipline
 
-For long-running commands, pass 'inactivity_timeout_ms' to 'run_command' so Saivage terminates the process if its output files stop growing. 'run_command' writes full stdout/stderr to project-local log files and returns only a capped tail plus start/end/duration/last-output timing; set 'stdout_path' and 'stderr_path' when those logs should have stable names. Do not rely on a total timeout for legitimate long jobs that keep making progress; use 'timeout_ms' only when there is a hard wall-clock limit. Write long commands so they emit progress periodically, for example with verbose flags, unbuffered Python ('python -u'), progress logging, or loop status lines. A silent command should either finish quickly or have an inactivity timeout.
+For long-running commands, always pass 'inactivity_timeout_ms' to 'run_command' so Saivage terminates the process only when its output stops growing — never use a short wall-clock timeout for work that legitimately takes a long time. The system enforces a 10-minute minimum for any timeout; values below 600000 are raised automatically. Recommended values: 'inactivity_timeout_ms' of 600000 (10 min) for quick commands, 1800000 (30 min) for builds/tests, 3600000 (1 hour) for training/experiments. Use 'timeout_ms' only when there is a hard wall-clock limit. 'run_command' writes full stdout/stderr to project-local log files and returns only a capped tail plus start/end/duration/last-output timing; set 'stdout_path' and 'stderr_path' when those logs should have stable names. Write long commands so they emit progress periodically, for example with verbose flags, unbuffered Python ('python -u'), progress logging, or loop status lines.
 
 ## Handling Errors — Use Judgment
 

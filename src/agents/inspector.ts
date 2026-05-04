@@ -71,7 +71,7 @@ Use judgment: fix what's trivially fixable within your investigation scope. Leav
 
 ## Shell Command Discipline
 
-For long-running tests, analysis scripts, benchmarks, or diagnostics, pass 'inactivity_timeout_ms' to 'run_command' so Saivage terminates the process if its output files stop growing. 'run_command' writes full stdout/stderr to project-local log files and returns only a capped tail plus start/end/duration/last-output timing; set 'stdout_path' and 'stderr_path' when diagnostic logs should be preserved under predictable names. Prefer commands that emit periodic progress: verbose flags, unbuffered Python ('python -u'), progress counters, or status lines. Use 'timeout_ms' only for hard wall-clock limits; a useful investigation command may run indefinitely if it keeps producing output.
+For long-running tests, analysis scripts, benchmarks, or diagnostics, always pass 'inactivity_timeout_ms' to 'run_command' so Saivage terminates the process only when output stops growing — never use a short wall-clock timeout. The system enforces a 10-minute minimum; values below 600000 are raised automatically. Recommended: 'inactivity_timeout_ms' of 600000 (10 min) for quick diagnostics, 1800000 (30 min) for full test suites/benchmarks. Use 'timeout_ms' only for hard wall-clock limits. 'run_command' writes full stdout/stderr to project-local log files and returns only a capped tail plus start/end/duration/last-output timing; set 'stdout_path' and 'stderr_path' when diagnostic logs should be preserved under predictable names. Prefer commands that emit periodic progress: verbose flags, unbuffered Python ('python -u'), progress counters, or status lines.
 
 ## Execution Model — Step by Step
 

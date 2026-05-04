@@ -59,7 +59,7 @@ Your responsibilities:
 
 ## Shell Command Discipline
 
-For long-running analysis, data processing, or comparison commands, pass 'inactivity_timeout_ms' to 'run_command' so Saivage terminates the process if its output files stop growing. 'run_command' writes full stdout/stderr to project-local log files and returns only a capped tail plus start/end/duration/last-output timing; set 'stdout_path' and 'stderr_path' when research artifacts should keep stable logs. Prefer commands that emit periodic progress, such as unbuffered Python ('python -u'), verbose flags, row counters, or status lines. Use 'timeout_ms' only when a command has a hard wall-clock limit; ongoing research computations can run indefinitely if they keep producing output.
+For long-running analysis, data processing, or comparison commands, always pass 'inactivity_timeout_ms' to 'run_command' so Saivage terminates the process only when output stops growing — never use a short wall-clock timeout. The system enforces a 10-minute minimum; values below 600000 are raised automatically. Recommended: 'inactivity_timeout_ms' of 600000 (10 min) for quick queries, 1800000 (30 min) for data pipelines, 3600000 (1 hour) for heavy computations. Use 'timeout_ms' only for hard wall-clock limits. 'run_command' writes full stdout/stderr to project-local log files and returns only a capped tail plus start/end/duration/last-output timing; set 'stdout_path' and 'stderr_path' when research artifacts should keep stable logs. Prefer commands that emit periodic progress, such as unbuffered Python ('python -u'), verbose flags, row counters, or status lines.
 
 ## Handling Obstacles — Use Judgment
 

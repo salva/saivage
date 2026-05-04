@@ -92,7 +92,7 @@ deploy:
 	@echo "==> Ensuring headless Playwright browser is available..."
 	@$(SSH) "cd /opt/saivage && npx -y playwright@latest install chromium" || true
 	@echo "==> Refreshing systemd unit..."
-	@$(SSH) "sudo cp /opt/saivage/deploy/saivage.service /etc/systemd/system/saivage.service && sudo systemctl daemon-reload"
+	@$(SSH) "sudo sed 's|/work/target|$(TARGET_PROJECT_MOUNT)|g' /opt/saivage/deploy/saivage.service | sudo tee /etc/systemd/system/saivage.service > /dev/null && sudo systemctl daemon-reload"
 	@echo "==> Restarting daemon..."
 	@$(MAKE) --no-print-directory record-shutdown SHUTDOWN_REASON="$(SHUTDOWN_REASON)"
 	@$(SSH) "sudo systemctl restart saivage"

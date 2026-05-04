@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { CheckCircle2, CircleDot, History, ListChecks, RefreshCw } from "lucide-vue-next";
+import { apiFetch } from "../utils/api";
 
 const props = defineProps<{ focusStageId?: string | null }>();
 const emit = defineEmits<{ "focus-consumed": [] }>();
@@ -64,9 +65,9 @@ async function fetchPlan() {
   loading.value = true;
   try {
     const [planRes, stateRes, configRes] = await Promise.all([
-      fetch("/api/plan"),
-      fetch("/api/state"),
-      fetch("/api/config"),
+      apiFetch("/api/plan"),
+      apiFetch("/api/state"),
+      apiFetch("/api/config"),
     ]);
     if (planRes.ok) {
       const data = await planRes.json();
@@ -84,7 +85,7 @@ async function fetchPlan() {
 
 async function fetchStageDetail(stageId: string) {
   try {
-    const res = await fetch(`/api/plan/stages/${stageId}`);
+    const res = await apiFetch(`/api/plan/stages/${stageId}`);
     if (res.ok) stageDetail.value = await res.json();
   } catch { /* ignore */ }
 }
@@ -174,8 +175,8 @@ watch(() => props.focusStageId, async (stageId) => {
           <span>issues</span>
         </div>
       </div>
-      <button class="console-button refresh" @click="fetchPlan" :disabled="loading" title="Refresh plan">
-        <RefreshCw :size="15" />
+      <button class="console-button refresh" @click="fetchPlan" :disabled="loading" title="Refresh plan" aria-label="Refresh plan">
+        <RefreshCw :size="15" :class="{ spin: loading }" />
         <span>Refresh</span>
       </button>
     </div>
@@ -207,6 +208,7 @@ watch(() => props.focusStageId, async (stageId) => {
           :key="stage.id"
           class="pipeline-row"
           :class="{ current: stage.id === plan?.current_stage_id }"
+          :aria-label="`Open stage ${stage.id}`"
           @click="activeSection = 'stages'; toggleStage(stage.id)"
         >
           <span class="pipeline-index">{{ index + 1 }}</span>

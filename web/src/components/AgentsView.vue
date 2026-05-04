@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 import { Bot, Clock3, MessageSquare, Wrench } from "lucide-vue-next";
 import FormattedContent from "./FormattedContent.vue";
+import { apiFetch } from "../utils/api";
 
 interface AgentState {
   agent_type: string;
@@ -103,8 +104,8 @@ let agentPollTimer: ReturnType<typeof setInterval> | null = null;
 async function fetchData() {
   try {
     const [stateRes, chatsRes] = await Promise.all([
-      fetch("/api/state"),
-      fetch("/api/chats"),
+      apiFetch("/api/state"),
+      apiFetch("/api/chats"),
     ]);
     if (stateRes.ok) {
       const data = await stateRes.json();
@@ -130,7 +131,7 @@ function maybeSelectDefaultConversation() {
 async function loadAgentConversation(agentId: string) {
   if (selectionKind.value === "agent" && selectedId.value === agentId && selectedAgent.value) {
     try {
-      const res = await fetch(`/api/agents/${agentId}/conversation`);
+      const res = await apiFetch(`/api/agents/${agentId}/conversation`);
       if (res.ok) {
         const data = await res.json() as AgentConversation;
         const wasAtBottom = isScrolledToBottom();
@@ -150,7 +151,7 @@ async function loadAgentConversation(agentId: string) {
   loading.value = true;
   expandedDetails.value = new Set();
   try {
-    const res = await fetch(`/api/agents/${agentId}/conversation`);
+    const res = await apiFetch(`/api/agents/${agentId}/conversation`);
     if (res.ok) {
       selectedAgent.value = await res.json() as AgentConversation;
       await nextTick();
@@ -170,7 +171,7 @@ async function loadSession(sessionId: string) {
   expandedDetails.value = new Set();
   stopAgentPolling();
   try {
-    const res = await fetch(`/api/chats/${sessionId}`);
+    const res = await apiFetch(`/api/chats/${sessionId}`);
     if (res.ok) selectedSession.value = await res.json();
   } catch { /* ignore */ }
   loading.value = false;

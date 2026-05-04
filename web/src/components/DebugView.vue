@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { AlertTriangle, Braces, Clock, RefreshCw } from "lucide-vue-next";
 import JsonHighlight from "./JsonHighlight.vue";
+import { apiFetch } from "../utils/api";
 
 interface ErrorEntry {
   source: string;
@@ -29,14 +30,14 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 async function fetchState() {
   try {
-    const res = await fetch("/api/debug/state");
+    const res = await apiFetch("/api/debug/state");
     if (res.ok) stateData.value = await res.json();
   } catch { /* ignore */ }
 }
 
 async function fetchErrors() {
   try {
-    const res = await fetch("/api/debug/errors");
+    const res = await apiFetch("/api/debug/errors");
     if (res.ok) {
       const data = await res.json();
       errors.value = data.errors ?? [];
@@ -46,7 +47,7 @@ async function fetchErrors() {
 
 async function fetchTimeline() {
   try {
-    const res = await fetch("/api/debug/timeline");
+    const res = await apiFetch("/api/debug/timeline");
     if (res.ok) {
       const data = await res.json();
       timeline.value = data.events ?? [];
@@ -126,8 +127,8 @@ const tabItems = computed(() => [
           <strong>{{ tab.count }}</strong>
         </button>
       </div>
-      <button class="console-button refresh" @click="fetchAll" :disabled="loading" title="Refresh debug data">
-        <RefreshCw :size="15" />
+      <button class="console-button refresh" @click="fetchAll" :disabled="loading" title="Refresh debug data" aria-label="Refresh debug data">
+        <RefreshCw :size="15" :class="{ spin: loading }" />
         <span>Refresh</span>
       </button>
     </div>

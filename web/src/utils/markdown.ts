@@ -14,8 +14,16 @@ export function renderMarkdown(text: string): string {
   rendered = rendered.replace(/^# (.+)$/gm, '<strong class="md-h1">$1</strong>');
   rendered = rendered.replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>");
   rendered = rendered.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-  rendered = rendered.replace(/^[-*] (.+)$/gm, '<span class="md-bullet">$1</span>');
-  rendered = rendered.replace(/^\d+\. (.+)$/gm, '<span class="md-bullet">$1</span>');
+  // Lists: keep the visible marker. Captures are HTML-escaped above so it
+  // is safe to interpolate them as text content.
+  rendered = rendered.replace(
+    /^[-*] (.+)$/gm,
+    '<span class="md-bullet"><span class="md-marker">\u2022</span><span class="md-bullet-text">$1</span></span>',
+  );
+  rendered = rendered.replace(
+    /^(\d+)\. (.+)$/gm,
+    '<span class="md-bullet"><span class="md-marker">$1.</span><span class="md-bullet-text">$2</span></span>',
+  );
 
   return rendered;
 }

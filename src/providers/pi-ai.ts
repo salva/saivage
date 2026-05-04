@@ -22,6 +22,7 @@ import type {
   AssistantMessage,
   ToolResultMessage,
   TextContent,
+  ThinkingContent,
   ToolCall,
   Tool,
 } from "@mariozechner/pi-ai";
@@ -92,7 +93,19 @@ export class PiAiProvider extends BaseProvider {
 
     // Fuzzy prefix match (e.g., "gpt-4o" matches "gpt-4o-2024-11-20")
     model = models.find((m) => modelId.startsWith(m.id) || m.id.startsWith(modelId));
-    return model;
+    if (model) return model;
+
+    // Synthesise a model entry for IDs the provider serves but pi-ai
+    // doesn't know about yet (e.g. kimi-k2.6 when only k2.5 is catalogued).
+    // Clone the closest sibling model (shared prefix before the last version
+    // segment) and override the ID.
+    const prefix = modelId.replace(/[.\-][\d]+$/, "");
+    const sibling = models.find((m) => m.id.startsWith(prefix));
+    if (sibling) {
+      return { ...sibling, id: modelId } as Model<Api>;
+    }
+
+    return undefined;
   }
 
   // ── Saivage → pi-ai conversion ───────────────────────
@@ -187,11 +200,14 @@ export class PiAiProvider extends BaseProvider {
 
   private convertResponse(result: AssistantMessage): ChatResponse {
     let content = "";
+    let reasoning = "";
     const toolCalls: ToolCallResult[] = [];
 
     for (const block of result.content) {
       if (block.type === "text") {
         content += block.text;
+      } else if (block.type === "thinking") {
+        reasoning += block.thinking;
       } else if (block.type === "toolCall") {
         toolCalls.push({
           id: block.id,
@@ -210,6 +226,7 @@ export class PiAiProvider extends BaseProvider {
       content,
       toolCalls,
       finishReason,
+      reasoning: reasoning || undefined,
       usage: {
         inputTokens: result.usage.input,
         outputTokens: result.usage.output,

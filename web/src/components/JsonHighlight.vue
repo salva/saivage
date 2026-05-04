@@ -4,7 +4,7 @@ import { computed } from "vue";
 const props = defineProps<{ data: unknown; maxHeight?: string }>();
 
 interface Token {
-  type: "key" | "string" | "number" | "boolean" | "null" | "brace" | "bracket" | "colon" | "comma";
+  type: "key" | "string" | "number" | "boolean" | "null" | "brace" | "bracket" | "colon" | "comma" | "whitespace";
   text: string;
 }
 
@@ -22,7 +22,7 @@ function tokenize(json: string): Token[] {
       while (i + 1 < len && (json[i + 1] === " " || json[i + 1] === "\n" || json[i + 1] === "\r" || json[i + 1] === "\t")) {
         ws += json[++i];
       }
-      tokens.push({ type: "brace", text: ws });
+      tokens.push({ type: "whitespace", text: ws });
       i++;
       continue;
     }

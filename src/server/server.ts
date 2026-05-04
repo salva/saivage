@@ -7,7 +7,7 @@
 import Fastify from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
-import { join, resolve } from "node:path";
+import { join, resolve, relative } from "node:path";
 import { existsSync, readFileSync, statSync, readdirSync } from "node:fs";
 import type { SaivageRuntime } from "./bootstrap.js";
 import { readDocOrNull, readDocLenient, readJsonOrNull, listDocs } from "../store/documents.js";
@@ -27,6 +27,23 @@ import { WebSocketChannel } from "../channels/websocket.js";
 import { log } from "../log.js";
 import { NoteManager } from "../runtime/notes.js";
 
+/**
+ * Returns true if `target` is the same as or a descendant of `base` after
+ * path resolution. `startsWith` is the wrong primitive: it would treat
+ * `/foo/barx` as inside `/foo/bar`. `relative()` returns an empty string for
+ * the base itself and never starts with `..` for proper descendants.
+ */
+export function isPathInside(base: string, target: string): boolean {
+  const resolvedBase = resolve(base);
+  const resolvedTarget = resolve(target);
+  if (resolvedBase === resolvedTarget) return true;
+  const rel = relative(resolvedBase, resolvedTarget);
+  if (rel === "" || rel === ".") return true;
+  if (rel.startsWith("..")) return false;
+  if (rel.startsWith("/") || /^[A-Za-z]:/.test(rel)) return false;
+  return true;
+}
+
 export interface ServerOptions {
   port: number;
   host: string;
@@ -37,6 +54,30 @@ export async function startServer(
   options: ServerOptions = { port: 8080, host: "0.0.0.0" },
 ): Promise<{ close: () => Promise<void> }> {
   const app = Fastify({ logger: false });
+
+  // ─── Optional API token gate ───────────────────────────────────────────
+  // When SAIVAGE_API_TOKEN is set, /api/* and /ws require the same token via
+  // Authorization: Bearer, x-saivage-token header, or ?token= query param.
+  // /, /assets/*, /index.html and /health stay public so the SPA loads and
+  // monitoring can probe.
+  //
+  // /api/* is enforced by an onRequest hook that returns 401. /ws is also
+  // checked here, but rejecting a WebSocket upgrade with an HTTP 401 makes
+  // the browser see only a generic 1006 "abnormal closure" on the WebSocket
+  // side, which the SPA would treat as a transient drop and retry forever.
+  // The actual /ws handler below performs a second check and closes the
+  // socket with 1008 (policy violation) so the client can stop the loop.
+  const apiToken = process.env["SAIVAGE_API_TOKEN"];
+  if (apiToken) {
+    log.info("[server] API token gate enabled (SAIVAGE_API_TOKEN set)");
+    app.addHook("onRequest", async (req, reply) => {
+      const url = req.url.split("?")[0] ?? "";
+      if (!url.startsWith("/api/")) return;
+      if (extractRequestToken(req) !== apiToken) {
+        return reply.status(401).send({ error: "unauthorized" });
+      }
+    });
+  }
 
   await app.register(fastifyWebsocket);
 
@@ -290,7 +331,7 @@ export async function startServer(
       : saivageDir;
 
     // Ensure resolved path is within .saivage/
-    if (!targetDir.startsWith(saivageDir)) {
+    if (!isPathInside(saivageDir, targetDir)) {
       return reply.status(400).send({ error: "Invalid path" });
     }
 
@@ -336,7 +377,7 @@ export async function startServer(
     const saivageDir = runtime.project.saivageDir;
     const targetFile = resolve(saivageDir, queryPath);
 
-    if (!targetFile.startsWith(saivageDir)) {
+    if (!isPathInside(saivageDir, targetFile)) {
       return reply.status(400).send({ error: "Invalid path" });
     }
 
@@ -558,7 +599,13 @@ export async function startServer(
 
   // ─── WebSocket Chat ────────────────────────────────────────────────────
 
-  app.get("/ws", { websocket: true }, (socket, _req) => {
+  app.get("/ws", { websocket: true }, (socket, req) => {
+    if (apiToken && extractRequestToken(req) !== apiToken) {
+      log.warn("[server] WebSocket rejected: missing or invalid token");
+      // 1008 = policy violation; the SPA stops reconnecting on this code.
+      socket.close(1008, "unauthorized");
+      return;
+    }
     const sessionId = chatSessionId();
     const channel = new WebSocketChannel(socket);
 
@@ -628,4 +675,25 @@ function resolveChatRoute(runtime: SaivageRuntime) {
     authProfileKey: route.authProfile,
     accountRef: route.accountRef,
   };
+}
+
+function bearer(value: string | string[] | undefined): string | undefined {
+  if (!value) return undefined;
+  const header = Array.isArray(value) ? value[0] : value;
+  if (!header) return undefined;
+  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+  return match ? match[1] : undefined;
+}
+
+interface RequestWithAuthBits {
+  headers: Record<string, unknown>;
+  query?: unknown;
+}
+
+function extractRequestToken(req: RequestWithAuthBits): string | undefined {
+  const headerToken =
+    (req.headers["x-saivage-token"] as string | undefined) ??
+    bearer(req.headers["authorization"] as string | string[] | undefined);
+  const query = req.query as { token?: string } | undefined;
+  return headerToken ?? query?.token;
 }

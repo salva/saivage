@@ -342,18 +342,48 @@ program
       }
 
       // Start the planner with recovery loop (auto-restarts after 5min on exit)
-      runPlannerWithRecovery(runtime).then((result) => {
+      const plannerPromise = runPlannerWithRecovery(runtime).then((result) => {
         console.log(`Planner finished: ${result.kind}`);
       }).catch((err) => {
         console.error(`Planner error: ${err}`);
       });
 
-      // Handle graceful shutdown
+      // Handle graceful shutdown. Re-entrant SIGINT (operator hits Ctrl+C
+      // twice) must not double-call server.close / runtime.shutdown — both
+      // are not idempotent and the second call would race the first.
+      let shuttingDown = false;
+      let forceCount = 0;
+      const PLANNER_SHUTDOWN_TIMEOUT_MS = 30_000;
       const shutdown = async () => {
+        if (shuttingDown) {
+          forceCount += 1;
+          if (forceCount >= 2) {
+            console.log("Force exit requested.");
+            process.exit(1);
+          }
+          console.log("Shutdown already in progress. Press Ctrl+C again to force exit.");
+          return;
+        }
+        shuttingDown = true;
         console.log("\nShutting down...");
-        telegramBot?.stop();
-        await server.close();
-        await runtime.shutdown();
+        try { telegramBot?.stop(); } catch (err) {
+          console.error(`Telegram stop error: ${err instanceof Error ? err.message : err}`);
+        }
+        // Cancel and await the planner so its in-flight tool calls/state
+        // writes have a chance to finish before we tear down MCP runtime.
+        try {
+          runtime.plannerControl.requestRestart("shutdown", "system");
+        } catch { /* control may not be ready */ }
+        await Promise.race([
+          plannerPromise,
+          new Promise<void>((resolve) => setTimeout(resolve, PLANNER_SHUTDOWN_TIMEOUT_MS).unref()),
+        ]);
+        try { await server.close(); } catch (err) {
+          console.error(`Server close error: ${err instanceof Error ? err.message : err}`);
+        }
+        try { await runtime.shutdown(); } catch (err) {
+          console.error(`Runtime shutdown error: ${err instanceof Error ? err.message : err}`);
+        }
         process.exit(0);
       };
       process.on("SIGINT", shutdown);

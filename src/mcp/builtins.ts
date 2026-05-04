@@ -312,7 +312,7 @@ const filesystemHandler: InProcessToolHandler = async (toolName, args) => {
 const shellTools: ToolEntry[] = [
   {
     name: "run_command",
-    description: "Execute a shell command",
+    description: "Execute a shell command. Output is written to log files; only a capped tail is returned. For long-running work (tests, builds, training, experiments, data processing), prefer 'inactivity_timeout_ms' over 'timeout_ms' — it kills the process only when output stops, allowing legitimate long work to continue. The minimum accepted timeout is 600000 (10 minutes); lower values are raised automatically.",
     inputSchema: {
       type: "object",
       properties: {
@@ -320,19 +320,19 @@ const shellTools: ToolEntry[] = [
         cwd: { type: "string" },
         timeout_ms: {
           type: "number",
-          description: "Optional command timeout in milliseconds. Omit or set 0 for no timeout.",
+          description: "Hard wall-clock timeout in milliseconds. Use only when you need an absolute time cap. Minimum 600000 (10 min). Omit or set 0 for no limit.",
         },
         timeout: {
           type: "number",
-          description: "Deprecated alias for timeout_ms, in milliseconds.",
+          description: "Deprecated alias for timeout_ms.",
         },
         inactivity_timeout_ms: {
           type: "number",
-          description: "Optional no-output timeout in milliseconds. If stdout/stderr are silent for this long, Saivage terminates the command. Omit or set 0 to disable.",
+          description: "Kill the process if stdout/stderr stop growing for this many milliseconds. Preferred over timeout_ms for most commands. Minimum 600000 (10 min). Omit or set 0 to disable.",
         },
         idle_timeout_ms: {
           type: "number",
-          description: "Deprecated alias for inactivity_timeout_ms, in milliseconds.",
+          description: "Deprecated alias for inactivity_timeout_ms.",
         },
         stdout_path: {
           type: "string",
@@ -355,17 +355,19 @@ const shellHandler: InProcessToolHandler = async (toolName, args) => {
 
   const command = args.command as string;
   const cwd = args.cwd ? resolvePath(args.cwd as string) : projectRoot();
-  const timeout = parseOptionalTimeoutMs(args, ["timeout_ms", "timeout"], "timeout_ms");
-  const inactivityTimeout = parseOptionalTimeoutMs(
+  const timeout = clampTimeout(parseOptionalTimeoutMs(args, ["timeout_ms", "timeout"], "timeout_ms"));
+  const inactivityTimeout = clampTimeout(parseOptionalTimeoutMs(
     args,
     ["inactivity_timeout_ms", "idle_timeout_ms"],
     "inactivity_timeout_ms",
-  );
+  ));
   const outputPaths = resolveCommandLogPaths(args);
 
   const result = await runShellCommand(command, cwd, timeout, inactivityTimeout, outputPaths);
   return { content: result, isError: false };
 };
+
+const DEFAULT_MIN_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 function parseOptionalTimeoutMs(
   args: Record<string, unknown>,
@@ -379,6 +381,58 @@ function parseOptionalTimeoutMs(
   }
   const timeout = Math.floor(raw);
   return timeout === 0 ? undefined : timeout;
+}
+
+/**
+ * Enforce a minimum timeout floor. Values below the floor are raised so
+ * autonomous agents cannot prematurely kill long-running jobs. The floor is
+ * configurable via SAIVAGE_SHELL_TIMEOUT_FLOOR_MS (set to 0 to disable, e.g.
+ * for tests that need to exercise short timeouts deterministically).
+ */
+function clampTimeout(ms: number | undefined): number | undefined {
+  if (ms === undefined) return undefined;
+  return Math.max(ms, shellTimeoutFloorMs());
+}
+
+function shellTimeoutFloorMs(): number {
+  const raw = process.env["SAIVAGE_SHELL_TIMEOUT_FLOOR_MS"];
+  if (raw === undefined) return DEFAULT_MIN_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_MIN_TIMEOUT_MS;
+  return Math.floor(parsed);
+}
+
+/**
+ * Patterns of environment variable names whose values must NOT be inherited
+ * by shell child processes. Agents very rarely need credentials in shell
+ * commands; leaking them would create a one-shot exfiltration path via
+ * `env` + any outbound network tool. Override exact values explicitly via
+ * the `cwd` and dedicated tools when needed.
+ */
+const SECRET_ENV_PATTERNS: RegExp[] = [
+  /API[_-]?KEY/i,
+  /(?:^|_)TOKEN(?:$|_)/i,
+  /SECRET/i,
+  /PASSWORD/i,
+  /PASSWD/i,
+  /CREDENTIAL/i,
+  /^ANTHROPIC_/i,
+  /^OPENAI_/i,
+  /^GITHUB_/i,
+  /^GH_/i,
+  /^TELEGRAM_/i,
+  /^SAIVAGE_API_TOKEN$/i,
+  /^AWS_(ACCESS|SECRET|SESSION)/i,
+];
+
+export function filterShellEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const result: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) continue;
+    if (SECRET_ENV_PATTERNS.some((pattern) => pattern.test(key))) continue;
+    result[key] = value;
+  }
+  return result;
 }
 
 async function runShellCommand(
@@ -399,7 +453,7 @@ async function runShellCommand(
       cwd,
       shell: true,
       detached: process.platform !== "win32",
-      env: { ...process.env, PROJECT_ROOT: projectRoot() },
+      env: { ...filterShellEnv(process.env), PROJECT_ROOT: projectRoot() },
     });
 
     let timeoutKind: "total" | "inactivity" | null = null;

@@ -5,7 +5,7 @@
  * Supports login, token refresh, and API key retrieval.
  * Mirrors the OpenClaw/pi-ai pattern.
  */
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { saivageDir, ensureDir } from "../config.js";
 import { log } from "../log.js";
@@ -58,7 +58,17 @@ export function loadProfiles(): AuthProfileStore {
 
 export function saveProfiles(store: AuthProfileStore): void {
   ensureDir(saivageDir());
-  writeFileSync(storePath(), JSON.stringify(store, null, 2) + "\n", "utf-8");
+  const fp = storePath();
+  // Owner-only mode: this file holds OAuth refresh tokens. Always set the
+  // mode explicitly because writeFileSync only honours `mode` when creating
+  // a new file; existing files keep their previous (potentially world-
+  // readable) permissions.
+  writeFileSync(fp, JSON.stringify(store, null, 2) + "\n", { encoding: "utf-8", mode: 0o600 });
+  try {
+    chmodSync(fp, 0o600);
+  } catch (err) {
+    log.warn(`[auth] could not chmod ${fp}: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 export function saveProfile(key: string, profile: AuthProfile): void {

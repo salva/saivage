@@ -45,6 +45,8 @@ export interface ChatResponse {
   content: string;
   toolCalls: ToolCallResult[];
   finishReason: "end_turn" | "tool_use" | "max_tokens" | "stop";
+  /** Model reasoning/thinking content (if the model supports it). */
+  reasoning?: string;
   provider?: string;
   model?: string;
   modelSpec?: string;

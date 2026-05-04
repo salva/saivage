@@ -16,12 +16,13 @@ import { cleanStash } from "../runtime/stash.js";
 import { EventBus } from "../events/bus.js";
 import { PlanService } from "../mcp/plan-server.js";
 import { NoteService } from "../mcp/notes-server.js";
+import { NoteManager } from "../runtime/notes.js";
 import {
   loadProject,
   discoverProject,
   type ProjectContext,
 } from "../store/project.js";
-import { recoverFromCrash, writeRuntimeState, createRuntimeState, isAnotherInstanceRunning, RuntimeTracker } from "../runtime/recovery.js";
+import { recoverFromCrash, writeRuntimeState, createRuntimeState, isAnotherInstanceRunning, acquireRuntimeLock, RuntimeTracker, type RuntimeLock } from "../runtime/recovery.js";
 import { RuntimeSupervisor } from "../runtime/supervisor.js";
 import { consumeShutdownHandoff, writeShutdownSummary } from "../runtime/shutdown-handoff.js";
 import { PlannerAgent } from "../agents/planner.js";
@@ -158,12 +159,15 @@ export async function bootstrap(
       planService.handleToolCall(toolName, args),
   );
 
-  // 6. Single-instance guard
+  // 6. Single-instance guard: PID-liveness check (fast path) plus an
+  // O_CREAT|O_EXCL lockfile that closes the TOCTOU between the check and
+  // the first writeRuntimeState call.
   if (isAnotherInstanceRunning(project.paths.runtimeState)) {
     throw new Error(
       "Another Saivage instance is already running. Stop it first or check runtime.json.",
     );
   }
+  const runtimeLock = acquireRuntimeLock(project.saivageDir);
 
   // 7. Crash recovery
   const recovery = await recoverFromCrash(project, planService);
@@ -171,6 +175,15 @@ export async function bootstrap(
     log.info(`[v2] Crash recovery completed (stale state from previous run)`);
     if (recovery.needsArchival) {
       log.info(`[v2] Stage ${recovery.stageId} needs archival by Planner`);
+    }
+  }
+
+  // 7b. Clean up stale/expired notes from previous runs
+  {
+    const noteCleanup = new NoteManager(project.paths.notes);
+    const cleaned = noteCleanup.cleanupStaleNotes();
+    if (cleaned > 0) {
+      log.info(`[v2] Cleaned ${cleaned} stale/expired notes from previous run`);
     }
   }
 
@@ -205,6 +218,9 @@ export async function bootstrap(
     supervisor: null,
     shutdown: async () => {
       log.info("[v2] Shutting down...");
+      // Freeze the tracker FIRST so any agent activity callbacks firing
+      // during teardown cannot race the final "idle" write below.
+      tracker.freeze("shutdown");
       try {
         writeShutdownSummary(project);
       } catch (err) {
@@ -216,9 +232,12 @@ export async function bootstrap(
       const finalState = createRuntimeState();
       finalState.status = "idle";
       await writeRuntimeState(project.paths.runtimeState, finalState);
+      runtimeLock.release();
       log.info("[v2] Shutdown complete");
     },
   };
+
+  installFatalHandlers(runtime, runtimeLock);
 
   const noteService = new NoteService(project.paths.notes);
   mcpRuntime.registerInProcess(
@@ -570,6 +589,41 @@ export async function runPlannerWithRecovery(
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+let fatalHandlersInstalled = false;
+
+/**
+ * Install last-resort handlers for `uncaughtException` / `unhandledRejection`.
+ * They flush an "error" runtime state and release the lockfile so the next
+ * bootstrap doesn't see ourselves as still running, then exit. Without this
+ * a thrown promise in any background path (chat, supervisor, MCP client)
+ * would kill the process leaving runtime.json claiming "running".
+ */
+function installFatalHandlers(runtime: SaivageRuntime, lock: RuntimeLock): void {
+  if (fatalHandlersInstalled) return;
+  fatalHandlersInstalled = true;
+
+  const onFatal = (label: string) => (err: unknown) => {
+    const msg = err instanceof Error ? err.stack ?? err.message : String(err);
+    log.error(`[fatal] ${label}: ${msg}`);
+    try {
+      runtime.tracker.freeze(label);
+    } catch { /* ignore */ }
+    try {
+      const failState = createRuntimeState();
+      failState.status = "error";
+      writeRuntimeState(runtime.project.paths.runtimeState, failState);
+    } catch (writeErr) {
+      log.warn(`[fatal] Failed to mark runtime state as error: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`);
+    }
+    try { lock.release(); } catch { /* ignore */ }
+    // Exit on next tick so the log line has a chance to flush.
+    setImmediate(() => process.exit(1));
+  };
+
+  process.on("uncaughtException", onFatal("uncaughtException"));
+  process.on("unhandledRejection", onFatal("unhandledRejection"));
+}
 
 async function startConfiguredMcpServers(
   mcpRuntime: McpRuntime,

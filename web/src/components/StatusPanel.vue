@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { AlertTriangle, CheckCircle2, Clock3, ListTree, Users } from "lucide-vue-next";
+import { apiFetch } from "../utils/api";
 
 const emit = defineEmits<{
   navigate: [tab: string, focusId?: string];
@@ -54,8 +55,8 @@ let clockTimer: ReturnType<typeof setInterval> | null = null;
 async function fetchState() {
   try {
     const [stateRes, planRes] = await Promise.all([
-      fetch("/api/state"),
-      fetch("/api/plan"),
+      apiFetch("/api/state"),
+      apiFetch("/api/plan"),
     ]);
     if (stateRes.ok) {
       const data = await stateRes.json();

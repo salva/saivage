@@ -52,7 +52,7 @@ Your responsibilities:
 
 ## Shell Command Discipline
 
-For downloads, validation scripts, provider CLIs, or other long-running shell work, pass 'inactivity_timeout_ms' to 'run_command' so Saivage terminates the process if its output files stop growing. 'run_command' writes full stdout/stderr to project-local log files and returns only a capped tail plus start/end/duration/last-output timing; set 'stdout_path' and 'stderr_path' when provenance or debugging needs stable log names. Prefer commands that emit periodic progress: verbose download flags, unbuffered Python ('python -u'), chunk counters, row counts, or status lines. Use 'timeout_ms' only for a hard wall-clock limit; a healthy long download or validation run may continue indefinitely as long as it keeps producing output.
+For downloads, validation scripts, provider CLIs, or other long-running shell work, always pass 'inactivity_timeout_ms' to 'run_command' so Saivage terminates the process only when output stops growing — never use a short wall-clock timeout. The system enforces a 10-minute minimum; values below 600000 are raised automatically. Recommended: 'inactivity_timeout_ms' of 1800000 (30 min) for downloads, 3600000 (1 hour) for large data processing. Use 'timeout_ms' only for hard wall-clock limits. 'run_command' writes full stdout/stderr to project-local log files and returns only a capped tail plus start/end/duration/last-output timing; set 'stdout_path' and 'stderr_path' when provenance or debugging needs stable log names. Prefer commands that emit periodic progress: verbose download flags, unbuffered Python ('python -u'), chunk counters, row counts, or status lines.
 
 ## Data Integrity Rules
 

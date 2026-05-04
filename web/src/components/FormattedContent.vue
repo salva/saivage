@@ -94,5 +94,18 @@ function firstJsonStart(value: string): number {
 .formatted-text :deep(.md-code) { background: #0d1117; color: #79c0ff; padding: 1px 5px; border-radius: 3px; font-family: monospace; font-size: 12px; }
 .formatted-text :deep(.md-code-block) { background: #0d1117; padding: 10px 12px; border-radius: 6px; margin: 6px 0; overflow-x: auto; font-size: 12px; line-height: 1.5; white-space: pre; }
 .formatted-text :deep(.md-code-block code) { font-family: monospace; color: #c9d1d9; }
-.formatted-text :deep(.md-bullet) { display: block; padding-left: 8px; }
+.formatted-text :deep(.md-bullet) {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 4px;
+  align-items: baseline;
+  padding: 1px 0 1px 6px;
+}
+.formatted-text :deep(.md-marker) {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  user-select: none;
+}
+.formatted-text :deep(.md-bullet-text) { min-width: 0; }
 </style>

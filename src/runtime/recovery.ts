@@ -4,9 +4,16 @@
  * from disk, reset in-progress and aborted tasks to pending.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  openSync,
+  closeSync,
+  writeFileSync,
+  unlinkSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
-import { readDoc, readDocOrNull, writeDoc } from "../store/documents.js";
+import { readDoc, readDocOrNull, writeDoc, ensureDir, sweepStaleTempFiles } from "../store/documents.js";
 import {
   RuntimeStateSchema,
   TaskListSchema,
@@ -42,6 +49,16 @@ export function isAnotherInstanceRunning(runtimeStatePath: string): boolean {
   if (!state) return false;
   if (state.status === "idle") return false;
 
+  // PID liveness alone is unsafe (PIDs are reused on Linux). Bound the
+  // check by recorded `started_at`: if the file claims this process started
+  // a very long time ago, the recorded PID almost certainly belongs to
+  // someone else now and this state is stale.
+  const startedMs = Date.parse(state.started_at);
+  if (Number.isFinite(startedMs)) {
+    const ageDays = (Date.now() - startedMs) / (24 * 60 * 60 * 1000);
+    if (ageDays > 14) return false;
+  }
+
   // Check if the PID is alive
   try {
     process.kill(state.pid, 0); // Signal 0 = check existence
@@ -49,6 +66,94 @@ export function isAnotherInstanceRunning(runtimeStatePath: string): boolean {
   } catch {
     return false; // Process is dead → stale state
   }
+}
+
+export interface RuntimeLock {
+  /** Release the lock (delete the lockfile). Idempotent. */
+  release: () => void;
+}
+
+/**
+ * Acquire an exclusive runtime lock for this project. Uses an
+ * `O_CREAT|O_EXCL` file create so two concurrent bootstraps cannot both
+ * succeed even if their `isAnotherInstanceRunning` checks both returned
+ * false. If the lock file exists but its PID is dead (or its recorded boot
+ * timestamp is older than the safety horizon), the stale lock is removed
+ * and the acquisition is retried once.
+ */
+export function acquireRuntimeLock(saivageDir: string): RuntimeLock {
+  const stateDir = join(saivageDir, "tmp", "state");
+  ensureDir(stateDir);
+  const lockPath = join(stateDir, "runtime.lock");
+
+  const tryCreate = (): boolean => {
+    try {
+      const fd = openSync(lockPath, "wx");
+      try {
+        const payload = JSON.stringify({ pid: process.pid, started_at: new Date().toISOString() }) + "\n";
+        writeFileSync(fd, payload, "utf-8");
+      } finally {
+        closeSync(fd);
+      }
+      return true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "EEXIST") return false;
+      throw err;
+    }
+  };
+
+  if (tryCreate()) return makeReleaser(lockPath);
+
+  // Lock exists. Decide whether it's stale.
+  let stale = false;
+  try {
+    const raw = readFileSync(lockPath, "utf-8");
+    const parsed = JSON.parse(raw) as { pid?: number; started_at?: string };
+    const pid = typeof parsed.pid === "number" ? parsed.pid : null;
+    const startedMs = parsed.started_at ? Date.parse(parsed.started_at) : NaN;
+
+    if (!pid) {
+      stale = true;
+    } else {
+      try {
+        process.kill(pid, 0);
+        // Process exists; check the age horizon.
+        if (Number.isFinite(startedMs)) {
+          const ageDays = (Date.now() - startedMs) / (24 * 60 * 60 * 1000);
+          if (ageDays > 14) stale = true;
+        }
+      } catch {
+        stale = true; // PID dead → lock is stale.
+      }
+    }
+  } catch {
+    // Unreadable lock file — treat as stale rather than refusing forever.
+    stale = true;
+  }
+
+  if (stale) {
+    try { unlinkSync(lockPath); } catch { /* ignore */ }
+    if (tryCreate()) {
+      log.info("[recovery] Removed stale runtime.lock and re-acquired");
+      return makeReleaser(lockPath);
+    }
+  }
+
+  throw new Error(
+    "Another Saivage instance is already running (runtime.lock held). " +
+      "Stop it first or delete the stale lock under .saivage/tmp/state/.",
+  );
+}
+
+function makeReleaser(lockPath: string): RuntimeLock {
+  let released = false;
+  return {
+    release: () => {
+      if (released) return;
+      released = true;
+      try { unlinkSync(lockPath); } catch { /* ignore */ }
+    },
+  };
 }
 
 /**
@@ -60,6 +165,19 @@ export function recoverFromCrash(
   planService: PlanService,
 ): RecoveryResult {
   const runtimeStatePath = project.paths.runtimeState;
+
+  // Sweep stale `*.tmp` files left over from interrupted writes. Cheap and
+  // keeps `.saivage/` tidy; failures here are logged but don't block boot.
+  try {
+    const stateDir = dirname(runtimeStatePath);
+    const removedState = sweepStaleTempFiles(stateDir);
+    const removedRoot = sweepStaleTempFiles(project.saivageDir);
+    if (removedState + removedRoot > 0) {
+      log.info(`[recovery] Swept ${removedState + removedRoot} stale .tmp file(s)`);
+    }
+  } catch (err) {
+    log.warn(`[recovery] Tmp sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   // Read old runtime state
   const oldState = readDocOrNull(runtimeStatePath, RuntimeStateSchema);
@@ -212,6 +330,7 @@ export class RuntimeTracker {
   private agents = new Map<string, AgentState>();
   private currentStageId: string | null = null;
   private startedAt: string;
+  private frozen = false;
 
   constructor(private statePath: string) {
     this.startedAt = new Date().toISOString();
@@ -219,6 +338,7 @@ export class RuntimeTracker {
 
   /** Register an agent as active and persist. */
   agentStarted(agentId: string, agentType: AgentState["agent_type"], taskId?: string): void {
+    if (this.frozen) return;
     this.agents.set(agentId, {
       agent_type: agentType,
       agent_id: agentId,
@@ -231,23 +351,39 @@ export class RuntimeTracker {
 
   /** Remove an agent and persist. */
   agentStopped(agentId: string): void {
+    if (this.frozen) return;
     this.agents.delete(agentId);
     this.flush();
   }
 
   /** Persist a heartbeat for an active agent without changing lifecycle state. */
   agentActivity(agentId: string): void {
+    if (this.frozen) return;
     if (!this.agents.has(agentId)) return;
     this.flush();
   }
 
   /** Update the current stage ID and persist. */
   setCurrentStage(stageId: string | null): void {
+    if (this.frozen) return;
     this.currentStageId = stageId;
     this.flush();
   }
 
+  /**
+   * Stop persisting state. Used by `runtime.shutdown()` so that any
+   * lingering activity callbacks from agents finishing in flight cannot
+   * race with the final "idle" write and flip the status back to
+   * "running" on disk.
+   */
+  freeze(reason: string = "shutdown"): void {
+    if (this.frozen) return;
+    this.frozen = true;
+    log.info(`[recovery] RuntimeTracker frozen (${reason})`);
+  }
+
   private flush(): void {
+    if (this.frozen) return;
     const state: RuntimeState = {
       status: "running",
       current_stage_id: this.currentStageId,

@@ -229,7 +229,9 @@ export class BaseAgent {
       }
 
       log.info(
-        `[agent:${this.role}:${this.id}] LLM response: ${response.toolCalls.length} tool calls, finish=${response.finishReason}, content=${response.content?.slice(0, 200)}`,
+        `[agent:${this.role}:${this.id}] LLM response: ${response.toolCalls.length} tool calls, finish=${response.finishReason}` +
+        (response.reasoning ? `, reasoning=${response.reasoning.length}ch` : "") +
+        `, content=${response.content?.slice(0, 200)}`,
       );
 
       // No tool calls → agent is done
@@ -466,8 +468,8 @@ export class BaseAgent {
           `${throttled ? "Provider throttling" : "Temporary model service issue"} on attempt ${attempt + 1}. Retrying in ${Math.round(delaySec)}s. Error: ${truncateDiagnostic(msg)}`,
         );
 
-        // Clear sticky failovers so the router retries the primary model
-        this.ctx.router.clearStickyFailover(this.ctx.modelSpec);
+        // Reset model health so the router retries the primary model
+        this.ctx.router.resetModelHealth(this.ctx.modelSpec);
 
         await this.sleepWithCancellation(delaySec * 1000);
       }

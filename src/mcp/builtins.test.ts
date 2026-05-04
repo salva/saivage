@@ -38,6 +38,9 @@ describe("built-in MCP services", () => {
     previousSaivageRoot = process.env["SAIVAGE_ROOT"];
     process.env["PROJECT_ROOT"] = projectRoot;
     process.env["SAIVAGE_ROOT"] = join(projectRoot, ".saivage");
+    // Tests exercise short, deterministic shell timeouts; disable the
+    // production floor so they fire promptly.
+    process.env["SAIVAGE_SHELL_TIMEOUT_FLOOR_MS"] = "0";
     runtime = new McpRuntime({
       maxServices: 50,
       restartOnCrash: true,
@@ -53,6 +56,7 @@ describe("built-in MCP services", () => {
     else process.env["PROJECT_ROOT"] = previousProjectRoot;
     if (previousSaivageRoot === undefined) delete process.env["SAIVAGE_ROOT"];
     else process.env["SAIVAGE_ROOT"] = previousSaivageRoot;
+    delete process.env["SAIVAGE_SHELL_TIMEOUT_FLOOR_MS"];
     rmSync(projectRoot, { recursive: true, force: true });
   });
 

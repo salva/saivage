@@ -48,8 +48,16 @@ export function createUserNote(input: CreateUserNoteInput): UserNote {
  */
 export class NoteManager {
   private notesDir: string;
-  /** Notes that have been injected in the current cycle, pending acknowledgment. */
-  private pendingAcknowledgment: string[] = [];
+  /**
+   * Notes that have been injected in the current cycle, pending
+   * acknowledgment. A Set so multiple `getUnacknowledgedNotes()` calls
+   * within one Planner cycle accumulate IDs instead of overwriting and
+   * losing earlier batches.
+   */
+  private pendingAcknowledgment = new Set<string>();
+
+  /** Default TTL for unacknowledged volatile notes: 2 hours. */
+  static readonly DEFAULT_VOLATILE_TTL_MS = 2 * 60 * 60 * 1000;
 
   constructor(notesDir: string) {
     this.notesDir = notesDir;
@@ -61,8 +69,9 @@ export class NoteManager {
   getUnacknowledgedNotes(): UserNote[] {
     const notes = this.peekUnacknowledgedNotes();
 
-    // Track for acknowledgment
-    this.pendingAcknowledgment = notes.map((n) => n.id);
+    // Merge into pending set rather than overwriting, so a Planner cycle
+    // that injects notes more than once still acknowledges every batch.
+    for (const note of notes) this.pendingAcknowledgment.add(note.id);
 
     return notes;
   }
@@ -93,7 +102,7 @@ export class NoteManager {
 
     try {
       const note = readDoc(path, UserNoteSchema);
-      this.pendingAcknowledgment = this.pendingAcknowledgment.filter((pending) => pending !== noteId);
+      this.pendingAcknowledgment.delete(noteId);
 
       if (note.permanent) {
         const updated = note.acknowledged_at
@@ -116,7 +125,7 @@ export class NoteManager {
 
     try {
       deleteDoc(path);
-      this.pendingAcknowledgment = this.pendingAcknowledgment.filter((pending) => pending !== noteId);
+      this.pendingAcknowledgment.delete(noteId);
       return true;
     } catch {
       return false;
@@ -138,11 +147,12 @@ export class NoteManager {
    * Sets acknowledged_at and deletes volatile notes.
    */
   acknowledgeNotes(): void {
-    if (this.pendingAcknowledgment.length === 0) return;
+    if (this.pendingAcknowledgment.size === 0) return;
 
     const now = new Date().toISOString();
+    const ids = [...this.pendingAcknowledgment];
 
-    for (const noteId of this.pendingAcknowledgment) {
+    for (const noteId of ids) {
       const path = join(this.notesDir, `${noteId}.json`);
       if (!existsSync(path)) continue;
 
@@ -164,7 +174,7 @@ export class NoteManager {
       }
     }
 
-    this.pendingAcknowledgment = [];
+    this.pendingAcknowledgment.clear();
   }
 
   /**
@@ -200,22 +210,36 @@ export class NoteManager {
 
   /**
    * Clean up acknowledged volatile notes that weren't deleted
-   * (e.g., after a crash).
+   * (e.g., after a crash), and auto-expire unacknowledged volatile notes
+   * older than the TTL (default 2 hours). This prevents stale notes from
+   * being re-injected indefinitely after restarts.
    */
-  cleanupStaleNotes(): number {
+  cleanupStaleNotes(ttlMs: number = NoteManager.DEFAULT_VOLATILE_TTL_MS): number {
     if (!existsSync(this.notesDir)) return 0;
 
     const files = readdirSync(this.notesDir).filter((f) =>
       f.endsWith(".json"),
     );
     let cleaned = 0;
+    const now = Date.now();
 
     for (const file of files) {
       try {
         const note = readDoc(join(this.notesDir, file), UserNoteSchema);
+        // Remove acknowledged volatile notes (crash recovery)
         if (note.acknowledged_at && !note.permanent) {
           deleteDoc(join(this.notesDir, file));
           cleaned++;
+          continue;
+        }
+        // Auto-expire unacknowledged volatile notes older than TTL
+        if (!note.permanent && !note.acknowledged_at) {
+          const age = now - new Date(note.created_at).getTime();
+          if (age > ttlMs) {
+            deleteDoc(join(this.notesDir, file));
+            log.info(`[notes] Auto-expired volatile note ${note.id} (age ${Math.round(age / 60_000)}min)`);
+            cleaned++;
+          }
         }
       } catch {
         // Skip malformed files
@@ -223,7 +247,7 @@ export class NoteManager {
     }
 
     if (cleaned > 0) {
-      log.info(`[notes] Cleaned up ${cleaned} stale volatile notes`);
+      log.info(`[notes] Cleaned up ${cleaned} stale/expired volatile notes`);
     }
 
     return cleaned;

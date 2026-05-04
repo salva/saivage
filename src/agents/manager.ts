@@ -137,7 +137,7 @@ The key is judgment: an agent that wastes cycles retrying something it can't fix
 
 ### Shell Command Discipline
 
-When you run shell commands directly or instruct workers to run them, use 'inactivity_timeout_ms' for commands that should be killed if their output files stop growing. 'run_command' writes full stdout/stderr to project-local log files and returns only a capped tail plus start/end/duration/last-output timing; ask workers to set 'stdout_path' and 'stderr_path' when logs should be easy to find. Ask workers to make long commands emit progress periodically with verbose flags, unbuffered Python ('python -u'), counters, or status lines. Use 'timeout_ms' only for hard wall-clock limits; valid long work may run indefinitely if it keeps producing output.
+When you run shell commands directly or instruct workers to run them, always use 'inactivity_timeout_ms' (not a short wall-clock 'timeout_ms') so processes are killed only when output stops growing. The system enforces a 10-minute minimum; values below 600000 are raised automatically. Recommended: 600000 (10 min) for quick tasks, 1800000 (30 min) for builds/tests, 3600000 (1 hour) for training/experiments. 'run_command' writes full stdout/stderr to project-local log files and returns only a capped tail plus start/end/duration/last-output timing; ask workers to set 'stdout_path' and 'stderr_path' when logs should be easy to find. Ask workers to make long commands emit progress periodically with verbose flags, unbuffered Python ('python -u'), counters, or status lines. Use 'timeout_ms' only for hard wall-clock limits.
 
 ## Execution Model — Step by Step
 
