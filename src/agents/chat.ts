@@ -131,6 +131,7 @@ When system events arrive, push concise but informative notifications:
  * transport for user message I/O.
  */
 export class ChatAgent extends BaseAgent implements Agent {
+  private static readonly MAX_PENDING_MESSAGES = 5;
   private input: ChatInput;
   private channel: ChatChannel;
   private eventBus: EventBus;
@@ -139,6 +140,7 @@ export class ChatAgent extends BaseAgent implements Agent {
   private chatLog: ChatLog;
   private chatDir: string;
   private messageQueue: Promise<void> = Promise.resolve();
+  private pendingMessages = 0;
 
   constructor(
     ctx: AgentContext,
@@ -197,6 +199,10 @@ export class ChatAgent extends BaseAgent implements Agent {
       return new Promise<AgentResult>((resolve) => {
         // Handle incoming user messages
         this.channel.onMessage((message) => {
+          if (this.pendingMessages >= ChatAgent.MAX_PENDING_MESSAGES) {
+            return this.rejectQueuedMessage();
+          }
+          this.pendingMessages += 1;
           this.messageQueue = this.messageQueue
             .catch((err) => {
               log.error(`[chat:${this.id}] Previous message handling failed: ${err}`);
@@ -204,6 +210,9 @@ export class ChatAgent extends BaseAgent implements Agent {
             .then(() => this.handleUserMessage(message))
             .catch((err) => {
               log.error(`[chat:${this.id}] Message handling error: ${err}`);
+            })
+            .finally(() => {
+              this.pendingMessages = Math.max(0, this.pendingMessages - 1);
             });
           return this.messageQueue;
         });
@@ -221,6 +230,14 @@ export class ChatAgent extends BaseAgent implements Agent {
       this.cleanup();
       return { kind: "failure", reason: msg };
     }
+  }
+
+  private async rejectQueuedMessage(): Promise<void> {
+    const response = "I already have several chat messages queued for this session. Please wait for the current replies before sending more.";
+    log.warn(`[chat:${this.id}] Rejecting chat message because queue is full`);
+    await this.channel.send(response);
+    this.recordMessage("assistant", response);
+    await this.saveChatLog();
   }
 
   /** Handle an incoming user message — run through LLM and respond. */
@@ -297,7 +314,7 @@ export class ChatAgent extends BaseAgent implements Agent {
       case "/note":
         return args ? this.cmdNote(args, false, false) : "Usage: `/note <message>` — create a note for the Planner.";
       case "/note!":
-        return args ? this.cmdNote(args, false, true) : "Usage: `/note! <message>` — create an **urgent** note (aborts current work).";
+        return args ? this.cmdNote(args, false, true) : "Usage: `/note! <message>` — create an **urgent** high-priority note.";
       case "/notep":
         return args ? this.cmdNote(args, true, false) : "Usage: `/notep <message>` — create a **permanent** note.";
       default:
@@ -318,7 +335,7 @@ export class ChatAgent extends BaseAgent implements Agent {
       "| `/replan [reason]` | Force replanning (urgent note to Planner) |",
       "| `/restart-planner [reason]` | Restart the Planner from persisted state |",
       "| `/note <msg>` | Create a note for the Planner |",
-      "| `/note! <msg>` | Create an **urgent** note (aborts current work) |",
+      "| `/note! <msg>` | Create an **urgent** high-priority note |",
       "| `/notep <msg>` | Create a **permanent** note |",
       "",
       "Any other message is handled by the AI assistant.",

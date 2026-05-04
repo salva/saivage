@@ -151,6 +151,25 @@ describe("EventBus", () => {
     await expect(bus.publish(makeEvent())).resolves.toBeUndefined();
   });
 
+  it("bounds buffered handler delivery during resume", async () => {
+    vi.useFakeTimers();
+    try {
+      bus = new EventBus(10);
+      bus.subscribe("hung", () => new Promise<void>(() => {}));
+
+      bus.pause("hung");
+      await bus.publish(makeEvent("stage_completed", "Buffered"));
+
+      const resumed = bus.resume("hung");
+      await vi.advanceTimersByTimeAsync(10);
+
+      await expect(resumed).resolves.toBe(1);
+      expect(bus.getBufferSize("hung")).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("clear removes all subscriptions", async () => {
     const received: SystemEvent[] = [];
     bus.subscribe("test", (e) => { received.push(e); });

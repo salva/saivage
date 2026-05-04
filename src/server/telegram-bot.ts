@@ -18,7 +18,7 @@ import type { SaivageRuntime } from "./bootstrap.js";
  */
 export async function startTelegramBot(
   runtime: SaivageRuntime,
-): Promise<{ stop: () => void }> {
+): Promise<{ stop: () => Promise<void> }> {
   const botToken = runtime.config.telegram.botToken;
   if (!botToken) {
     throw new Error("Telegram bot token not configured (telegram.botToken in config)");
@@ -145,9 +145,9 @@ export async function startTelegramBot(
   });
 
   return {
-    stop: () => {
+    stop: async () => {
       log.info("[telegram] Stopping Telegram bot...");
-      bot.stop();
+      await bot.stop();
       for (const [, session] of sessions) {
         session.channel.close();
       }

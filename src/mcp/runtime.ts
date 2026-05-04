@@ -33,6 +33,19 @@ interface ManagedService {
   idleSince: number | null;
 }
 
+interface ExternalFailureState {
+  failures: number[];
+  cooldownUntil: number;
+}
+
+export interface McpRuntimeOptions {
+  clientFactory?: (entry: ServiceEntry) => McpClient;
+  now?: () => number;
+  crashFailureThreshold?: number;
+  crashFailureWindowMs?: number;
+  crashCooldownMs?: number;
+}
+
 /**
  * MCP Runtime — manages lifecycle of MCP service processes.
  * Start, stop, health-check, lazy loading, idle shutdown, crash recovery.
@@ -40,12 +53,23 @@ interface ManagedService {
 export class McpRuntime {
   private services = new Map<string, ManagedService>();
   private inProcessServices = new Map<string, InProcessService>();
+  private externalFailures = new Map<string, ExternalFailureState>();
   private healthInterval: ReturnType<typeof setInterval> | null = null;
   private idleInterval: ReturnType<typeof setInterval> | null = null;
   private config: SaivageConfig["runtime"];
+  private clientFactory: (entry: ServiceEntry) => McpClient;
+  private now: () => number;
+  private crashFailureThreshold: number;
+  private crashFailureWindowMs: number;
+  private crashCooldownMs: number;
 
-  constructor(config: SaivageConfig["runtime"]) {
+  constructor(config: SaivageConfig["runtime"], options: McpRuntimeOptions = {}) {
     this.config = config;
+    this.clientFactory = options.clientFactory ?? ((entry) => new McpClient(entry));
+    this.now = options.now ?? (() => Date.now());
+    this.crashFailureThreshold = options.crashFailureThreshold ?? 3;
+    this.crashFailureWindowMs = options.crashFailureWindowMs ?? 60_000;
+    this.crashCooldownMs = options.crashCooldownMs ?? 60_000;
   }
 
   /** Start health-check and idle-shutdown loops */
@@ -71,6 +95,8 @@ export class McpRuntime {
 
   /** Start a service by name (from registry) */
   async startService(name: string): Promise<McpClient> {
+    this.assertNotCoolingDown(name);
+
     const existing = this.services.get(name);
     if (existing?.client.connected) {
       existing.idleSince = null; // Mark as active
@@ -85,7 +111,9 @@ export class McpRuntime {
 
   /** Start a service from an entry (not necessarily in registry) */
   async startFromEntry(entry: ServiceEntry): Promise<McpClient> {
-    const client = new McpClient(entry);
+    this.assertNotCoolingDown(entry.name);
+
+    const client = this.clientFactory(entry);
     try {
       await client.connect();
       const managed: ManagedService = {
@@ -96,10 +124,12 @@ export class McpRuntime {
         idleSince: null,
       };
       this.services.set(entry.name, managed);
+      this.clearExternalFailures(entry.name);
       updateServiceStatus(entry.name, "active");
       return client;
     } catch (err) {
       updateServiceStatus(entry.name, "error");
+      this.recordExternalFailure(entry.name, err);
       throw err;
     }
   }
@@ -261,14 +291,60 @@ export class McpRuntime {
     await new Promise((r) => setTimeout(r, backoffMs));
 
     try {
-      const client = new McpClient(managed.entry);
+      this.assertNotCoolingDown(name);
+      const client = this.clientFactory(managed.entry);
       await client.connect();
       managed.client = client;
       managed.lastHealthCheck = Date.now();
+      this.clearExternalFailures(name);
       log.info(`Service "${name}" restarted successfully`);
     } catch (err) {
       log.error(`Failed to restart "${name}": ${err}`);
+      if (this.recordExternalFailure(name, err)) {
+        updateServiceStatus(name, "error");
+        this.services.delete(name);
+      }
     }
+  }
+
+  private assertNotCoolingDown(name: string): void {
+    const state = this.externalFailures.get(name);
+    if (!state || state.cooldownUntil <= 0) return;
+
+    const now = this.now();
+    if (state.cooldownUntil <= now) {
+      this.externalFailures.delete(name);
+      return;
+    }
+
+    const waitMs = state.cooldownUntil - now;
+    throw new Error(
+      `Service "${name}" is cooling down after repeated startup failures; retry in ${Math.ceil(waitMs / 1000)}s`,
+    );
+  }
+
+  private recordExternalFailure(name: string, err: unknown): boolean {
+    const now = this.now();
+    const state = this.externalFailures.get(name) ?? { failures: [], cooldownUntil: 0 };
+    state.failures = state.failures.filter((t) => now - t <= this.crashFailureWindowMs);
+    state.failures.push(now);
+
+    if (state.failures.length >= this.crashFailureThreshold) {
+      state.cooldownUntil = now + this.crashCooldownMs;
+      state.failures = [];
+      log.error(
+        `Service "${name}" failed ${this.crashFailureThreshold} time(s) in ${this.crashFailureWindowMs}ms; cooling down for ${this.crashCooldownMs}ms: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      this.externalFailures.set(name, state);
+      return true;
+    }
+
+    this.externalFailures.set(name, state);
+    return false;
+  }
+
+  private clearExternalFailures(name: string): void {
+    this.externalFailures.delete(name);
   }
 
   // --- Idle shutdown ---

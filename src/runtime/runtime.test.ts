@@ -50,6 +50,7 @@ import type { ProjectContext } from "../store/project.js";
 import { RuntimeSupervisor } from "./supervisor.js";
 import { log } from "../log.js";
 import type { SaivageConfig } from "../config.js";
+import { waitForRecoveryDelay } from "../server/bootstrap.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -94,6 +95,20 @@ function makeProjectContext(root: string): ProjectContext {
       work: join(saivageDir, "tmp", "work"),
     },
   };
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
 }
 
 // ─── Runtime Supervisor ────────────────────────────────────────────────────
@@ -500,6 +515,39 @@ describe("PlanService", () => {
     const result = await planService.handleToolCall("plan_get", {});
     expect(result.isError).toBe(false);
     expect((result.content as any).stages).toEqual([]);
+  });
+
+  it("serializes mutating tool calls across async boundaries", async () => {
+    planService.plan_init([]);
+    const commitGate = deferred<{ sha: string }>();
+    planService.setGitCommit(async () => commitGate.promise);
+
+    const commit = planService.handleToolCall("plan_commit", { message: "commit first" });
+    let addSettled = false;
+    const add = planService.handleToolCall("plan_add_stage", {
+      stage: {
+        id: "stg-after-commit",
+        objective: "After commit",
+        starting_points: [],
+        expected_outcomes: ["done"],
+        acceptance_criteria: ["done"],
+        references: [],
+        tags: [],
+      },
+    }).then((result) => {
+      addSettled = true;
+      return result;
+    });
+
+    await Promise.resolve();
+    expect(addSettled).toBe(false);
+
+    commitGate.resolve({ sha: "abc123" });
+    await expect(commit).resolves.toMatchObject({ isError: false });
+    const addResult = await add;
+
+    expect(addResult.isError).toBe(false);
+    expect((planService.plan_get() as any).stages.map((s: any) => s.id)).toEqual(["stg-after-commit"]);
   });
 });
 
@@ -956,6 +1004,25 @@ describe("Abort", () => {
 // ─── Crash Recovery ──────────────────────────────────────────────────────────
 
 describe("Crash Recovery", () => {
+  it("waitForRecoveryDelay removes signal listeners after timer elapses", async () => {
+    vi.useFakeTimers();
+    try {
+      const sigintBefore = process.listenerCount("SIGINT");
+      const sigtermBefore = process.listenerCount("SIGTERM");
+
+      const waiting = waitForRecoveryDelay(10);
+      expect(process.listenerCount("SIGINT")).toBe(sigintBefore + 1);
+      expect(process.listenerCount("SIGTERM")).toBe(sigtermBefore + 1);
+
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(waiting).resolves.toBe(false);
+      expect(process.listenerCount("SIGINT")).toBe(sigintBefore);
+      expect(process.listenerCount("SIGTERM")).toBe(sigtermBefore);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("writeRuntimeState mirrors the compatibility runtime-state path", () => {
     const statePath = join(tmpDir, ".saivage", "tmp", "state", "runtime.json");
     const legacyPath = join(tmpDir, ".saivage", "runtime", "runtime-state.json");

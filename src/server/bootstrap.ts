@@ -485,9 +485,6 @@ export async function runPlannerWithRecovery(
   let cancelled = false;
   let iteration = 0;
 
-  // Increase max listeners to avoid warnings across recovery iterations
-  process.setMaxListeners(Math.max(process.getMaxListeners(), 30));
-
   const cancelRecovery = () => { cancelled = true; };
   process.on("SIGINT", cancelRecovery);
   process.on("SIGTERM", cancelRecovery);
@@ -505,8 +502,12 @@ export async function runPlannerWithRecovery(
         log.info(`[recovery] Planner restart requested by ${request.requestedBy}: ${request.reason}`);
       });
 
-      const result = await runPlanner(runtime, { abortSignal });
-      unsubscribeRestart();
+      let result: AgentResult;
+      try {
+        result = await runPlanner(runtime, { abortSignal });
+      } finally {
+        unsubscribeRestart();
+      }
 
       const restartRequest = runtime.plannerControl.consumeRestartRequest() ?? restartDuringRun;
 
@@ -562,17 +563,7 @@ export async function runPlannerWithRecovery(
         timestamp: new Date().toISOString(),
       });
 
-      // Wait with cancellation support
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, RECOVERY_DELAY_MS);
-        const onCancel = () => {
-          clearTimeout(timer);
-          cancelled = true;
-          resolve();
-        };
-        process.once("SIGINT", onCancel);
-        process.once("SIGTERM", onCancel);
-      });
+      if (await waitForRecoveryDelay(RECOVERY_DELAY_MS)) cancelled = true;
 
       if (cancelled) break;
 
@@ -586,6 +577,30 @@ export async function runPlannerWithRecovery(
     process.off("SIGINT", cancelRecovery);
     process.off("SIGTERM", cancelRecovery);
   }
+}
+
+/**
+ * Wait for a recovery-loop delay. Returns true if a shutdown signal cancelled
+ * the wait, false if the timer elapsed normally.
+ */
+export function waitForRecoveryDelay(ms: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let onCancel: () => void;
+    const finish = (cancelled: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      process.off("SIGINT", onCancel);
+      process.off("SIGTERM", onCancel);
+      resolve(cancelled);
+    };
+    timer = setTimeout(() => finish(false), ms);
+    onCancel = () => finish(true);
+    process.once("SIGINT", onCancel);
+    process.once("SIGTERM", onCancel);
+  });
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

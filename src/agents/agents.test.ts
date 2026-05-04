@@ -339,6 +339,58 @@ describe("ChatAgent", () => {
     channel.close();
     await runPromise;
   });
+
+  it("rejects chat messages when the session queue is full", async () => {
+    const firstResponse = deferred<void>();
+    const routerCalls: ChatRequest[] = [];
+    const router = {
+      getMaxContextTokens: () => 200_000,
+      chat: async (request: ChatRequest): Promise<ChatResponse> => {
+        routerCalls.push(request);
+        if (routerCalls.length === 1) await firstResponse.promise;
+        return {
+          content: `response ${routerCalls.length}`,
+          toolCalls: [],
+          finishReason: "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+
+    const channel = new TestChatChannel();
+    const agent = new ChatAgent(
+      makeChatContext(tmpDir, router),
+      { channel: "telegram", sessionId: "telegram-1" },
+      channel,
+      new EventBus(),
+    );
+
+    const runPromise = agent.run();
+    await channel.waitForHandler();
+
+    const pending = [
+      channel.receive("one"),
+      channel.receive("two"),
+      channel.receive("three"),
+      channel.receive("four"),
+      channel.receive("five"),
+    ];
+    await channel.receive("six");
+
+    expect(channel.sent).toEqual([
+      "I already have several chat messages queued for this session. Please wait for the current replies before sending more.",
+    ]);
+    expect(routerCalls).toHaveLength(1);
+
+    firstResponse.resolve(undefined);
+    await Promise.all(pending);
+
+    expect(routerCalls).toHaveLength(5);
+    expect(channel.sent).toHaveLength(6);
+
+    channel.close();
+    await runPromise;
+  });
 });
 
 describe("Execution guards", () => {

@@ -51,7 +51,10 @@ interface Subscription {
  * - Supports pause/resume for offline channels with buffering.
  */
 export class EventBus {
+  private static readonly DEFAULT_HANDLER_TIMEOUT_MS = 5000;
   private subscriptions = new Map<string, Subscription>();
+
+  constructor(private readonly handlerTimeoutMs = EventBus.DEFAULT_HANDLER_TIMEOUT_MS) {}
 
   /**
    * Subscribe to system events.
@@ -106,8 +109,6 @@ export class EventBus {
     }
   }
 
-  private static readonly HANDLER_TIMEOUT_MS = 5000;
-
   private async deliverWithTimeout(
     sub: Subscription,
     event: SystemEvent,
@@ -115,8 +116,8 @@ export class EventBus {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const timeout = new Promise<void>((_resolve, reject) => {
       timer = setTimeout(
-        () => reject(new Error(`handler timed out after ${EventBus.HANDLER_TIMEOUT_MS}ms`)),
-        EventBus.HANDLER_TIMEOUT_MS,
+        () => reject(new Error(`handler timed out after ${this.handlerTimeoutMs}ms`)),
+        this.handlerTimeoutMs,
       );
     });
     try {
@@ -157,13 +158,7 @@ export class EventBus {
         `[event-bus] Resuming ${id}: delivering ${buffered.length} buffered event(s)`,
       );
 
-      for (const event of buffered) {
-        try {
-          await sub.handler(event);
-        } catch (err) {
-          log.error(`[event-bus] Handler error for ${id} (buffered): ${err}`);
-        }
-      }
+      for (const event of buffered) await this.deliverWithTimeout(sub, event);
     }
 
     return buffered.length;

@@ -49,6 +49,7 @@ function planError(code: PlanErrorCode, message: string): PlanError {
 export class PlanService {
   private planPath: string;
   private historyPath: string;
+  private mutationQueue: Promise<unknown> = Promise.resolve();
 
   /** Git commit callback — called by plan_commit. */
   private gitCommitFn:
@@ -333,6 +334,22 @@ export class PlanService {
     toolName: string,
     args: Record<string, unknown>,
   ): Promise<{ content: unknown; isError: boolean }> {
+    if (isMutatingPlanTool(toolName)) {
+      return this.serializeMutation(() => this.handleToolCallInner(toolName, args));
+    }
+    return this.handleToolCallInner(toolName, args);
+  }
+
+  private async serializeMutation<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.mutationQueue.catch(() => undefined).then(fn);
+    this.mutationQueue = run.catch(() => undefined);
+    return run;
+  }
+
+  private async handleToolCallInner(
+    toolName: string,
+    args: Record<string, unknown>,
+  ): Promise<{ content: unknown; isError: boolean }> {
     let result: unknown;
     let isError = false;
 
@@ -490,4 +507,14 @@ export class PlanService {
       },
     ];
   }
+}
+
+function isMutatingPlanTool(toolName: string): boolean {
+  return toolName === "plan_set_stages" ||
+    toolName === "plan_add_stage" ||
+    toolName === "plan_remove_stage" ||
+    toolName === "plan_set_current" ||
+    toolName === "plan_complete_stage" ||
+    toolName === "plan_init" ||
+    toolName === "plan_commit";
 }

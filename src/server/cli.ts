@@ -181,7 +181,7 @@ program
 
     console.log(`Note created: ${id}`);
     if (opts.urgent) {
-      console.log("⚠ Urgent — the runtime will abort current work and replan.");
+      console.log("Urgent — the Planner will prioritize this note on its next turn.");
     }
     if (opts.permanent) {
       console.log("This note is permanent and will persist across replans.");
@@ -330,7 +330,7 @@ program
       console.log(`Project: ${runtime.project.projectRoot}`);
 
       // Start Telegram bot if configured
-      let telegramBot: { stop: () => void } | undefined;
+      let telegramBot: { stop: () => Promise<void> } | undefined;
       if (runtime.config.telegram.botToken) {
         try {
           const { startTelegramBot } = await import("./telegram-bot.js");
@@ -366,7 +366,7 @@ program
         }
         shuttingDown = true;
         console.log("\nShutting down...");
-        try { telegramBot?.stop(); } catch (err) {
+        try { await telegramBot?.stop(); } catch (err) {
           console.error(`Telegram stop error: ${err instanceof Error ? err.message : err}`);
         }
         // Cancel and await the planner so its in-flight tool calls/state
