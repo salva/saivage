@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { ModelRouter } from "./router.js";
 import type { SaivageConfig } from "../config.js";
 import type { ChatRequest, ModelProvider } from "./types.js";
@@ -32,6 +32,10 @@ function makeConfig(overrides: Partial<SaivageConfig> = {}): SaivageConfig {
 }
 
 describe("ModelRouter", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("resolves model for role", () => {
     const router = new ModelRouter(makeConfig());
     expect(router.resolveModelForRole("coder")).toBe(
@@ -162,6 +166,97 @@ describe("ModelRouter", () => {
     expect(response.requestedModelSpec).toBe("primary/model-a");
   });
 
+  it("retries the primary model after sticky failover cooldown", async () => {
+    let now = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+
+    const router = new ModelRouter(makeConfig({
+      failover: {
+        "primary/model-a": ["fallback/model-b"],
+      },
+    }));
+    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
+    providers.clear();
+
+    const primaryChat = vi.fn(async () => {
+      if (primaryChat.mock.calls.length === 1) {
+        throw new Error("primary unavailable");
+      }
+      return {
+        content: "primary recovered",
+        toolCalls: [],
+        finishReason: "end_turn" as const,
+        usage: { inputTokens: 1, outputTokens: 1 },
+      };
+    });
+    const fallbackChat = vi.fn(async () => ({
+      content: "fallback answer",
+      toolCalls: [],
+      finishReason: "end_turn" as const,
+      usage: { inputTokens: 1, outputTokens: 1 },
+    }));
+    providers.set("primary", makeProvider("primary", primaryChat));
+    providers.set("fallback", makeProvider("fallback", fallbackChat));
+
+    const first = await router.chat(makeChatRequest("primary/model-a"));
+    expect(first.modelSpec).toBe("fallback/model-b");
+    expect(primaryChat).toHaveBeenCalledTimes(1);
+    expect(fallbackChat).toHaveBeenCalledTimes(1);
+
+    now += 29_000;
+    const second = await router.chat(makeChatRequest("primary/model-a"));
+    expect(second.modelSpec).toBe("fallback/model-b");
+    expect(primaryChat).toHaveBeenCalledTimes(1);
+    expect(fallbackChat).toHaveBeenCalledTimes(2);
+
+    now += 1_000;
+    const third = await router.chat(makeChatRequest("primary/model-a"));
+    expect(third.modelSpec).toBe("primary/model-a");
+    expect(primaryChat).toHaveBeenCalledTimes(2);
+    expect(fallbackChat).toHaveBeenCalledTimes(2);
+  });
+
+  it("backs off primary retry windows after repeated failed switchback attempts", async () => {
+    let now = 2_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+
+    const router = new ModelRouter(makeConfig({
+      failover: {
+        "primary/model-a": ["fallback/model-b"],
+      },
+    }));
+    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
+    providers.clear();
+
+    const primaryChat = vi.fn(async () => {
+      throw new Error("primary unavailable");
+    });
+    const fallbackChat = vi.fn(async () => ({
+      content: "fallback answer",
+      toolCalls: [],
+      finishReason: "end_turn" as const,
+      usage: { inputTokens: 1, outputTokens: 1 },
+    }));
+    providers.set("primary", makeProvider("primary", primaryChat));
+    providers.set("fallback", makeProvider("fallback", fallbackChat));
+
+    await router.chat(makeChatRequest("primary/model-a"));
+    expect(primaryChat).toHaveBeenCalledTimes(1);
+
+    now += 30_000;
+    await router.chat(makeChatRequest("primary/model-a"));
+    expect(primaryChat).toHaveBeenCalledTimes(2);
+
+    now += 44_000;
+    await router.chat(makeChatRequest("primary/model-a"));
+    expect(primaryChat).toHaveBeenCalledTimes(2);
+
+    now += 1_000;
+    await router.chat(makeChatRequest("primary/model-a"));
+    expect(primaryChat).toHaveBeenCalledTimes(3);
+    expect(fallbackChat).toHaveBeenCalledTimes(4);
+  });
+
   it("reports provider and model separately when all providers fail", async () => {
     const router = new ModelRouter(makeConfig());
     const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
@@ -196,6 +291,15 @@ describe("ModelRouter", () => {
     await expect(router.resolveApiKey("github-copilot")).resolves.toBe("account-key");
   });
 });
+
+function makeChatRequest(modelSpec: string): ChatRequest & { modelSpec: string } {
+  return {
+    modelSpec,
+    model: modelSpec.split("/")[1] ?? modelSpec,
+    system: "system",
+    messages: [],
+  };
+}
 
 function makeProvider(name: string, chat: ModelProvider["chat"]): ModelProvider {
   return {

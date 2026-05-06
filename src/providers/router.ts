@@ -15,6 +15,15 @@ import type { RuntimeProviderAccountLike, RuntimeProviderConfigLike } from "../r
 import { parseAccountRef } from "../routing/resolver.js";
 
 const PROVIDER_REQUEST_TIMEOUT_MS = 300_000;
+const PRIMARY_RETRY_BASE_DELAY_MS = 30_000;
+const PRIMARY_RETRY_BACKOFF_MULT = 1.5;
+const PRIMARY_RETRY_MAX_DELAY_MS = 20 * 60_000;
+
+interface StickyFailoverState {
+  spec: string;
+  retryDelayMs: number;
+  nextPrimaryRetryAt: number;
+}
 
 /** Per-model health state for exponential recovery. */
 interface ModelHealth {
@@ -53,6 +62,7 @@ export class ModelRouter {
   private modelEquivalents: Map<string, string[]>;
   private modelAssignments: Record<string, string>;
   private providerConfigs: Record<string, RuntimeProviderConfigLike>;
+  private stickyFailovers = new Map<string, StickyFailoverState>();
 
   // ── Model health tracking (exponential recovery) ──────────────────────
   private modelHealth = new Map<string, ModelHealth>();
@@ -174,13 +184,14 @@ export class ModelRouter {
    */
   async chat(request: ChatRequest & { modelSpec: string }): Promise<ChatResponse> {
     const chain = this.buildChain(request.modelSpec);
-    const now = Date.now();
     let lastError: Error | undefined;
+    let attemptedPrimary = false;
 
     for (const spec of chain) {
       const health = this.getHealth(spec);
 
       // Skip models still in cooldown
+      const now = Date.now();
       if (health.disabledUntil > now) {
         const remainSec = Math.round((health.disabledUntil - now) / 1000);
         log.info(`[router] Skipping ${spec} (disabled for ${remainSec}s more)`);
@@ -203,10 +214,40 @@ export class ModelRouter {
         continue;
       }
 
+      if (spec === request.modelSpec) attemptedPrimary = true;
+
       // Attempt the call
       const result = await this.callProvider(spec, provider, model, request);
 
       if (result.ok) {
+        const sticky = this.stickyFailovers.get(request.modelSpec);
+        if (spec === request.modelSpec && sticky) {
+          this.stickyFailovers.delete(request.modelSpec);
+          log.info(`Model switch: ${sticky.spec} -> ${request.modelSpec} (primary recovered after cooldown)`);
+        }
+
+        // If we failed over after actually trying the primary, stick to the failover
+        // until the next primary retry window. Successful sticky calls before the
+        // window expires must not push the retry window forward indefinitely.
+        if (spec !== request.modelSpec) {
+          if (attemptedPrimary || !sticky) {
+            const previousDelay = sticky?.retryDelayMs ?? 0;
+            const retryDelayMs = Math.min(
+              previousDelay > 0 ? previousDelay * PRIMARY_RETRY_BACKOFF_MULT : PRIMARY_RETRY_BASE_DELAY_MS,
+              PRIMARY_RETRY_MAX_DELAY_MS,
+            );
+            this.stickyFailovers.set(request.modelSpec, {
+              spec,
+              retryDelayMs,
+              nextPrimaryRetryAt: Date.now() + retryDelayMs,
+            });
+            log.info(
+              `Model switch: ${request.modelSpec} -> ${spec} ` +
+              `(primary failed, using failover; retrying primary in ${Math.round(retryDelayMs / 1000)}s)`,
+            );
+          }
+        }
+
         // Success — reset health for this model
         if (health.consecutiveFailures > 0) {
           log.info(`[router] ${spec} recovered after ${health.consecutiveFailures} failure(s)`);
@@ -328,7 +369,17 @@ export class ModelRouter {
   }
 
   private buildChain(modelSpec: string): string[] {
+    const sticky = this.stickyFailovers.get(modelSpec);
     const chain: string[] = [];
+
+    if (sticky && sticky.spec !== modelSpec) {
+      if (Date.now() < sticky.nextPrimaryRetryAt) {
+        chain.push(sticky.spec);
+      } else {
+        log.info(`Model switch: ${sticky.spec} -> ${modelSpec} (retrying primary after cooldown)`);
+      }
+    }
+
     this.appendFailoverChain(modelSpec, chain, new Set<string>());
     return chain;
   }
@@ -380,6 +431,15 @@ export class ModelRouter {
       default:
         return !!cfg || hasAccounts;
     }
+  }
+
+  /** Reset sticky failover for a model */
+  clearStickyFailover(modelSpec: string): void {
+    const was = this.stickyFailovers.get(modelSpec);
+    if (was) {
+      log.info(`Model switch: ${was.spec} -> ${modelSpec} (retrying primary after cooldown)`);
+    }
+    this.stickyFailovers.delete(modelSpec);
   }
 
   private createProvider(providerName: string, accountName?: string): ModelProvider | undefined {

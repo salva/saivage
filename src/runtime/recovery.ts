@@ -225,7 +225,14 @@ export function recoverFromCrash(
 
   // Check tasks.json — reset in-progress and aborted tasks
   if (existsSync(tasksPath)) {
-    const taskList = readDocOrNull(tasksPath, TaskListSchema);
+    let taskList: TaskList | null = null;
+    try {
+      taskList = readDocOrNull(tasksPath, TaskListSchema);
+    } catch (err) {
+      log.warn(
+        `[recovery] Ignoring malformed task list for stage ${stageId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     if (taskList) {
       let modified = false;
 

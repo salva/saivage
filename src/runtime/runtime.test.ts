@@ -1181,6 +1181,47 @@ describe("Crash Recovery", () => {
     expect(tasks.tasks[2].status).toBe("completed"); // unchanged
   });
 
+  it("recoverFromCrash ignores malformed task lists", () => {
+    const project = makeProjectContext(tmpDir);
+    ensureDir(project.paths.stages);
+    ensureDir(join(project.paths.tmp, "state"));
+
+    const planService = new PlanService(project.saivageDir);
+    planService.plan_init([
+      {
+        id: "stg-1",
+        objective: "Test stage",
+        starting_points: [],
+        expected_outcomes: [],
+        acceptance_criteria: [],
+        references: [],
+        tags: [],
+      },
+    ]);
+    planService.plan_set_current("stg-1");
+
+    writeRuntimeState(project.paths.runtimeState, {
+      status: "running",
+      current_stage_id: "stg-1",
+      active_agents: [],
+      started_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      pid: 999999999,
+    });
+
+    const stageDir = join(project.paths.stages, "stg-1");
+    ensureDir(stageDir);
+    writeFileSync(
+      join(stageDir, "tasks.json"),
+      JSON.stringify([{ id: "legacy-array-task", status: "planned" }], null, 2),
+      "utf-8",
+    );
+
+    const result = recoverFromCrash(project, planService);
+    expect(result.recovered).toBe(true);
+    expect(result.stageId).toBe("stg-1");
+  });
+
   it("recoverFromCrash detects unarchived summary", () => {
     const project = makeProjectContext(tmpDir);
     ensureDir(project.paths.stages);

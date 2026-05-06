@@ -293,10 +293,10 @@ function buildPlannerMessage(ctx: AgentContext): string {
     `### Project Objectives\n${objList}\n\n` +
     `### Instructions\n` +
     `1. Read the project configuration and assess current state.\n` +
-    `2. Create a multi-stage plan using plan_init(stages).\n` +
+    `2. Call plan_get() before changing the plan. If plan_get() returns PLAN_NOT_FOUND, create the first multi-stage plan with plan_init(stages). If plan_get() returns an existing plan, DO NOT call plan_init(); continue it, or use plan_add_stage() / plan_set_stages() to add or replace remaining stages.\n` +
     `3. Execute stages one at a time via run_manager(stage).\n` +
     `4. Process results, adapt the plan, and continue until all objectives are met.\n` +
-    `5. If all objectives are achieved but a continuous-improvement note is present, create and dispatch the next improvement/verification/hardening stage.\n` +
+    `5. If all objectives are achieved but a continuous-improvement note is present, create and dispatch the next improvement/verification/hardening stage with plan_add_stage() or plan_set_stages(), not plan_init().\n` +
     `6. Only respond with "PLAN_COMPLETE" when objectives are verified and no continuous-improvement instruction is active.`
   );
 }

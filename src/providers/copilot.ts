@@ -145,9 +145,10 @@ export class CopilotProvider extends BaseProvider {
 
     this.anthropicClient = new Anthropic({
       apiKey,
-      baseURL: `${this.baseUrl}/anthropic`,
+      baseURL: this.baseUrl,
       defaultHeaders: COPILOT_HEADERS,
-    });
+      fetch: createCopilotFetch(apiKey),
+    } as unknown as ConstructorParameters<typeof Anthropic>[0]);
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {

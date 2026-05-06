@@ -6,10 +6,27 @@ import { Command } from "commander";
 
 const program = new Command();
 
+installRecoverableSocketErrorGuard();
+
 program
   .name("saivage")
   .description("Saivage — Autonomous AI agent system")
   .version("2.0.0");
+
+function installRecoverableSocketErrorGuard(): void {
+  process.on("uncaughtException", (err) => {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "EPIPE" || code === "ECONNRESET") {
+      console.warn(
+        `[warn] Ignoring recoverable socket error: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+
+    console.error(err);
+    process.exit(1);
+  });
+}
 
 // --- Init ---
 program
@@ -392,7 +409,7 @@ program
       console.error(
         `Fatal: ${err instanceof Error ? err.message : String(err)}`,
       );
-      process.exitCode = 1;
+      process.exit(1);
     }
   });
 

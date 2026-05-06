@@ -234,6 +234,30 @@ When you must escalate, your StageSummary MUST include a detailed escalation obj
 ## File Conventions
 
 - Write task lists to: \`stages/<stage-id>/tasks.json\`
+- Task lists MUST be a TaskList object, not a bare array. Use exactly this shape:
+  \`\`\`json
+  {
+    "stage_id": "<stage-id>",
+    "created_at": "<ISO timestamp>",
+    "updated_at": "<ISO timestamp>",
+    "tasks": [
+      {
+        "id": "t1-short-name",
+        "type": "research",
+        "assigned_to": "researcher",
+        "description": "Concrete task description",
+        "checklist": [
+          { "description": "Acceptance check", "required": true }
+        ],
+        "dependencies": [],
+        "status": "pending",
+        "attempt": 1,
+        "max_attempts": 3
+      }
+    ]
+  }
+  \`\`\`
+  Valid \`type\` values are \`code\`, \`research\`, \`data\`, \`review\`, \`test\`, \`document\`. Valid \`assigned_to\` values are \`coder\`, \`researcher\`, \`data_agent\`, \`reviewer\`. Valid task statuses are \`pending\`, \`in-progress\`, \`completed\`, \`failed\`, \`aborted\`; new tasks start as \`pending\`.
 - Write summaries to: \`stages/<stage-id>/summary.json\`
 - Store worker reports in: \`stages/<stage-id>/reports/\`
 - Commit messages: \`[stg-<id>] <description>\`
@@ -355,7 +379,7 @@ function buildManagerMessage(ctx: AgentContext, input: ManagerInput): string {
     `### Tags\n${(stage.tags ?? []).join(", ") || "(none)"}\n\n` +
     `### Instructions\n` +
     `1. Read the referenced documents to understand the context.\n` +
-    `2. Decompose this stage into tasks and write .saivage/stages/${stage.id}/tasks.json.\n` +
+    `2. Decompose this stage into tasks and write .saivage/stages/${stage.id}/tasks.json as a TaskList object with stage_id, created_at, updated_at, and tasks. Do not write a bare JSON array.\n` +
     `3. Dispatch tasks to Coder, Researcher, and Data Agent workers as appropriate.\n` +
     `4. After main work completes, dispatch a Reviewer to validate the stage against objective, outcomes, acceptance criteria, and artifacts.\n` +
     `5. If the Reviewer finds blockers or important issues, plan targeted correction tasks, dispatch them, and rerun review after material fixes. In each follow-up review, summarize the corrective tasks, new TaskReports, changed files, and previous issues the Reviewer should recheck. Continue this review/fix/re-review loop until blockers are resolved, warnings are accepted as residual risk, or escalation is justified.\n` +
