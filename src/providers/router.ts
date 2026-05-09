@@ -217,7 +217,18 @@ export class ModelRouter {
       if (spec === request.modelSpec) attemptedPrimary = true;
 
       // Attempt the call
-      const result = await this.callProvider(spec, provider, model, request);
+      let result = await this.callProvider(spec, provider, model, request);
+
+      // If the call failed and the provider has alternate accounts, retry with each
+      if (!result.ok && !result.nonRetryable && provider.setApiKey) {
+        const altAccounts = this.getAlternateAccounts(providerName, request);
+        for (const altKey of altAccounts) {
+          provider.setApiKey(altKey);
+          log.info(`[router] Retrying ${spec} with alternate account`);
+          result = await this.callProvider(spec, provider, model, request);
+          if (result.ok || result.nonRetryable) break;
+        }
+      }
 
       if (result.ok) {
         const sticky = this.stickyFailovers.get(request.modelSpec);
@@ -440,6 +451,33 @@ export class ModelRouter {
       log.info(`Model switch: ${was.spec} -> ${modelSpec} (retrying primary after cooldown)`);
     }
     this.stickyFailovers.delete(modelSpec);
+  }
+
+  /**
+   * Return API keys from alternate accounts for a provider, excluding the
+   * key that was already used for the current request.
+   */
+  private getAlternateAccounts(
+    providerName: string,
+    request: { accountRef?: string },
+  ): string[] {
+    const providerConfig = this.providerConfigs[providerName];
+    if (!providerConfig?.accounts) return [];
+
+    const primaryKey = providerConfig.apiKey;
+    const usedAccountRef = request.accountRef;
+
+    const keys: string[] = [];
+    for (const [accountName, accountCfg] of Object.entries(providerConfig.accounts)) {
+      if (!accountCfg?.apiKey) continue;
+      // Skip the account that was already used
+      const ref = `${providerName}.${accountName}`;
+      if (ref === usedAccountRef) continue;
+      // Skip if same key as primary (already tried)
+      if (accountCfg.apiKey === primaryKey) continue;
+      keys.push(accountCfg.apiKey);
+    }
+    return keys;
   }
 
   private createProvider(providerName: string, accountName?: string): ModelProvider | undefined {
