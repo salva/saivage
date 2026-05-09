@@ -176,6 +176,28 @@ describe("built-in MCP services", () => {
     })).rejects.toThrow("inactivity_timeout_ms must be a non-negative finite number");
   });
 
+  it("kills descendant processes on timeout", async () => {
+    // Spawn a shell that starts a child writing a PID file, then sleeps forever.
+    // After timeout kills the process group, the child should be gone.
+    const pidFile = join(projectRoot, "tmp", `test-descendant-${Date.now()}.pid`);
+    mkdirSync(join(projectRoot, "tmp"), { recursive: true });
+    const result = await runtime.callTool("shell", "run_command", {
+      command: `bash -c 'echo $$ > ${pidFile}; sync; sleep 300'`,
+      inactivity_timeout_ms: 200,
+    }) as { exitCode: number };
+
+    expect(result.exitCode).toBe(124);
+
+    // Give the OS a moment to reap
+    await new Promise((r) => setTimeout(r, 200));
+
+    // The PID file should exist (child started), but the process should be dead
+    const pid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
+    let alive = false;
+    try { process.kill(pid, 0); alive = true; } catch { /* expected */ }
+    expect(alive).toBe(false);
+  });
+
   it("rejects unsupported download protocols", async () => {
     await expect(runtime.callTool("data", "download_file", {
       url: "file:///etc/passwd",

@@ -33,6 +33,10 @@ const execFileAsync = promisify(execFile);
 const MAX_OUTPUT = 100 * 1024; // 100 KB
 const PROCESS_KILL_GRACE_MS = 2_000;
 const OUTPUT_GROWTH_POLL_MS = 1_000;
+/** Hard wall-clock cap applied when the agent omits timeout_ms.
+ *  Must be shorter than McpRuntime.SHELL_TIMEOUT_MS so the process is
+ *  cleanly terminated before the outer promise-race fires. */
+const MAX_WALL_CLOCK_MS = 4 * 60 * 60 * 1000 - 30_000; // 3 h 59 m 30 s
 const MAX_FETCH_CHARS = 200_000;
 const MAX_DOWNLOAD_BYTES = 250 * 1024 * 1024;
 const MAX_SCAN_DECODE_BYTES = 1_000_000;
@@ -363,7 +367,10 @@ const shellHandler: InProcessToolHandler = async (toolName, args) => {
   ));
   const outputPaths = resolveCommandLogPaths(args);
 
-  const result = await runShellCommand(command, cwd, timeout, inactivityTimeout, outputPaths);
+  // Always enforce a hard wall-clock cap so the process group is
+  // properly killed even when the agent omits timeout_ms.
+  const effectiveTimeout = timeout ?? MAX_WALL_CLOCK_MS;
+  const result = await runShellCommand(command, cwd, effectiveTimeout, inactivityTimeout, outputPaths);
   return { content: result, isError: false };
 };
 
