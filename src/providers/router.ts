@@ -76,10 +76,14 @@ export class ModelRouter {
 
   constructor(config: SaivageConfig) {
     this.failoverChains = config.failover;
-    this.modelEquivalents = buildModelEquivalenceIndex(config.modelEquivalents);
     this.modelAssignments = config.models as Record<string, string>;
     this.providerConfigs = config.providers as Record<string, RuntimeProviderConfigLike>;
     this.initProviders(config);
+
+    // Build equivalence index: manual entries + autodiscovered from providers
+    const manualEquivs = buildModelEquivalenceIndex(config.modelEquivalents);
+    const discovered = this.discoverModelEquivalents();
+    this.modelEquivalents = mergeEquivalenceIndexes(manualEquivs, discovered);
   }
 
   private initProviders(config: SaivageConfig): void {
@@ -101,6 +105,49 @@ export class ModelRouter {
       const provider = this.createProvider(providerName);
       if (provider) this.providers.set(providerName, provider);
     }
+  }
+
+  /**
+   * Autodiscover model equivalents by querying each registered provider's
+   * model list.  Models with the same ID served by multiple providers are
+   * equivalent (e.g. opencode-go/kimi-k2.6 ≡ opencode/kimi-k2.6).
+   */
+  private discoverModelEquivalents(): Map<string, string[]> {
+    // model-id → list of provider/model specs
+    const modelToSpecs = new Map<string, string[]>();
+
+    for (const [providerName, provider] of this.providers) {
+      if (!provider.listModels) continue;
+      try {
+        const models = provider.listModels();
+        // listModels can return a Promise; only use sync results here
+        if (!Array.isArray(models)) continue;
+        for (const modelId of models) {
+          const spec = `${providerName}/${modelId}`;
+          const existing = modelToSpecs.get(modelId) ?? [];
+          existing.push(spec);
+          modelToSpecs.set(modelId, existing);
+        }
+      } catch {
+        // Provider list unavailable — skip
+      }
+    }
+
+    // Build equivalence entries only for models served by 2+ providers
+    const index = new Map<string, string[]>();
+    for (const specs of modelToSpecs.values()) {
+      if (specs.length < 2) continue;
+      for (const spec of specs) {
+        const others = specs.filter((s) => s !== spec);
+        const existing = index.get(spec) ?? [];
+        index.set(spec, unique([...existing, ...others]));
+      }
+    }
+
+    if (index.size > 0) {
+      log.info(`[router] Autodiscovered ${index.size} model equivalents across providers`);
+    }
+    return index;
   }
 
   /**
@@ -217,18 +264,7 @@ export class ModelRouter {
       if (spec === request.modelSpec) attemptedPrimary = true;
 
       // Attempt the call
-      let result = await this.callProvider(spec, provider, model, request);
-
-      // If the call failed and the provider has alternate accounts, retry with each
-      if (!result.ok && !result.nonRetryable && provider.setApiKey) {
-        const altAccounts = this.getAlternateAccounts(providerName, request);
-        for (const altKey of altAccounts) {
-          provider.setApiKey(altKey);
-          log.info(`[router] Retrying ${spec} with alternate account`);
-          result = await this.callProvider(spec, provider, model, request);
-          if (result.ok || result.nonRetryable) break;
-        }
-      }
+      const result = await this.callProvider(spec, provider, model, request);
 
       if (result.ok) {
         const sticky = this.stickyFailovers.get(request.modelSpec);
@@ -453,33 +489,6 @@ export class ModelRouter {
     this.stickyFailovers.delete(modelSpec);
   }
 
-  /**
-   * Return API keys from alternate accounts for a provider, excluding the
-   * key that was already used for the current request.
-   */
-  private getAlternateAccounts(
-    providerName: string,
-    request: { accountRef?: string },
-  ): string[] {
-    const providerConfig = this.providerConfigs[providerName];
-    if (!providerConfig?.accounts) return [];
-
-    const primaryKey = providerConfig.apiKey;
-    const usedAccountRef = request.accountRef;
-
-    const keys: string[] = [];
-    for (const [accountName, accountCfg] of Object.entries(providerConfig.accounts)) {
-      if (!accountCfg?.apiKey) continue;
-      // Skip the account that was already used
-      const ref = `${providerName}.${accountName}`;
-      if (ref === usedAccountRef) continue;
-      // Skip if same key as primary (already tried)
-      if (accountCfg.apiKey === primaryKey) continue;
-      keys.push(accountCfg.apiKey);
-    }
-    return keys;
-  }
-
   private createProvider(providerName: string, accountName?: string): ModelProvider | undefined {
     const accountConfig = accountName ? this.getAccountConfig(providerName, accountName) : undefined;
     const providerConfig = this.providerConfigs[providerName];
@@ -583,6 +592,16 @@ function buildModelEquivalenceIndex(groups: Record<string, string[]>): Map<strin
     }
   }
   return index;
+}
+
+/** Merge two equivalence indexes, combining entries for the same spec. */
+function mergeEquivalenceIndexes(a: Map<string, string[]>, b: Map<string, string[]>): Map<string, string[]> {
+  const merged = new Map(a);
+  for (const [spec, equivalents] of b) {
+    const existing = merged.get(spec) ?? [];
+    merged.set(spec, unique([...existing, ...equivalents]));
+  }
+  return merged;
 }
 
 function unique(values: string[]): string[] {
