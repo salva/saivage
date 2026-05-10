@@ -71,6 +71,14 @@ export interface RateLimitStatus {
   limited: boolean;
 }
 
+export interface UsageStatus {
+  usedTokens: number | null;
+  totalTokens: number | null;
+  remainingTokens: number | null;
+  remainingRatio: number | null;
+  resetAt: Date | null;
+}
+
 export interface ModelProvider {
   readonly name: string;
 
@@ -85,6 +93,7 @@ export interface ModelProvider {
 
   isAvailable(): Promise<boolean>;
   getRateLimitStatus(): RateLimitStatus;
+  getUsageStatus?(): Promise<UsageStatus | null> | UsageStatus | null;
 
   /** Update the API key at runtime (e.g., from OAuth token refresh). */
   setApiKey?(apiKey: string): void;

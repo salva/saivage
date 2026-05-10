@@ -17,8 +17,11 @@ respects per-model health backoff.
 | `ollama`          | none                     | Local; `baseUrl` defaults to `http://localhost:11434`. |
 | `llamacpp`        | none                     | Local llama.cpp HTTP server. |
 
-A model is identified by a `provider/model` string, e.g.
+A model can be configured as a provider-independent model id, e.g.
+`kimi-k2.6`, or as a legacy `provider/model` string, e.g.
 `github-copilot/claude-sonnet-4` or `anthropic/claude-3-5-sonnet-20241022`.
+Provider-independent model ids are matched against provider and account
+`models` declarations at runtime.
 
 ## Where credentials live
 
@@ -61,6 +64,39 @@ Resolution precedence (most specific wins):
 A role string is one of `planner`, `manager`, `coder`, `researcher`,
 `reviewer`, `inspector`, `chat`, `data_agent`.
 
+Role assignments may be ordered model lists:
+
+```jsonc
+"models": {
+  "coder": ["kimi-k2.6", "deepseek-v4-pro"],
+  "reviewer": ["gpt-5.5", "deepseek-v4-pro"]
+}
+```
+
+For each model in the list, the router tries every configured provider/account
+that can serve that model. At startup the router inspects usage snapshots for
+each provider/account. Candidates with more unused tokens are tried first, then
+those with a higher unused ratio, then static `priority` lower numbers first. If
+all candidates for a model fail or are cooling down, the router advances to the
+next model in the role list or model failover chain.
+
+When a provider adapter does not expose account quota, `quota` can be used as a
+startup hint for the same ordering logic:
+
+```jsonc
+{
+  "providers": {
+    "opencode-go": {
+      "models": ["kimi-k2.6", "deepseek-v4-pro"],
+      "accounts": {
+        "opencode":    { "priority": 20, "apiKey": "${OPENCODE_GO_PRIMARY_KEY}", "quota": { "remainingTokens": 4000000 } },
+        "opencode-go": { "priority": 10, "apiKey": "${OPENCODE_GO_SECONDARY_KEY}", "quota": { "remainingTokens": 9000000 } }
+      }
+    }
+  }
+}
+```
+
 ## Multiple accounts per provider
 
 Both `routing` (project-level) and `providers.<id>.accounts` (runtime-level)
@@ -69,15 +105,17 @@ let you bind a request to a specific OAuth profile or API key:
 ```jsonc
 "providers": {
   "github-copilot": {
+    "models": ["gpt-5.5", "claude-sonnet-4.6"],
     "accounts": {
-      "personal": { "authProfile": "github-copilot/me@example.com" },
-      "work":     { "authProfile": "github-copilot/me@work.com" }
+      "personal": { "priority": 20, "authProfile": "github-copilot/me@example.com" },
+      "work":     { "priority": 10, "authProfile": "github-copilot/me@work.com" }
     }
   }
 }
 ```
 
 You can then reference an account in routing: `provider:github-copilot@personal`.
+If no account is pinned, Saivage tries eligible accounts by priority.
 
 ## Failover
 
@@ -87,10 +125,10 @@ You can then reference an account in routing: `provider:github-copilot@personal`
 }
 ```
 
-The router maintains per-model health: consecutive failures push the model
-into a cooldown that grows by ×1.5 (15 s → 10 min cap). When all healthy
-models for a request are exhausted, the router walks the failover chain
-provider-by-provider.
+The router maintains per-`provider/account/model` health: consecutive failures
+push that candidate into a cooldown that grows by ×1.5 (15 s → 10 min cap).
+When one provider/account fails, Saivage tries the next eligible provider/account
+for the same model before it advances to the next configured model.
 
 ## Rate limiting
 

@@ -95,19 +95,23 @@ class DefaultPromptInjectionCop implements PromptInjectionCop {
   }
 
   private async scanWithModel(request: PromptInjectionScanRequest): Promise<PromptInjectionScanResult | null> {
-    const { provider: providerName, model } = parseModelId(this.options.modelSpec);
-    const provider = this.router.getProvider(providerName);
-    if (!provider) return null;
+    const parsed = tryParseModelId(this.options.modelSpec);
+    const model = parsed?.model ?? this.options.modelSpec;
 
-    try {
-      if (!(await provider.isAvailable())) return null;
-    } catch {
-      return null;
-    }
+    if (parsed) {
+      const provider = this.router.getProvider(parsed.provider);
+      if (!provider) return null;
 
-    if (provider.setApiKey) {
-      const oauthKey = await this.router.resolveApiKey(providerName);
-      if (oauthKey) provider.setApiKey(oauthKey);
+      try {
+        if (!(await provider.isAvailable())) return null;
+      } catch {
+        return null;
+      }
+
+      if (provider.setApiKey) {
+        const oauthKey = await this.router.resolveApiKey(parsed.provider);
+        if (oauthKey) provider.setApiKey(oauthKey);
+      }
     }
 
     try {
@@ -143,6 +147,10 @@ class DefaultPromptInjectionCop implements PromptInjectionCop {
       return null;
     }
   }
+}
+
+function tryParseModelId(modelSpec: string): { provider: string; model: string } | undefined {
+  return modelSpec.includes("/") ? parseModelId(modelSpec) : undefined;
 }
 
 export function scanHeuristically(content: string): PromptInjectionScanResult {

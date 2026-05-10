@@ -1,4 +1,4 @@
-import type { ModelProvider, RateLimitStatus } from "./types.js";
+import type { ModelProvider, RateLimitStatus, UsageStatus } from "./types.js";
 
 export abstract class BaseProvider implements ModelProvider {
   abstract readonly name: string;
@@ -26,5 +26,9 @@ export abstract class BaseProvider implements ModelProvider {
 
   getRateLimitStatus(): RateLimitStatus {
     return { remaining: null, resetAt: null, limited: false };
+  }
+
+  getUsageStatus(): UsageStatus | null {
+    return null;
   }
 }

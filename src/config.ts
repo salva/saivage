@@ -6,6 +6,8 @@ import { runtimeProviderConfigSchema } from "./routing/resolver.js";
 
 // --- Schema ---
 
+const modelAssignmentSchema = z.union([z.string(), z.array(z.string())]);
+
 const notificationFiltersSchema = z.object({
   min_severity: z.enum(["info", "warning", "error"]).default("info"),
   categories: z
@@ -32,17 +34,17 @@ const mcpServerSchema = z.object({
 const configSchema = z.object({
   models: z
     .object({
-      orchestrator: z.string().optional(),
-      planner: z.string().optional(),
-      manager: z.string().optional(),
-      coder: z.string().optional(),
-      researcher: z.string().optional(),
-      data_agent: z.string().optional(),
-      reviewer: z.string().optional(),
-      inspector: z.string().optional(),
-      executor: z.string().optional(),
-      chat: z.string().optional(),
-      default: z.string().optional(),
+      orchestrator: modelAssignmentSchema.optional(),
+      planner: modelAssignmentSchema.optional(),
+      manager: modelAssignmentSchema.optional(),
+      coder: modelAssignmentSchema.optional(),
+      researcher: modelAssignmentSchema.optional(),
+      data_agent: modelAssignmentSchema.optional(),
+      reviewer: modelAssignmentSchema.optional(),
+      inspector: modelAssignmentSchema.optional(),
+      executor: modelAssignmentSchema.optional(),
+      chat: modelAssignmentSchema.optional(),
+      default: modelAssignmentSchema.optional(),
     })
     .default({ orchestrator: "anthropic/claude-sonnet-4-20250514" }),
 

@@ -3,6 +3,7 @@ import type {
   ChatRequest,
   ChatResponse,
   ModelProvider,
+  UsageStatus,
 } from "./types.js";
 import { parseModelId } from "./types.js";
 import { PiAiProvider } from "./pi-ai.js";
@@ -30,6 +31,21 @@ interface ModelHealth {
   consecutiveFailures: number;
   disabledUntil: number;   // epoch ms — model is skipped until this time
   backoffMs: number;       // current backoff duration (grows × BACKOFF_MULTIPLIER each failure)
+}
+
+interface ChatCandidate {
+  spec: string;
+  accountRef?: string;
+  healthKey: string;
+}
+
+interface UsageSnapshot {
+  usedTokens: number | null;
+  totalTokens: number | null;
+  remainingTokens: number | null;
+  remainingRatio: number | null;
+  resetAt: Date | null;
+  source: "provider" | "config" | "rate-limit" | "unknown";
 }
 
 /** Lightweight LLM call metrics (replaces v1 telemetry module). */
@@ -60,9 +76,10 @@ export class ModelRouter {
   private providers = new Map<string, ModelProvider>();
   private failoverChains: Record<string, string[]>;
   private modelEquivalents: Map<string, string[]>;
-  private modelAssignments: Record<string, string>;
+  private modelAssignments: Record<string, string | string[] | undefined>;
   private providerConfigs: Record<string, RuntimeProviderConfigLike>;
   private stickyFailovers = new Map<string, StickyFailoverState>();
+  private usageSnapshots = new Map<string, UsageSnapshot>();
 
   // ── Model health tracking (exponential recovery) ──────────────────────
   private modelHealth = new Map<string, ModelHealth>();
@@ -76,7 +93,7 @@ export class ModelRouter {
 
   constructor(config: SaivageConfig) {
     this.failoverChains = config.failover;
-    this.modelAssignments = config.models as Record<string, string>;
+    this.modelAssignments = config.models as Record<string, string | string[] | undefined>;
     this.providerConfigs = config.providers as Record<string, RuntimeProviderConfigLike>;
     this.initProviders(config);
 
@@ -184,7 +201,7 @@ export class ModelRouter {
 
   /** Resolve a role (e.g. "coder") to a model spec string */
   resolveModelForRole(role: string): string {
-    return this.modelAssignments[role] ?? this.modelAssignments["default"] ?? "anthropic/claude-sonnet-4-20250514";
+    return firstModel(this.modelAssignments[role]) ?? firstModel(this.modelAssignments["default"]) ?? "anthropic/claude-sonnet-4-20250514";
   }
 
   /** Get provider instance by name */
@@ -195,6 +212,20 @@ export class ModelRouter {
   /** List all registered providers */
   listProviders(): string[] {
     return [...this.providers.keys()];
+  }
+
+  /** Inspect provider/account usage once at startup and cache routing weights. */
+  async inspectUsageAtStartup(): Promise<void> {
+    const candidates = this.listUsageCandidateKeys();
+    await Promise.all(candidates.map((candidate) => this.inspectUsageCandidate(candidate)));
+    const known = [...this.usageSnapshots.entries()].filter(([, snapshot]) => snapshot.source !== "unknown").length;
+    if (known > 0) {
+      log.info(`[router] Loaded startup usage snapshots for ${known}/${candidates.length} provider/account candidate(s)`);
+    }
+  }
+
+  getUsageSnapshot(providerName: string, accountName?: string): UsageSnapshot | undefined {
+    return this.usageSnapshots.get(accountName ? `${providerName}#${accountName}` : providerName);
   }
 
   /** List model IDs exposed by a registered provider, when supported. */
@@ -210,9 +241,18 @@ export class ModelRouter {
     return provider.listModels();
   }
 
-  /** Get context window size (tokens) for a model spec like "github-copilot/gpt-5.3-codex" */
+  /** Get context window size (tokens) for a model spec or provider-independent model id. */
   getMaxContextTokens(modelSpec: string): number {
-    const { provider: providerName, model } = parseModelId(modelSpec);
+    const parsed = tryParseModelId(modelSpec);
+    if (!parsed) {
+      const candidate = this.buildCandidateChain(modelSpec)[0];
+      if (!candidate) return 200_000;
+      const { provider: providerName, model } = parseModelId(candidate.spec);
+      const provider = this.getProviderForRequest(providerName, { accountRef: candidate.accountRef });
+      return provider?.maxContextTokens(model) ?? 200_000;
+    }
+
+    const { provider: providerName, model } = parsed;
     const provider = this.getProviderForRequest(providerName);
     return provider?.maxContextTokens(model) ?? 200_000;
   }
@@ -230,41 +270,43 @@ export class ModelRouter {
    * each time, capped at 10 min. A single success resets fully.
    */
   async chat(request: ChatRequest & { modelSpec: string }): Promise<ChatResponse> {
-    const chain = this.buildChain(request.modelSpec);
+    const chain = this.buildCandidateChain(request.modelSpec, request);
     let lastError: Error | undefined;
     let attemptedPrimary = false;
 
-    for (const spec of chain) {
-      const health = this.getHealth(spec);
+    for (const candidate of chain) {
+      const spec = candidate.spec;
+      const health = this.getHealth(candidate.healthKey);
 
       // Skip models still in cooldown
       const now = Date.now();
       if (health.disabledUntil > now) {
         const remainSec = Math.round((health.disabledUntil - now) / 1000);
-        log.info(`[router] Skipping ${spec} (disabled for ${remainSec}s more)`);
+        log.info(`[router] Skipping ${candidate.healthKey} (disabled for ${remainSec}s more)`);
         continue;
       }
 
       // Resolve provider
       const { provider: providerName, model } = parseModelId(spec);
-      const provider = this.getProviderForRequest(providerName, request);
+      const candidateRequest = { ...request, accountRef: candidate.accountRef ?? request.accountRef };
+      const provider = this.getProviderForRequest(providerName, candidateRequest);
       if (!provider) {
-        log.warn(`Provider "${providerName}" not registered, skipping`);
+        log.warn(`Provider "${providerName}" not registered, skipping ${candidate.healthKey}`);
         continue;
       }
       if (provider.setApiKey) {
-        const oauthKey = await this.resolveApiKey(providerName, request);
+        const oauthKey = await this.resolveApiKey(providerName, candidateRequest);
         if (oauthKey) provider.setApiKey(oauthKey);
       }
       if (provider.getRateLimitStatus().limited) {
-        log.warn(`Provider "${providerName}" rate-limited, skipping`);
+        log.warn(`Provider "${providerName}" rate-limited, skipping ${candidate.healthKey}`);
         continue;
       }
 
       if (spec === request.modelSpec) attemptedPrimary = true;
 
       // Attempt the call
-      const result = await this.callProvider(spec, provider, model, request);
+      const result = await this.callProvider(spec, provider, model, candidateRequest);
 
       if (result.ok) {
         const sticky = this.stickyFailovers.get(request.modelSpec);
@@ -276,7 +318,7 @@ export class ModelRouter {
         // If we failed over after actually trying the primary, stick to the failover
         // until the next primary retry window. Successful sticky calls before the
         // window expires must not push the retry window forward indefinitely.
-        if (spec !== request.modelSpec) {
+        if (spec !== request.modelSpec && request.modelSpec.includes("/")) {
           if (attemptedPrimary || !sticky) {
             const previousDelay = sticky?.retryDelayMs ?? 0;
             const retryDelayMs = Math.min(
@@ -297,9 +339,9 @@ export class ModelRouter {
 
         // Success — reset health for this model
         if (health.consecutiveFailures > 0) {
-          log.info(`[router] ${spec} recovered after ${health.consecutiveFailures} failure(s)`);
+          log.info(`[router] ${candidate.healthKey} recovered after ${health.consecutiveFailures} failure(s)`);
         }
-        this.resetHealth(spec);
+        this.resetHealth(candidate.healthKey);
         return result.response;
       }
 
@@ -308,7 +350,7 @@ export class ModelRouter {
 
       // Record failure, apply exponential cooldown
       lastError = result.error;
-      this.recordFailure(spec, health);
+      this.recordFailure(candidate.healthKey, health);
     }
 
     const summary = `All providers failed for ${describeRequestedModel(request.modelSpec)}`;
@@ -406,52 +448,238 @@ export class ModelRouter {
 
   /** Force-reset health for all models in a failover chain (used by agent retry logic). */
   resetModelHealth(modelSpec: string): void {
-    const chain = this.buildChain(modelSpec);
-    for (const spec of chain) {
-      if (this.modelHealth.has(spec)) {
-        log.info(`[router] Resetting health for ${spec}`);
-        this.modelHealth.delete(spec);
+    const chain = this.buildCandidateChain(modelSpec);
+    for (const candidate of chain) {
+      if (this.modelHealth.has(candidate.healthKey)) {
+        log.info(`[router] Resetting health for ${candidate.healthKey}`);
+        this.modelHealth.delete(candidate.healthKey);
       }
     }
   }
 
   private buildChain(modelSpec: string): string[] {
+    return unique(this.buildCandidateChain(modelSpec).map((candidate) => candidate.spec));
+  }
+
+  private buildCandidateChain(
+    modelSpec: string,
+    request?: { authProfileKey?: string; accountRef?: string },
+  ): ChatCandidate[] {
     const sticky = this.stickyFailovers.get(modelSpec);
-    const chain: string[] = [];
+    const chain: ChatCandidate[] = [];
 
     if (sticky && sticky.spec !== modelSpec) {
       if (Date.now() < sticky.nextPrimaryRetryAt) {
-        chain.push(sticky.spec);
+        this.appendCandidatesForModelSpec(sticky.spec, chain, request);
       } else {
         log.info(`Model switch: ${sticky.spec} -> ${modelSpec} (retrying primary after cooldown)`);
       }
     }
 
-    this.appendFailoverChain(modelSpec, chain, new Set<string>());
+    this.appendFailoverChain(modelSpec, chain, new Set<string>(), request);
     return chain;
   }
 
-  private appendFailoverChain(modelSpec: string, chain: string[], expanded: Set<string>): void {
-    if (!chain.includes(modelSpec)) chain.push(modelSpec);
+  private appendFailoverChain(
+    modelSpec: string,
+    chain: ChatCandidate[],
+    expanded: Set<string>,
+    request?: { authProfileKey?: string; accountRef?: string },
+  ): void {
+    this.appendCandidatesForModelSpec(modelSpec, chain, request);
     if (expanded.has(modelSpec)) return;
     expanded.add(modelSpec);
 
     for (const equivalent of this.modelEquivalents.get(modelSpec) ?? []) {
-      this.appendFailoverChain(equivalent, chain, expanded);
+      this.appendFailoverChain(equivalent, chain, expanded, request);
     }
 
-    // Look up failover by full spec first, then by provider-only key.
-    const { provider: providerName, model } = parseModelId(modelSpec);
-    const failovers = this.failoverChains[modelSpec] ?? this.failoverChains[providerName];
+    const parsed = tryParseModelId(modelSpec);
+    const providerName = parsed?.provider;
+    const model = parsed?.model ?? modelSpec;
+    // Look up failover by full spec first, provider-independent model next,
+    // then by provider-only key for legacy provider failover chains.
+    const failovers = this.failoverChains[modelSpec] ?? this.failoverChains[model] ?? (providerName ? this.failoverChains[providerName] : undefined);
     if (!failovers) return;
 
     // Expand provider-only failover entries to full specs using the same model.
     for (const fallback of failovers) {
-      if (!fallback.includes("/") && this.modelEquivalents.has(modelSpec)) {
+      if (parsed && !fallback.includes("/") && this.modelEquivalents.has(modelSpec)) {
         continue;
       }
-      this.appendFailoverChain(fallback.includes("/") ? fallback : `${fallback}/${model}`, chain, expanded);
+      const next = parsed && isProviderName(fallback, this.providerConfigs) ? `${fallback}/${model}` : fallback;
+      this.appendFailoverChain(next, chain, expanded, request);
     }
+  }
+
+  private appendCandidatesForModelSpec(
+    modelSpec: string,
+    chain: ChatCandidate[],
+    request?: { authProfileKey?: string; accountRef?: string },
+  ): void {
+    const parsed = tryParseModelId(modelSpec);
+    const candidates = parsed
+      ? this.expandProviderModelCandidates(parsed.provider, parsed.model, request)
+      : this.expandProviderIndependentCandidates(modelSpec, request);
+
+    for (const candidate of candidates) {
+      if (chain.some((item) => item.healthKey === candidate.healthKey)) continue;
+      chain.push(candidate);
+    }
+  }
+
+  private expandProviderIndependentCandidates(
+    model: string,
+    request?: { authProfileKey?: string; accountRef?: string },
+  ): ChatCandidate[] {
+    return [...this.providers.keys()]
+      .filter((providerName) => this.providerCanServeModel(providerName, model))
+      .sort((a, b) => this.compareProviderOrder(a, b))
+      .flatMap((providerName) => this.expandProviderModelCandidates(providerName, model, request));
+  }
+
+  private expandProviderModelCandidates(
+    providerName: string,
+    model: string,
+    request?: { authProfileKey?: string; accountRef?: string },
+  ): ChatCandidate[] {
+    const requestedAccount = request?.accountRef ? this.parseMatchingAccountRef(providerName, request.accountRef) : undefined;
+    const accounts = this.orderedAccountsForModel(providerName, model, requestedAccount);
+    const spec = `${providerName}/${model}`;
+
+    if (accounts.length === 0) {
+      return [{ spec, healthKey: spec }];
+    }
+
+    return accounts.map((accountName) => {
+      const accountRef = `${providerName}.${accountName}`;
+      return { spec, accountRef, healthKey: `${spec}#${accountName}` };
+    });
+  }
+
+  private orderedAccountsForModel(providerName: string, model: string, requestedAccount?: string): string[] {
+    const accounts = this.providerConfigs[providerName]?.accounts ?? {};
+    const accountNames = Object.keys(accounts).filter((accountName) => this.accountCanServeModel(providerName, accountName, model));
+    if (requestedAccount) {
+      return accountNames.includes(requestedAccount) ? [requestedAccount] : [];
+    }
+
+    return accountNames.sort((a, b) => this.compareAccountOrder(providerName, a, b));
+  }
+
+  private providerCanServeModel(providerName: string, model: string): boolean {
+    const configuredModels = this.providerConfigs[providerName]?.models;
+    if (configuredModels?.length) return configuredModels.includes(model);
+
+    const provider = this.providers.get(providerName);
+    if (provider?.listModels) {
+      try {
+        const models = provider.listModels();
+        if (Array.isArray(models)) return models.includes(model);
+      } catch {
+        // Provider list unavailable — fall through to account metadata.
+      }
+    }
+
+    const accounts = this.providerConfigs[providerName]?.accounts ?? {};
+    return Object.keys(accounts).some((accountName) => this.accountCanServeModel(providerName, accountName, model));
+  }
+
+  private accountCanServeModel(providerName: string, accountName: string, model: string): boolean {
+    const accountModels = this.providerConfigs[providerName]?.accounts?.[accountName]?.models;
+    if (accountModels?.length) return accountModels.includes(model);
+    const providerModels = this.providerConfigs[providerName]?.models;
+    return !providerModels?.length || providerModels.includes(model);
+  }
+
+  private providerPriority(providerName: string): number {
+    return this.providerConfigs[providerName]?.priority ?? 100;
+  }
+
+  private accountPriority(providerName: string, accountName: string): number {
+    return this.providerConfigs[providerName]?.accounts?.[accountName]?.priority ?? 100;
+  }
+
+  private compareProviderOrder(a: string, b: string): number {
+    return compareUsageSnapshots(this.usageSnapshots.get(a), this.usageSnapshots.get(b)) ||
+      this.providerPriority(a) - this.providerPriority(b) ||
+      a.localeCompare(b);
+  }
+
+  private compareAccountOrder(providerName: string, a: string, b: string): number {
+    return compareUsageSnapshots(this.usageSnapshots.get(`${providerName}#${a}`), this.usageSnapshots.get(`${providerName}#${b}`)) ||
+      this.accountPriority(providerName, a) - this.accountPriority(providerName, b) ||
+      a.localeCompare(b);
+  }
+
+  private listUsageCandidateKeys(): { providerName: string; accountName?: string; key: string }[] {
+    const candidates: { providerName: string; accountName?: string; key: string }[] = [];
+    for (const providerName of this.providers.keys()) {
+      if (providerName.includes("#")) continue;
+      const accounts = Object.keys(this.providerConfigs[providerName]?.accounts ?? {});
+      if (accounts.length === 0) {
+        candidates.push({ providerName, key: providerName });
+        continue;
+      }
+      for (const accountName of accounts) {
+        candidates.push({ providerName, accountName, key: `${providerName}#${accountName}` });
+      }
+    }
+    return candidates;
+  }
+
+  private async inspectUsageCandidate(candidate: { providerName: string; accountName?: string; key: string }): Promise<void> {
+    const provider = this.getProviderForRequest(candidate.providerName, candidate.accountName ? { accountRef: `${candidate.providerName}.${candidate.accountName}` } : undefined);
+    const configured = this.usageFromConfig(candidate.providerName, candidate.accountName);
+    if (configured.source !== "unknown") {
+      this.usageSnapshots.set(candidate.key, configured);
+    }
+
+    if (provider?.setApiKey) {
+      const apiKey = await this.resolveApiKey(candidate.providerName, candidate.accountName ? { accountRef: `${candidate.providerName}.${candidate.accountName}` } : undefined);
+      if (apiKey) provider.setApiKey(apiKey);
+    }
+
+    if (provider?.getUsageStatus) {
+      try {
+        const inspected = normalizeUsageSnapshot(await provider.getUsageStatus(), "provider");
+        if (inspected.source !== "unknown") {
+          this.usageSnapshots.set(candidate.key, inspected);
+          return;
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log.warn(`[router] Could not inspect usage for ${candidate.key}: ${message}`);
+      }
+    }
+
+    if (configured.source !== "unknown") return;
+
+    const rateLimit = provider?.getRateLimitStatus();
+    const fromRateLimit = normalizeUsageSnapshot(rateLimit ? {
+      usedTokens: null,
+      totalTokens: null,
+      remainingTokens: rateLimit.remaining,
+      remainingRatio: null,
+      resetAt: rateLimit.resetAt,
+    } : null, "rate-limit");
+    this.usageSnapshots.set(candidate.key, fromRateLimit);
+  }
+
+  private usageFromConfig(providerName: string, accountName?: string): UsageSnapshot {
+    const config = accountName ? this.providerConfigs[providerName]?.accounts?.[accountName] : this.providerConfigs[providerName];
+    return normalizeUsageSnapshot({
+      usedTokens: config?.quota?.usedTokens ?? null,
+      totalTokens: config?.quota?.totalTokens ?? null,
+      remainingTokens: config?.quota?.remainingTokens ?? null,
+      remainingRatio: config?.quota?.remainingRatio ?? null,
+      resetAt: null,
+    }, "config");
+  }
+
+  private parseMatchingAccountRef(providerName: string, accountRef: string): string | undefined {
+    const parsed = parseAccountRef(accountRef.includes(".") ? accountRef : `${providerName}.${accountRef}`);
+    return parsed.provider === providerName ? parsed.account : undefined;
   }
 
   private shouldRegisterProvider(providerName: string): boolean {
@@ -578,8 +806,91 @@ export class ModelRouter {
 }
 
 function describeRequestedModel(modelSpec: string): string {
-  const { provider, model } = parseModelId(modelSpec);
+  const parsed = tryParseModelId(modelSpec);
+  if (!parsed) return `model "${modelSpec}"`;
+  const { provider, model } = parsed;
   return `model "${model}" via provider "${provider}"`;
+}
+
+function tryParseModelId(modelSpec: string): { provider: string; model: string } | undefined {
+  return modelSpec.includes("/") ? parseModelId(modelSpec) : undefined;
+}
+
+function isProviderName(value: string, providerConfigs: Record<string, RuntimeProviderConfigLike>): boolean {
+  return Object.prototype.hasOwnProperty.call(providerConfigs, value) || [
+    "github-copilot",
+    "anthropic",
+    "openai",
+    "openai-codex",
+    "opencode",
+    "opencode-go",
+    "ollama",
+    "llamacpp",
+  ].includes(value);
+}
+
+function firstModel(value: string | string[] | undefined): string | undefined {
+  if (!value) return undefined;
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function compareUsageSnapshots(a: UsageSnapshot | undefined, b: UsageSnapshot | undefined): number {
+  const remainingTokens = compareNullableNumbersDesc(a?.remainingTokens, b?.remainingTokens);
+  if (remainingTokens !== 0) return remainingTokens;
+  return compareNullableNumbersDesc(a?.remainingRatio, b?.remainingRatio);
+}
+
+function compareNullableNumbersDesc(a: number | null | undefined, b: number | null | undefined): number {
+  const aKnown = typeof a === "number" && Number.isFinite(a);
+  const bKnown = typeof b === "number" && Number.isFinite(b);
+  if (aKnown && bKnown) return b - a;
+  if (aKnown) return -1;
+  if (bKnown) return 1;
+  return 0;
+}
+
+function normalizeUsageSnapshot(status: UsageStatus | null, source: UsageSnapshot["source"]): UsageSnapshot {
+  if (!status) return unknownUsageSnapshot();
+  const usedTokens = finiteOrNull(status.usedTokens);
+  const totalTokens = finiteOrNull(status.totalTokens);
+  const explicitRemainingTokens = finiteOrNull(status.remainingTokens);
+  const remainingTokens = explicitRemainingTokens ??
+    (totalTokens !== null && usedTokens !== null ? Math.max(totalTokens - usedTokens, 0) : null);
+  const explicitRemainingRatio = finiteOrNull(status.remainingRatio);
+  const remainingRatio = explicitRemainingRatio ??
+    (totalTokens && remainingTokens !== null ? clamp01(remainingTokens / totalTokens) : null);
+
+  if (usedTokens === null && totalTokens === null && remainingTokens === null && remainingRatio === null) {
+    return unknownUsageSnapshot();
+  }
+
+  return {
+    usedTokens,
+    totalTokens,
+    remainingTokens,
+    remainingRatio,
+    resetAt: status.resetAt ?? null,
+    source,
+  };
+}
+
+function unknownUsageSnapshot(): UsageSnapshot {
+  return {
+    usedTokens: null,
+    totalTokens: null,
+    remainingTokens: null,
+    remainingRatio: null,
+    resetAt: null,
+    source: "unknown",
+  };
+}
+
+function finiteOrNull(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
 }
 
 function buildModelEquivalenceIndex(groups: Record<string, string[]>): Map<string, string[]> {

@@ -50,6 +50,18 @@ describe("ModelRouter", () => {
     );
   });
 
+  it("uses the first configured model when a role has an ordered model list", () => {
+    const router = new ModelRouter(makeConfig({
+      models: {
+        coder: ["kimi-k2.6", "deepseek-v4-pro"],
+        default: ["deepseek-v4-flash"],
+      },
+    }));
+
+    expect(router.resolveModelForRole("coder")).toBe("kimi-k2.6");
+    expect(router.resolveModelForRole("unknown")).toBe("deepseek-v4-flash");
+  });
+
   it("lists registered providers", () => {
     const router = new ModelRouter(makeConfig());
     const providers = router.listProviders();
@@ -111,6 +123,147 @@ describe("ModelRouter", () => {
       "openai-codex/gpt-5.4",
       "github-copilot/claude-sonnet-4.6",
     ]);
+  });
+
+  it("orders provider-independent model candidates by provider priority", () => {
+    const router = new ModelRouter(makeConfig({
+      providers: {
+        alpha: { priority: 20, models: ["shared-model"] },
+        beta: { priority: 10, models: ["shared-model"] },
+      },
+    }));
+    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
+    providers.clear();
+    providers.set("alpha", makeProvider("alpha", vi.fn(async () => successfulResponse("alpha"))));
+    providers.set("beta", makeProvider("beta", vi.fn(async () => successfulResponse("beta"))));
+
+    const chain = (router as unknown as { buildChain(modelSpec: string): string[] }).buildChain("shared-model");
+
+    expect(chain).toEqual(["beta/shared-model", "alpha/shared-model"]);
+  });
+
+  it("prefers provider with more remaining tokens after startup usage inspection", async () => {
+    const router = new ModelRouter(makeConfig({
+      providers: {
+        alpha: { priority: 10, models: ["shared-model"], quota: { remainingTokens: 100 } },
+        beta: { priority: 20, models: ["shared-model"], quota: { remainingTokens: 1000 } },
+      },
+    }));
+    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
+    providers.clear();
+    providers.set("alpha", makeProvider("alpha", vi.fn(async () => successfulResponse("alpha"))));
+    providers.set("beta", makeProvider("beta", vi.fn(async () => successfulResponse("beta"))));
+
+    await router.inspectUsageAtStartup();
+    const chain = (router as unknown as { buildChain(modelSpec: string): string[] }).buildChain("shared-model");
+
+    expect(chain).toEqual(["beta/shared-model", "alpha/shared-model"]);
+  });
+
+  it("resolves context window for provider-independent model candidates", () => {
+    const router = new ModelRouter(makeConfig({
+      providers: {
+        alpha: { priority: 20, models: ["shared-model"] },
+        beta: { priority: 10, models: ["shared-model"] },
+      },
+    }));
+    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
+    providers.clear();
+    providers.set("alpha", { ...makeProvider("alpha", vi.fn(async () => successfulResponse("alpha"))), maxContextTokens: () => 111 });
+    providers.set("beta", { ...makeProvider("beta", vi.fn(async () => successfulResponse("beta"))), maxContextTokens: () => 222 });
+
+    expect(router.getMaxContextTokens("shared-model")).toBe(222);
+  });
+
+  it("tries the next provider for a model before advancing to the next model", async () => {
+    const router = new ModelRouter(makeConfig({
+      providers: {
+        primary: { priority: 10, models: ["model-a"] },
+        secondary: { priority: 20, models: ["model-a"] },
+        fallback: { priority: 10, models: ["model-b"] },
+      },
+      failover: {
+        "model-a": ["model-b"],
+      },
+    }));
+    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
+    providers.clear();
+
+    const primaryChat = vi.fn(async () => {
+      throw new Error("primary unavailable");
+    });
+    const secondaryChat = vi.fn(async () => successfulResponse("secondary"));
+    const fallbackChat = vi.fn(async () => successfulResponse("fallback"));
+    providers.set("primary", makeProvider("primary", primaryChat));
+    providers.set("secondary", makeProvider("secondary", secondaryChat));
+    providers.set("fallback", makeProvider("fallback", fallbackChat));
+
+    const response = await router.chat(makeChatRequest("model-a"));
+
+    expect(primaryChat).toHaveBeenCalledTimes(1);
+    expect(secondaryChat).toHaveBeenCalledTimes(1);
+    expect(fallbackChat).not.toHaveBeenCalled();
+    expect(response.modelSpec).toBe("secondary/model-a");
+    expect(response.requestedModelSpec).toBe("model-a");
+  });
+
+  it("orders accounts by priority within a provider", async () => {
+    const router = new ModelRouter(makeConfig({
+      providers: {
+        gateway: {
+          models: ["shared-model"],
+          accounts: {
+            primary: { priority: 20, apiKey: "primary-key" },
+            secondary: { priority: 10, apiKey: "secondary-key" },
+          },
+        },
+      },
+    }));
+    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
+    providers.clear();
+
+    const baseChat = vi.fn(async () => successfulResponse("base"));
+    const primaryChat = vi.fn(async () => successfulResponse("primary"));
+    const secondaryChat = vi.fn(async () => successfulResponse("secondary"));
+    providers.set("gateway", makeProvider("gateway", baseChat));
+    providers.set("gateway#primary", makeProvider("gateway#primary", primaryChat));
+    providers.set("gateway#secondary", makeProvider("gateway#secondary", secondaryChat));
+
+    const response = await router.chat(makeChatRequest("shared-model"));
+
+    expect(secondaryChat).toHaveBeenCalledTimes(1);
+    expect(primaryChat).not.toHaveBeenCalled();
+    expect(baseChat).not.toHaveBeenCalled();
+    expect(response.modelSpec).toBe("gateway/shared-model");
+  });
+
+  it("prefers account with more remaining tokens after startup usage inspection", async () => {
+    const router = new ModelRouter(makeConfig({
+      providers: {
+        gateway: {
+          models: ["shared-model"],
+          accounts: {
+            primary: { priority: 10, apiKey: "primary-key", quota: { remainingTokens: 100 } },
+            secondary: { priority: 20, apiKey: "secondary-key", quota: { remainingTokens: 1000 } },
+          },
+        },
+      },
+    }));
+    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
+    providers.clear();
+
+    const primaryChat = vi.fn(async () => successfulResponse("primary"));
+    const secondaryChat = vi.fn(async () => successfulResponse("secondary"));
+    providers.set("gateway", makeProvider("gateway", vi.fn(async () => successfulResponse("base"))));
+    providers.set("gateway#primary", makeProvider("gateway#primary", primaryChat));
+    providers.set("gateway#secondary", makeProvider("gateway#secondary", secondaryChat));
+
+    await router.inspectUsageAtStartup();
+    const response = await router.chat(makeChatRequest("shared-model"));
+
+    expect(secondaryChat).toHaveBeenCalledTimes(1);
+    expect(primaryChat).not.toHaveBeenCalled();
+    expect(response.modelSpec).toBe("gateway/shared-model");
   });
 
   it("does not carry provider-only failover onto models with explicit equivalents", () => {
@@ -311,5 +464,14 @@ function makeProvider(name: string, chat: ModelProvider["chat"]): ModelProvider 
     maxContextTokens: () => 200_000,
     isAvailable: async () => true,
     getRateLimitStatus: () => ({ remaining: null, resetAt: null, limited: false }),
+  };
+}
+
+function successfulResponse(content: string) {
+  return {
+    content,
+    toolCalls: [],
+    finishReason: "end_turn" as const,
+    usage: { inputTokens: 1, outputTokens: 1 },
   };
 }

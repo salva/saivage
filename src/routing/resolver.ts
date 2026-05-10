@@ -39,6 +39,16 @@ export const runtimeProviderAccountSchema = z.object({
   apiKey: z.string().optional(),
   baseUrl: z.string().optional(),
   authProfile: z.string().optional(),
+  priority: z.number().default(100),
+  models: z.array(z.string()).optional(),
+  quota: z
+    .object({
+      usedTokens: z.number().optional(),
+      totalTokens: z.number().optional(),
+      remainingTokens: z.number().optional(),
+      remainingRatio: z.number().min(0).max(1).optional(),
+    })
+    .optional(),
 });
 
 export const runtimeProviderConfigSchema = runtimeProviderAccountSchema.extend({
@@ -50,6 +60,14 @@ export interface RuntimeProviderAccountLike {
   apiKey?: string;
   baseUrl?: string;
   authProfile?: string;
+  priority?: number;
+  models?: string[];
+  quota?: {
+    usedTokens?: number;
+    totalTokens?: number;
+    remainingTokens?: number;
+    remainingRatio?: number;
+  };
 }
 
 export interface RuntimeProviderConfigLike extends RuntimeProviderAccountLike {
@@ -64,7 +82,7 @@ export interface ProjectRoutingConfigLike {
 }
 
 export interface RuntimeRoutingConfigLike {
-  models?: Record<string, string | undefined>;
+  models?: Record<string, string | string[] | undefined>;
   providers?: Record<string, RuntimeProviderConfigLike | undefined>;
   supervisorModel?: string;
   securityModel?: string;
@@ -114,9 +132,11 @@ export class ModelRoutingResolver {
     const roleRule = this.resolveRoleRule(role);
     const merged = this.mergeRuleChain(roleRule.rule);
     const preferredModels = this.resolvePreferredModels(role, merged);
-    const modelSpec = preferredModels[0] ?? this.resolveLegacyModel(role);
-    const { provider, model } = parseModelSpec(modelSpec);
-    const preferredAccounts = this.resolvePreferredAccounts(provider, merged);
+    const modelSpec = preferredModels[0] ?? this.resolveLegacyModels(role)[0] ?? "openai-codex/gpt-5.3-codex";
+    const parsed = tryParseModelSpec(modelSpec);
+    const provider = parsed?.provider ?? "";
+    const model = parsed?.model ?? modelSpec;
+    const preferredAccounts = parsed ? this.resolvePreferredAccounts(provider, merged) : [];
 
     return {
       role,
@@ -219,7 +239,7 @@ export class ModelRoutingResolver {
 
     if (filtered.length > 0) return filtered;
     if (allowed?.size) return [...allowed];
-    return [];
+    return this.resolveLegacyModels(role);
   }
 
   private resolvePreferredAccounts(provider: string, rule: NormalizedRule): string[] {
@@ -247,28 +267,28 @@ export class ModelRoutingResolver {
     return allowed ? [...allowed] : [];
   }
 
-  private resolveRuntimeDefaultModel(role: string): string | undefined {
-    if (role === "supervisor") return this.runtime.supervisorModel;
-    if (role === "security") return this.runtime.securityModel;
+  private resolveRuntimeDefaultModels(role: string): string[] {
+    if (role === "supervisor") return normalizeModelList(this.runtime.supervisorModel);
+    if (role === "security") return normalizeModelList(this.runtime.securityModel);
     const key = ROUTING_ROLE_TO_MODEL_KEY[role] ?? role;
-    return this.runtime.models?.[key] ?? this.runtime.models?.default;
+    return normalizeModelList(this.runtime.models?.[key] ?? this.runtime.models?.default);
   }
 
-  private resolveLegacyModel(role: string): string {
+  private resolveLegacyModels(role: string): string[] {
     const override = this.project.model_overrides?.[role];
-    if (override) return override;
+    if (override) return [override];
 
-    const runtimeDefault = this.resolveRuntimeDefaultModel(role);
-    if (runtimeDefault) return runtimeDefault;
+    const runtimeDefault = this.resolveRuntimeDefaultModels(role);
+    if (runtimeDefault.length) return runtimeDefault;
 
-    if (this.project.provider) return this.project.provider;
-    return "openai-codex/gpt-5.3-codex";
+    if (this.project.provider) return [this.project.provider];
+    return ["openai-codex/gpt-5.3-codex"];
   }
 
   private resolveSource(role: string, rule: NormalizedRule, preferredModels: string[]): ResolvedModelRoute["source"] {
     if (rule.model || rule.preferredModels.length || rule.profile) return "routing";
     if (this.project.model_overrides?.[role]) return "legacy";
-    if (this.resolveRuntimeDefaultModel(role)) return "runtime-default";
+    if (this.resolveRuntimeDefaultModels(role).length) return "runtime-default";
     if (this.project.provider) return "project-default";
     return "hardcoded-default";
   }
@@ -311,6 +331,15 @@ export function parseModelSpec(modelSpec: string): { provider: string; model: st
     provider: modelSpec.slice(0, slash),
     model: modelSpec.slice(slash + 1),
   };
+}
+
+function tryParseModelSpec(modelSpec: string): { provider: string; model: string } | undefined {
+  return modelSpec.includes("/") ? parseModelSpec(modelSpec) : undefined;
+}
+
+function normalizeModelList(value: string | string[] | undefined): string[] {
+  if (!value) return [];
+  return Array.isArray(value) ? unique(value) : [value];
 }
 
 function unique(values: string[]): string[] {

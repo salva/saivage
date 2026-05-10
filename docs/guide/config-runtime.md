@@ -51,25 +51,83 @@ isolation, set `SAIVAGE_ROOT` per service.
 
 ### `models`
 
-Per-role default `provider/model` strings. Keys: `orchestrator`, `planner`,
+Per-role model assignments. Values may be legacy `provider/model` strings
+or ordered provider-independent model lists. Keys: `orchestrator`, `planner`,
 `manager`, `coder`, `researcher`, `data_agent`, `reviewer`, `inspector`,
 `executor`, `chat`, `default`. Project-level `model_overrides` take
 precedence.
 
+```json
+"models": {
+  "coder": ["kimi-k2.6", "deepseek-v4-pro"],
+  "reviewer": "github-copilot/gpt-5.4",
+  "default": ["deepseek-v4-flash"]
+}
+```
+
+For provider-independent model names, the router finds providers and accounts
+that advertise the requested model and tries them by usage and priority before
+moving to the next configured model.
+
 ### `providers`
 
-Map of provider id → settings (`apiKey`, `baseUrl`, `models`, …). Provider
-ids are the well-known identifiers used by the router: `anthropic`,
+Map of provider id → settings (`apiKey`, `baseUrl`, `models`, `priority`,
+`quota`, `accounts`, …). Provider ids are the well-known identifiers used by the router: `anthropic`,
 `openai`, `openai-codex`, `github-copilot`, `ollama`, `llamacpp`,
 `openrouter`, `pi-ai`. Settings are validated by `runtimeProviderConfigSchema`.
 
+Providers can declare model capability and priority:
+
+```json
+"providers": {
+  "opencode-go": {
+    "priority": 10,
+    "models": ["kimi-k2.6", "deepseek-v4-pro"],
+    "apiKey": "${OPENCODE_GO_API_KEY}"
+  },
+  "opencode": {
+    "priority": 20,
+    "models": ["kimi-k2.6", "qwen3.5-plus"],
+    "apiKey": "${OPENCODE_API_KEY}"
+  }
+}
+```
+
+At startup the router inspects provider/account usage snapshots when a provider
+adapter exposes them. If the adapter cannot report quota, you can provide a
+startup hint with `quota`. Candidates with more `remainingTokens` are tried
+first; `remainingRatio` is used next; static `priority` breaks ties and remains
+the fallback when usage is unknown.
+
+```json
+"providers": {
+  "opencode-go": {
+    "models": ["kimi-k2.6", "deepseek-v4-pro"],
+    "accounts": {
+      "primary": {
+        "priority": 10,
+        "apiKey": "${OPENCODE_GO_PRIMARY_KEY}",
+        "quota": { "remainingTokens": 12000000, "totalTokens": 15000000 }
+      },
+      "secondary": {
+        "priority": 20,
+        "apiKey": "${OPENCODE_GO_SECONDARY_KEY}",
+        "quota": { "remainingTokens": 18000000, "totalTokens": 20000000 }
+      }
+    }
+  }
+}
+```
+
 ### `failover`
 
-Map of provider id → ordered fallback chain. When a provider hits 5+
-consecutive failures within 2 minutes, the router rotates to the next id.
+Map of model or provider id → ordered fallback chain. For provider-independent
+models, provider/account failures are exhausted for the current model before the
+router advances to the next model.
 
 ```json
 "failover": {
+  "kimi-k2.6": ["deepseek-v4-pro"],
   "github-copilot": ["openai-codex", "anthropic", "openai"]
 }
 ```

@@ -133,6 +133,7 @@ export async function bootstrap(
   // 3. Initialize model router + OAuth
   const router = new ModelRouter(config);
   await injectOAuthTokens(router);
+  await router.inspectUsageAtStartup();
   log.info(`[v2] Providers: ${router.listProviders().join(", ")}`);
 
   // 4. Initialize MCP runtime + builtin services
