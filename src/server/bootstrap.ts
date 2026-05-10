@@ -302,40 +302,44 @@ export function createChildSpawner(
       }
 
       case "coder": {
-        const workerInput = input as import("../agents/types.js").WorkerInput;
+        const workerInput = normalizeWorkerDispatchInput(input, role);
         agent = new CoderAgent(ctx, workerInput, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
         });
         taskId = workerInput.task?.id;
+        tracker.setCurrentStage(workerInput.stageId);
         break;
       }
 
       case "researcher": {
-        const workerInput = input as import("../agents/types.js").WorkerInput;
+        const workerInput = normalizeWorkerDispatchInput(input, role);
         agent = new ResearcherAgent(ctx, workerInput, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
         });
         taskId = workerInput.task?.id;
+        tracker.setCurrentStage(workerInput.stageId);
         break;
       }
 
       case "data_agent": {
-        const workerInput = input as import("../agents/types.js").WorkerInput;
+        const workerInput = normalizeWorkerDispatchInput(input, role);
         agent = new DataAgent(ctx, workerInput, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
         });
         taskId = workerInput.task?.id;
+        tracker.setCurrentStage(workerInput.stageId);
         break;
       }
 
       case "reviewer": {
-        const workerInput = input as import("../agents/types.js").WorkerInput;
+        const workerInput = normalizeWorkerDispatchInput(input, role);
         const stageId = workerInput.stageId ?? "unknown-stage";
         const existing = stageReviewers.get(stageId);
         if (existing) {
           agent = existing.agent;
           trackingAgentId = existing.ctx.agentId;
           taskId = workerInput.task?.id;
+          tracker.setCurrentStage(workerInput.stageId);
           break;
         }
 
@@ -345,6 +349,7 @@ export function createChildSpawner(
         agent = reviewer;
         stageReviewers.set(stageId, { agent: reviewer, ctx });
         taskId = workerInput.task?.id;
+        tracker.setCurrentStage(workerInput.stageId);
         break;
       }
 
@@ -385,6 +390,58 @@ export function createChildSpawner(
       runtime.agentRegistry.delete(trackingAgentId);
     }
   };
+}
+
+function normalizeWorkerDispatchInput(
+  input: unknown,
+  role: import("../agents/types.js").AgentRole,
+): import("../agents/types.js").WorkerInput {
+  const raw = input as Record<string, unknown> | null;
+  if (!raw || typeof raw !== "object") {
+    throw new Error(`Invalid ${role} dispatch: expected an object input`);
+  }
+
+  const rawStageId = raw.stageId ?? raw.stage_id;
+  if (typeof rawStageId !== "string" || rawStageId.trim() === "") {
+    throw new Error(`Invalid ${role} dispatch: missing required stageId`);
+  }
+
+  const rawTask = raw.task as Record<string, unknown> | null;
+  if (!rawTask || typeof rawTask !== "object") {
+    throw new Error(`Invalid ${role} dispatch: missing required task object`);
+  }
+
+  const rawTaskId = rawTask.id ?? rawTask.task_id;
+  if (typeof rawTaskId !== "string" || rawTaskId.trim() === "") {
+    throw new Error(`Invalid ${role} dispatch: task.id is required`);
+  }
+
+  const description = firstNonEmptyString(
+    rawTask.description,
+    rawTask.objective,
+    rawTask.title,
+    rawTask.name,
+    rawTask.instructions,
+  );
+  if (!description) {
+    throw new Error(`Invalid ${role} dispatch: task.description or task.objective is required`);
+  }
+
+  return {
+    stageId: rawStageId.trim(),
+    task: {
+      ...rawTask,
+      id: rawTaskId.trim(),
+      description,
+    } as import("../types.js").Task,
+  };
+}
+
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim() !== "") return value.trim();
+  }
+  return undefined;
 }
 
 /**
