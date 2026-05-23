@@ -329,8 +329,8 @@ const tabItems = computed(() => [
 }
 
 code {
-  color: var(--accent);
-  background: var(--bg);
+  color: var(--accent-2);
+  background: var(--surface-3);
   border-radius: 4px;
   padding: 2px 6px;
   font-family: var(--mono);

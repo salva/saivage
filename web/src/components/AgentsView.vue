@@ -290,8 +290,8 @@ function roleColor(role: string): string {
     case "manager": return "var(--accent)";
     case "coder": return "var(--accent-2)";
     case "researcher": return "var(--warn)";
-    case "data_agent": return "#64d2ff";
-    case "reviewer": return "#d0a2ff";
+    case "data_agent": return "#2e7d9a";
+    case "reviewer": return "var(--purple)";
     case "inspector": return "var(--orange)";
     default: return "var(--text)";
   }
@@ -971,24 +971,24 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
 }
 
 .reasoning-entry {
-  border-color: rgba(157, 132, 255, 0.32);
-  background: rgba(157, 132, 255, 0.08);
+  border-color: rgba(111, 66, 193, 0.25);
+  background: rgba(111, 66, 193, 0.05);
 }
 
 .entry.user .text-entry,
 .chat-msg.user .text-entry {
-  border-color: rgba(61, 214, 140, 0.35);
-  background: rgba(61, 214, 140, 0.08);
+  border-color: rgba(24, 121, 78, 0.25);
+  background: rgba(24, 121, 78, 0.05);
 }
 
 .entry.danger .text-entry {
-  border-color: rgba(239, 107, 100, 0.38);
-  background: rgba(239, 107, 100, 0.08);
+  border-color: rgba(184, 39, 44, 0.25);
+  background: rgba(184, 39, 44, 0.05);
 }
 
 .entry.warn .text-entry {
-  border-color: rgba(224, 169, 68, 0.38);
-  background: rgba(224, 169, 68, 0.08);
+  border-color: rgba(145, 89, 48, 0.25);
+  background: rgba(145, 89, 48, 0.05);
 }
 
 .tool-header {
@@ -1024,7 +1024,7 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
   gap: 8px;
   margin-top: 8px;
   padding-left: 10px;
-  border-left: 2px solid rgba(255, 255, 255, 0.08);
+  border-left: 2px solid rgba(0, 0, 0, 0.08);
 }
 
 .detail-item {
@@ -1085,9 +1085,9 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
 }
 
 .tool-content.error {
-  border-color: rgba(239, 107, 100, 0.36);
-  color: #ffaaa5;
-  background: rgba(239, 107, 100, 0.06);
+  border-color: rgba(184, 39, 44, 0.25);
+  color: var(--danger);
+  background: rgba(184, 39, 44, 0.05);
 }
 
 @media (max-width: 900px) {
@@ -1120,12 +1120,12 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
   padding: 6px 10px;
   border-radius: 999px;
   font-size: 12px;
-  background: var(--panel, #1a1d24);
-  border: 1px solid var(--border, #2a2f3a);
-  color: var(--muted, #98a2b3);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
   align-self: flex-start;
   width: fit-content;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--shadow-2);
 }
 
 .activity-indicator .dot {
@@ -1137,7 +1137,7 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
 }
 
 .activity-indicator.state-in_flight {
-  color: var(--accent, #4ea1ff);
+  color: var(--accent);
 }
 
 .activity-indicator.state-in_flight .dot {
@@ -1145,7 +1145,7 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
 }
 
 .activity-indicator.state-backoff {
-  color: var(--warn, #f5a623);
+  color: var(--warn);
 }
 
 .activity-indicator.state-backoff .dot {
@@ -1153,7 +1153,7 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
 }
 
 .activity-indicator.state-idle {
-  color: var(--muted, #98a2b3);
+  color: var(--text-faint);
   opacity: 0.7;
 }
 

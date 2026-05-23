@@ -1,24 +1,24 @@
 :root {
-  --bg: #1b1b1f;
-  --surface-1: #202127;
-  --surface-2: #2a2b32;
-  --surface-3: #313239;
-  --border: #3c3f44;
-  --border-strong: #505259;
-  --text: #ededef;
-  --text-muted: #a8a8b3;
-  --text-faint: #6a6a71;
-  --accent: #3dd68c;
-  --accent-2: #5eadff;
-  --warn: #e8b84a;
-  --danger: #f06b6b;
-  --purple: #c0a0ff;
-  --orange: #f0975a;
+  --bg: #ffffff;
+  --surface-1: #f6f6f7;
+  --surface-2: #f1f1f2;
+  --surface-3: #ebebef;
+  --border: #e2e2e3;
+  --border-strong: #c2c2c4;
+  --text: #3c3c43;
+  --text-muted: #67676c;
+  --text-faint: #929295;
+  --accent: #18794e;
+  --accent-2: #3451b2;
+  --warn: #915930;
+  --danger: #b8272c;
+  --purple: #6f42c1;
+  --orange: #c75300;
   --radius: 8px;
   --mono: ui-monospace, "Cascadia Code", "Fira Code", Menlo, Monaco, Consolas, monospace;
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.24);
-  --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.32);
-  --shadow-3: 0 12px 32px rgba(0, 0, 0, 0.4);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-2: 0 3px 12px rgba(0, 0, 0, 0.07), 0 1px 4px rgba(0, 0, 0, 0.07);
+  --shadow-3: 0 12px 32px rgba(0, 0, 0, 0.1), 0 2px 6px rgba(0, 0, 0, 0.08);
 }
 
 * {
@@ -58,7 +58,7 @@ pre,
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: var(--border-strong);
   border: 2px solid var(--bg);
   border-radius: 999px;
 }
@@ -151,8 +151,8 @@ pre,
 code {
   padding: 2px 5px;
   border-radius: 4px;
-  background: var(--surface-2);
-  color: var(--accent);
+  background: var(--surface-3);
+  color: var(--accent-2);
   font-size: 0.875em;
 }
 

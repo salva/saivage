@@ -549,8 +549,8 @@ function parseJson(content: string): unknown {
 }
 
 .danger-button {
-  color: #ff8f8f;
-  border-color: rgba(255, 143, 143, 0.25);
+  color: var(--danger);
+  border-color: rgba(184, 39, 44, 0.25);
 }
 
 .notes-list {
@@ -570,7 +570,7 @@ function parseJson(content: string): unknown {
 }
 
 .note-card.urgent {
-  border-color: rgba(255, 173, 90, 0.34);
+  border-color: rgba(145, 89, 48, 0.3);
 }
 
 .note-card.acknowledged {
@@ -605,21 +605,21 @@ function parseJson(content: string): unknown {
 }
 
 .note-chip.urgent {
-  color: #ffb067;
-  border-color: rgba(255, 176, 103, 0.3);
+  color: var(--warn);
+  border-color: rgba(145, 89, 48, 0.25);
 }
 
 .note-chip.ok {
-  color: #8be0a4;
-  border-color: rgba(139, 224, 164, 0.3);
+  color: var(--accent);
+  border-color: rgba(24, 121, 78, 0.25);
 }
 
 .note-content {
   margin: 0;
   padding: 10px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: rgba(0, 0, 0, 0.18);
+  background: var(--surface-1);
   color: var(--text);
   font-family: var(--mono);
   font-size: 12px;
@@ -628,7 +628,7 @@ function parseJson(content: string): unknown {
 }
 
 .console-pill.warn {
-  border-color: rgba(224, 169, 68, 0.45);
+  border-color: rgba(145, 89, 48, 0.3);
   color: var(--warn);
 }
 
