@@ -1,5 +1,6 @@
 {
   "$schema": "https://typedoc.org/schema.json",
+  "skipErrorChecking": true,
   "entryPoints": [
     "src/index.ts",
     "src/types.ts",
