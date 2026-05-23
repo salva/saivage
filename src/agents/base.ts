@@ -49,12 +49,28 @@ export interface ConversationEntry {
     | "tool_result"
     | "tool_error";
   content: string;
-  tool?: string;
-  timestamp?: string;
+  timestamp: string;
+  roundId: string;
+  messageIndex: number;
+  blockIndex: number;
+  toolUseId?: string;
+  toolName?: string;
   provider?: string;
   model?: string;
   modelSpec?: string;
   requestedModelSpec?: string;
+}
+
+/** Runtime activity status surfaced to the dashboard. */
+export interface ActivityStatus {
+  pending_call: {
+    started_at: string;
+    status: "in_flight" | "backoff";
+    attempt: number;
+    reason: string | null;
+    retry_at: string | null;
+  } | null;
+  last_activity_at: string;
 }
 
 export interface LlmResponseSource {
@@ -126,6 +142,13 @@ export class BaseAgent {
   private messageSources: (LlmResponseSource | undefined)[] = [];
   private toolCallNames: string[] = [];
   private invalidFinalResponseCount = 0;
+  private roundCounter = 0;
+  private compactionCounter = 0;
+  private currentRoundId: string | null = null;
+  private pendingRoundId: string | null = null;
+  private messageRoundIds: (string | null)[] = [];
+  private lastActivityAt: string = new Date().toISOString();
+  private pendingCall: NonNullable<ActivityStatus["pending_call"]> | null = null;
   readonly startedAt = new Date().toISOString();
 
   constructor(ctx: AgentContext, config: BaseAgentConfig) {
@@ -328,54 +351,108 @@ export class BaseAgent {
 
   /** Return a serializable snapshot of the conversation for the dashboard. */
   getConversationSnapshot(): ConversationEntry[] {
-    const entries: ConversationEntry[] = [];
-
-    for (const [index, msg] of this.messages.entries()) {
-      const timestamp = this.messageTimestamps[index];
-      const source = msg.role === "assistant" ? this.messageSources[index] : undefined;
-      if (typeof msg.content === "string") {
-        entries.push({ role: msg.role, kind: "text", content: msg.content, timestamp, ...source });
-      } else if (Array.isArray(msg.content)) {
-        const textBlocks = msg.content.filter((block) => block.type === "text" && block.text);
-        const toolUseBlocks = msg.content.filter((block) => block.type === "tool_use");
-        if (msg.role === "assistant" && textBlocks.length === 0 && toolUseBlocks.length > 0) {
-          entries.push({
-            role: "assistant",
-            kind: "activity",
-            content: describeToolUseBlocks(toolUseBlocks),
-            timestamp,
-            ...source,
-          });
-        }
-        for (const block of msg.content) {
-          if (block.type === "text" && block.text) {
-            entries.push({ role: msg.role, kind: "text", content: block.text, timestamp, ...source });
-          } else if (block.type === "tool_use") {
-            const inputStr = typeof block.input === "string"
-              ? block.input
-              : JSON.stringify(block.input, null, 2);
-            entries.push({
-              role: "assistant",
-              kind: "tool_call",
-              tool: block.name ?? "unknown",
-              content: inputStr.length > 2000 ? inputStr.slice(0, 2000) + "\n…(truncated)" : inputStr,
-              timestamp,
-              ...source,
-            });
-          } else if (block.type === "tool_result") {
-            const text = block.content ?? block.text ?? "";
-            entries.push({
-              role: "system",
-              kind: block.is_error ? "tool_error" : "tool_result",
-              tool: block.tool_use_id,
-              content: text.length > 3000 ? text.slice(0, 3000) + "\n…(truncated)" : text,
-              timestamp,
-            });
-          }
+    // Pass 1: per-toolUseId → { name, roundId } from assistant tool_use blocks.
+    const toolMeta = new Map<string, { name: string; roundId: string }>();
+    for (const [idx, msg] of this.messages.entries()) {
+      if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+      const roundId = this.messageRoundIds[idx] ?? `r-msg:${idx}`;
+      for (const block of msg.content) {
+        if (block.type === "tool_use" && block.id) {
+          toolMeta.set(block.id, { name: block.name ?? "unknown", roundId });
         }
       }
     }
-    return [...entries, ...this.diagnostics];
+
+    // Pass 2: walk messages and emit entries.
+    const entries: ConversationEntry[] = [];
+    for (const [idx, msg] of this.messages.entries()) {
+      const timestamp = this.messageTimestamps[idx];
+      const source = msg.role === "assistant" ? this.messageSources[idx] ?? {} : {};
+      const ownRoundId = this.messageRoundIds[idx]
+        ?? (msg.role === "assistant" ? `r-msg:${idx}` : `r-msg:${idx}`);
+
+      if (typeof msg.content === "string") {
+        entries.push({
+          role: msg.role,
+          kind: "text",
+          content: msg.content,
+          timestamp,
+          roundId: ownRoundId,
+          messageIndex: idx,
+          blockIndex: 0,
+          ...source,
+        });
+        continue;
+      }
+      if (!Array.isArray(msg.content)) continue;
+
+      const textBlocks = msg.content.filter((block) => block.type === "text" && block.text);
+      const toolUseBlocks = msg.content.filter((block) => block.type === "tool_use");
+      if (msg.role === "assistant" && textBlocks.length === 0 && toolUseBlocks.length > 0) {
+        entries.push({
+          role: "assistant",
+          kind: "activity",
+          content: describeToolUseBlocks(toolUseBlocks),
+          timestamp,
+          roundId: ownRoundId,
+          messageIndex: idx,
+          blockIndex: -1,
+          ...source,
+        });
+      }
+
+      for (const [bIdx, block] of msg.content.entries()) {
+        if (block.type === "text" && block.text) {
+          entries.push({
+            role: msg.role,
+            kind: "text",
+            content: block.text,
+            timestamp,
+            roundId: ownRoundId,
+            messageIndex: idx,
+            blockIndex: bIdx,
+            ...source,
+          });
+        } else if (block.type === "tool_use") {
+          const inputStr = typeof block.input === "string"
+            ? block.input
+            : JSON.stringify(block.input, null, 2);
+          entries.push({
+            role: "assistant",
+            kind: "tool_call",
+            toolUseId: block.id,
+            toolName: block.name ?? "unknown",
+            content: inputStr.length > 2000 ? inputStr.slice(0, 2000) + "\n…(truncated)" : inputStr,
+            timestamp,
+            roundId: ownRoundId,
+            messageIndex: idx,
+            blockIndex: bIdx,
+            ...source,
+          });
+        } else if (block.type === "tool_result") {
+          const meta = block.tool_use_id ? toolMeta.get(block.tool_use_id) : undefined;
+          const text = block.content ?? block.text ?? "";
+          entries.push({
+            role: "system",
+            kind: block.is_error ? "tool_error" : "tool_result",
+            toolUseId: block.tool_use_id,
+            toolName: meta?.name,
+            content: text.length > 3000 ? text.slice(0, 3000) + "\n…(truncated)" : text,
+            timestamp,
+            roundId: meta?.roundId ?? ownRoundId,
+            messageIndex: idx,
+            blockIndex: bIdx,
+          });
+        }
+      }
+    }
+
+    return [...entries, ...this.diagnostics].sort(
+      (a, b) =>
+        a.timestamp.localeCompare(b.timestamp)
+        || a.messageIndex - b.messageIndex
+        || a.blockIndex - b.blockIndex,
+    );
   }
 
   // ─── Protected ──────────────────────────────────────────────────────────
@@ -386,11 +463,21 @@ export class BaseAgent {
    *  triggers compaction and immediate retry instead of backoff.
    */
   protected async callLLM(): Promise<ChatResponse> {
+    const myRoundId = `r${++this.roundCounter}`;
+    this.pendingRoundId = myRoundId;
+    this.pendingCall = {
+      started_at: new Date().toISOString(),
+      status: "in_flight",
+      attempt: 0,
+      reason: null,
+      retry_at: null,
+    };
+    this.recordActivity();
+
     const tools = this.getToolSchemas();
     const BASE_DELAY_S = 30;
     const BACKOFF_MULT = 1.5;
     const MAX_DELAY_S = 20 * 60; // 20 minutes
-    const MAX_TRANSIENT_RETRIES = 500; // non-throttling errors only
 
     log.info(
       `[agent:${this.role}:${this.id}] Calling LLM with ${tools.length} tools, ${this.messages.length} messages`,
@@ -400,6 +487,8 @@ export class BaseAgent {
 
     for (let attempt = 0; ; attempt++) {
       if (this.cancelled || this.abortSignal?.aborted) {
+        this.pendingCall = null;
+        this.pendingRoundId = null;
         throw new Error("Agent cancelled");
       }
 
@@ -417,8 +506,10 @@ export class BaseAgent {
           this.addDiagnostic(
             "model_recovered",
             `Model service recovered after ${attempt} failed ${attempt === 1 ? "attempt" : "attempts"}.`,
+            { source: responseSource(response) },
           );
         }
+        this.pendingCall = null;
         return response;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -431,6 +522,8 @@ export class BaseAgent {
           if (isMaxCompactionsReached(this.compactionState, this.compactionConfig)) {
             const failure = `Cannot repair malformed model request after ${this.compactionState.compactionCount} compactions (${reason}). Aborting this agent so the parent can handle the failure.`;
             this.addDiagnostic("model_issue", failure);
+            this.pendingCall = null;
+            this.pendingRoundId = null;
             throw new Error(failure);
           }
           this.addDiagnostic(
@@ -447,11 +540,14 @@ export class BaseAgent {
             this.compactionConfig,
             this.compactionState,
           ));
+          this.pendingRoundId = myRoundId;
           continue;
         }
 
         // Non-retryable errors (invalid tool calls, etc.) — propagate immediately
         if (isNonRetryableError(msg)) {
+          this.pendingCall = null;
+          this.pendingRoundId = null;
           throw err;
         }
 
@@ -460,9 +556,11 @@ export class BaseAgent {
         // Only count non-throttling errors toward the retry cap
         if (!throttled) {
           nonThrottleAttempts++;
-          if (nonThrottleAttempts >= MAX_TRANSIENT_RETRIES) {
+          if (nonThrottleAttempts >= this.transientCap) {
             const failure = `LLM call failed after ${nonThrottleAttempts} non-throttling attempts. Last error: ${truncateDiagnostic(msg)}`;
             this.addDiagnostic("model_issue", failure);
+            this.pendingCall = null;
+            this.pendingRoundId = null;
             throw new Error(failure);
           }
         }
@@ -484,7 +582,22 @@ export class BaseAgent {
         // Reset model health so the router retries the primary model
         this.ctx.router.resetModelHealth(this.ctx.modelSpec);
 
+        const retryAt = new Date(Date.now() + delaySec * 1000).toISOString();
+        this.pendingCall = {
+          started_at: this.pendingCall?.started_at ?? new Date().toISOString(),
+          status: "backoff",
+          attempt: attempt + 1,
+          reason: throttled ? "throttled" : "transient",
+          retry_at: retryAt,
+        };
         await this.sleepWithCancellation(delaySec * 1000);
+        this.pendingCall = {
+          started_at: new Date().toISOString(),
+          status: "in_flight",
+          attempt: attempt + 1,
+          reason: null,
+          retry_at: null,
+        };
       }
     }
   }
@@ -571,11 +684,40 @@ export class BaseAgent {
   }
 
   private recordActivity(): void {
+    this.lastActivityAt = new Date().toISOString();
     this.onActivity?.(this.id);
   }
 
-  private addDiagnostic(kind: ConversationEntry["kind"], content: string): void {
-    this.diagnostics.push({ role: "system", kind, content, timestamp: new Date().toISOString() });
+  /** Public lifecycle status for the dashboard. */
+  public getActivityStatus(): ActivityStatus {
+    return {
+      pending_call: this.pendingCall ? { ...this.pendingCall } : null,
+      last_activity_at: this.lastActivityAt,
+    };
+  }
+
+  /** Cap on non-throttling LLM retries before giving up. Overridable in tests. */
+  protected get transientCap(): number {
+    return 500;
+  }
+
+  private addDiagnostic(
+    kind: ConversationEntry["kind"],
+    content: string,
+    opts?: { roundId?: string; source?: LlmResponseSource },
+  ): void {
+    const roundId = opts?.roundId ?? this.pendingRoundId ?? this.currentRoundId ?? "r-pre";
+    const entry: ConversationEntry = {
+      role: "system",
+      kind,
+      content,
+      timestamp: new Date().toISOString(),
+      roundId,
+      messageIndex: -1,
+      blockIndex: this.diagnostics.length,
+      ...(opts?.source ?? {}),
+    };
+    this.diagnostics.push(entry);
     if (this.diagnostics.length > MAX_DIAGNOSTIC_ENTRIES) {
       this.diagnostics.splice(0, this.diagnostics.length - MAX_DIAGNOSTIC_ENTRIES);
     }
@@ -586,12 +728,27 @@ export class BaseAgent {
     this.messages.push(message);
     this.messageTimestamps.push(timestamp);
     this.messageSources.push(source);
+    if (message.role === "assistant") {
+      // Assistant message completes the pending round: claim pending id, then clear pending.
+      const roundId = this.pendingRoundId ?? this.currentRoundId ?? `r-msg:${this.messages.length - 1}`;
+      this.messageRoundIds.push(roundId);
+      this.currentRoundId = roundId;
+      this.pendingRoundId = null;
+    } else {
+      this.messageRoundIds.push(null);
+    }
+    this.recordActivity();
   }
 
   protected replaceMessages(messages: Message[], timestamp = new Date().toISOString()): void {
     this.messages = messages;
     this.messageTimestamps = messages.map(() => timestamp);
     this.messageSources = messages.map(() => undefined);
+    const compactionRound = `r-compacted-${++this.compactionCounter}`;
+    this.messageRoundIds = messages.map(() => compactionRound);
+    this.currentRoundId = null;
+    this.pendingRoundId = null;
+    this.recordActivity();
   }
 
   private async sleepWithCancellation(ms: number): Promise<void> {
@@ -600,6 +757,8 @@ export class BaseAgent {
       await new Promise((resolve) => setTimeout(resolve, Math.min(1_000, deadline - Date.now())));
     }
     if (this.cancelled || this.abortSignal?.aborted) {
+      this.pendingCall = null;
+      this.pendingRoundId = null;
       throw new Error("Agent cancelled");
     }
   }

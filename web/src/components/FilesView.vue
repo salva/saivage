@@ -1,9 +1,41 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { CheckCheck, ChevronLeft, FileJson, FileText, Folder, FolderOpen, RefreshCw, StickyNote, Trash2 } from "lucide-vue-next";
 import JsonHighlight from "./JsonHighlight.vue";
 import FormattedContent from "./FormattedContent.vue";
 import { apiFetch } from "../utils/api";
+
+type FileRoot = "saivage" | "project";
+
+const props = defineProps<{
+  initialRoot?: FileRoot;
+  initialPath?: string;
+}>();
+
+const currentRoot = ref<FileRoot>(props.initialRoot ?? "saivage");
+const rootLabel = computed(() => (currentRoot.value === "project" ? "project" : ".saivage"));
+const projectRoot = ref<string>("");
+const saivageDir = ref<string>("");
+
+function stripRootPrefix(absPath: string, root: FileRoot): string {
+  const prefix = (root === "project" ? projectRoot.value : saivageDir.value).replace(/\/$/, "");
+  if (!prefix) return absPath.replace(/^\//, "");
+  if (absPath === prefix) return "";
+  if (absPath.startsWith(prefix + "/")) return absPath.slice(prefix.length + 1);
+  return absPath.replace(/^\//, "");
+}
+
+async function ensureRoots() {
+  if (projectRoot.value && saivageDir.value) return;
+  try {
+    const res = await apiFetch("/api/config");
+    if (res.ok) {
+      const data = await res.json();
+      projectRoot.value = data.project_root ?? "";
+      saivageDir.value = data.saivage_dir ?? "";
+    }
+  } catch { /* ignore */ }
+}
 
 interface FileEntry {
   name: string;
@@ -36,7 +68,7 @@ async function fetchDir(path: string) {
   loading.value = true;
   fileContent.value = null;
   try {
-    const res = await apiFetch(`/api/files?path=${encodeURIComponent(path)}`);
+    const res = await apiFetch(`/api/files?path=${encodeURIComponent(path)}&root=${currentRoot.value}`);
     if (res.ok) {
       const data = await res.json();
       entries.value = (data.entries ?? []).sort((a: FileEntry, b: FileEntry) => {
@@ -44,7 +76,7 @@ async function fetchDir(path: string) {
         return a.name.localeCompare(b.name);
       });
       currentPath.value = path;
-      if (path === "notes") {
+      if (currentRoot.value === "saivage" && path === "notes") {
         await fetchNotes();
       } else {
         notes.value = [];
@@ -79,11 +111,41 @@ async function openEntry(entry: FileEntry) {
 async function loadFile(path: string) {
   loading.value = true;
   try {
-    const res = await apiFetch(`/api/files/content?path=${encodeURIComponent(path)}`);
+    const res = await apiFetch(`/api/files/content?path=${encodeURIComponent(path)}&root=${currentRoot.value}`);
     if (res.ok) fileContent.value = await res.json();
   } catch { /* ignore */ }
   loading.value = false;
 }
+
+async function openExternalPath(root: FileRoot, path: string) {
+  await ensureRoots();
+  currentRoot.value = root;
+  // If the incoming path is absolute and inside the saivage dir, prefer root=saivage
+  // so the user lands inside the runtime tree rather than browsing it through project/.
+  if (
+    path.startsWith("/") &&
+    saivageDir.value &&
+    (path === saivageDir.value || path.startsWith(saivageDir.value + "/"))
+  ) {
+    currentRoot.value = "saivage";
+  }
+  const rel = stripRootPrefix(path, currentRoot.value);
+  const parentDir = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
+  pathStack.value = parentDir ? ["", parentDir] : [""];
+  await fetchDir(parentDir);
+  await loadFile(rel);
+}
+
+async function switchRoot(root: FileRoot) {
+  if (currentRoot.value === root) return;
+  await ensureRoots();
+  currentRoot.value = root;
+  pathStack.value = [""];
+  fileContent.value = null;
+  await fetchDir("");
+}
+
+defineExpose({ openExternalPath, switchRoot });
 
 async function acknowledgeNote(noteId: string) {
   noteActionBusy.value = `ack:${noteId}`;
@@ -126,7 +188,21 @@ function goToPathIndex(index: number) {
   fetchDir(pathStack.value[pathStack.value.length - 1]);
 }
 
-onMounted(() => fetchDir(""));
+onMounted(async () => {
+  await ensureRoots();
+  if (props.initialPath) {
+    await openExternalPath(props.initialRoot ?? "project", props.initialPath);
+  } else {
+    await fetchDir("");
+  }
+});
+
+watch(
+  () => [props.initialRoot, props.initialPath],
+  async ([root, path]) => {
+    if (path) await openExternalPath((root as FileRoot) ?? "project", path as string);
+  },
+);
 
 function iconFor(entry: FileEntry) {
   if (entry.type === "dir") return Folder;
@@ -147,10 +223,11 @@ function formatModified(ts?: string): string {
 }
 
 const breadcrumbs = computed(() => {
-  if (!currentPath.value) return [{ label: ".saivage", index: 0 }];
+  const root = rootLabel.value;
+  if (!currentPath.value) return [{ label: root, index: 0 }];
   const parts = currentPath.value.split("/");
   return [
-    { label: ".saivage", index: 0 },
+    { label: root, index: 0 },
     ...parts.map((part, index) => ({ label: part, index: index + 1 })),
   ];
 });
@@ -172,6 +249,20 @@ function parseJson(content: string): unknown {
     <aside class="file-tree-panel">
       <div class="panel-heading tree-heading">
         <h2>Artifacts</h2>
+        <div class="root-toggle" role="tablist" aria-label="File root">
+          <button
+            type="button"
+            :aria-pressed="currentRoot === 'saivage'"
+            :class="{ active: currentRoot === 'saivage' }"
+            @click="switchRoot('saivage')"
+          >.saivage</button>
+          <button
+            type="button"
+            :aria-pressed="currentRoot === 'project'"
+            :class="{ active: currentRoot === 'project' }"
+            @click="switchRoot('project')"
+          >project</button>
+        </div>
         <button class="icon-button" @click="fetchDir(currentPath)" title="Refresh directory" aria-label="Refresh directory">
           <RefreshCw :size="15" :class="{ spin: loading }" />
         </button>
@@ -327,6 +418,35 @@ function parseJson(content: string): unknown {
 
 .tree-heading h2 {
   font-size: 13px;
+}
+
+.root-toggle {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: auto;
+  padding: 2px;
+  background: var(--surface-2);
+  border-radius: 6px;
+}
+
+.root-toggle button {
+  font-size: 11px;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-family: var(--mono);
+}
+
+.root-toggle button.active {
+  background: var(--surface-3, var(--bg));
+  color: var(--text);
+}
+
+.root-toggle button:hover:not(.active) {
+  color: var(--text);
 }
 
 .icon-button {
@@ -549,8 +669,8 @@ function parseJson(content: string): unknown {
 }
 
 .danger-button {
-  color: #ff8f8f;
-  border-color: rgba(255, 143, 143, 0.25);
+  color: var(--danger);
+  border-color: var(--entry-danger-border);
 }
 
 .notes-list {
@@ -570,7 +690,7 @@ function parseJson(content: string): unknown {
 }
 
 .note-card.urgent {
-  border-color: rgba(255, 173, 90, 0.34);
+  border-color: var(--entry-warn-border);
 }
 
 .note-card.acknowledged {
@@ -605,21 +725,21 @@ function parseJson(content: string): unknown {
 }
 
 .note-chip.urgent {
-  color: #ffb067;
-  border-color: rgba(255, 176, 103, 0.3);
+  color: var(--warn);
+  border-color: var(--entry-warn-border);
 }
 
 .note-chip.ok {
-  color: #8be0a4;
-  border-color: rgba(139, 224, 164, 0.3);
+  color: var(--accent);
+  border-color: var(--entry-user-border);
 }
 
 .note-content {
   margin: 0;
   padding: 10px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: rgba(0, 0, 0, 0.18);
+  background: var(--surface-1);
   color: var(--text);
   font-family: var(--mono);
   font-size: 12px;
@@ -628,7 +748,7 @@ function parseJson(content: string): unknown {
 }
 
 .console-pill.warn {
-  border-color: rgba(224, 169, 68, 0.45);
+  border-color: var(--entry-warn-border);
   color: var(--warn);
 }
 

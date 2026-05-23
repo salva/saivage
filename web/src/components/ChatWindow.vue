@@ -385,7 +385,7 @@ function shortModelLabel(msg: Message): string {
 }
 
 .connection.unauthorized {
-  color: var(--warning, #d29922);
+  color: var(--warn);
 }
 
 .connection.connecting {
@@ -493,14 +493,14 @@ function shortModelLabel(msg: Message): string {
 }
 
 .msg.user .msg-content {
-  border-color: rgba(106, 166, 255, 0.36);
-  background: rgba(106, 166, 255, 0.14);
+  border-color: var(--entry-user-border);
+  background: var(--entry-user-bg);
 }
 
 .msg.system .msg-content {
-  border-color: rgba(224, 169, 68, 0.35);
-  color: #efc977;
-  background: rgba(224, 169, 68, 0.08);
+  border-color: var(--entry-warn-border);
+  color: var(--warn);
+  background: var(--entry-warn-bg);
   font-size: 12px;
 }
 
@@ -527,14 +527,14 @@ function shortModelLabel(msg: Message): string {
   40% { opacity: 1; transform: scale(1); }
 }
 
-.msg.assistant .msg-content :deep(strong) { color: #eef4fb; font-weight: 650; }
+.msg.assistant .msg-content :deep(strong) { color: var(--text); font-weight: 650; }
 .msg.assistant .msg-content :deep(em) { font-style: italic; }
 .msg.assistant .msg-content :deep(.md-h1) { display: block; font-size: 16px; margin: 8px 0 4px; }
 .msg.assistant .msg-content :deep(.md-h2) { display: block; font-size: 14px; margin: 6px 0 3px; }
 .msg.assistant .msg-content :deep(.md-h3) { display: block; font-size: 13px; margin: 4px 0 2px; }
-.msg.assistant .msg-content :deep(.md-code) { background: var(--bg); color: #9dd2ff; padding: 1px 5px; border-radius: 3px; font-family: var(--mono); font-size: 12px; }
-.msg.assistant .msg-content :deep(.md-code-block) { background: var(--bg); padding: 10px 12px; border-radius: 6px; margin: 6px 0; overflow-x: auto; font-size: 12px; line-height: 1.5; white-space: pre; }
-.msg.assistant .msg-content :deep(.md-code-block code) { font-family: var(--mono); color: var(--text); }
+.msg.assistant .msg-content :deep(.md-code) { background: var(--code-bg); color: var(--code-color); padding: 1px 5px; border-radius: 3px; font-family: var(--mono); font-size: 12px; }
+.msg.assistant .msg-content :deep(.md-code-block) { background: var(--code-block-bg); border: 1px solid var(--code-block-border); padding: 10px 12px; border-radius: 6px; margin: 6px 0; overflow-x: auto; font-size: 12px; line-height: 1.5; white-space: pre; }
+.msg.assistant .msg-content :deep(.md-code-block code) { font-family: var(--mono); color: var(--code-block-text); }
 .msg.assistant .msg-content :deep(.md-bullet) {
   display: grid;
   grid-template-columns: 18px 1fr;
@@ -593,17 +593,17 @@ function shortModelLabel(msg: Message): string {
   gap: 7px;
   height: 38px;
   min-width: 92px;
-  border: 1px solid rgba(41, 199, 138, 0.45);
+  border: 1px solid var(--btn-primary-border);
   border-radius: 7px;
-  color: #e8fff5;
-  background: #16875c;
+  color: var(--btn-primary-text);
+  background: var(--btn-primary-bg);
   cursor: pointer;
   font-size: 13px;
   font-weight: 650;
 }
 
 .send-btn:hover:not(:disabled) {
-  background: #1a9b6a;
+  background: var(--btn-primary-bg-hover);
 }
 
 .send-btn:disabled {
@@ -616,20 +616,20 @@ function shortModelLabel(msg: Message): string {
   gap: 14px;
   margin: 12px 16px 0;
   padding: 14px 16px;
-  border: 1px solid rgba(255, 173, 102, 0.5);
+  border: 1px solid var(--entry-warn-border);
   border-radius: 8px;
-  background: rgba(255, 173, 102, 0.08);
+  background: var(--entry-warn-bg);
   align-items: flex-start;
 }
 .auth-icon {
   flex: 0 0 auto;
-  color: var(--warn, #ffae66);
+  color: var(--warn);
   margin-top: 2px;
 }
 .auth-body { flex: 1 1 auto; min-width: 0; }
 .auth-body strong { display: block; color: var(--text); font-size: 13px; margin-bottom: 4px; }
 .auth-body p { margin: 0 0 10px; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
-.auth-body code { font-family: var(--mono); font-size: 12px; color: #ffd1a8; }
+.auth-body code { font-family: var(--mono); font-size: 12px; color: var(--warn); }
 .auth-form { display: flex; gap: 8px; }
 .auth-form input {
   flex: 1 1 auto;
@@ -644,7 +644,7 @@ function shortModelLabel(msg: Message): string {
   font-size: 12.5px;
   outline: none;
 }
-.auth-form input:focus { border-color: var(--warn, #ffae66); }
+.auth-form input:focus { border-color: var(--warn); }
 .auth-form button { height: 34px; }
 
 .jump-latest {
@@ -661,14 +661,14 @@ function shortModelLabel(msg: Message): string {
   color: var(--text);
   font-size: 12px;
   cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-2);
   z-index: 2;
 }
 .jump-latest:hover { background: var(--surface-3); }
 .jump-latest.unseen {
   border-color: var(--accent);
   color: var(--accent);
-  background: rgba(41, 199, 138, 0.08);
+  background: var(--entry-user-bg);
 }
 .chat-window { position: relative; }
 </style>

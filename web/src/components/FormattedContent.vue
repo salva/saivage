@@ -86,14 +86,14 @@ function firstJsonStart(value: string): number {
   line-height: 1.5;
 }
 
-.formatted-text :deep(strong) { color: #e6edf3; font-weight: 600; }
+.formatted-text :deep(strong) { color: var(--text); font-weight: 600; }
 .formatted-text :deep(em) { font-style: italic; }
 .formatted-text :deep(.md-h1) { display: block; font-size: 16px; margin: 8px 0 4px; }
 .formatted-text :deep(.md-h2) { display: block; font-size: 14px; margin: 6px 0 3px; }
 .formatted-text :deep(.md-h3) { display: block; font-size: 13px; margin: 4px 0 2px; }
-.formatted-text :deep(.md-code) { background: #0d1117; color: #79c0ff; padding: 1px 5px; border-radius: 3px; font-family: monospace; font-size: 12px; }
-.formatted-text :deep(.md-code-block) { background: #0d1117; padding: 10px 12px; border-radius: 6px; margin: 6px 0; overflow-x: auto; font-size: 12px; line-height: 1.5; white-space: pre; }
-.formatted-text :deep(.md-code-block code) { font-family: monospace; color: #c9d1d9; }
+.formatted-text :deep(.md-code) { background: var(--code-bg); color: var(--code-color); padding: 1px 5px; border-radius: 3px; font-family: monospace; font-size: 12px; }
+.formatted-text :deep(.md-code-block) { background: var(--code-block-bg); border: 1px solid var(--code-block-border); padding: 10px 12px; border-radius: 6px; margin: 6px 0; overflow-x: auto; font-size: 12px; line-height: 1.5; white-space: pre; }
+.formatted-text :deep(.md-code-block code) { font-family: monospace; color: var(--code-block-text); }
 .formatted-text :deep(.md-bullet) {
   display: grid;
   grid-template-columns: 18px 1fr;

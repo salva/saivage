@@ -193,22 +193,17 @@ export async function startServer(
   app.get("/api/agents/:agentId/conversation", async (req, reply) => {
     const { agentId } = req.params as { agentId: string };
     const agent = runtime.agentRegistry.get(agentId);
-    if (agent) {
-      return {
-        agent_id: agentId,
-        role: agent.role,
-        started_at: agent.startedAt,
-        message_count: agent.messageCount,
-        entries: agent.getConversationSnapshot(),
-        activity_status: agent.getActivityStatus(),
-      };
-    }
-
-    const completed = runtime.completedAgentRegistry.get(agentId);
-    if (!completed) {
+    if (!agent) {
       return reply.status(404).send({ error: "Agent not found or no longer running" });
     }
-    return completed;
+    return {
+      agent_id: agentId,
+      role: agent.role,
+      started_at: agent.startedAt,
+      message_count: agent.messageCount,
+      entries: agent.getConversationSnapshot(),
+      activity_status: agent.getActivityStatus(),
+    };
   });
 
   // ─── Config API ─────────────────────────────────────────────────────────
@@ -220,6 +215,8 @@ export async function startServer(
     return {
       project_name,
       objectives,
+      project_root: runtime.project.projectRoot,
+      saivage_dir: runtime.project.saivageDir,
       provider: plannerRoute.modelSpec,
       routing: {
         planner: plannerRoute,
@@ -352,22 +349,49 @@ export async function startServer(
 
   const HIDDEN_FILES = new Set(["auth-profiles.json"]);
 
-  app.get("/api/files", async (req, reply) => {
-    const queryPath = (req.query as { path?: string }).path ?? "";
+  /**
+   * Resolve a file-root query parameter to a base directory.
+   * `root=saivage` (default) → .saivage/
+   * `root=project` → project root (whole tree, read-only).
+   */
+  function resolveFileRoot(root: string | undefined): string {
+    return root === "project" ? runtime.project.projectRoot : runtime.project.saivageDir;
+  }
 
-    // Security: reject traversal attempts
-    if (queryPath.includes("..") || queryPath.startsWith("/")) {
+  /**
+   * Hidden-file checks differ per root. For the project root we exclude the
+   * entire .saivage/ subtree from listing (it's served via root=saivage) plus
+   * common heavy/secret directories. For .saivage we just hide auth files.
+   */
+  function isPathHiddenForRoot(root: string, relPath: string): boolean {
+    const last = relPath.split("/").pop() ?? "";
+    if (root === "saivage") return HIDDEN_FILES.has(last);
+    // project: hide vcs/build/cache/secret roots
+    const first = relPath.split("/")[0] ?? "";
+    if (["node_modules", ".git", ".saivage-work", "dist", "build"].includes(first)) return true;
+    return false;
+  }
+
+  app.get("/api/files", async (req, reply) => {
+    const query = req.query as { path?: string; root?: string };
+    const queryPath = query.path ?? "";
+    const baseDir = resolveFileRoot(query.root);
+    const rootKind = query.root === "project" ? "project" : "saivage";
+
+    // Reject relative-traversal attempts; absolute paths are validated via isPathInside below.
+    if (queryPath.includes("..")) {
       return reply.status(400).send({ error: "Invalid path" });
     }
 
-    const saivageDir = runtime.project.saivageDir;
-    const targetDir = queryPath
-      ? resolve(saivageDir, queryPath)
-      : saivageDir;
+    const targetDir = queryPath ? resolve(baseDir, queryPath.replace(/^\//, "")) : baseDir;
 
-    // Ensure resolved path is within .saivage/
-    if (!isPathInside(saivageDir, targetDir)) {
+    if (!isPathInside(baseDir, targetDir)) {
       return reply.status(400).send({ error: "Invalid path" });
+    }
+
+    const relPath = relative(baseDir, targetDir);
+    if (isPathHiddenForRoot(rootKind, relPath)) {
+      return reply.status(403).send({ error: "Access denied" });
     }
 
     if (!existsSync(targetDir)) {
@@ -377,7 +401,7 @@ export async function startServer(
     try {
       const items = readdirSync(targetDir);
       const entries = items
-        .filter((name) => !HIDDEN_FILES.has(name))
+        .filter((name) => !isPathHiddenForRoot(rootKind, relPath ? `${relPath}/${name}` : name))
         .map((name) => {
           const fullPath = join(targetDir, name);
           try {
@@ -399,24 +423,26 @@ export async function startServer(
   });
 
   app.get("/api/files/content", async (req, reply) => {
-    const queryPath = (req.query as { path?: string }).path;
+    const query = req.query as { path?: string; root?: string };
+    const queryPath = query.path;
     if (!queryPath) {
       return reply.status(400).send({ error: "path is required" });
     }
 
-    // Security: reject traversal attempts
-    if (queryPath.includes("..") || queryPath.startsWith("/")) {
+    if (queryPath.includes("..")) {
       return reply.status(400).send({ error: "Invalid path" });
     }
 
-    const saivageDir = runtime.project.saivageDir;
-    const targetFile = resolve(saivageDir, queryPath);
+    const baseDir = resolveFileRoot(query.root);
+    const rootKind = query.root === "project" ? "project" : "saivage";
+    const targetFile = resolve(baseDir, queryPath.replace(/^\//, ""));
 
-    if (!isPathInside(saivageDir, targetFile)) {
+    if (!isPathInside(baseDir, targetFile)) {
       return reply.status(400).send({ error: "Invalid path" });
     }
 
-    if (HIDDEN_FILES.has(queryPath.split("/").pop() ?? "")) {
+    const relPath = relative(baseDir, targetFile);
+    if (isPathHiddenForRoot(rootKind, relPath)) {
       return reply.status(403).send({ error: "Access denied" });
     }
 
@@ -426,15 +452,18 @@ export async function startServer(
 
     try {
       const st = statSync(targetFile);
+      if (st.isDirectory()) {
+        return reply.status(400).send({ error: "Path is a directory" });
+      }
       // Limit to 1MB for safety
       if (st.size > 1_048_576) {
         const partial = readFileSync(targetFile, "utf-8").slice(0, 1_048_576);
-        return { path: queryPath, content: partial, size: st.size, truncated: true };
+        return { path: relPath, content: partial, size: st.size, truncated: true };
       }
       const content = readFileSync(targetFile, "utf-8");
-      const ext = queryPath.split(".").pop()?.toLowerCase();
+      const ext = relPath.split(".").pop()?.toLowerCase();
       const type = ext === "json" ? "json" : ext === "md" ? "md" : "txt";
-      return { path: queryPath, content, size: st.size, type, truncated: false };
+      return { path: relPath, content, size: st.size, type, truncated: false };
     } catch {
       return reply.status(500).send({ error: "Read failed" });
     }

@@ -115,20 +115,20 @@ const tokens = computed<Token[]>(() => {
   font-family: "SF Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
   font-size: 12px;
   line-height: 1.6;
-  background: #0d1117;
-  border-top: 1px solid #21262d;
+  background: var(--code-block-bg);
+  border-top: 1px solid var(--code-block-border);
   white-space: pre-wrap;
   word-break: break-word;
   overflow-y: auto;
   tab-size: 2;
 }
 
-.jt-key { color: #7ee787; }
-.jt-string { color: #a5d6ff; }
-.jt-number { color: #79c0ff; }
-.jt-boolean { color: #ff7b72; }
-.jt-null { color: #ff7b72; font-style: italic; }
-.jt-brace, .jt-bracket { color: #8b949e; }
-.jt-colon { color: #8b949e; }
-.jt-comma { color: #8b949e; }
+.jt-key { color: var(--syn-key); }
+.jt-string { color: var(--syn-string); }
+.jt-number { color: var(--syn-number); }
+.jt-boolean { color: var(--syn-boolean); }
+.jt-null { color: var(--syn-null); font-style: italic; }
+.jt-brace, .jt-bracket { color: var(--syn-punctuation); }
+.jt-colon { color: var(--syn-punctuation); }
+.jt-comma { color: var(--syn-punctuation); }
 </style>
