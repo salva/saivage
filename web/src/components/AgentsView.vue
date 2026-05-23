@@ -1,8 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
-import { Bot, Clock3, MessageSquare, Wrench } from "lucide-vue-next";
+import { Bot, Clock3, MessageSquare } from "lucide-vue-next";
 import FormattedContent from "./FormattedContent.vue";
 import { ApiError, apiFetch } from "../utils/api";
+import { formatToolPair, type FormattedToolPair, type InlinePart } from "../utils/toolFormatters";
+
+const emit = defineEmits<{
+  (e: "open-file", payload: { path: string; root: "project" | "saivage" }): void;
+}>();
 
 interface AgentState {
   agent_type: string;
@@ -48,27 +53,20 @@ interface ConversationEntry {
     | "model_issue"
     | "model_repair"
     | "model_recovered"
-    | "agent_result"
     | "tool_call"
     | "tool_result"
     | "tool_error";
   content: string;
-  tool?: string;
-  timestamp?: string;
+  timestamp: string;
+  roundId: string;
+  messageIndex: number;
+  blockIndex: number;
+  toolUseId?: string;
+  toolName?: string;
   provider?: string;
   model?: string;
   modelSpec?: string;
   requestedModelSpec?: string;
-}
-
-interface AgentConversation {
-  agent_id: string;
-  role: string;
-  started_at?: string;
-  message_count: number;
-  entries: ConversationEntry[];
-  activity_status?: ActivityStatus;
-  finished_at?: string;
 }
 
 interface ActivityStatus {
@@ -82,21 +80,45 @@ interface ActivityStatus {
   last_activity_at: string;
 }
 
-interface StepBlock {
-  kind: "step";
-  id: string;
-  lead: ConversationEntry;
-  toolCalls: ConversationEntry[];
-  toolResults: ConversationEntry[];
+interface AgentConversation {
+  agent_id: string;
+  role: string;
+  started_at?: string;
+  message_count: number;
+  entries: ConversationEntry[];
+  activity_status: ActivityStatus | null;
+  finished_at?: string;
 }
 
-interface SingleBlock {
-  kind: "single";
+interface Round {
   id: string;
-  entry: ConversationEntry;
+  startedAt: string;
+  hasAssistant: boolean;
+  reasoning: ConversationEntry[];
+  toolPairs: ToolPair[];
+  context: ConversationEntry[];
+  diagnostics: ConversationEntry[];
+  modelSpec?: string;
+  requestedModelSpec?: string;
 }
 
-type ConversationBlock = StepBlock | SingleBlock;
+interface ToolPair {
+  toolUseId: string;
+  toolName: string;
+  call?: ConversationEntry;
+  result?: ConversationEntry;
+  status: "pending" | "ok" | "error" | "orphan" | "missing";
+}
+
+interface TimelineItem {
+  kind: "round" | "diagnostic" | "context" | "compacted";
+  id: string;
+  timestamp: string;
+  round?: Round;
+  diagnostic?: ConversationEntry;
+  context?: Round;
+  compacted?: ConversationEntry[];
+}
 
 type SelectionKind = "agent" | "chat";
 
@@ -155,7 +177,20 @@ async function loadAgentConversation(agentId: string) {
           scrollToBottom();
         }
       }
-    } catch { /* ignore */ }
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        if (selectedAgent.value && selectedId.value === agentId) {
+          const last = selectedAgent.value.entries.at(-1)?.timestamp
+            ?? new Date().toISOString();
+          selectedAgent.value = {
+            ...selectedAgent.value,
+            finished_at: selectedAgent.value.finished_at ?? last,
+            activity_status: null,
+          };
+        }
+        stopAgentPolling();
+      }
+    }
     return;
   }
 
@@ -172,37 +207,21 @@ async function loadAgentConversation(agentId: string) {
       scrollToBottom();
     }
   } catch (err) {
-    if (err instanceof ApiError && err.status === 404) markAgentFinished(agentId);
+    if (err instanceof ApiError && err.status === 404) {
+      if (selectedAgent.value && selectedId.value === agentId) {
+        const last = selectedAgent.value.entries.at(-1)?.timestamp
+          ?? new Date().toISOString();
+        selectedAgent.value = {
+          ...selectedAgent.value,
+          finished_at: selectedAgent.value.finished_at ?? last,
+          activity_status: null,
+        };
+      }
+      stopAgentPolling();
+    }
   }
   loading.value = false;
   startAgentPolling(agentId);
-}
-
-function markAgentFinished(agentId: string) {
-  if (!selectedAgent.value || selectedId.value !== agentId) return;
-  const finishedAt = new Date().toISOString();
-  const entries = selectedAgent.value.entries.some((entry) => entry.kind === "agent_result")
-    ? selectedAgent.value.entries
-    : [
-        ...selectedAgent.value.entries,
-        {
-          role: "system" as const,
-          kind: "agent_result" as const,
-          timestamp: finishedAt,
-          content:
-            "Conversation finished: the agent is no longer running. The returned payload has already been handed back to the parent conversation.",
-        },
-      ];
-
-  selectedAgent.value = {
-    ...selectedAgent.value,
-    entries,
-    finished_at: selectedAgent.value.finished_at ?? finishedAt,
-    activity_status: selectedAgent.value.activity_status
-      ? { ...selectedAgent.value.activity_status, pending_call: null, last_activity_at: finishedAt }
-      : undefined,
-  };
-  stopAgentPolling();
 }
 
 async function loadSession(sessionId: string) {
@@ -251,6 +270,10 @@ function toggleDetails(id: string) {
   expandedDetails.value = next;
 }
 
+function detailsOpen(id: string): boolean {
+  return expandedDetails.value.has(id);
+}
+
 onMounted(() => {
   fetchData();
   pollTimer = setInterval(fetchData, 5000);
@@ -297,31 +320,6 @@ function roleColor(role: string): string {
   }
 }
 
-function kindLabel(kind: string): string {
-  switch (kind) {
-    case "tool_call": return "Tool Call";
-    case "tool_result": return "Result";
-    case "tool_error": return "Error";
-    case "activity": return "Action";
-    case "model_issue": return "Model Issue";
-    case "model_repair": return "Model Repair";
-    case "model_recovered": return "Model Recovered";
-    case "agent_result": return "Finished";
-    default: return "Message";
-  }
-}
-
-function entryRoleLabel(entry: ConversationEntry): string {
-  if (entry.kind !== "text") return kindLabel(entry.kind);
-  if (entry.role === "assistant") return "Reasoning";
-  if (entry.role === "user") return "Context";
-  return "System";
-}
-
-function isTextLikeEntry(entry: ConversationEntry): boolean {
-  return ["text", "activity", "model_issue", "model_repair", "model_recovered", "agent_result"].includes(entry.kind);
-}
-
 function parseContent(content: string): string {
   if (content.startsWith("{")) {
     try {
@@ -332,12 +330,8 @@ function parseContent(content: string): string {
   return content;
 }
 
-function formatTime(ts: string): string {
+function formatHms(ts: string): string {
   return new Date(ts).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-
-function entryTime(entry: ConversationEntry): string {
-  return entry.timestamp ? timeAgo(entry.timestamp) : "";
 }
 
 function modelLabel(source: { provider?: string; model?: string; modelSpec?: string }): string {
@@ -348,81 +342,47 @@ function truncate(value: string, max: number): string {
   return value.length <= max ? value : value.slice(0, max) + "...";
 }
 
-function entryTone(entry: ConversationEntry): string {
-  if (entry.kind === "tool_error" || entry.kind === "model_issue") return "danger";
-  if (entry.kind === "model_repair") return "warn";
-  if (entry.kind === "agent_result" && /returned (failure|abort|escalation) result/i.test(entry.content)) return "warn";
-  if (entry.kind === "agent_result") return "ok";
-  if (entry.kind === "model_recovered" || entry.kind === "tool_result") return "ok";
-  if (entry.kind === "tool_call" || entry.kind === "activity") return "accent";
-  return entry.role;
+function diagnosticTone(kind: ConversationEntry["kind"]): "ok" | "warn" | "danger" | "neutral" {
+  if (kind === "model_recovered") return "ok";
+  if (kind === "model_repair") return "warn";
+  if (kind === "model_issue") return "danger";
+  return "neutral";
 }
 
-function isAssistantLead(entry: ConversationEntry): boolean {
-  return (entry.kind === "text" && entry.role === "assistant") || entry.kind === "activity";
-}
-
-const groupedAgentEntries = computed<ConversationBlock[]>(() => {
-  const entries = selectedAgent.value?.entries ?? [];
-  const blocks: ConversationBlock[] = [];
-
-  for (let index = 0; index < entries.length;) {
-    const entry = entries[index];
-    if (isAssistantLead(entry)) {
-      const toolCalls: ConversationEntry[] = [];
-      const toolResults: ConversationEntry[] = [];
-      let nextIndex = index + 1;
-
-      while (nextIndex < entries.length) {
-        const next = entries[nextIndex];
-        if (next.kind === "tool_call") {
-          toolCalls.push(next);
-          nextIndex += 1;
-          continue;
-        }
-        if (next.kind === "tool_result" || next.kind === "tool_error") {
-          toolResults.push(next);
-          nextIndex += 1;
-          continue;
-        }
-        break;
-      }
-
-      blocks.push({
-        kind: "step",
-        id: `step-${index}`,
-        lead: entry,
-        toolCalls,
-        toolResults,
-      });
-      index = nextIndex;
-      continue;
-    }
-
-    blocks.push({
-      kind: "single",
-      id: `entry-${index}`,
-      entry,
-    });
-    index += 1;
+function diagnosticLabel(kind: ConversationEntry["kind"]): string {
+  switch (kind) {
+    case "model_issue": return "Model Issue";
+    case "model_repair": return "Model Repair";
+    case "model_recovered": return "Model Recovered";
+    default: return kind;
   }
-
-  return blocks;
-});
-
-function hasDetails(block: StepBlock): boolean {
-  return block.toolCalls.length > 0 || block.toolResults.length > 0;
 }
 
-function detailSummary(block: StepBlock): string {
-  const parts: string[] = [];
-  if (block.toolCalls.length > 0) parts.push(`${block.toolCalls.length} call${block.toolCalls.length === 1 ? "" : "s"}`);
-  if (block.toolResults.length > 0) parts.push(`${block.toolResults.length} result${block.toolResults.length === 1 ? "" : "s"}`);
-  return parts.join(" · ") || "No tool details";
+function summarizeCallInput(entry: ConversationEntry): string {
+  const first = entry.content.split("\n")[0] ?? "";
+  return truncate(first, 120);
 }
 
-function detailsOpen(id: string): boolean {
-  return expandedDetails.value.has(id);
+function summarizeResult(entry: ConversationEntry): string {
+  const first = entry.content.split("\n")[0] ?? "";
+  return truncate(first, 120);
+}
+
+function formatPair(pair: ToolPair): FormattedToolPair {
+  return formatToolPair(
+    pair.toolName,
+    pair.call?.content,
+    pair.result?.content,
+    pair.status === "error",
+  );
+}
+
+function onPartClick(part: InlinePart) {
+  if (part.kind === "file") {
+    emit("open-file", { path: part.path, root: part.root ?? "project" });
+  } else if (part.kind === "url") {
+    window.open(part.url, "_blank", "noopener,noreferrer");
+  }
 }
 
 function durationSince(ts: string): string {
@@ -443,30 +403,164 @@ function durationUntil(ts: string): string {
   return `${mins}m ${secs % 60}s`;
 }
 
-const activityIndicator = computed<{
-  state: "in_flight" | "backoff";
-  primary: string;
-  detail?: string;
-} | null>(() => {
-  const status = selectedAgent.value?.activity_status;
-  if (!status) return null;
-  if (status.pending_call) {
-    const pc = status.pending_call;
-    const elapsedStr = durationSince(pc.started_at);
-    if (pc.status === "in_flight") {
-      const attemptLabel = pc.attempt > 1 ? ` (attempt ${pc.attempt})` : "";
-      return {
-        state: "in_flight",
-        primary: `Waiting for model… ${elapsedStr}${attemptLabel}`,
-      };
+function roundSortKey(id: string): [number, number, string] {
+  // tier 0: r-pre. tier 1: r-msg:N. tier 2: r${k}. tier 3: r-compacted-${n}.
+  if (id === "r-pre") return [0, 0, id];
+  const msg = /^r-msg:(\d+)$/.exec(id);
+  if (msg) return [1, Number(msg[1]), id];
+  const compacted = /^r-compacted-(\d+)$/.exec(id);
+  if (compacted) return [3, Number(compacted[1]), id];
+  const round = /^r(\d+)$/.exec(id);
+  if (round) return [2, Number(round[1]), id];
+  return [4, 0, id];
+}
+
+function roundsToTimeline(
+  entries: ConversationEntry[],
+  pendingRoundId: string | null,
+): TimelineItem[] {
+  const buckets = new Map<string, ConversationEntry[]>();
+  for (const entry of entries) {
+    const list = buckets.get(entry.roundId);
+    if (list) list.push(entry);
+    else buckets.set(entry.roundId, [entry]);
+  }
+
+  const items: TimelineItem[] = [];
+  for (const [id, bucket] of buckets) {
+    const earliest = bucket.reduce(
+      (acc, e) => (acc === "" || e.timestamp < acc ? e.timestamp : acc),
+      "",
+    );
+    if (id === "r-pre" || id.startsWith("r-compacted-")) {
+      items.push({ kind: "compacted", id, timestamp: earliest, compacted: bucket });
+      continue;
     }
-    const retry = pc.retry_at ? ` — retrying in ${durationUntil(pc.retry_at)}` : "";
-    const reason = pc.reason === "throttled" ? "Throttled by provider" : "Transient model error";
-    return {
-      state: "backoff",
-      primary: `${reason}${retry}`,
-      detail: `attempt ${pc.attempt}`,
+
+    const reasoning: ConversationEntry[] = [];
+    const userText: ConversationEntry[] = [];
+    const diagnostics: ConversationEntry[] = [];
+    const callMap = new Map<string, ToolPair>();
+    const orphanPairs: ToolPair[] = [];
+
+    for (const entry of bucket) {
+      if (
+        entry.kind === "model_issue"
+        || entry.kind === "model_repair"
+        || entry.kind === "model_recovered"
+      ) {
+        diagnostics.push(entry);
+      } else if (entry.kind === "tool_call") {
+        const key = entry.toolUseId ?? `${entry.messageIndex}:${entry.blockIndex}`;
+        const existing = callMap.get(key);
+        if (existing) {
+          existing.call = entry;
+          existing.toolName = entry.toolName ?? existing.toolName;
+        } else {
+          callMap.set(key, {
+            toolUseId: key,
+            toolName: entry.toolName ?? "unknown",
+            call: entry,
+            status: "missing",
+          });
+        }
+      } else if (entry.kind === "tool_result" || entry.kind === "tool_error") {
+        const key = entry.toolUseId ?? `${entry.messageIndex}:${entry.blockIndex}`;
+        const existing = callMap.get(key);
+        const status: ToolPair["status"] = entry.kind === "tool_error" ? "error" : "ok";
+        if (existing) {
+          existing.result = entry;
+          existing.toolName = existing.toolName ?? entry.toolName ?? "unknown";
+          existing.status = status;
+        } else {
+          orphanPairs.push({
+            toolUseId: key,
+            toolName: entry.toolName ?? "unknown",
+            result: entry,
+            status: "orphan",
+          });
+        }
+      } else if (entry.kind === "activity" || (entry.kind === "text" && entry.role === "assistant")) {
+        reasoning.push(entry);
+      } else if (entry.role === "user" && entry.kind === "text") {
+        userText.push(entry);
+      } else if (entry.role === "system" && entry.kind === "text") {
+        userText.push(entry);
+      }
+    }
+
+    const toolPairs: ToolPair[] = [...callMap.values(), ...orphanPairs];
+    const isCurrentRound = pendingRoundId !== null && pendingRoundId === id;
+    for (const pair of toolPairs) {
+      if (!pair.result && pair.call && isCurrentRound) pair.status = "pending";
+    }
+
+    const modelEntry = reasoning.find((e) => e.modelSpec) ?? bucket.find((e) => e.modelSpec);
+    const round: Round = {
+      id,
+      startedAt: earliest,
+      hasAssistant: reasoning.length > 0,
+      reasoning,
+      toolPairs,
+      context: userText,
+      diagnostics,
+      modelSpec: modelEntry?.modelSpec,
+      requestedModelSpec: modelEntry?.requestedModelSpec,
     };
+
+    if (reasoning.length > 0) {
+      items.push({ kind: "round", id, timestamp: earliest, round });
+    } else if (diagnostics.length > 0 && userText.length === 0 && toolPairs.length === 0) {
+      for (const d of diagnostics) {
+        items.push({
+          kind: "diagnostic",
+          id: `${d.timestamp}:${d.kind}:${id}`,
+          timestamp: d.timestamp,
+          diagnostic: d,
+        });
+      }
+    } else {
+      items.push({ kind: "context", id, timestamp: earliest, context: round });
+    }
+  }
+
+  items.sort((a, b) => {
+    if (a.timestamp !== b.timestamp) return a.timestamp.localeCompare(b.timestamp);
+    const [at, av] = roundSortKey(a.id);
+    const [bt, bv] = roundSortKey(b.id);
+    if (at !== bt) return at - bt;
+    return av - bv;
+  });
+
+  return items;
+}
+
+const timeline = computed<TimelineItem[]>(() => {
+  const entries = selectedAgent.value?.entries ?? [];
+  const pending = selectedAgent.value?.activity_status?.pending_call ?? null;
+  // The pending round id is not exposed by the server; we infer it as the
+  // most-recent r${k} round that has no tool result for at least one call,
+  // OR the latest r${k} when no assistant entry exists yet for that round.
+  let pendingRoundId: string | null = null;
+  if (pending) {
+    let bestK = -1;
+    for (const e of entries) {
+      const m = /^r(\d+)$/.exec(e.roundId);
+      if (m) {
+        const k = Number(m[1]);
+        if (k > bestK) { bestK = k; pendingRoundId = e.roundId; }
+      }
+    }
+  }
+  return roundsToTimeline(entries, pendingRoundId);
+});
+
+// Ambient model for the whole thread: the modelSpec of the first round that
+// has one. Per-round headers only render "via X" when a round's spec differs
+// from this ambient value, so we don't repeat the model on every turn.
+const defaultModelSpec = computed<string | null>(() => {
+  for (const item of timeline.value) {
+    if (item.kind === "round" && item.round?.modelSpec) return item.round.modelSpec;
   }
   return null;
 });
@@ -541,111 +635,207 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
       </div>
 
       <template v-if="selectedAgent && selectionKind === 'agent' && !loading">
-        <div class="thread-header">
-          <span class="role-badge" :style="{ borderColor: roleColor(selectedAgent.role), color: roleColor(selectedAgent.role) }">{{ selectedAgent.role }}</span>
-          <code>{{ selectedAgent.agent_id }}</code>
-          <span>{{ selectedAgent.message_count }} messages · {{ selectedAgent.entries.length }} entries</span>
+        <div class="thread-header agent-thread-header">
+          <strong class="agent-thread-role" :style="{ color: roleColor(selectedAgent.role) }">{{ selectedAgent.role }}</strong>
+          <code class="agent-thread-id">{{ selectedAgent.agent_id }}</code>
+          <em v-if="defaultModelSpec" class="agent-thread-model" :title="defaultModelSpec">{{ defaultModelSpec }}</em>
           <span v-if="selectedAgent.started_at" class="live-time">{{ elapsed(selectedAgent.started_at) }}</span>
           <span v-if="selectedAgent.finished_at" class="live-pill finished"><span></span>finished</span>
           <span v-else class="live-pill"><span></span>live</span>
         </div>
 
-        <div class="thread-body" ref="threadBody">
-          <article
-            v-for="block in groupedAgentEntries"
-            :key="block.id"
-            class="entry"
-            :class="block.kind === 'step' ? entryTone(block.lead) : entryTone(block.entry)"
-          >
-            <template v-if="block.kind === 'step'">
-              <div class="entry-label">
-                <span>{{ entryRoleLabel(block.lead) }}</span>
-                <em v-if="modelLabel(block.lead)" class="model-chip">{{ modelLabel(block.lead) }}</em>
-                <time v-if="block.lead.timestamp" :title="new Date(block.lead.timestamp).toLocaleString()">{{ entryTime(block.lead) }}</time>
-              </div>
-              <div class="entry-content text-entry reasoning-entry">
-                <FormattedContent :content="block.lead.content" max-height="460px" />
-              </div>
-              <div v-if="hasDetails(block)" class="step-tools">
-                <button class="tool-header step-summary" @click="toggleDetails(block.id)">
-                  <Wrench :size="14" />
-                  <strong>{{ detailSummary(block) }}</strong>
-                  <span>{{ detailsOpen(block.id) ? 'hide mechanics' : 'show mechanics' }}</span>
-                </button>
-                <div v-if="detailsOpen(block.id)" class="step-details">
-                  <template v-for="(entry, idx) in block.toolCalls" :key="`${block.id}-call-${idx}`">
-                    <button class="tool-header detail-item">
-                      <Wrench :size="14" />
-                      <strong>{{ entry.tool }}</strong>
-                      <em v-if="modelLabel(entry)" class="model-chip">{{ modelLabel(entry) }}</em>
-                      <time v-if="entry.timestamp">{{ entryTime(entry) }}</time>
-                    </button>
-                    <div class="entry-content tool-content detail-body">
-                      <FormattedContent :content="entry.content" max-height="320px" />
-                    </div>
-                  </template>
+        <div class="thread-body agent-thread-body" ref="threadBody">
+          <template v-for="item in timeline" :key="item.id">
+            <!-- ROUND -->
+            <section
+              v-if="item.kind === 'round' && item.round"
+              class="agent-round"
+              :data-round-id="item.round.id"
+            >
+              <div
+                v-if="item.round.modelSpec && item.round.modelSpec !== defaultModelSpec"
+                class="agent-round-via"
+                :title="item.round.requestedModelSpec ? `requested: ${item.round.requestedModelSpec}` : item.round.modelSpec"
+              >via {{ item.round.modelSpec }}</div>
 
-                  <template v-for="(entry, idx) in block.toolResults" :key="`${block.id}-result-${idx}`">
-                    <button class="tool-header result detail-item" :class="{ error: entry.kind === 'tool_error' }">
-                      <strong>{{ kindLabel(entry.kind) }}</strong>
-                      <time v-if="entry.timestamp">{{ entryTime(entry) }}</time>
-                      <p>{{ truncate(entry.content.split('\n')[0], 100) }}</p>
-                    </button>
-                    <div class="entry-content tool-content detail-body" :class="{ error: entry.kind === 'tool_error' }">
-                      <FormattedContent :content="entry.content" max-height="320px" />
+              <div
+                v-for="entry in item.round.reasoning"
+                :key="`${item.round.id}-reasoning-${entry.messageIndex}-${entry.blockIndex}`"
+                class="agent-round-reasoning"
+                :class="{ 'agent-activity-lead': entry.kind === 'activity' }"
+              >
+                <FormattedContent :content="entry.content" max-height="460px" />
+              </div>
+
+              <div
+                v-if="item.round.toolPairs.length > 0"
+                class="agent-tool-list"
+              >
+                <template v-for="pair in item.round.toolPairs" :key="`${item.round.id}-tool-${pair.toolUseId}`">
+                  <button
+                    class="agent-tool-row"
+                    :data-status="pair.status"
+                    :data-open="detailsOpen(pair.toolUseId) ? 'true' : 'false'"
+                    :aria-expanded="detailsOpen(pair.toolUseId)"
+                    :aria-label="`tool ${pair.toolName} ${pair.status}`"
+                    :title="pair.call?.timestamp ? new Date(pair.call.timestamp).toLocaleString() : undefined"
+                    @click="toggleDetails(pair.toolUseId)"
+                  >
+                    <span class="chevron" aria-hidden="true">›</span>
+                    <strong>{{ formatPair(pair).label }}</strong>
+                    <span class="agent-tool-summary">
+                      <template v-for="(part, idx) in formatPair(pair).summary" :key="`s${idx}`">
+                        <a
+                          v-if="part.kind === 'file'"
+                          class="tool-link tool-file"
+                          :href="`#files:${part.root ?? 'project'}:${part.path}`"
+                          @click.stop.prevent="onPartClick(part)"
+                        >{{ part.path }}</a>
+                        <a
+                          v-else-if="part.kind === 'url'"
+                          class="tool-link tool-url"
+                          :href="part.url"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          @click.stop
+                        >{{ part.url }}</a>
+                        <code v-else-if="part.kind === 'code'" class="tool-code">{{ part.value }}</code>
+                        <span v-else :data-tone="part.tone || undefined">{{ part.value }}</span>
+                      </template>
+                    </span>
+                    <span class="agent-tool-result" :data-tone="formatPair(pair).resultTone || undefined">
+                      <template v-if="pair.status === 'pending'">…</template>
+                      <template v-else-if="pair.status === 'missing'">no result</template>
+                      <template v-else>
+                        <template v-for="(part, idx) in formatPair(pair).result" :key="`r${idx}`">
+                          <a
+                            v-if="part.kind === 'file'"
+                            class="tool-link tool-file"
+                            :href="`#files:${part.root ?? 'project'}:${part.path}`"
+                            @click.stop.prevent="onPartClick(part)"
+                          >{{ part.path }}</a>
+                          <a
+                            v-else-if="part.kind === 'url'"
+                            class="tool-link tool-url"
+                            :href="part.url"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            @click.stop
+                          >{{ part.url }}</a>
+                          <code v-else-if="part.kind === 'code'" class="tool-code">{{ part.value }}</code>
+                          <span v-else :data-tone="part.tone || undefined">{{ part.value }}</span>
+                        </template>
+                      </template>
+                    </span>
+                  </button>
+                  <div v-if="detailsOpen(pair.toolUseId)" class="agent-tool-detail">
+                    <div v-if="pair.call" class="agent-tool-detail-block">
+                      <span class="agent-tool-detail-label">input</span>
+                      <FormattedContent :content="pair.call.content" max-height="320px" />
                     </div>
-                  </template>
+                    <div v-if="pair.result" class="agent-tool-detail-block" :class="{ error: pair.status === 'error' }">
+                      <span class="agent-tool-detail-label">{{ pair.status === 'error' ? 'error' : 'result' }}</span>
+                      <FormattedContent :content="pair.result.content" max-height="320px" />
+                    </div>
+                  </div>
+                </template>
+              </div>
+
+              <div
+                v-for="d in item.round.diagnostics"
+                :key="`${item.round.id}-diag-${d.timestamp}-${d.blockIndex}`"
+                class="agent-diagnostic-row"
+                :data-tone="diagnosticTone(d.kind)"
+                :title="new Date(d.timestamp).toLocaleString()"
+              >
+                <span class="agent-diagnostic-label">{{ diagnosticLabel(d.kind) }}</span>
+                <FormattedContent :content="d.content" max-height="200px" />
+              </div>
+
+              <div
+                v-for="c in item.round.context"
+                :key="`${item.round.id}-ctx-${c.messageIndex}-${c.blockIndex}`"
+                class="agent-context-block"
+              >
+                <FormattedContent :content="c.content" max-height="320px" />
+              </div>
+            </section>
+
+            <!-- STANDALONE DIAGNOSTIC -->
+            <div
+              v-else-if="item.kind === 'diagnostic' && item.diagnostic"
+              class="agent-diagnostic-row standalone"
+              :data-tone="diagnosticTone(item.diagnostic.kind)"
+              :title="new Date(item.diagnostic.timestamp).toLocaleString()"
+            >
+              <span class="agent-diagnostic-label">{{ diagnosticLabel(item.diagnostic.kind) }}</span>
+              <FormattedContent :content="item.diagnostic.content" max-height="200px" />
+            </div>
+
+            <!-- STANDALONE CONTEXT (user-role text outside a round) -->
+            <section
+              v-else-if="item.kind === 'context' && item.context"
+              class="agent-context-standalone"
+              :data-round-id="item.context.id"
+            >
+              <div
+                v-for="c in item.context.context"
+                :key="`${item.context.id}-ctx-${c.messageIndex}-${c.blockIndex}`"
+                class="agent-context-block"
+                :title="new Date(c.timestamp).toLocaleString()"
+              >
+                <FormattedContent :content="c.content" max-height="320px" />
+              </div>
+            </section>
+
+            <!-- COMPACTED CLUSTER -->
+            <section
+              v-else-if="item.kind === 'compacted' && item.compacted"
+              class="agent-compacted-cluster"
+            >
+              <button
+                class="agent-compacted-summary"
+                :aria-expanded="detailsOpen(item.id)"
+                @click="toggleDetails(item.id)"
+              >
+                <span class="chevron" aria-hidden="true">›</span>
+                <span>— compacted, {{ item.compacted.length }} diagnostic{{ item.compacted.length === 1 ? '' : 's' }} re-keyed —</span>
+              </button>
+              <div v-if="detailsOpen(item.id)" class="agent-compacted-body">
+                <div
+                  v-for="(c, idx) in item.compacted"
+                  :key="`${item.id}-${idx}`"
+                  class="agent-diagnostic-row"
+                  :data-tone="diagnosticTone(c.kind)"
+                  :title="new Date(c.timestamp).toLocaleString()"
+                >
+                  <span class="agent-diagnostic-label">{{ diagnosticLabel(c.kind) }}</span>
+                  <FormattedContent :content="c.content" max-height="200px" />
                 </div>
               </div>
-            </template>
+            </section>
+          </template>
 
-            <template v-else-if="isTextLikeEntry(block.entry)">
-              <div class="entry-label">
-                <span>{{ entryRoleLabel(block.entry) }}</span>
-                <em v-if="modelLabel(block.entry)" class="model-chip">{{ modelLabel(block.entry) }}</em>
-                <time v-if="block.entry.timestamp" :title="new Date(block.entry.timestamp).toLocaleString()">{{ entryTime(block.entry) }}</time>
-              </div>
-              <div class="entry-content text-entry">
-                <FormattedContent :content="block.entry.content" max-height="460px" />
-              </div>
-            </template>
-
-            <template v-else-if="block.entry.kind === 'tool_call'">
-              <button class="tool-header" @click="toggleDetails(block.id)">
-                <Wrench :size="14" />
-                <strong>{{ block.entry.tool }}</strong>
-                <em v-if="modelLabel(block.entry)" class="model-chip">{{ modelLabel(block.entry) }}</em>
-                <time v-if="block.entry.timestamp">{{ entryTime(block.entry) }}</time>
-                <span>{{ detailsOpen(block.id) ? 'hide details' : 'show details' }}</span>
-              </button>
-              <div v-if="detailsOpen(block.id)" class="entry-content tool-content">
-                <FormattedContent :content="block.entry.content" max-height="320px" />
-              </div>
-            </template>
-
-            <template v-else-if="block.entry.kind === 'tool_result' || block.entry.kind === 'tool_error'">
-              <button class="tool-header result" :class="{ error: block.entry.kind === 'tool_error' }" @click="toggleDetails(block.id)">
-                <strong>{{ kindLabel(block.entry.kind) }}</strong>
-                <time v-if="block.entry.timestamp">{{ entryTime(block.entry) }}</time>
-                <p>{{ truncate(block.entry.content.split('\n')[0], 100) }}</p>
-                <span>{{ detailsOpen(block.id) ? 'hide details' : 'show details' }}</span>
-              </button>
-              <div v-if="detailsOpen(block.id)" class="entry-content tool-content" :class="{ error: block.entry.kind === 'tool_error' }">
-                <FormattedContent :content="block.entry.content" max-height="320px" />
-              </div>
-            </template>
-          </article>
-          <div
-            v-if="activityIndicator"
-            class="activity-indicator"
-            :class="`state-${activityIndicator.state}`"
+          <footer
+            v-if="selectedAgent.activity_status?.pending_call"
+            class="agent-thread-footer"
+            :data-state="selectedAgent.activity_status.pending_call.status"
             role="status"
             aria-live="polite"
           >
-            <span class="dot" />
-            <span class="primary">{{ activityIndicator.primary }}</span>
-            <span v-if="activityIndicator.detail" class="detail">{{ activityIndicator.detail }}</span>
-          </div>
+            <span class="dot" aria-hidden="true" />
+            <template v-if="selectedAgent.activity_status.pending_call.status === 'in_flight'">
+              <span>Waiting for model… {{ durationSince(selectedAgent.activity_status.pending_call.started_at) }}<template v-if="selectedAgent.activity_status.pending_call.attempt > 1"> (attempt {{ selectedAgent.activity_status.pending_call.attempt }})</template></span>
+            </template>
+            <template v-else>
+              <span>
+                <template v-if="selectedAgent.activity_status.pending_call.reason === 'throttled'">Throttled by provider</template>
+                <template v-else>Transient model error</template>
+                <template v-if="selectedAgent.activity_status.pending_call.retry_at"> — retrying in {{ durationUntil(selectedAgent.activity_status.pending_call.retry_at) }}</template>
+              </span>
+              <span class="detail">attempt {{ selectedAgent.activity_status.pending_call.attempt }}</span>
+            </template>
+          </footer>
         </div>
       </template>
 
@@ -662,7 +852,7 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
             <div class="entry-label">
               <span>{{ msg.role }}</span>
               <em v-if="msg.role === 'assistant' && modelLabel(msg)" class="model-chip">{{ modelLabel(msg) }}</em>
-              <time>{{ formatTime(msg.timestamp) }}</time>
+              <time>{{ formatHms(msg.timestamp) }}</time>
               <em v-if="msg.event">{{ msg.event.type }}</em>
             </div>
             <div class="entry-content text-entry">
@@ -903,7 +1093,6 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
   padding: 16px;
 }
 
-.entry,
 .chat-msg {
   margin-bottom: 10px;
 }
@@ -929,7 +1118,7 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
 }
 
 .entry-label .model-chip,
-.tool-header .model-chip {
+.agent-round-model {
   overflow: hidden;
   max-width: min(360px, 50vw);
   padding: 2px 6px;
@@ -946,16 +1135,9 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
   white-space: nowrap;
 }
 
-.entry.assistant .entry-label,
 .chat-msg.assistant .entry-label { color: var(--accent-2); }
-.entry.user .entry-label,
 .chat-msg.user .entry-label { color: var(--accent); }
-.entry.system .entry-label,
 .chat-msg.system .entry-label { color: var(--warn); }
-.entry.danger .entry-label { color: var(--danger); }
-.entry.warn .entry-label { color: var(--warn); }
-.entry.ok .entry-label { color: var(--accent-2); }
-.entry.accent .entry-label { color: var(--accent); }
 
 .entry-content {
   border: 1px solid var(--border);
@@ -970,124 +1152,310 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
   padding: 9px 11px;
 }
 
-.reasoning-entry {
-  border-color: var(--entry-purple-border);
-  background: var(--entry-purple-bg);
-}
-
-.entry.user .text-entry,
 .chat-msg.user .text-entry {
   border-color: var(--entry-user-border);
   background: var(--entry-user-bg);
 }
 
-.entry.danger .text-entry {
-  border-color: var(--entry-danger-border);
-  background: var(--entry-danger-bg);
-}
-
-.entry.warn .text-entry {
-  border-color: var(--entry-warn-border);
-  background: var(--entry-warn-bg);
-}
-
-.tool-header {
+/* === Agent round timeline (compact, borderless) === */
+.agent-thread-header {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-height: 34px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
+  align-items: baseline;
+  gap: 10px;
+  min-height: 40px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
   color: var(--text-muted);
-  background: var(--surface-1);
-  cursor: pointer;
-  text-align: left;
-}
-
-.tool-header:hover {
-  border-color: var(--border-strong);
-  background: var(--surface-2);
-}
-
-.step-tools {
-  margin-top: 7px;
-}
-
-.step-summary {
-  justify-content: space-between;
-}
-
-.step-details {
-  display: grid;
-  gap: 8px;
-  margin-top: 8px;
-  padding-left: 10px;
-  border-left: 2px solid var(--border-subtle);
-}
-
-.detail-item {
-  cursor: default;
-}
-
-.detail-body {
-  margin-top: -2px;
-}
-
-.tool-header strong {
-  color: var(--accent);
-  font-family: var(--mono);
   font-size: 12px;
 }
 
-.tool-header time,
-.tool-header span {
+.agent-thread-role {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: lowercase;
+  letter-spacing: 0;
+}
+
+.agent-thread-id {
   color: var(--text-faint);
   font-family: var(--mono);
   font-size: 11px;
 }
 
-.tool-header > span:last-child {
-  margin-left: auto;
-}
-
-.tool-header p {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  margin: 0;
+.agent-thread-model {
   color: var(--text-faint);
-  font-size: 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-style: normal;
+  overflow: hidden;
+  max-width: min(360px, 40vw);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.tool-header.result {
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
+.agent-thread-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 16px 20px;
 }
 
-.tool-header.result strong {
-  color: var(--accent-2);
+.agent-round {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.tool-header.result.error strong {
-  color: var(--danger);
+.agent-round-via {
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 11px;
 }
 
-.tool-content {
-  margin-top: -1px;
-  border-radius: 0 0 7px 7px;
-  padding: 8px 10px;
+.agent-round-reasoning {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.agent-activity-lead {
   color: var(--text-muted);
+  font-style: italic;
+}
+
+.agent-tool-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-top: 2px;
+}
+
+.agent-tool-row {
+  display: grid;
+  grid-template-columns: 14px auto minmax(0, 1fr) minmax(0, 1.4fr);
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 24px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
   font-family: var(--mono);
   font-size: 12px;
 }
 
-.tool-content.error {
-  border-color: var(--entry-danger-border);
+.agent-tool-row:hover {
+  background: var(--surface-2);
+}
+
+.agent-tool-row strong {
+  color: var(--accent);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-tool-row .chevron {
+  display: inline-block;
+  transition: transform 0.12s ease;
+  color: var(--text-faint);
+}
+
+.agent-tool-row[data-open="true"] .chevron {
+  transform: rotate(90deg);
+}
+
+.agent-tool-row .agent-tool-summary,
+.agent-tool-row .agent-tool-result {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-faint);
+}
+
+.agent-tool-row .agent-tool-summary {
+  color: var(--text-muted);
+}
+
+.agent-tool-row [data-tone="ok"] { color: var(--accent-2); }
+.agent-tool-row [data-tone="warn"] { color: var(--warn); }
+.agent-tool-row [data-tone="error"] { color: var(--danger); }
+.agent-tool-row [data-tone="muted"] { color: var(--text-faint); }
+
+.agent-tool-row .tool-link {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dotted transparent;
+}
+
+.agent-tool-row:hover .tool-link {
+  border-bottom-color: currentColor;
+}
+
+.agent-tool-row .tool-link:hover {
+  color: var(--accent-2);
+}
+
+.agent-tool-row .tool-code {
+  color: var(--text);
+  background: transparent;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: inherit;
+}
+
+.agent-tool-row[data-status="ok"] strong { color: var(--accent-2); }
+.agent-tool-row[data-status="pending"] strong { color: var(--accent); }
+.agent-tool-row[data-status="pending"] .agent-tool-result {
+  color: var(--accent);
+  font-style: italic;
+}
+.agent-tool-row[data-status="error"] strong { color: var(--danger); }
+.agent-tool-row[data-status="error"] .agent-tool-result { color: var(--danger); }
+.agent-tool-row[data-status="orphan"] strong,
+.agent-tool-row[data-status="missing"] strong { color: var(--warn); }
+
+.agent-tool-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 0 4px 22px;
+  padding: 4px 0 4px 10px;
+  border-left: 2px solid var(--border-subtle, var(--border));
+}
+
+.agent-tool-detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.agent-tool-detail-block.error {
   color: var(--danger);
-  background: var(--entry-danger-bg);
+}
+
+.agent-tool-detail-label {
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.agent-diagnostic-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.agent-diagnostic-row .agent-diagnostic-label {
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.agent-diagnostic-row[data-tone="ok"] { color: var(--accent-2); }
+.agent-diagnostic-row[data-tone="warn"] { color: var(--warn); }
+.agent-diagnostic-row[data-tone="danger"] { color: var(--danger); }
+
+.agent-context-standalone {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-context-block {
+  padding: 0 0 0 10px;
+  border-left: 2px solid var(--border-subtle, var(--border));
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.agent-compacted-cluster {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.agent-compacted-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.agent-compacted-summary .chevron {
+  transition: transform 0.12s ease;
+}
+
+.agent-compacted-summary[aria-expanded="true"] .chevron {
+  transform: rotate(90deg);
+}
+
+.agent-compacted-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 14px;
+}
+
+.agent-thread-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 4px 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: var(--mono);
+}
+
+.agent-thread-footer .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.agent-thread-footer[data-state="in_flight"] { color: var(--accent); }
+.agent-thread-footer[data-state="in_flight"] .dot {
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.agent-thread-footer[data-state="backoff"] { color: var(--warn); }
+.agent-thread-footer[data-state="backoff"] .dot {
+  animation: pulse 0.8s ease-in-out infinite;
+}
+
+.agent-thread-footer .detail {
+  opacity: 0.7;
+  font-style: italic;
 }
 
 @media (max-width: 900px) {
@@ -1110,56 +1478,11 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
   .live-time {
     margin-left: 0;
   }
-}
 
-.activity-indicator {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 8px;
-  padding: 6px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  background: var(--surface-1);
-  border: 1px solid var(--border);
-  color: var(--text-muted);
-  align-self: flex-start;
-  width: fit-content;
-  box-shadow: var(--shadow-2);
-}
-
-.activity-indicator .dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: currentColor;
-  flex-shrink: 0;
-}
-
-.activity-indicator.state-in_flight {
-  color: var(--accent);
-}
-
-.activity-indicator.state-in_flight .dot {
-  animation: pulse 1.2s ease-in-out infinite;
-}
-
-.activity-indicator.state-backoff {
-  color: var(--warn);
-}
-
-.activity-indicator.state-backoff .dot {
-  animation: pulse 0.8s ease-in-out infinite;
-}
-
-.activity-indicator.state-idle {
-  color: var(--text-faint);
-  opacity: 0.7;
-}
-
-.activity-indicator .detail {
-  opacity: 0.7;
-  font-style: italic;
+  .agent-tool-row {
+    grid-template-columns: 14px 1fr;
+    grid-auto-flow: row;
+  }
 }
 
 @keyframes pulse {

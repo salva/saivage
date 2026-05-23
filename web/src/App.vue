@@ -73,6 +73,13 @@ function handleNavigate(tab: string, focusId?: string) {
   }
 }
 
+const filesTarget = ref<{ root: "saivage" | "project"; path: string } | null>(null);
+
+function handleOpenFile(payload: { path: string; root: "saivage" | "project" }) {
+  filesTarget.value = { root: payload.root, path: payload.path };
+  activeTab.value = "files";
+}
+
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable) return true;
@@ -229,8 +236,13 @@ watch([runtimeStatus, runtimeStage, activeTabConfig], ([status, stage, tab]) => 
           :focus-stage-id="focusStageId"
           @focus-consumed="focusStageId = null"
         />
-        <AgentsView v-if="activeTab === 'agents'" class="full-view" />
-        <FilesView v-if="activeTab === 'files'" class="full-view" />
+        <AgentsView v-if="activeTab === 'agents'" class="full-view" @open-file="handleOpenFile" />
+        <FilesView
+          v-if="activeTab === 'files'"
+          class="full-view"
+          :initial-root="filesTarget?.root"
+          :initial-path="filesTarget?.path"
+        />
         <DebugView v-if="activeTab === 'debug'" class="full-view" />
       </main>
     </section>
