@@ -491,7 +491,7 @@ watch(() => props.focusStageId, async (stageId) => {
 }
 
 .pipeline-row:hover {
-  background: rgba(0, 0, 0, 0.02);
+  background: var(--hover-bg);
 }
 
 .pipeline-index {
@@ -548,7 +548,7 @@ watch(() => props.focusStageId, async (stageId) => {
 }
 
 .stage-row.current {
-  border-color: rgba(24, 121, 78, 0.35);
+  border-color: var(--entry-accent-border);
 }
 
 .stage-row.expanded,
@@ -638,9 +638,9 @@ li {
 }
 
 code {
-  color: var(--accent-2);
-  background: var(--surface-3);
-  border-radius: 4px;
+  color: var(--code-color);
+  background: var(--code-bg);
+  border-radius: var(--radius-sm);
   padding: 1px 5px;
   font-size: 11px;
 }
@@ -747,8 +747,8 @@ code {
   padding: 0 14px 12px;
 }
 
-.outcomes.achieved span { border-color: rgba(24, 121, 78, 0.3); color: var(--accent); }
-.outcomes.missed span { border-color: rgba(184, 39, 44, 0.3); color: var(--danger); }
+.outcomes.achieved span { border-color: var(--entry-accent-border); color: var(--accent); }
+.outcomes.missed span { border-color: var(--entry-danger-border); color: var(--danger); }
 
 @media (max-width: 980px) {
   .overview-grid,

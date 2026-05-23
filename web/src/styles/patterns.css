@@ -1,0 +1,215 @@
+/* ─── Pattern Classes ────────────────────────────────────────────────────────
+   Reusable visual patterns. Apply via class="" in templates.
+   Components keep only layout/positioning in <style scoped>.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* ── Entry / message state backgrounds ───────────────────────────────────── */
+
+.entry-user {
+  border-color: var(--entry-user-border);
+  background: var(--entry-user-bg);
+}
+
+.entry-accent {
+  border-color: var(--entry-accent-border);
+  background: var(--entry-accent-bg);
+}
+
+.entry-warn {
+  border-color: var(--entry-warn-border);
+  background: var(--entry-warn-bg);
+}
+
+.entry-danger {
+  border-color: var(--entry-danger-border);
+  background: var(--entry-danger-bg);
+}
+
+.entry-purple {
+  border-color: var(--entry-purple-border);
+  background: var(--entry-purple-bg);
+}
+
+/* ── Cards ───────────────────────────────────────────────────────────────── */
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+}
+
+.card-active {
+  border-color: var(--entry-accent-border);
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.btn:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--surface-3);
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.btn-primary {
+  border-color: var(--btn-primary-border);
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-text);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--btn-primary-bg-hover);
+}
+
+.btn-danger {
+  color: var(--danger);
+  border-color: var(--entry-danger-border);
+}
+
+/* ── Pills / tags ────────────────────────────────────────────────────────── */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 22px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text-muted);
+  background: var(--surface-2);
+  font-size: 11px;
+  white-space: nowrap;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.pill-warn {
+  border-color: var(--entry-warn-border);
+  color: var(--warn);
+}
+
+.pill-accent {
+  border-color: var(--entry-accent-border);
+  color: var(--accent);
+}
+
+.pill-danger {
+  border-color: var(--entry-danger-border);
+  color: var(--danger);
+}
+
+/* ── Code ────────────────────────────────────────────────────────────────── */
+
+.code-inline {
+  padding: 2px 5px;
+  border-radius: var(--radius-sm);
+  background: var(--code-bg);
+  color: var(--code-color);
+  font-family: var(--mono);
+  font-size: 0.875em;
+}
+
+.code-block {
+  background: var(--code-block-bg);
+  border: 1px solid var(--code-block-border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  color: var(--code-block-text);
+}
+
+/* ── JSON / Syntax highlighting ──────────────────────────────────────────── */
+
+.syn-key { color: var(--syn-key); }
+.syn-string { color: var(--syn-string); }
+.syn-number { color: var(--syn-number); }
+.syn-boolean { color: var(--syn-boolean); }
+.syn-null { color: var(--syn-null); font-style: italic; }
+.syn-punctuation { color: var(--syn-punctuation); }
+
+/* ── Panel heading ───────────────────────────────────────────────────────── */
+
+.panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-1);
+}
+
+.panel-heading h2,
+.panel-heading h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+/* ── Status dot ──────────────────────────────────────────────────────────── */
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+/* ── Text utilities ──────────────────────────────────────────────────────── */
+
+.text-muted { color: var(--text-muted); }
+.text-faint { color: var(--text-faint); }
+.text-accent { color: var(--accent); }
+.text-warn { color: var(--warn); }
+.text-danger { color: var(--danger); }
+
+/* ── Overlay ─────────────────────────────────────────────────────────────── */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: var(--overlay-bg);
+  z-index: 50;
+}
+
+/* ── Animations ──────────────────────────────────────────────────────────── */
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.7); }
+}

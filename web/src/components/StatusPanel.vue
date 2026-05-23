@@ -109,7 +109,7 @@ function roleColor(role: string): string {
     case "manager": return "var(--accent)";
     case "coder": return "var(--accent-2)";
     case "researcher": return "var(--warn)";
-    case "data_agent": return "#2e7d9a";
+    case "data_agent": return "var(--teal)";
     case "reviewer": return "var(--purple)";
     case "inspector": return "var(--orange)";
     case "chat": return "var(--text-muted)";
@@ -462,7 +462,7 @@ const recentHistory = computed(() => history.value.slice(-8).reverse());
 }
 
 .queue-row.current {
-  border-color: rgba(24, 121, 78, 0.4);
+  border-color: var(--entry-accent-border);
 }
 
 .queue-row span {

@@ -493,14 +493,14 @@ function shortModelLabel(msg: Message): string {
 }
 
 .msg.user .msg-content {
-  border-color: rgba(24, 121, 78, 0.25);
-  background: rgba(24, 121, 78, 0.06);
+  border-color: var(--entry-user-border);
+  background: var(--entry-user-bg);
 }
 
 .msg.system .msg-content {
-  border-color: rgba(145, 89, 48, 0.25);
+  border-color: var(--entry-warn-border);
   color: var(--warn);
-  background: rgba(145, 89, 48, 0.06);
+  background: var(--entry-warn-bg);
   font-size: 12px;
 }
 
@@ -532,9 +532,9 @@ function shortModelLabel(msg: Message): string {
 .msg.assistant .msg-content :deep(.md-h1) { display: block; font-size: 16px; margin: 8px 0 4px; }
 .msg.assistant .msg-content :deep(.md-h2) { display: block; font-size: 14px; margin: 6px 0 3px; }
 .msg.assistant .msg-content :deep(.md-h3) { display: block; font-size: 13px; margin: 4px 0 2px; }
-.msg.assistant .msg-content :deep(.md-code) { background: var(--surface-3); color: var(--accent-2); padding: 1px 5px; border-radius: 3px; font-family: var(--mono); font-size: 12px; }
-.msg.assistant .msg-content :deep(.md-code-block) { background: var(--surface-1); border: 1px solid var(--border); padding: 10px 12px; border-radius: 6px; margin: 6px 0; overflow-x: auto; font-size: 12px; line-height: 1.5; white-space: pre; }
-.msg.assistant .msg-content :deep(.md-code-block code) { font-family: var(--mono); color: var(--text); }
+.msg.assistant .msg-content :deep(.md-code) { background: var(--code-bg); color: var(--code-color); padding: 1px 5px; border-radius: 3px; font-family: var(--mono); font-size: 12px; }
+.msg.assistant .msg-content :deep(.md-code-block) { background: var(--code-block-bg); border: 1px solid var(--code-block-border); padding: 10px 12px; border-radius: 6px; margin: 6px 0; overflow-x: auto; font-size: 12px; line-height: 1.5; white-space: pre; }
+.msg.assistant .msg-content :deep(.md-code-block code) { font-family: var(--mono); color: var(--code-block-text); }
 .msg.assistant .msg-content :deep(.md-bullet) {
   display: grid;
   grid-template-columns: 18px 1fr;
@@ -593,17 +593,17 @@ function shortModelLabel(msg: Message): string {
   gap: 7px;
   height: 38px;
   min-width: 92px;
-  border: 1px solid rgba(24, 121, 78, 0.4);
+  border: 1px solid var(--btn-primary-border);
   border-radius: 7px;
-  color: #ffffff;
-  background: #299764;
+  color: var(--btn-primary-text);
+  background: var(--btn-primary-bg);
   cursor: pointer;
   font-size: 13px;
   font-weight: 650;
 }
 
 .send-btn:hover:not(:disabled) {
-  background: #18794e;
+  background: var(--btn-primary-bg-hover);
 }
 
 .send-btn:disabled {
@@ -616,9 +616,9 @@ function shortModelLabel(msg: Message): string {
   gap: 14px;
   margin: 12px 16px 0;
   padding: 14px 16px;
-  border: 1px solid rgba(145, 89, 48, 0.35);
+  border: 1px solid var(--entry-warn-border);
   border-radius: 8px;
-  background: rgba(145, 89, 48, 0.06);
+  background: var(--entry-warn-bg);
   align-items: flex-start;
 }
 .auth-icon {
@@ -668,7 +668,7 @@ function shortModelLabel(msg: Message): string {
 .jump-latest.unseen {
   border-color: var(--accent);
   color: var(--accent);
-  background: rgba(24, 121, 78, 0.06);
+  background: var(--entry-user-bg);
 }
 .chat-window { position: relative; }
 </style>

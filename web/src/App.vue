@@ -413,7 +413,7 @@ watch([runtimeStatus, runtimeStage, activeTabConfig], ([status, stage, tab]) => 
   inset: 0;
   display: grid;
   place-items: center;
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--overlay-bg);
   z-index: 50;
 }
 .help-card {

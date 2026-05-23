@@ -290,7 +290,7 @@ function roleColor(role: string): string {
     case "manager": return "var(--accent)";
     case "coder": return "var(--accent-2)";
     case "researcher": return "var(--warn)";
-    case "data_agent": return "#2e7d9a";
+    case "data_agent": return "var(--teal)";
     case "reviewer": return "var(--purple)";
     case "inspector": return "var(--orange)";
     default: return "var(--text)";
@@ -971,24 +971,24 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
 }
 
 .reasoning-entry {
-  border-color: rgba(111, 66, 193, 0.25);
-  background: rgba(111, 66, 193, 0.05);
+  border-color: var(--entry-purple-border);
+  background: var(--entry-purple-bg);
 }
 
 .entry.user .text-entry,
 .chat-msg.user .text-entry {
-  border-color: rgba(24, 121, 78, 0.25);
-  background: rgba(24, 121, 78, 0.05);
+  border-color: var(--entry-user-border);
+  background: var(--entry-user-bg);
 }
 
 .entry.danger .text-entry {
-  border-color: rgba(184, 39, 44, 0.25);
-  background: rgba(184, 39, 44, 0.05);
+  border-color: var(--entry-danger-border);
+  background: var(--entry-danger-bg);
 }
 
 .entry.warn .text-entry {
-  border-color: rgba(145, 89, 48, 0.25);
-  background: rgba(145, 89, 48, 0.05);
+  border-color: var(--entry-warn-border);
+  background: var(--entry-warn-bg);
 }
 
 .tool-header {
@@ -1024,7 +1024,7 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
   gap: 8px;
   margin-top: 8px;
   padding-left: 10px;
-  border-left: 2px solid rgba(0, 0, 0, 0.08);
+  border-left: 2px solid var(--border-subtle);
 }
 
 .detail-item {
@@ -1085,9 +1085,9 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
 }
 
 .tool-content.error {
-  border-color: rgba(184, 39, 44, 0.25);
+  border-color: var(--entry-danger-border);
   color: var(--danger);
-  background: rgba(184, 39, 44, 0.05);
+  background: var(--entry-danger-bg);
 }
 
 @media (max-width: 900px) {

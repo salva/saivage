@@ -550,7 +550,7 @@ function parseJson(content: string): unknown {
 
 .danger-button {
   color: var(--danger);
-  border-color: rgba(184, 39, 44, 0.25);
+  border-color: var(--entry-danger-border);
 }
 
 .notes-list {
@@ -570,7 +570,7 @@ function parseJson(content: string): unknown {
 }
 
 .note-card.urgent {
-  border-color: rgba(145, 89, 48, 0.3);
+  border-color: var(--entry-warn-border);
 }
 
 .note-card.acknowledged {
@@ -606,12 +606,12 @@ function parseJson(content: string): unknown {
 
 .note-chip.urgent {
   color: var(--warn);
-  border-color: rgba(145, 89, 48, 0.25);
+  border-color: var(--entry-warn-border);
 }
 
 .note-chip.ok {
   color: var(--accent);
-  border-color: rgba(24, 121, 78, 0.25);
+  border-color: var(--entry-user-border);
 }
 
 .note-content {
@@ -628,7 +628,7 @@ function parseJson(content: string): unknown {
 }
 
 .console-pill.warn {
-  border-color: rgba(145, 89, 48, 0.3);
+  border-color: var(--entry-warn-border);
   color: var(--warn);
 }
 

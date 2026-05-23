@@ -1,0 +1,75 @@
+/* ─── Semantic Variables ─────────────────────────────────────────────────────
+   Map raw tokens to meaning. Components reference ONLY these.
+   ────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* Surfaces */
+  --bg: var(--c-white);
+  --surface-1: var(--c-gray-50);
+  --surface-2: var(--c-gray-100);
+  --surface-3: var(--c-gray-150);
+
+  /* Borders */
+  --border: var(--c-gray-200);
+  --border-strong: var(--c-gray-400);
+  --border-subtle: rgba(0, 0, 0, 0.08);
+
+  /* Text */
+  --text: var(--c-gray-800);
+  --text-muted: var(--c-gray-600);
+  --text-faint: var(--c-gray-500);
+
+  /* Accents (semantic) */
+  --accent: var(--c-green);
+  --accent-2: var(--c-indigo);
+  --warn: var(--c-yellow);
+  --danger: var(--c-red);
+  --purple: var(--c-purple);
+  --orange: var(--c-orange);
+  --teal: var(--c-teal);
+
+  /* ── Entry / message state colors ──────────────────────────────────────── */
+  --entry-user-border: rgba(24, 121, 78, 0.25);
+  --entry-user-bg: rgba(24, 121, 78, 0.06);
+  --entry-accent-border: rgba(24, 121, 78, 0.35);
+  --entry-accent-bg: rgba(24, 121, 78, 0.06);
+
+  --entry-warn-border: rgba(145, 89, 48, 0.25);
+  --entry-warn-bg: rgba(145, 89, 48, 0.06);
+
+  --entry-danger-border: rgba(184, 39, 44, 0.25);
+  --entry-danger-bg: rgba(184, 39, 44, 0.05);
+
+  --entry-purple-border: rgba(111, 66, 193, 0.25);
+  --entry-purple-bg: rgba(111, 66, 193, 0.05);
+
+  /* ── Code / syntax theme ───────────────────────────────────────────────── */
+  --code-bg: var(--c-gray-150);
+  --code-color: var(--c-indigo);
+  --code-block-bg: var(--c-gray-50);
+  --code-block-border: var(--c-gray-200);
+  --code-block-text: var(--c-gray-800);
+
+  /* JSON / syntax highlighting */
+  --syn-key: var(--c-green);
+  --syn-string: var(--c-indigo);
+  --syn-number: var(--c-indigo-light);
+  --syn-boolean: var(--c-red);
+  --syn-null: var(--c-red);
+  --syn-punctuation: var(--c-gray-500);
+
+  /* ── Interactive / button ──────────────────────────────────────────────── */
+  --btn-primary-bg: var(--c-green-light);
+  --btn-primary-bg-hover: var(--c-green);
+  --btn-primary-border: rgba(24, 121, 78, 0.4);
+  --btn-primary-text: var(--c-white);
+
+  /* ── Overlay / modal ───────────────────────────────────────────────────── */
+  --overlay-bg: rgba(0, 0, 0, 0.25);
+
+  /* ── Hover / subtle interaction ────────────────────────────────────────── */
+  --hover-bg: rgba(0, 0, 0, 0.02);
+
+  /* ── Shorthand font stacks ─────────────────────────────────────────────── */
+  --mono: var(--font-mono);
+}
