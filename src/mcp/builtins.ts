@@ -9,6 +9,17 @@
 
 import type { McpRuntime, InProcessToolHandler } from "./runtime.js";
 import type { ToolEntry } from "./registry.js";
+import { knowledgeSkillsTools, knowledgeSkillsHandler } from "./knowledgeSkills.js";
+import { knowledgeMemoryTools, knowledgeMemoryHandler } from "./knowledgeMemory.js";
+
+// M2 feature flag — when true, register the new knowledge-loader-backed
+// `skills` and `memory` services (WI-07/WI-08). When false (default), the
+// legacy in-place skills handler stays active and `memory` is a stub.
+let useKnowledgeLoader = false;
+/** Test-only override for the knowledge-loader flag. Not part of public API. */
+export function __setUseKnowledgeLoader(v: boolean): void {
+  useKnowledgeLoader = v;
+}
 import {
   closeSync,
   createWriteStream,
@@ -1160,11 +1171,17 @@ export function registerBuiltinServices(mcpRuntime: McpRuntime, options: Builtin
   mcpRuntime.registerInProcess("shell", shellTools, shellHandler);
   mcpRuntime.registerInProcess("data", dataTools, createDataHandler(promptInjectionCop));
   mcpRuntime.registerInProcess("git", gitTools, gitHandler);
-  mcpRuntime.registerInProcess("skills", skillsTools, skillsHandler);
+  if (useKnowledgeLoader) {
+    mcpRuntime.registerInProcess("skills", knowledgeSkillsTools, knowledgeSkillsHandler);
+    mcpRuntime.registerInProcess("memory", knowledgeMemoryTools, knowledgeMemoryHandler);
+  } else {
+    mcpRuntime.registerInProcess("skills", skillsTools, skillsHandler);
+    // Stubs — services that need external dependencies not yet integrated
+    mcpRuntime.registerInProcess("memory", memoryTools, stubHandler("memory"), { available: false });
+  }
 
   // Stubs — services that need external dependencies not yet integrated
   mcpRuntime.registerInProcess("web", webTools, stubHandler("web"), { available: false });
-  mcpRuntime.registerInProcess("memory", memoryTools, stubHandler("memory"), { available: false });
   mcpRuntime.registerInProcess("index", indexTools, stubHandler("index"), { available: false });
   mcpRuntime.registerInProcess("lock", lockTools, stubHandler("lock"), { available: false });
 

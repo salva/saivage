@@ -18,6 +18,7 @@ import type { EventBus, EventFilter } from "../events/bus.js";
 import { chatSessionId } from "../ids.js";
 import { writeDoc, readDocOrNull, readDocLenient, ensureDir } from "../store/documents.js";
 import { createUserNote } from "../runtime/notes.js";
+import { parseSlashCommand, runSlashCommand } from "../chat/slashCommands.js";
 import {
   ChatLogSchema,
   PlanSchema,
@@ -289,6 +290,37 @@ export class ChatAgent extends BaseAgent implements Agent {
   private async tryHandleCommand(content: string): Promise<string | null> {
     if (!content.startsWith("/")) return null;
 
+    // M2/WI-09 — knowledge slash commands (`/skills`, `/memories`,
+    // `/remember`, `/forget`). Reads go through MCP; writes hand off to
+    // the Planner via inter-agent message (never call write tools).
+    const parsed = parseSlashCommand(content);
+    if (parsed) {
+      try {
+        return await runSlashCommand(parsed, {
+          callTool: (service, tool, args) => this.ctx.mcpRuntime.callTool(service, tool, args, {
+            role: this.ctx.role,
+            agentId: this.ctx.agentId,
+            projectRoot: this.ctx.project.projectRoot,
+            ...(this.input.channel ? { channelId: this.input.channel } : {}),
+            ...(this.input.sessionId ? { sessionId: this.input.sessionId } : {}),
+          }),
+          notifyPlanner: async (text, opts) => {
+            const note = createUserNote({
+              notesDir: this.ctx.project.paths.notes,
+              channel: this.input.channel,
+              sessionId: this.input.sessionId,
+              content: text,
+              permanent: opts.permanent ?? true,
+              urgent: opts.urgent ?? false,
+            });
+            return note.id;
+          },
+        });
+      } catch (e) {
+        return `Error: ${e instanceof Error ? e.message : String(e)}`;
+      }
+    }
+
     const spaceIdx = content.indexOf(" ");
     const cmd = (spaceIdx === -1 ? content : content.slice(0, spaceIdx)).toLowerCase();
     const args = spaceIdx === -1 ? "" : content.slice(spaceIdx + 1).trim();
@@ -337,6 +369,13 @@ export class ChatAgent extends BaseAgent implements Agent {
       "| `/note <msg>` | Create a note for the Planner |",
       "| `/note! <msg>` | Create an **urgent** high-priority note |",
       "| `/notep <msg>` | Create a **permanent** note |",
+      "| `/skills list` | List available skills |",
+      "| `/skills show <name-or-id>` | Show a skill body |",
+      "| `/memories list` | List memory records |",
+      "| `/memories show <id-or-topic>` | Show a memory by id or topic |",
+      "| `/memories search <query>` | Search memory records |",
+      "| `/remember <text>` | Ask the Planner to record a memory |",
+      "| `/forget <id>` | Ask the Planner to archive a memory |",
       "",
       "Any other message is handled by the AI assistant.",
     ].join("\n");
