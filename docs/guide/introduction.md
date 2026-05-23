@@ -1,6 +1,6 @@
 # Introduction
 
-**Saivage** (a portmanteau of *self* and *savage*) is a self-extending,
+**Saivage** (a wordplay between *AI* and *savage*) is a self-extending,
 autonomous software-engineering agent that runs continuously on a project
 directory and pursues a list of objectives until they are met.
 
