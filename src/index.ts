@@ -22,8 +22,6 @@ export type {
   ChatLog,
   RuntimeState,
   AgentState,
-  SkillEntry,
-  SkillIndex,
 } from "./types.js";
 
 // Store

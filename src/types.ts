@@ -245,24 +245,6 @@ export const InspectionReportSchema = z.object({
 });
 export type InspectionReport = z.infer<typeof InspectionReportSchema>;
 
-// ─── 10. Skill Index ────────────────────────────────────────────────────────
-
-export const SkillEntrySchema = z.object({
-  name: z.string(),
-  file: z.string(),
-  description: z.string(),
-  triggers: z.array(z.string()),
-  target_agents: z.array(z.string()).optional(),
-  created_at: z.string(),
-  updated_at: z.string(),
-});
-export type SkillEntry = z.infer<typeof SkillEntrySchema>;
-
-export const SkillIndexSchema = z.object({
-  skills: z.array(SkillEntrySchema),
-});
-export type SkillIndex = z.infer<typeof SkillIndexSchema>;
-
 // ─── 11. Runtime State ──────────────────────────────────────────────────────
 
 export const AgentStateSchema = z.object({
