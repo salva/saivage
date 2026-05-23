@@ -111,7 +111,9 @@ export class OpenAICodexProvider extends BaseProvider {
 
     if (tools && tools.length > 0) body.tools = tools;
     if (request.temperature != null) body.temperature = request.temperature;
-    if (request.maxTokens) body.max_output_tokens = request.maxTokens;
+    // The ChatGPT Codex backend rejects every token-limit knob
+    // (max_output_tokens / max_completion_tokens / max_tokens), so we
+    // intentionally drop request.maxTokens here. See openai-codex.test.ts.
 
     const url = resolveEndpoint(this.baseUrl);
     const headers: Record<string, string> = {
