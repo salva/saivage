@@ -4,12 +4,18 @@
  */
 
 import { join } from "node:path";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, writeFileSync, readFileSync } from "node:fs";
 import { readDoc, writeDoc, ensureDir } from "./documents.js";
 import {
   ProjectConfigSchema,
   type ProjectConfig,
 } from "../types.js";
+
+/** Subscopes under skills/ and memory/ knowledge trees (design §B.4). */
+const KNOWLEDGE_SUBSCOPES = ["project", "stages", "sessions"] as const;
+
+/** Lines that must be present in `.saivage/.gitignore` after init. */
+const GITIGNORE_LINES = ["tmp/", "skills/sessions/", "memory/sessions/"];
 
 /** Resolved paths and loaded config for a project. */
 export interface ProjectContext {
@@ -28,6 +34,7 @@ export interface ProjectContext {
     notes: string;
     inspections: string;
     skills: string;
+    memory: string;
     tools: string;
     research: string;
     tmp: string;
@@ -68,6 +75,7 @@ export function loadProject(projectRoot: string): ProjectContext {
     notes: join(saivageDir, "notes"),
     inspections: join(saivageDir, "inspections"),
     skills: join(saivageDir, "skills"),
+    memory: join(saivageDir, "memory"),
     tools: join(saivageDir, "tools"),
     research: join(projectRoot, "research"),
     tmp: join(saivageDir, "tmp"),
@@ -104,7 +112,6 @@ export function initProject(
   ensureDir(join(saivageDir, "stages"));
   ensureDir(join(saivageDir, "notes"));
   ensureDir(join(saivageDir, "inspections"));
-  ensureDir(join(saivageDir, "skills"));
   ensureDir(join(saivageDir, "tools", "inspector"));
   ensureDir(join(saivageDir, "tmp", "state"));
   ensureDir(join(saivageDir, "tmp", "chats"));
@@ -114,11 +121,53 @@ export function initProject(
   // Write project config
   writeDoc(configPath, config, ProjectConfigSchema);
 
-  // Create .gitignore for tmp/
-  const gitignorePath = join(saivageDir, ".gitignore");
-  if (!existsSync(gitignorePath)) {
-    writeFileSync(gitignorePath, "tmp/\n", "utf-8");
-  }
+  // Seed knowledge trees (skills + memory) and .gitignore lines.
+  initProjectTree(projectRoot);
 
   return loadProject(projectRoot);
+}
+
+/**
+ * Ensure the `.saivage/{skills,memory}/{project,stages,sessions}/` tree
+ * exists with seeded empty `index.json` and empty `audit.jsonl` files,
+ * and that `.saivage/.gitignore` contains the lines required by FR-21.
+ *
+ * Idempotent: running on an already-initialized tree is a no-op (no
+ * file is overwritten if it already exists).
+ *
+ * Called from {@link initProject} during fresh init, and safe to call
+ * independently to upgrade a partially-initialized tree.
+ */
+export function initProjectTree(projectRoot: string): void {
+  const saivageDir = join(projectRoot, ".saivage");
+  ensureDir(saivageDir);
+
+  for (const kind of ["skills", "memory"] as const) {
+    for (const sub of KNOWLEDGE_SUBSCOPES) {
+      ensureDir(join(saivageDir, kind, sub));
+    }
+    // Seed empty project-scope index + audit. Stage and session scopes
+    // are created on demand by their respective lifecycle events.
+    const indexPath = join(saivageDir, kind, "project", "index.json");
+    if (!existsSync(indexPath)) {
+      const initial =
+        kind === "skills" ? { skills: [] } : { memories: [], topic_map: {} };
+      writeFileSync(indexPath, JSON.stringify(initial, null, 2), "utf-8");
+    }
+    const auditPath = join(saivageDir, kind, "project", "audit.jsonl");
+    if (!existsSync(auditPath)) writeFileSync(auditPath, "", "utf-8");
+  }
+
+  // Idempotent .gitignore update. We only append missing lines, preserving
+  // any pre-existing entries (e.g. user customizations).
+  const gitignorePath = join(saivageDir, ".gitignore");
+  const existing = existsSync(gitignorePath)
+    ? readFileSync(gitignorePath, "utf-8")
+    : "";
+  const have = new Set(existing.split(/\r?\n/).map((l) => l.trim()).filter(Boolean));
+  const missing = GITIGNORE_LINES.filter((line) => !have.has(line));
+  if (missing.length > 0) {
+    const trailing = existing.length === 0 || existing.endsWith("\n") ? "" : "\n";
+    writeFileSync(gitignorePath, existing + trailing + missing.join("\n") + "\n", "utf-8");
+  }
 }

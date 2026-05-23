@@ -23,6 +23,7 @@ import {
   type CompletedStage,
   type Escalation,
 } from "../types.js";
+import { archiveStage } from "../knowledge/lifecycle.js";
 import { log } from "../log.js";
 
 /** Error codes returned by the Plan MCP service. */
@@ -49,6 +50,7 @@ function planError(code: PlanErrorCode, message: string): PlanError {
 export class PlanService {
   private planPath: string;
   private historyPath: string;
+  private projectRoot: string;
   private mutationQueue: Promise<unknown> = Promise.resolve();
 
   /** Git commit callback — called by plan_commit. */
@@ -62,6 +64,7 @@ export class PlanService {
   constructor(projectSaivageDir: string) {
     this.planPath = join(projectSaivageDir, "plan.json");
     this.historyPath = join(projectSaivageDir, "plan-history.json");
+    this.projectRoot = join(projectSaivageDir, "..");
     ensureDir(projectSaivageDir);
   }
 
@@ -245,6 +248,13 @@ export class PlanService {
     // Atomic writes (plan first, then history)
     writeDoc(this.planPath, plan, PlanSchema);
     writeDoc(this.historyPath, history, PlanHistorySchema);
+
+    // FR-9 / WI-11: archive stage-scoped skills + memory at stage close.
+    try {
+      archiveStage(this.projectRoot, stage.id);
+    } catch (err) {
+      log.warn(`[plan-server] archiveStage failed for ${stage.id}: ${String(err)}`);
+    }
 
     return { completed_stage: completedStage, plan };
   }

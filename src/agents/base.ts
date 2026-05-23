@@ -26,11 +26,9 @@ import {
   type CompactionConfig,
   type CompactionState,
 } from "../runtime/compaction.js";
-import {
-  resolveSkills,
-  formatSkillsForPrompt,
-  type SkillMatchContext,
-} from "../skills/loader.js";
+import { buildEagerBlock, buildSurvivorBlock } from "../knowledge/eagerLoader.js";
+import type { KnowledgeAgentRole } from "../knowledge/types.js";
+import type { SkillMatchContext } from "../knowledge/loader.js";
 import { checkConvention } from "./conventions.js";
 import { stashResult, readStash, cleanStash } from "../runtime/stash.js";
 import type { RuntimeToolEntry } from "../mcp/runtime.js";
@@ -115,6 +113,12 @@ export interface BaseAgentConfig {
   abortSignal?: { aborted: boolean };
   /** Notify the runtime that this agent is still making progress. */
   onActivity?: (agentId: string) => void;
+  /**
+   * Test hook (FR-16 / WI-14): invoked once after the Planner
+   * pre-compaction memory-write window closes, with the number of
+   * `create_memory` (or related) tool calls observed during the window.
+   */
+  onCompactionHookComplete?: (writeCount: number) => void;
 }
 
 /**
@@ -149,6 +153,7 @@ export class BaseAgent {
   private messageRoundIds: (string | null)[] = [];
   private lastActivityAt: string = new Date().toISOString();
   private pendingCall: NonNullable<ActivityStatus["pending_call"]> | null = null;
+  private onCompactionHookComplete?: (writeCount: number) => void;
   readonly startedAt = new Date().toISOString();
 
   constructor(ctx: AgentContext, config: BaseAgentConfig) {
@@ -156,16 +161,13 @@ export class BaseAgent {
     this.role = ctx.role;
     this.ctx = ctx;
 
-    // Build system prompt with skills
-    const skills = config.skillContext
-      ? resolveSkills(
-          config.skillContext,
-          ctx.project.paths.skills,
-          ctx.project.config.skills.max_per_agent,
-        )
-      : [];
-
-    const skillBlock = formatSkillsForPrompt(skills);
+    // Build system prompt with eager-injected knowledge (FR-1 / FR-15 §D.6).
+    const skillBlock = buildEagerBlock(
+      ctx.project.projectRoot,
+      ctx.role as KnowledgeAgentRole,
+      config.skillContext?.description,
+      config.skillContext?.tags,
+    );
     this.systemPrompt = [
       config.systemPrompt,
       VISIBLE_EXECUTION_STYLE_PROMPT,
@@ -192,6 +194,7 @@ export class BaseAgent {
 
     this.abortSignal = config.abortSignal;
     this.onActivity = config.onActivity;
+    this.onCompactionHookComplete = config.onCompactionHookComplete;
 
     // Set initial message
     if (config.initialMessage) {
@@ -230,13 +233,7 @@ export class BaseAgent {
           };
         }
 
-        this.replaceMessages(await compactConversation(
-          this.systemPrompt,
-          this.messages,
-          this.ctx.router,
-          this.compactionConfig,
-          this.compactionState,
-        ));
+        await this.compactWithReinjection();
       }
 
       // Make LLM call
@@ -533,13 +530,7 @@ export class BaseAgent {
           log.warn(
             `[agent:${this.role}:${this.id}] ${reason} — compacting and retrying`,
           );
-          this.replaceMessages(await compactConversation(
-            this.systemPrompt,
-            this.messages,
-            this.ctx.router,
-            this.compactionConfig,
-            this.compactionState,
-          ));
+          await this.compactWithReinjection();
           this.pendingRoundId = myRoundId;
           continue;
         }
@@ -749,6 +740,114 @@ export class BaseAgent {
     this.currentRoundId = null;
     this.pendingRoundId = null;
     this.recordActivity();
+  }
+
+  /**
+   * FR-16 / WI-14 — §E.2 Planner pre-compaction memory-write window.
+   * Injects the nudge and lets the model run up to 5 tool-call turns so
+   * survivable knowledge gets persisted before the summary is built.
+   * Only invoked when role === "planner".
+   */
+  private async runPlannerCompactionHook(): Promise<void> {
+    const MAX_TURNS = 5;
+    const NUDGE =
+      "PRE-COMPACTION MEMORY HOOK: Conversation context is about to be compacted. " +
+      "You have up to 5 tool-call turns to call create_memory / create_skill " +
+      "for anything important that must survive compaction. " +
+      "Reply with a final text answer (no tool calls) to skip.";
+    this.pushMessage({ role: "user", content: NUDGE });
+
+    let writeCount = 0;
+    for (let turn = 0; turn < MAX_TURNS; turn++) {
+      if (this.cancelled || this.abortSignal?.aborted) break;
+      let response: ChatResponse;
+      try {
+        response = await this.callLLM();
+      } catch (err) {
+        log.warn(
+          `[agent:${this.role}:${this.id}] pre-compaction hook callLLM failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        break;
+      }
+      if (response.toolCalls.length === 0) {
+        const content: string | ContentBlock[] = response.reasoning
+          ? [
+              { type: "thinking", thinking: response.reasoning, thinking_signature: "reasoning_content" },
+              ...(response.content ? [{ type: "text", text: response.content } as ContentBlock] : []),
+            ]
+          : response.content;
+        this.pushMessage({ role: "assistant", content }, undefined, responseSource(response));
+        break;
+      }
+      const blocks: ContentBlock[] = [];
+      if (response.reasoning) {
+        blocks.push({ type: "thinking", thinking: response.reasoning, thinking_signature: "reasoning_content" });
+      }
+      if (response.content) blocks.push({ type: "text", text: response.content });
+      for (const tc of response.toolCalls) {
+        blocks.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input });
+        if (tc.name === "create_memory" || tc.name === "create_skill") writeCount += 1;
+      }
+      this.pushMessage({ role: "assistant", content: blocks }, undefined, responseSource(response));
+      const dispatchResult = await this.dispatcher.processToolCalls(
+        response.toolCalls,
+        this.ctx,
+        this.abortSignal,
+      );
+      const resultBlocks: ContentBlock[] = dispatchResult.toolResults.map((r) => ({
+        type: "tool_result" as const,
+        tool_use_id: r.toolUseId,
+        content: r.content,
+        is_error: r.isError,
+      }));
+      this.pushMessage({ role: "user", content: resultBlocks });
+      if (dispatchResult.aborted) break;
+    }
+    try {
+      this.onCompactionHookComplete?.(writeCount);
+    } catch (err) {
+      log.warn(
+        `[agent:${this.role}:${this.id}] onCompactionHookComplete threw: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * FR-15 / WI-14 — Compact the conversation and append the §E.1 survivor
+   * reinjection block (if the knowledge loader is enabled). Used by both
+   * the pre-LLM-call compaction path and the model-repair compaction path.
+   */
+  private async compactWithReinjection(): Promise<void> {
+    if (this.role === "planner") {
+      try {
+        await this.runPlannerCompactionHook();
+      } catch (err) {
+        log.warn(
+          `[agent:${this.role}:${this.id}] pre-compaction hook failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    const summarized = await compactConversation(
+      this.systemPrompt,
+      this.messages,
+      this.ctx.router,
+      this.compactionConfig,
+      this.compactionState,
+    );
+    let next: Message[] = summarized;
+    try {
+      const block = buildSurvivorBlock(
+        this.ctx.project.projectRoot,
+        this.role as KnowledgeAgentRole,
+        this.compactionState.compactionCount,
+      );
+      if (block) next = [...summarized, { role: "user", content: block }];
+    } catch (err) {
+      log.warn(
+        `[agent:${this.role}:${this.id}] survivor reinjection failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    this.replaceMessages(next);
   }
 
   private async sleepWithCancellation(ms: number): Promise<void> {

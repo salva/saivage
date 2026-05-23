@@ -236,6 +236,13 @@ export async function startServer(
     return { providers };
   });
 
+  // WI-12 — Inspector endpoint listing every MCP tool the runtime is aware
+  // of (in-process + running + registered), including the `available` flag so
+  // the UI can show services that are registered as stubs.
+  app.get("/api/mcp/tools", async () => {
+    return { tools: runtime.mcpRuntime.listAllToolsForApi() };
+  });
+
   // ─── Inspections API ───────────────────────────────────────────────────
 
   app.get("/api/inspections", async () => {

@@ -16,6 +16,7 @@
     "dev": "tsx src/server/cli.ts",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:bundle": "npm run build && vitest run -t 'fr31a'",
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
     "docs:api": "typedoc && node docs/.vitepress/scripts/sanitize-typedoc.mjs",

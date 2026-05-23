@@ -16,6 +16,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -842,3 +843,105 @@ function buildSearchSnippet(text: string, tokens: readonly string[]): string {
   }
   return text.slice(0, SEARCH_SNIPPET_WINDOW);
 }
+
+// ─── Stage / Session archival hooks (WI-11, design §B.4 + §F) ──────────────
+
+/** Synthetic author used when the runtime auto-archives at lifecycle events. */
+const SYSTEM_AUTHOR: AuthorAgent = { role: "manager", agent_id: "system" };
+
+interface ScopeArchiveResult {
+  archivedSkills: string[];
+  archivedMemories: string[];
+}
+
+function archiveScope(
+  projectRoot: string,
+  scope: Exclude<KnowledgeScope, "project">,
+  scopeRef: string,
+): ScopeArchiveResult {
+  const saivageRoot = join(projectRoot, ".saivage");
+  const result: ScopeArchiveResult = { archivedSkills: [], archivedMemories: [] };
+
+  archiveOneKind(saivageRoot, "skill", SkillRecordSchema, parseSkill, scope, scopeRef, result.archivedSkills);
+  archiveOneKind(saivageRoot, "memory", MemoryRecordSchema, parseMemory, scope, scopeRef, result.archivedMemories);
+
+  return result;
+}
+
+function archiveOneKind<T extends KnowledgeRecord>(
+  saivageRoot: string,
+  kind: "skill" | "memory",
+  schema: z.ZodTypeAny,
+  parse: ParseFn<T>,
+  scope: Exclude<KnowledgeScope, "project">,
+  scopeRef: string,
+  bucket: string[],
+): void {
+  const dir = scopeDir(saivageRoot, kind, scope, scopeRef);
+  if (!existsSync(dir)) return;
+  const records = collectScopeActiveRecords(dir, parse);
+  if (records.length === 0) return;
+
+  const recordsDir = join(dir, "records");
+  const archiveRecordsDir = join(dir, "archive", "records");
+  ensureDir(archiveRecordsDir);
+
+  const now = new Date().toISOString();
+  for (const rec of records) {
+    const archived = schema.parse({
+      ...rec,
+      status: "archived",
+      updated_at: now,
+    }) as T;
+    writeFileSync(
+      join(archiveRecordsDir, `${archived.id}.json`),
+      JSON.stringify(archived, null, 2),
+      "utf-8",
+    );
+    const bodyRel = (archived as { body_path?: string }).body_path;
+    if (bodyRel && typeof bodyRel === "string") {
+      const liveBody = join(dir, bodyRel);
+      const archivedBody = join(dir, "archive", bodyRel);
+      if (existsSync(liveBody)) {
+        ensureDir(join(archivedBody, ".."));
+        try { renameSync(liveBody, archivedBody); } catch { /* best-effort */ }
+      }
+    }
+    const liveRecord = join(recordsDir, `${archived.id}.json`);
+    if (existsSync(liveRecord)) {
+      try { unlinkSync(liveRecord); } catch { /* best-effort */ }
+    }
+    writeAuditSafe(
+      dir,
+      buildAudit(archived.id, "archive", "ok", SYSTEM_AUTHOR, `${scope} ${scopeRef} archived`, {
+        prev_status: rec.status,
+        next_status: "archived",
+      }),
+    );
+    bucket.push(archived.id);
+  }
+
+  safeRebuild(dir, schema);
+}
+
+/**
+ * Archive every active skill + memory under
+ * `<projectRoot>/.saivage/{skills,memory}/stages/<stageId>/`. Idempotent:
+ * a second call when no active records remain is a no-op. Records are
+ * moved into a sibling `archive/` subtree so subsequent
+ * `resolveEagerRecords` calls for the next stage do not see them
+ * (FR-9).
+ */
+export function archiveStage(projectRoot: string, stageId: string): ScopeArchiveResult {
+  return archiveScope(projectRoot, "stage", stageId);
+}
+
+/**
+ * Same as {@link archiveStage} but for session-scoped knowledge under
+ * `<projectRoot>/.saivage/{skills,memory}/sessions/<channelId>/`.
+ * Called from `ChatAgent` at the channel-close log point.
+ */
+export function archiveSession(projectRoot: string, channelId: string): ScopeArchiveResult {
+  return archiveScope(projectRoot, "session", channelId);
+}
+

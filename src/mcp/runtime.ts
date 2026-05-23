@@ -249,6 +249,65 @@ export class McpRuntime {
     return tools;
   }
 
+  /**
+   * Like {@link getAllTools} but also includes in-process services that are
+   * currently `available:false` (e.g. legacy stub registrations during the
+   * M2/M3 transition). Returns a flat projection suitable for the
+   * `/api/mcp/tools` endpoint (WI-12). Each entry carries an explicit
+   * `available` flag derived from the owning service.
+   */
+  listAllToolsForApi(): Array<{
+    name: string;
+    service: string;
+    description: string;
+    inputSchema: unknown;
+    available: boolean;
+  }> {
+    const out: Array<{ name: string; service: string; description: string; inputSchema: unknown; available: boolean }> = [];
+    const seen = new Set<string>();
+
+    for (const [name, svc] of this.inProcessServices) {
+      for (const tool of svc.tools) {
+        out.push({
+          name: tool.name,
+          service: name,
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+          available: svc.available,
+        });
+        seen.add(tool.name);
+      }
+    }
+    for (const [name, managed] of this.services) {
+      for (const tool of managed.client.getTools()) {
+        if (seen.has(tool.name)) continue;
+        out.push({
+          name: tool.name,
+          service: name,
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+          available: true,
+        });
+        seen.add(tool.name);
+      }
+    }
+    for (const entry of listRegisteredServices()) {
+      if (entry.status !== "active") continue;
+      for (const tool of entry.tools) {
+        if (seen.has(tool.name)) continue;
+        out.push({
+          name: tool.name,
+          service: entry.name,
+          description: tool.description,
+          inputSchema: tool.inputSchema,
+          available: true,
+        });
+        seen.add(tool.name);
+      }
+    }
+    return out;
+  }
+
   /** List running services */
   listRunning(): string[] {
     return [...this.services.keys()];

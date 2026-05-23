@@ -12,14 +12,6 @@ import type { ToolEntry } from "./registry.js";
 import { knowledgeSkillsTools, knowledgeSkillsHandler } from "./knowledgeSkills.js";
 import { knowledgeMemoryTools, knowledgeMemoryHandler } from "./knowledgeMemory.js";
 
-// M2 feature flag — when true, register the new knowledge-loader-backed
-// `skills` and `memory` services (WI-07/WI-08). When false (default), the
-// legacy in-place skills handler stays active and `memory` is a stub.
-let useKnowledgeLoader = false;
-/** Test-only override for the knowledge-loader flag. Not part of public API. */
-export function __setUseKnowledgeLoader(v: boolean): void {
-  useKnowledgeLoader = v;
-}
 import {
   closeSync,
   createWriteStream,
@@ -286,6 +278,23 @@ const filesystemHandler: InProcessToolHandler = async (toolName, args) => {
     }
     case "write_file": {
       const fp = resolvePath(args.path as string);
+      // FR-17 / WI-15 — read-only knowledge store: write_file must never
+      // create or mutate records under .saivage/skills/ or .saivage/memory/.
+      // Knowledge changes must go through create_skill / create_memory.
+      const saivageDir = join(projectRoot(), ".saivage");
+      const blockedRoots = [join(saivageDir, "skills"), join(saivageDir, "memory")];
+      for (const blocked of blockedRoots) {
+        if (fp === blocked || fp.startsWith(blocked + "/")) {
+          return {
+            content: {
+              error:
+                `BLOCKED_PATH: write_file cannot write to ${fp}. ` +
+                `Use create_skill / create_memory MCP tools to mutate knowledge records.`,
+            },
+            isError: true,
+          };
+        }
+      }
       mkdirSync(dirname(fp), { recursive: true });
       writeFileSync(fp, args.content as string, "utf-8");
       return { content: { written: true, path: fp }, isError: false };
@@ -1059,73 +1068,6 @@ const gitHandler: InProcessToolHandler = async (toolName, args) => {
   }
 };
 
-// ─── Skills ─────────────────────────────────────────────────────────────────
-
-const skillsTools: ToolEntry[] = [
-  { name: "list_skills", description: "List all available skills", inputSchema: { type: "object", properties: {} } },
-  { name: "read_skill", description: "Read a skill's content", inputSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
-  { name: "create_skill", description: "Create a new skill", inputSchema: { type: "object", properties: { name: { type: "string" }, description: { type: "string" }, content: { type: "string" } }, required: ["name", "description", "content"] } },
-  { name: "update_skill", description: "Update an existing skill", inputSchema: { type: "object", properties: { name: { type: "string" }, content: { type: "string" }, reason: { type: "string" } }, required: ["name", "content", "reason"] } },
-];
-
-const skillsHandler: InProcessToolHandler = async (toolName, args) => {
-  const skillsDir = join(
-    process.env["SAIVAGE_ROOT"] ?? join(projectRoot(), ".saivage"),
-    "skills",
-  );
-
-  switch (toolName) {
-    case "list_skills": {
-      const indexPath = join(skillsDir, "index.json");
-      if (!existsSync(indexPath)) return { content: { skills: [] }, isError: false };
-      const index = JSON.parse(readFileSync(indexPath, "utf-8"));
-      return { content: index, isError: false };
-    }
-    case "read_skill": {
-      const name = args.name as string;
-      const skillPath = resolveSkillPath(skillsDir, name);
-      if (!existsSync(skillPath)) {
-        return { content: { error: `Skill "${name}" not found` }, isError: true };
-      }
-      return { content: { name, content: readFileSync(skillPath, "utf-8") }, isError: false };
-    }
-    case "create_skill": {
-      const name = args.name as string;
-      const description = args.description as string;
-      const content = args.content as string;
-      mkdirSync(skillsDir, { recursive: true });
-      writeFileSync(resolveSkillPath(skillsDir, name), content, "utf-8");
-      const indexPath = join(skillsDir, "index.json");
-      const index = existsSync(indexPath)
-        ? JSON.parse(readFileSync(indexPath, "utf-8"))
-        : { skills: [] };
-      const now = new Date().toISOString();
-      index.skills.push({
-        name,
-        file: `${name}.md`,
-        description,
-        triggers: [],
-        created_at: now,
-        updated_at: now,
-      });
-      writeFileSync(indexPath, JSON.stringify(index, null, 2), "utf-8");
-      return { content: { created: true, name }, isError: false };
-    }
-    case "update_skill": {
-      const name = args.name as string;
-      const content = args.content as string;
-      const skillPath = resolveSkillPath(skillsDir, name);
-      if (!existsSync(skillPath)) {
-        return { content: { error: `Skill "${name}" not found` }, isError: true };
-      }
-      writeFileSync(skillPath, content, "utf-8");
-      return { content: { updated: true, name }, isError: false };
-    }
-    default:
-      return { content: { error: `Unknown skills tool: ${toolName}` }, isError: true };
-  }
-};
-
 // ─── Stubs (not yet implemented) ────────────────────────────────────────────
 
 function stubHandler(serviceName: string): InProcessToolHandler {
@@ -1138,13 +1080,6 @@ function stubHandler(serviceName: string): InProcessToolHandler {
 const webTools: ToolEntry[] = [
   { name: "fetch_url", description: "Fetch raw URL content", inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
   { name: "fetch_page_content", description: "Fetch and extract page text", inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
-];
-
-const memoryTools: ToolEntry[] = [
-  { name: "store_memory", description: "Store a key-value memory", inputSchema: { type: "object", properties: { key: { type: "string" }, value: { type: "string" } }, required: ["key", "value"] } },
-  { name: "recall_memory", description: "Recall a memory by key", inputSchema: { type: "object", properties: { key: { type: "string" } }, required: ["key"] } },
-  { name: "list_memories", description: "List stored memories", inputSchema: { type: "object", properties: {} } },
-  { name: "delete_memory", description: "Delete a memory by key", inputSchema: { type: "object", properties: { key: { type: "string" } }, required: ["key"] } },
 ];
 
 const indexTools: ToolEntry[] = [
@@ -1171,19 +1106,13 @@ export function registerBuiltinServices(mcpRuntime: McpRuntime, options: Builtin
   mcpRuntime.registerInProcess("shell", shellTools, shellHandler);
   mcpRuntime.registerInProcess("data", dataTools, createDataHandler(promptInjectionCop));
   mcpRuntime.registerInProcess("git", gitTools, gitHandler);
-  if (useKnowledgeLoader) {
-    mcpRuntime.registerInProcess("skills", knowledgeSkillsTools, knowledgeSkillsHandler);
-    mcpRuntime.registerInProcess("memory", knowledgeMemoryTools, knowledgeMemoryHandler);
-  } else {
-    mcpRuntime.registerInProcess("skills", skillsTools, skillsHandler);
-    // Stubs — services that need external dependencies not yet integrated
-    mcpRuntime.registerInProcess("memory", memoryTools, stubHandler("memory"), { available: false });
-  }
+  mcpRuntime.registerInProcess("skills", knowledgeSkillsTools, knowledgeSkillsHandler);
+  mcpRuntime.registerInProcess("memory", knowledgeMemoryTools, knowledgeMemoryHandler);
 
   // Stubs — services that need external dependencies not yet integrated
   mcpRuntime.registerInProcess("web", webTools, stubHandler("web"), { available: false });
   mcpRuntime.registerInProcess("index", indexTools, stubHandler("index"), { available: false });
   mcpRuntime.registerInProcess("lock", lockTools, stubHandler("lock"), { available: false });
 
-  log.info("[builtins] 9 built-in services registered (5 active, 4 stubs)");
+  log.info("[builtins] 7 built-in services registered (6 active, 3 stubs)");
 }

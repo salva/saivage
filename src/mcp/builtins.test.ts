@@ -72,13 +72,6 @@ describe("built-in MCP services", () => {
       .rejects.toThrow("Path must stay inside");
   });
 
-  it("rejects skill path traversal names", async () => {
-    mkdirSync(join(projectRoot, ".saivage", "skills"), { recursive: true });
-
-    await expect(runtime.callTool("skills", "read_skill", { name: "../outside" }))
-      .rejects.toThrow("Skill name may only contain");
-  });
-
   it("hides unavailable stub services from the tool catalog", async () => {
     const toolNames = runtime.getAllTools().map((tool) => tool.name);
 

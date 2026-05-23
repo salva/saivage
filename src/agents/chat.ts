@@ -28,6 +28,7 @@ import {
 import { join } from "node:path";
 import { log } from "../log.js";
 import type { PlannerControl } from "../server/bootstrap.js";
+import { archiveSession } from "../knowledge/lifecycle.js";
 
 const CHAT_PROMPT = `# Chat — System Prompt
 
@@ -221,6 +222,12 @@ export class ChatAgent extends BaseAgent implements Agent {
         // Handle channel close
         this.channel.onClose(() => {
           log.info(`[chat:${this.id}] Channel closed`);
+          // FR-9 / WI-11: archive session-scoped knowledge at channel close.
+          try {
+            archiveSession(this.ctx.project.projectRoot, this.input.channel);
+          } catch (err) {
+            log.warn(`[chat:${this.id}] archiveSession failed: ${String(err)}`);
+          }
           this.cleanup();
           resolve({ kind: "success", data: { sessionId: this.input.sessionId } });
         });
