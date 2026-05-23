@@ -1,17 +1,18 @@
 import { defineConfig } from "vitepress";
+import { withMermaid } from "vitepress-plugin-mermaid";
 
-export default defineConfig({
+export default withMermaid(defineConfig({
   title: "Saivage",
   description:
     "Self-extending autonomous AI software-engineering agent — full project documentation",
   lang: "en-US",
-  base: "/",
-  cleanUrls: true,
+  base: process.env.VITEPRESS_BASE || "/docs/",
+  cleanUrls: false,
   lastUpdated: true,
   ignoreDeadLinks: true,
 
   head: [
-    ["link", { rel: "icon", href: "/favicon.svg" }],
+    ["link", { rel: "icon", href: "/docs/favicon.svg" }],
     ["meta", { name: "theme-color", content: "#3c8772" }],
   ],
 
@@ -198,4 +199,4 @@ export default defineConfig({
       text: "Edit this page on GitHub",
     },
   },
-});
+}));

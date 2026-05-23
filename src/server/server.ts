@@ -105,7 +105,7 @@ export async function startServer(
       root: docsDistPath,
       prefix: "/docs/",
       decorateReply: false,
-      wildcard: false,
+      wildcard: true,
       index: ["index.html"],
     });
     log.info(`[server] docs mounted at /docs/ from ${docsDistPath}`);
@@ -193,16 +193,22 @@ export async function startServer(
   app.get("/api/agents/:agentId/conversation", async (req, reply) => {
     const { agentId } = req.params as { agentId: string };
     const agent = runtime.agentRegistry.get(agentId);
-    if (!agent) {
+    if (agent) {
+      return {
+        agent_id: agentId,
+        role: agent.role,
+        started_at: agent.startedAt,
+        message_count: agent.messageCount,
+        entries: agent.getConversationSnapshot(),
+        activity_status: agent.getActivityStatus(),
+      };
+    }
+
+    const completed = runtime.completedAgentRegistry.get(agentId);
+    if (!completed) {
       return reply.status(404).send({ error: "Agent not found or no longer running" });
     }
-    return {
-      agent_id: agentId,
-      role: agent.role,
-      started_at: agent.startedAt,
-      message_count: agent.messageCount,
-      entries: agent.getConversationSnapshot(),
-    };
+    return completed;
   });
 
   // ─── Config API ─────────────────────────────────────────────────────────
