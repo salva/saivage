@@ -493,8 +493,8 @@ function shortModelLabel(msg: Message): string {
 }
 
 .msg.user .msg-content {
-  border-color: rgba(106, 166, 255, 0.36);
-  background: rgba(106, 166, 255, 0.14);
+  border-color: rgba(61, 214, 140, 0.36);
+  background: rgba(61, 214, 140, 0.1);
 }
 
 .msg.system .msg-content {
@@ -527,12 +527,12 @@ function shortModelLabel(msg: Message): string {
   40% { opacity: 1; transform: scale(1); }
 }
 
-.msg.assistant .msg-content :deep(strong) { color: #eef4fb; font-weight: 650; }
+.msg.assistant .msg-content :deep(strong) { color: var(--text); font-weight: 650; }
 .msg.assistant .msg-content :deep(em) { font-style: italic; }
 .msg.assistant .msg-content :deep(.md-h1) { display: block; font-size: 16px; margin: 8px 0 4px; }
 .msg.assistant .msg-content :deep(.md-h2) { display: block; font-size: 14px; margin: 6px 0 3px; }
 .msg.assistant .msg-content :deep(.md-h3) { display: block; font-size: 13px; margin: 4px 0 2px; }
-.msg.assistant .msg-content :deep(.md-code) { background: var(--bg); color: #9dd2ff; padding: 1px 5px; border-radius: 3px; font-family: var(--mono); font-size: 12px; }
+.msg.assistant .msg-content :deep(.md-code) { background: var(--bg); color: var(--accent); padding: 1px 5px; border-radius: 3px; font-family: var(--mono); font-size: 12px; }
 .msg.assistant .msg-content :deep(.md-code-block) { background: var(--bg); padding: 10px 12px; border-radius: 6px; margin: 6px 0; overflow-x: auto; font-size: 12px; line-height: 1.5; white-space: pre; }
 .msg.assistant .msg-content :deep(.md-code-block code) { font-family: var(--mono); color: var(--text); }
 .msg.assistant .msg-content :deep(.md-bullet) {

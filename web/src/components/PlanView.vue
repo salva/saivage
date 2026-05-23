@@ -548,7 +548,7 @@ watch(() => props.focusStageId, async (stageId) => {
 }
 
 .stage-row.current {
-  border-color: rgba(106, 166, 255, 0.48);
+  border-color: rgba(61, 214, 140, 0.48);
 }
 
 .stage-row.expanded,
@@ -638,7 +638,7 @@ li {
 }
 
 code {
-  color: #9dd2ff;
+  color: var(--accent);
   background: var(--surface-1);
   border-radius: 4px;
   padding: 1px 5px;

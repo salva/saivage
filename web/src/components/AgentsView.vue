@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 import { Bot, Clock3, MessageSquare, Wrench } from "lucide-vue-next";
 import FormattedContent from "./FormattedContent.vue";
-import { apiFetch } from "../utils/api";
+import { ApiError, apiFetch } from "../utils/api";
 
 interface AgentState {
   agent_type: string;
@@ -48,6 +48,7 @@ interface ConversationEntry {
     | "model_issue"
     | "model_repair"
     | "model_recovered"
+    | "agent_result"
     | "tool_call"
     | "tool_result"
     | "tool_error";
@@ -66,6 +67,19 @@ interface AgentConversation {
   started_at?: string;
   message_count: number;
   entries: ConversationEntry[];
+  activity_status?: ActivityStatus;
+  finished_at?: string;
+}
+
+interface ActivityStatus {
+  pending_call: {
+    started_at: string;
+    status: "in_flight" | "backoff";
+    attempt: number;
+    reason: string | null;
+    retry_at: string | null;
+  } | null;
+  last_activity_at: string;
 }
 
 interface StepBlock {
@@ -157,9 +171,38 @@ async function loadAgentConversation(agentId: string) {
       await nextTick();
       scrollToBottom();
     }
-  } catch { /* ignore */ }
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) markAgentFinished(agentId);
+  }
   loading.value = false;
   startAgentPolling(agentId);
+}
+
+function markAgentFinished(agentId: string) {
+  if (!selectedAgent.value || selectedId.value !== agentId) return;
+  const finishedAt = new Date().toISOString();
+  const entries = selectedAgent.value.entries.some((entry) => entry.kind === "agent_result")
+    ? selectedAgent.value.entries
+    : [
+        ...selectedAgent.value.entries,
+        {
+          role: "system" as const,
+          kind: "agent_result" as const,
+          timestamp: finishedAt,
+          content:
+            "Conversation finished: the agent is no longer running. The returned payload has already been handed back to the parent conversation.",
+        },
+      ];
+
+  selectedAgent.value = {
+    ...selectedAgent.value,
+    entries,
+    finished_at: selectedAgent.value.finished_at ?? finishedAt,
+    activity_status: selectedAgent.value.activity_status
+      ? { ...selectedAgent.value.activity_status, pending_call: null, last_activity_at: finishedAt }
+      : undefined,
+  };
+  stopAgentPolling();
 }
 
 async function loadSession(sessionId: string) {
@@ -263,6 +306,7 @@ function kindLabel(kind: string): string {
     case "model_issue": return "Model Issue";
     case "model_repair": return "Model Repair";
     case "model_recovered": return "Model Recovered";
+    case "agent_result": return "Finished";
     default: return "Message";
   }
 }
@@ -275,7 +319,7 @@ function entryRoleLabel(entry: ConversationEntry): string {
 }
 
 function isTextLikeEntry(entry: ConversationEntry): boolean {
-  return ["text", "activity", "model_issue", "model_repair", "model_recovered"].includes(entry.kind);
+  return ["text", "activity", "model_issue", "model_repair", "model_recovered", "agent_result"].includes(entry.kind);
 }
 
 function parseContent(content: string): string {
@@ -307,6 +351,8 @@ function truncate(value: string, max: number): string {
 function entryTone(entry: ConversationEntry): string {
   if (entry.kind === "tool_error" || entry.kind === "model_issue") return "danger";
   if (entry.kind === "model_repair") return "warn";
+  if (entry.kind === "agent_result" && /returned (failure|abort|escalation) result/i.test(entry.content)) return "warn";
+  if (entry.kind === "agent_result") return "ok";
   if (entry.kind === "model_recovered" || entry.kind === "tool_result") return "ok";
   if (entry.kind === "tool_call" || entry.kind === "activity") return "accent";
   return entry.role;
@@ -378,6 +424,52 @@ function detailSummary(block: StepBlock): string {
 function detailsOpen(id: string): boolean {
   return expandedDetails.value.has(id);
 }
+
+function durationSince(ts: string): string {
+  const ms = Math.max(0, now.value - new Date(ts).getTime());
+  const secs = Math.floor(ms / 1000);
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ${secs % 60}s`;
+  const hrs = Math.floor(mins / 60);
+  return `${hrs}h ${mins % 60}m`;
+}
+
+function durationUntil(ts: string): string {
+  const ms = Math.max(0, new Date(ts).getTime() - now.value);
+  const secs = Math.ceil(ms / 1000);
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  return `${mins}m ${secs % 60}s`;
+}
+
+const activityIndicator = computed<{
+  state: "in_flight" | "backoff";
+  primary: string;
+  detail?: string;
+} | null>(() => {
+  const status = selectedAgent.value?.activity_status;
+  if (!status) return null;
+  if (status.pending_call) {
+    const pc = status.pending_call;
+    const elapsedStr = durationSince(pc.started_at);
+    if (pc.status === "in_flight") {
+      const attemptLabel = pc.attempt > 1 ? ` (attempt ${pc.attempt})` : "";
+      return {
+        state: "in_flight",
+        primary: `Waiting for model… ${elapsedStr}${attemptLabel}`,
+      };
+    }
+    const retry = pc.retry_at ? ` — retrying in ${durationUntil(pc.retry_at)}` : "";
+    const reason = pc.reason === "throttled" ? "Throttled by provider" : "Transient model error";
+    return {
+      state: "backoff",
+      primary: `${reason}${retry}`,
+      detail: `attempt ${pc.attempt}`,
+    };
+  }
+  return null;
+});
 
 const filteredSessions = computed(() => chatSessions.value.filter(session => session.message_count > 0));
 </script>
@@ -454,7 +546,8 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
           <code>{{ selectedAgent.agent_id }}</code>
           <span>{{ selectedAgent.message_count }} messages · {{ selectedAgent.entries.length }} entries</span>
           <span v-if="selectedAgent.started_at" class="live-time">{{ elapsed(selectedAgent.started_at) }}</span>
-          <span class="live-pill"><span></span>live</span>
+          <span v-if="selectedAgent.finished_at" class="live-pill finished"><span></span>finished</span>
+          <span v-else class="live-pill"><span></span>live</span>
         </div>
 
         <div class="thread-body" ref="threadBody">
@@ -542,6 +635,17 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
               </div>
             </template>
           </article>
+          <div
+            v-if="activityIndicator"
+            class="activity-indicator"
+            :class="`state-${activityIndicator.state}`"
+            role="status"
+            aria-live="polite"
+          >
+            <span class="dot" />
+            <span class="primary">{{ activityIndicator.primary }}</span>
+            <span v-if="activityIndicator.detail" class="detail">{{ activityIndicator.detail }}</span>
+          </div>
         </div>
       </template>
 
@@ -785,6 +889,14 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
   background: var(--accent-2);
 }
 
+.live-pill.finished {
+  color: var(--text-muted);
+}
+
+.live-pill.finished span {
+  background: var(--text-muted);
+}
+
 .thread-body {
   flex: 1;
   overflow-y: auto;
@@ -865,8 +977,8 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
 
 .entry.user .text-entry,
 .chat-msg.user .text-entry {
-  border-color: rgba(106, 166, 255, 0.35);
-  background: rgba(106, 166, 255, 0.1);
+  border-color: rgba(61, 214, 140, 0.35);
+  background: rgba(61, 214, 140, 0.08);
 }
 
 .entry.danger .text-entry {
@@ -998,5 +1110,60 @@ const filteredSessions = computed(() => chatSessions.value.filter(session => ses
   .live-time {
     margin-left: 0;
   }
+}
+
+.activity-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: var(--panel, #1a1d24);
+  border: 1px solid var(--border, #2a2f3a);
+  color: var(--muted, #98a2b3);
+  align-self: flex-start;
+  width: fit-content;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+.activity-indicator .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.activity-indicator.state-in_flight {
+  color: var(--accent, #4ea1ff);
+}
+
+.activity-indicator.state-in_flight .dot {
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.activity-indicator.state-backoff {
+  color: var(--warn, #f5a623);
+}
+
+.activity-indicator.state-backoff .dot {
+  animation: pulse 0.8s ease-in-out infinite;
+}
+
+.activity-indicator.state-idle {
+  color: var(--muted, #98a2b3);
+  opacity: 0.7;
+}
+
+.activity-indicator .detail {
+  opacity: 0.7;
+  font-style: italic;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.7); }
 }
 </style>

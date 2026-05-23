@@ -294,7 +294,7 @@ watch([runtimeStatus, runtimeStage, activeTabConfig], ([status, stage, tab]) => 
   flex-direction: column;
   min-width: 0;
   border-right: 1px solid var(--border);
-  background: #0d1218;
+  background: var(--bg);
 }
 
 .brand {
@@ -314,7 +314,7 @@ watch([runtimeStatus, runtimeStage, activeTabConfig], ([status, stage, tab]) => 
   border: 1px solid var(--border-strong);
   border-radius: 8px;
   color: var(--accent);
-  background: var(--surface-1);
+  background: var(--surface-2);
 }
 
 .brand-text {
@@ -367,6 +367,7 @@ watch([runtimeStatus, runtimeStage, activeTabConfig], ([status, stage, tab]) => 
   color: var(--text);
   border-color: var(--border);
   background: var(--surface-2);
+  border-left: 2px solid var(--accent);
 }
 
 .nav-item.active svg {
@@ -412,7 +413,7 @@ watch([runtimeStatus, runtimeStage, activeTabConfig], ([status, stage, tab]) => 
   inset: 0;
   display: grid;
   place-items: center;
-  background: rgba(5, 8, 12, 0.65);
+  background: rgba(0, 0, 0, 0.5);
   z-index: 50;
 }
 .help-card {
@@ -424,7 +425,7 @@ watch([runtimeStatus, runtimeStage, activeTabConfig], ([status, stage, tab]) => 
   border-radius: 10px;
   background: var(--surface-1);
   color: var(--text);
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-3);
 }
 .help-card header {
   display: flex;

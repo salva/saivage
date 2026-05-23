@@ -329,7 +329,7 @@ const tabItems = computed(() => [
 }
 
 code {
-  color: #9dd2ff;
+  color: var(--accent);
   background: var(--bg);
   border-radius: 4px;
   padding: 2px 6px;
