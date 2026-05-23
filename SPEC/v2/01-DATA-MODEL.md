@@ -309,25 +309,45 @@ interface InspectionRequest {
 
 ---
 
-## 10. Skill Index
+## 10. Skills & Memory
 
-**Path:** `<project>/.saivage/skills/index.json`
+**On-disk layout under `<project>/.saivage/`** (design §B.4):
 
-```typescript
-interface SkillIndex {
-  skills: SkillEntry[];
-}
-
-interface SkillEntry {
-  name: string;
-  file: string;                      // relative path to .md file
-  description: string;
-  triggers: string[];                // e.g. "keyword:pandas", "tool:web_search", "path:*.py", "tag:data", "agent:coder"
-  target_agents?: string[];          // agent types this skill applies to (omit = all agents)
-  created_at: string;
-  updated_at: string;
-}
 ```
+.saivage/
+├── skills/
+│   ├── project/{index.json, audit.jsonl, records/<uuid>.json, records/<uuid>.md}
+│   ├── stages/<stage_id>/{index.json, audit.jsonl, records/}
+│   └── sessions/<channel_id>/{index.json, audit.jsonl, records/}
+├── memory/
+│   ├── project/{index.json, audit.jsonl, records/<uuid>.json}
+│   ├── stages/<stage_id>/{index.json, audit.jsonl, records/}
+│   └── sessions/<channel_id>/{index.json, audit.jsonl, records/}
+```
+
+Built-in skills ship at `saivage/skills/builtin/<topic>/SKILL.md` (YAML frontmatter, no `index.json`) and live **outside** `<project>/.saivage/`. They are bundled into `dist/skills/builtin/` by `tsup`.
+
+`.saivage/{skills,memory}/sessions/` is gitignored; `project/` and `stages/` subtrees are committed. Each scope subtree is self-contained — its own `index.json` (a derivable summary projection of `records/*.json`), its own append-only `audit.jsonl`, and its own `records/` directory.
+
+**Schemas.** The canonical Zod schemas live in the design document — see [SPEC/v2/skills-memory/01-DESIGN.md](skills-memory/01-DESIGN.md) §B.1 for `SkillRecord`, `MemoryRecord`, and `AuditEntry`. Summary of the shared `RecordBase` fields:
+
+- `id` (UUID) — unique within `(kind, scope, scope_ref)`.
+- `kind` — `"skill"` | `"memory"`.
+- `scope` — `"project"` | `"stage"` | `"session"`; `scope_ref` is required for stage/session and matches the path under §B.4.
+- `status` — `"active"` | `"superseded"` | `"archived"` | `"expired"` (tombstone for `deleted`).
+- `created_at` / `updated_at` — ISO 8601 datetimes.
+- `author_agent` — `{ role, agent_id }` of the creator.
+- `source` — optional `{ stage_id?, task_id? }` provenance.
+- `expires_at` / `ttl_ms` — optional decay metadata (project scope only; stage/session use scope hooks instead).
+- `supersedes` / `superseded_by` — UUID pair forming the supersession chain.
+- `relates_to` — symmetric free-form references (bounded at 16).
+- `survive_compaction` — boolean; `true` ⇒ record participates in post-compaction reinjection (design §E.1).
+
+`SkillRecord` adds `{ origin: "builtin"|"project", name, description, triggers[], target_agents[], body_path }`. `MemoryRecord` adds `{ topic: {domain, subject, aspect?}, keys[], target_agents[], body, source_ref? }`. See design §B.1 for the exact refinements.
+
+`AuditEntry` is one JSON line per write attempt (including rejections) in the scope's `audit.jsonl`: `{ ts, record_id, op, outcome, error_code?, author_agent, reason, prev_status?, next_status?, content_hash_before?, content_hash_after? }`. Operations: `create | update | supersede | archive | unarchive | delete | expire`.
+
+**Lifecycle states.** `active` → `superseded` (via `supersede_*`), `archived` (reversible via `unarchive_*`), `expired` (sweeper), `deleted` (tombstone). Stage terminal transitions archive their stage-scoped records via a directory walk; chat-channel close archives session-scoped records the same way. Supersession may widen scope (`stage → project`) but never narrow it; see design §B.2 / §B.5.
 
 ---
 

@@ -63,15 +63,14 @@ graph TB
         EBUS["Event Bus"]
     end
 
-    subgraph "MCP Services (in-process + stubs)"
+    subgraph "MCP Services (in-process)"
         FS["Filesystem"]
         SH["Shell"]
         GIT["Git"]
         WB["Web (stub)"]
         PLAN["Plan"]
         SK["Skills"]
-        MEM["Memory (stub)"]
-        IDX["Index (stub)"]
+        MEM["Memory"]
     end
 
     TG --> CT
@@ -238,22 +237,34 @@ An in-process pub/sub bus that connects runtime events to user-facing channels.
 | `inspector_complete` | Inspector returns report | info |
 | `plan_updated` | Planner modifies the plan | info |
 
-### 2.6 Skill System
+### 2.6 Skill & Memory System
 
-Skills inject project-specific knowledge into agent contexts at invocation time.
+Skill and memory records share one document-store substrate, one Zod base (`RecordBase`), one append-only audit log, and one permission engine in `src/knowledge/`. They diverge on default surfacing mode: skills are eagerly injected into agent system prompts at construction time; memories are on-demand lookup (or eager when `target_agents` is non-empty). Full design: [SPEC/v2/skills-memory/01-DESIGN.md](skills-memory/01-DESIGN.md).
 
-**Responsibilities:**
-- **Trigger matching**: when an agent is invoked, the Skill Loader evaluates all skills against the agent's metadata (task/stage description, tool list, file paths, tags, agent type). Trigger types: `keyword:<word>` (case-insensitive substring), `tool:<name>` (exact match), `path:<glob>` (minimatch), `tag:<label>` (exact), `agent:<type>` (exact).
-- **Target filtering**: skills with `target_agents` are only loaded for matching agent types.
-- **Ranking**: matched skills are ranked by trigger match count (descending), then `updated_at` (most recent first).
-- **Budget**: top N skills loaded per invocation (configurable, default 5).
-- **Injection format**: each loaded skill is prepended to the context as a system message section: `--- SKILL: <name> ---\n<content>\n---`.
+**Authoring surface** (design §C.1). Sixteen MCP tools — eight per kind — backed by a shared store/permissions engine: `create_*`, `read_*` / `get_*`, `list_*`, `search_*`, `update_*`, `supersede_*`, `archive_*`, `delete_*`. Direct filesystem writes under `.saivage/{skills,memory}/` are rejected by `fsGuard` from every role. Authorization is enforced at the MCP runtime via `ToolCallContext` + `permissions.canCall`, not by handler convention.
 
-**Discovery paths** (in precedence order):
-1. `<SAIVAGE_ROOT>/skills/` — builtin skills shipped with Saivage
-2. `<PROJECT>/.saivage/skills/` — project-specific skills (highest precedence)
+**Built-in vs project skills.** Built-in skills ship at `saivage/skills/builtin/<topic>/SKILL.md` with YAML frontmatter, walked by `src/knowledge/builtinWalker.ts`, and have `origin="builtin"`, `scope="project"`. Project skills are authored at runtime via `create_skill` (no frontmatter — fields live in the JSON record).
 
-**Generation**: the Manager can schedule skill-creation tasks when it detects reusable patterns. The Coder creates the `.md` file and updates `skills/index.json`.
+**Eager-injection algorithm** (design §D.1). When a `BaseAgent` is constructed, the knowledge loader:
+
+1. Collects candidates from four sources: built-in skills (frontmatter walk), `skills/project/index.json`, `skills/stages/<ctx.stage_id>/index.json`, `skills/sessions/<ctx.channel_id>/index.json`, plus memory records (in the same scope tree) whose `target_agents` is non-empty.
+2. Filters to `status == "active"` and `target_agents` matching the current agent role (empty `target_agents` = any role).
+3. Scores skills against `keyword:` / `tag:` / `agent:` triggers only. Triggerless skills score 0 (FR-8): not eager-injected, but findable via `search_skills`. Memories score 1 when eligible.
+4. Sorts: origin precedence (project > builtin) → score desc → `updated_at` desc → `id` asc.
+5. Splits the result into the **two-tier budget** (§D.2).
+
+**Two-tier budget** (design §D.2). The eager block is **survivor reinjection** + **ordinary eager records**:
+
+- **Survivor sub-budget — always-on, summary form.** Records with `survive_compaction: true` (skills + project-scoped memories) are always included as one-line summaries (no token cap — this is the FR-15 contract). Per-record hard ceiling 4096 tokens post-summarization; `create_*` / `update_*` rejects oversize records (`OVERSIZED_SURVIVOR`); load-time corruption quarantines the record but echoes its id in the block header.
+- **Ordinary eager sub-budget — token cap.** Default 2048 tokens per agent (configurable via `ctx.project.config.skills.eager_budget_tokens`). Token estimation uses `length / 4`, matching `compaction.ts` `estimateTokens`. Records are appended in rank order; overflow records are dropped (not truncated) and their ids are echoed in the block header `omitted: [...]` so the agent can retrieve them via `read_skill` / `get_memory`.
+
+Survivor reinjection (post-compaction) is unconditional — the ordinary token cap does **not** apply to survivors.
+
+**Canonical normalization** (design §D.3). `search_skills` and `search_memories` apply universal normalization to both query and indexed text: NFC unicode normalize → lowercase → strip ASCII punctuation `[^\w\s]` (replace with space) → collapse whitespace → split on whitespace. Match is **exact token equality** after normalization (no substring, no stemming). The per-scope `index.json` caches the first 500 chars of every record body as `body_snippet` so search never touches body files on the hot path; full bodies load only via `read_skill` / `get_memory`. Stable ordering: score desc → `updated_at` desc → `id` asc.
+
+**Lifecycle & decay.** Records transition `active` → `superseded` (via `supersede_*`) | `archived` (via `archive_*`, reversible with `unarchive_*`) | `expired` (sweeper). `delete_*` writes a tombstone + audit. Stage-terminal transitions archive their stage-scoped subtree; chat-channel close archives the session subtree. TTL is project-scope only; the sweeper runs on-load lazily, transitions under the per-record mutex, and never races authoring writes.
+
+**Cross-references and scope rules** are in design §B.5 (allowed supersession pairs — scope may widen but never narrow). Permissions matrix (9 roles × per-operation per-kind) is design §F. On-disk layout is design §B.4 (mirrored in [SPEC/v2/01-DATA-MODEL.md](01-DATA-MODEL.md) §10).
 
 ### 2.7 Document Store
 
@@ -345,7 +356,10 @@ erDiagram
     StageSummary ||--o| Escalation : "may contain"
     UserNote }|--|| Plan : "influences"
     InspectionRequest ||--|| InspectionReport : "produces"
-    SkillIndex ||--|{ SkillEntry : "contains"
+    SkillRecord }o--o| SkillRecord : "supersedes"
+    MemoryRecord }o--o| MemoryRecord : "supersedes"
+    SkillRecord ||--|{ AuditEntry : "audited by"
+    MemoryRecord ||--|{ AuditEntry : "audited by"
 ```
 
 Full TypeScript interfaces for all document types in [01-DATA-MODEL.md](01-DATA-MODEL.md).
@@ -512,19 +526,18 @@ graph TB
         MCPRT["MCP Runtime<br/><i>lazy start, health check,<br/>idle shutdown</i>"]
     end
 
-    subgraph "MCP Services (child processes)"
+    subgraph "MCP Services (in-process)"
         FS["Filesystem<br/><i>read, write, list, search</i>"]
         SH["Shell<br/><i>run_command</i>"]
         GIT["Git<br/><i>commit, status, diff, log</i><br/><b>serialized access</b>"]
         WEB["Web<br/><i>fetch_url, fetch_page_content</i>"]
         PLAN["Plan<br/><i>11 tools for plan CRUD</i><br/><b>atomic writes</b>"]
-        SK["Skills<br/><i>list, read, create, update</i>"]
-        MEM["Memory<br/><i>store, recall, list, delete</i><br/><b>SQLite + FTS5</b>"]
-        IDX["Index<br/><i>ingest, search</i><br/><b>SQLite + FTS5</b>"]
+        SK["Skills<br/><i>create, read, list, search, update, supersede, archive, delete</i><br/><b>per-record mutex + audit log</b>"]
+        MEM["Memory<br/><i>create, get, list, search, update, supersede, archive, delete</i><br/><b>per-record mutex + audit log</b>"]
     end
 
     AGENTS --> MCPRT
-    MCPRT --> FS & SH & GIT & WEB & PLAN & SK & MEM & IDX
+    MCPRT --> FS & SH & GIT & WEB & PLAN & SK & MEM
 ```
 
 **Key design decisions:**
@@ -544,9 +557,10 @@ graph TB
 | Web | — | — | ✓ | ✓ | ✓ | — |
 | Plan (read) | ✓ | — | — | — | — | ✓ |
 | Plan (write) | ✓ | — | — | — | — | — |
-| Skills | — | — | ✓ | — | — | — |
-| Memory | — | — | ✓ | ✓ | ✓ | — |
-| Index | — | — | ✓ | ✓ | ✓ | — |
+| Skills | see [05-MCP-SERVICES.md](05-MCP-SERVICES.md) §6 + design [§F](skills-memory/01-DESIGN.md) |
+| Memory | see [05-MCP-SERVICES.md](05-MCP-SERVICES.md) §7 + design [§F](skills-memory/01-DESIGN.md) |
+
+Skills & memory ACL is enforced at the MCP runtime (`ToolCallContext` + `permissions.canCall`) per-tool per-role; the matrix is not summarizable in one row. Full 9-role × per-operation table in [SPEC/v2/skills-memory/01-DESIGN.md](skills-memory/01-DESIGN.md) §F.
 
 Full tool schemas, parameters, and return values in [05-MCP-SERVICES.md](05-MCP-SERVICES.md).
 Plan MCP service specification in [03-PLAN-MCP-SERVICE.md](03-PLAN-MCP-SERVICE.md).

@@ -18,9 +18,14 @@ Whenever you create, move, or organize files within the `.saivage/` directory or
 │   └── reports/<task-id>.json  # Coder/Researcher creates
 ├── inspections/             # Inspector creates
 ├── research/<topic>/        # Researcher creates
-├── skills/                  # Coder creates
-│   ├── index.json
-│   └── <name>.md
+├── skills/                  # Manager / Inspector author via MCP `create_skill`
+│   ├── project/{index.json, audit.jsonl, records/<uuid>.{json,md}}
+│   ├── stages/<stage-id>/{index.json, audit.jsonl, records/}
+│   └── sessions/<channel-id>/{index.json, audit.jsonl, records/}  # gitignored
+├── memory/                  # Pl/Mg/Co/Re/In author via MCP `create_memory`
+│   ├── project/{index.json, audit.jsonl, records/<uuid>.json}
+│   ├── stages/<stage-id>/{index.json, audit.jsonl, records/}
+│   └── sessions/<channel-id>/{index.json, audit.jsonl, records/}  # gitignored
 └── tools/inspector/         # Inspector creates (persistent tools)
 ```
 
