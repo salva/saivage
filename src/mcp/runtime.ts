@@ -16,6 +16,7 @@ export interface RuntimeToolEntry extends ToolEntry {
 export type InProcessToolHandler = (
   toolName: string,
   args: Record<string, unknown>,
+  ctx?: import("./toolContext.js").ToolCallContext,
 ) => Promise<{ content: unknown; isError: boolean }>;
 
 interface InProcessService {
@@ -175,6 +176,7 @@ export class McpRuntime {
     serviceName: string,
     toolName: string,
     args: Record<string, unknown>,
+    ctx?: import("./toolContext.js").ToolCallContext,
   ): Promise<unknown> {
     // Check in-process services first
     const inProc = this.inProcessServices.get(serviceName);
@@ -186,7 +188,7 @@ export class McpRuntime {
         ? McpRuntime.SHELL_TIMEOUT_MS
         : McpRuntime.IN_PROCESS_TIMEOUT_MS;
       const result = await withTimeout(
-        inProc.handler(toolName, args),
+        inProc.handler(toolName, args, ctx),
         timeoutMs,
         `Tool "${toolName}" on "${serviceName}" timed out after ${timeoutMs}ms`,
       );

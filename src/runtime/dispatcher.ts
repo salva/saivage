@@ -187,10 +187,19 @@ export class Dispatcher {
       this.consecutiveInvalidCalls = 0;
 
       const args = (tc.input ?? {}) as Record<string, unknown>;
+      const toolCtx = {
+        role: ctx.role,
+        agentId: ctx.agentId,
+        projectRoot: ctx.project.projectRoot,
+        ...(ctx.stageId ? { stageId: ctx.stageId } : {}),
+        ...(ctx.channelId ? { channelId: ctx.channelId } : {}),
+        ...(ctx.sessionId ? { sessionId: ctx.sessionId } : {}),
+      };
       const result = await this.mcpRuntime.callTool(
         toolEntry.service,
         tc.name,
         args,
+        toolCtx,
       );
 
       const content =

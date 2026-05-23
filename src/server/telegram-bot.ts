@@ -72,6 +72,8 @@ export async function startTelegramBot(
       mcpRuntime: runtime.mcpRuntime,
       agentId: agentId(),
       role: "chat" as const,
+      channelId: "telegram",
+      sessionId,
       ...resolveChatRoute(),
     };
 

@@ -156,7 +156,7 @@ export async function bootstrap(
   mcpRuntime.registerInProcess(
     "plan",
     planTools,
-    (toolName: string, args: Record<string, unknown>) =>
+    (toolName: string, args: Record<string, unknown>, _ctx?: import("../mcp/toolContext.js").ToolCallContext) =>
       planService.handleToolCall(toolName, args),
   );
 
@@ -244,7 +244,7 @@ export async function bootstrap(
   mcpRuntime.registerInProcess(
     "notes",
     NoteService.getToolSchemas(),
-    (toolName: string, args: Record<string, unknown>) =>
+    (toolName: string, args: Record<string, unknown>, _ctx?: import("../mcp/toolContext.js").ToolCallContext) =>
       noteService.handleToolCall(toolName, args),
   );
 
@@ -294,6 +294,7 @@ export function createChildSpawner(
       case "manager": {
         const managerInput = input as import("../agents/types.js").ManagerInput;
         const managerSpawner = createChildSpawner(runtime);
+        ctx.stageId = managerInput.stage?.id;
         agent = new ManagerAgent(ctx, managerInput, managerSpawner, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
         });
@@ -303,6 +304,7 @@ export function createChildSpawner(
 
       case "coder": {
         const workerInput = normalizeWorkerDispatchInput(input, role);
+        ctx.stageId = workerInput.stageId;
         agent = new CoderAgent(ctx, workerInput, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
         });
@@ -313,6 +315,7 @@ export function createChildSpawner(
 
       case "researcher": {
         const workerInput = normalizeWorkerDispatchInput(input, role);
+        ctx.stageId = workerInput.stageId;
         agent = new ResearcherAgent(ctx, workerInput, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
         });
@@ -323,6 +326,7 @@ export function createChildSpawner(
 
       case "data_agent": {
         const workerInput = normalizeWorkerDispatchInput(input, role);
+        ctx.stageId = workerInput.stageId;
         agent = new DataAgent(ctx, workerInput, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
         });
@@ -334,6 +338,7 @@ export function createChildSpawner(
       case "reviewer": {
         const workerInput = normalizeWorkerDispatchInput(input, role);
         const stageId = workerInput.stageId ?? "unknown-stage";
+        ctx.stageId = workerInput.stageId;
         const existing = stageReviewers.get(stageId);
         if (existing) {
           agent = existing.agent;
@@ -355,6 +360,7 @@ export function createChildSpawner(
 
       case "inspector": {
         const inspectorInput = input as import("../agents/types.js").InspectorInput;
+        ctx.stageId = tracker.getCurrentStage() ?? undefined;
         agent = new InspectorAgent(ctx, inspectorInput, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
         });
@@ -461,6 +467,7 @@ export async function runPlanner(
     role: "planner",
     ...resolveAgentRoute(runtime, "planner"),
     startupDirectives: runtime.plannerStartupDirectives.splice(0),
+    stageId: tracker.getCurrentStage() ?? undefined,
   };
 
   const childSpawner = createChildSpawner(runtime);

@@ -679,6 +679,8 @@ export async function startServer(
       mcpRuntime: runtime.mcpRuntime,
       agentId: agentId(),
       role: "chat" as const,
+      channelId: "web",
+      sessionId,
       ...resolveChatRoute(runtime),
     };
 

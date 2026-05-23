@@ -377,6 +377,11 @@ export class RuntimeTracker {
     this.flush();
   }
 
+  /** Return the currently-active stage id (null when idle). */
+  getCurrentStage(): string | null {
+    return this.currentStageId;
+  }
+
   /**
    * Stop persisting state. Used by `runtime.shutdown()` so that any
    * lingering activity callbacks from agents finishing in flight cannot

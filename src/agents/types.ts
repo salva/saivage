@@ -54,6 +54,12 @@ export interface AgentContext {
   accountRef?: string;
   /** Runtime-supplied startup directives for the current agent instance. */
   startupDirectives?: string[];
+  /** Active stage id for stage-scoped agents (manager, worker, inspector). */
+  stageId?: string;
+  /** Chat channel id for chat-scoped agents (web | telegram | …). */
+  channelId?: string;
+  /** Chat session id (per-channel monotonic id) for chat-scoped agents. */
+  sessionId?: string;
 }
 
 /** Inputs for each agent type. */

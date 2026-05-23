@@ -575,6 +575,7 @@ function makeReviewerContext(root: string, router: unknown, mcpRuntimeOverride?:
     } as AgentContext["mcpRuntime"],
     agentId: "reviewer-1",
     role: "reviewer",
+    stageId: "stage-1",
     modelSpec: "test/model",
   };
 }
@@ -585,6 +586,9 @@ function makeChatContext(root: string, router: unknown): AgentContext {
     ...ctx,
     agentId: "chat-1",
     role: "chat",
+    stageId: undefined,
+    channelId: "web",
+    sessionId: "session-test-1",
   };
 }
 
