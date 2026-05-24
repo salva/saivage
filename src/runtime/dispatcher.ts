@@ -6,35 +6,26 @@
  */
 
 import type { Message, ContentBlock, ToolCallResult, ChatResponse, ToolSchema } from "../providers/types.js";
-import type { AgentContext, AgentResult, AgentRole } from "../agents/types.js";
+import type { AgentContext, AgentResult } from "../agents/types.js";
+import { ROSTER, type DispatchableRole } from "../agents/roster.js";
 import type { McpRuntime, RuntimeToolEntry } from "../mcp/runtime.js";
 import { readStash } from "./stash.js";
 import { NoteManager } from "./notes.js";
 import { log } from "../log.js";
 
-/** Agent-dispatch tool names that trigger suspend/resume. */
-export const DISPATCH_TOOLS = new Set([
-  "run_manager",
-  "run_coder",
-  "run_researcher",
-  "run_data_agent",
-  "run_reviewer",
-  "run_inspector",
-]);
-
 /** Maps dispatch tool name to child agent role. */
-export const DISPATCH_ROLE_MAP: Record<string, AgentRole> = {
-  run_manager: "manager",
-  run_coder: "coder",
-  run_researcher: "researcher",
-  run_data_agent: "data_agent",
-  run_reviewer: "reviewer",
-  run_inspector: "inspector",
-};
+export const DISPATCH_ROLE_MAP: Record<string, DispatchableRole> = Object.fromEntries(
+  ROSTER
+    .filter((entry) => entry.dispatchTool !== null)
+    .map((entry) => [entry.dispatchTool as string, entry.role as DispatchableRole]),
+);
+
+/** Agent-dispatch tool names that trigger suspend/resume. */
+export const DISPATCH_TOOLS = new Set<string>(Object.keys(DISPATCH_ROLE_MAP));
 
 /** Handler for spawning a child agent and running it to completion. */
 export type ChildSpawner = (
-  role: AgentRole,
+  role: DispatchableRole,
   input: unknown,
   parentCtx: AgentContext,
 ) => Promise<AgentResult>;

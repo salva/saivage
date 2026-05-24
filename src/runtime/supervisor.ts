@@ -3,6 +3,7 @@ import { getRecentLogs } from "../log.js";
 import type { ModelRouter } from "../providers/router.js";
 import type { BaseAgent } from "../agents/base.js";
 import type { AgentRole } from "../agents/types.js";
+import { ROSTER } from "../agents/roster.js";
 import { log } from "../log.js";
 
 const DEFAULT_MODEL = "github-copilot/gpt-5.4";
@@ -11,13 +12,13 @@ const DEFAULT_THRESHOLD = 3;
 const DEFAULT_LOG_LINES = 400;
 const FORCE_CANCEL_DELAY_MS = 600_000; // re-cancel after 10 minutes if agent didn't stop
 
-const ROLE_ABORT_PRIORITY: AgentRole[] = [
-  "reviewer",
-  "data_agent",
-  "coder",
-  "researcher",
-  "manager",
-];
+const ROLE_ABORT_PRIORITY: AgentRole[] = ROSTER
+  .filter((entry) => entry.abortPriority !== null)
+  .slice()
+  .sort((a, b) => (a.abortPriority as number) - (b.abortPriority as number))
+  .map((entry) => entry.role as AgentRole);
+
+export { ROLE_ABORT_PRIORITY };
 
 type SupervisorVerdict = {
   stuck: boolean;

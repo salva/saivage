@@ -5,18 +5,12 @@
  */
 
 import type { AgentRole } from "../agents/types.js";
+import { ROSTER } from "../agents/roster.js";
 
 /** Default self-check frequencies per agent role. */
-export const DEFAULT_SELF_CHECK_FREQUENCY: Record<AgentRole, number> = {
-  planner: 30,
-  manager: 20,
-  coder: 15,
-  researcher: 15,
-  data_agent: 15,
-  reviewer: 15,
-  inspector: 15,
-  chat: 0, // Chat doesn't use self-check
-};
+export const DEFAULT_SELF_CHECK_FREQUENCY: Record<AgentRole, number> = Object.fromEntries(
+  ROSTER.map((entry) => [entry.role, entry.selfCheckFrequency]),
+) as Record<AgentRole, number>;
 
 /** Self-check state per agent conversation. */
 export interface SelfCheckState {

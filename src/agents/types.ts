@@ -16,16 +16,8 @@ import type { ProjectContext } from "../store/project.js";
 import type { ModelRouter } from "../providers/router.js";
 import type { McpRuntime } from "../mcp/runtime.js";
 
-/** Agent roles in the hierarchy. */
-export type AgentRole =
-  | "planner"
-  | "manager"
-  | "coder"
-  | "researcher"
-  | "data_agent"
-  | "reviewer"
-  | "inspector"
-  | "chat";
+import type { AgentRole } from "./roster.js";
+export type { AgentRole };
 
 /** Result of an agent's execution. */
 export type AgentResult =

@@ -3,16 +3,12 @@
  * Reviews completed stage work against objectives and acceptance criteria.
  */
 
-import { BaseAgent, type BaseAgentConfig } from "./base.js";
-import type {
-  Agent,
-  AgentContext,
-  AgentResult,
-  WorkerInput,
-} from "./types.js";
-import type { TaskReport } from "../types.js";
-import { log } from "../log.js";
+import { WorkerAgent } from "./worker.js";
+import type { BaseAgentConfig } from "./base.js";
+import type { AgentContext, AgentResult, WorkerInput } from "./types.js";
+import { normalizeTask } from "./task-report.js";
 import { buildHandoffContext } from "./handoff.js";
+import { renderRosterSummary } from "./roster.js";
 
 const REVIEWER_PROMPT = `# Reviewer — System Prompt
 
@@ -20,10 +16,7 @@ const REVIEWER_PROMPT = `# Reviewer — System Prompt
 
 You are operating inside **Saivage**, an autonomous multi-agent system. Here is where you fit:
 
-- **Planner**: The strategic agent that owns the overall plan. You never interact with it directly.
-- **Manager** (your boss): The tactical executor that dispatched you near the end of a stage. Your review determines whether the Manager can summarize the stage or must launch correction tasks.
-- **Coder, Researcher, Data Agent**: Worker agents whose outputs you inspect. You do not redo their work unless a tiny verification command is needed.
-- **Reviewer** (you): A stage-scoped quality gate. You persist for the lifespan of one stage, so repeated review requests from the same Manager should build on your earlier findings and reports.
+${renderRosterSummary("reviewer")}
 
 ## Your Role
 
@@ -76,100 +69,38 @@ Every issue that should drive a correction task must appear in \`issues_found[]\
 
 Return the full TaskReport JSON as your final response.`;
 
-export class ReviewerAgent extends BaseAgent implements Agent {
-  private input: WorkerInput;
+export class ReviewerAgent extends WorkerAgent {
   private reviewCount = 0;
 
-  constructor(ctx: AgentContext, input: WorkerInput, config?: Partial<BaseAgentConfig>) {
-    const task = normalizeTask(input.task);
-    const normalized: WorkerInput = { ...input, task };
-    const initialMessage = buildReviewerMessage(ctx, normalized);
-
-    super(ctx, {
+  constructor(
+    ctx: AgentContext,
+    input: WorkerInput,
+    config?: Partial<BaseAgentConfig>,
+  ) {
+    super(ctx, input, {
+      role: "reviewer",
       systemPrompt: REVIEWER_PROMPT,
-      skillContext: {
-        agentRole: "reviewer",
-        description: task.description,
-        tags: task.tags ?? [],
-      },
-      initialMessage,
+      buildInitialMessage: (i) => buildReviewerMessage(ctx, i),
+      invalidFinalResponseMessage:
+        "Invalid final review response: you have not used any tools to inspect evidence yet.",
       ...config,
     });
-
-    this.input = normalized;
   }
 
-  async run(): Promise<AgentResult> {
+  override async run(): Promise<AgentResult> {
     return this.review(this.input);
   }
 
   async review(input: WorkerInput): Promise<AgentResult> {
-    this.input = normalizeWorkerInput(input);
+    this.input = { ...input, task: normalizeTask(input.task, "reviewer") };
     if (this.reviewCount > 0) {
-      this.injectMessage(buildReviewerMessage(this.ctx, this.input, this.reviewCount + 1));
+      this.injectMessage(
+        buildReviewerMessage(this.ctx, this.input, this.reviewCount + 1),
+      );
     }
-
-    log.info(
-      `[reviewer:${this.id}] Starting review ${this.reviewCount + 1} task ${this.input.task.id}: ${this.input.task.description.slice(0, 80)}`,
-    );
-
-    const startedAt = new Date().toISOString();
-    const start = Date.now();
-
-    try {
-      const { text, finishReason } = await this.runLoop();
-      this.messages.push({ role: "assistant", content: text });
-      this.reviewCount++;
-      if (finishReason === "abort" || finishReason === "cancelled") {
-        return { kind: "abort", reason: text, partial: buildFailureReport(this.input, startedAt, start, text) };
-      }
-      if (finishReason === "max_compactions" || finishReason === "error") {
-        return { kind: "failure", reason: text, partial: buildFailureReport(this.input, startedAt, start, text) };
-      }
-      return { kind: "success", data: parseTaskReport(text, this.input, startedAt, start) };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log.error(`[reviewer:${this.id}] Failed: ${msg}`);
-      return { kind: "failure", reason: msg, partial: buildFailureReport(this.input, startedAt, start, msg) };
-    }
+    this.reviewCount++;
+    return this.executeTask(this.input);
   }
-
-  protected override validateFinalResponse(): string | null {
-    if (this.hasUsedAnyTool()) return null;
-    return "Invalid final review response: you have not used any tools to inspect evidence yet.";
-  }
-}
-
-function normalizeWorkerInput(input: WorkerInput): WorkerInput {
-  const task = normalizeTask(input.task);
-  return { ...input, task };
-}
-
-function normalizeTask(raw: any): import("../types.js").Task {
-  const descriptionParts = [raw.description ?? raw.objective ?? "(no description)"];
-  if (Array.isArray(raw.files) && raw.files.length > 0) {
-    descriptionParts.push(`Suggested files or starting points:\n${raw.files.map((file: string) => `- ${file}`).join("\n")}`);
-  }
-  if (typeof raw.instructions === "string" && raw.instructions.trim()) {
-    descriptionParts.push(`Detailed instructions from Manager:\n${raw.instructions.trim()}`);
-  }
-
-  return {
-    id: raw.id ?? "unknown",
-    type: raw.type ?? "review",
-    assigned_to: raw.assigned_to ?? "reviewer",
-    description: descriptionParts.join("\n\n"),
-    checklist: Array.isArray(raw.checklist)
-      ? raw.checklist
-      : (Array.isArray(raw.acceptance_criteria)
-          ? raw.acceptance_criteria.map((c: string) => ({ description: c, required: true }))
-          : []),
-    dependencies: raw.dependencies ?? [],
-    status: raw.status ?? "pending",
-    tags: raw.tags ?? [],
-    attempt: raw.attempt ?? 1,
-    max_attempts: raw.max_attempts ?? 3,
-  };
 }
 
 function buildReviewerMessage(
@@ -201,83 +132,4 @@ function buildReviewerMessage(
     `Commit using MCP git with message prefix: [${input.task.id}] if you create review files.\n` +
     `Return the full TaskReport JSON as your final response.`
   );
-}
-
-function parseTaskReport(
-  text: string,
-  input: WorkerInput,
-  startedAt: string,
-  startMs: number,
-): TaskReport {
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(jsonMatch[0]) as TaskReport;
-      return {
-        task_id: parsed.task_id ?? input.task.id,
-        stage_id: parsed.stage_id ?? input.stageId,
-        agent: "reviewer",
-        status: parsed.status ?? "completed",
-        summary: parsed.summary ?? text.slice(0, 500),
-        checklist_results: parsed.checklist_results ?? [],
-        files_modified: parsed.files_modified ?? [],
-        files_created: parsed.files_created ?? [],
-        tests_added: parsed.tests_added ?? [],
-        tests_run: parsed.tests_run ?? [],
-        commits: parsed.commits ?? [],
-        issues_found: parsed.issues_found ?? [],
-        output_truncated: parsed.output_truncated,
-        failure_reason: parsed.failure_reason,
-        started_at: startedAt,
-        completed_at: new Date().toISOString(),
-        duration_ms: Date.now() - startMs,
-      };
-    } catch {
-      // Fall through.
-    }
-  }
-
-  return {
-    task_id: input.task.id,
-    stage_id: input.stageId,
-    agent: "reviewer",
-    status: "completed",
-    summary: text.slice(0, 1000),
-    checklist_results: [],
-    files_modified: [],
-    files_created: [],
-    tests_added: [],
-    tests_run: [],
-    commits: [],
-    issues_found: [],
-    started_at: startedAt,
-    completed_at: new Date().toISOString(),
-    duration_ms: Date.now() - startMs,
-  };
-}
-
-function buildFailureReport(
-  input: WorkerInput,
-  startedAt: string,
-  startMs: number,
-  reason: string,
-): TaskReport {
-  return {
-    task_id: input.task.id,
-    stage_id: input.stageId,
-    agent: "reviewer",
-    status: "failed",
-    summary: `Task failed: ${reason}`,
-    checklist_results: [],
-    files_modified: [],
-    files_created: [],
-    tests_added: [],
-    tests_run: [],
-    commits: [],
-    issues_found: [{ severity: "error", description: reason }],
-    failure_reason: reason,
-    started_at: startedAt,
-    completed_at: new Date().toISOString(),
-    duration_ms: Date.now() - startMs,
-  };
 }

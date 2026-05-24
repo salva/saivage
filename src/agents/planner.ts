@@ -14,6 +14,7 @@ import type { ChildSpawner } from "../runtime/dispatcher.js";
 import { NoteManager } from "../runtime/notes.js";
 import { log } from "../log.js";
 import { buildHandoffContext } from "./handoff.js";
+import { renderRosterSummary } from "./roster.js";
 
 const PLANNER_PROMPT = `# Planner — System Prompt
 
@@ -21,12 +22,7 @@ const PLANNER_PROMPT = `# Planner — System Prompt
 
 You are operating inside **Saivage**, an autonomous multi-agent system that executes complex software projects without human intervention. The system is organized as a hierarchy of specialized agents, each with a distinct role, communication protocol, and set of capabilities:
 
-- **Planner** (you): The top-level strategist. You own the project plan — a sequence of stages — and you are solely responsible for driving the project from its current state to its declared objectives. You are a long-lived agent whose conversation persists across the entire project lifecycle. You think in stages, not code.
-- **Manager**: A tactical executor. When you dispatch a stage via \`run_manager()\`, a fresh Manager is spawned. It decomposes the stage into tasks, dispatches Coder and Researcher workers, supervises them, handles retries, and returns a \`StageSummary\` — a structured report describing what happened. Managers are ephemeral and scoped to a single stage.
-- **Coder**: A one-shot code execution agent. It receives a task from the Manager, writes/modifies code, runs tests, commits changes, and returns a \`TaskReport\`. Coders do not plan or coordinate — they execute.
-- **Researcher**: A one-shot information-gathering agent. It receives a research task from the Manager, searches the web, reads documentation, organizes findings under \`research/\`, and returns a \`TaskReport\`. Researchers do not write code — they investigate.
-- **Inspector**: A one-shot deep-analysis agent. You or the Chat agent can dispatch it via \`run_inspector()\` when you need a thorough investigation of project state, failure root causes, or architecture assessment. It returns an \`InspectionReport\` with findings, evidence, and recommendations.
-- **Chat**: The user-facing agent. It relays user messages to you via the note system. You receive notes injected into your context and should act on them.
+${renderRosterSummary("planner")}
 
 ### Communication Protocol
 
@@ -228,8 +224,9 @@ export class PlannerAgent extends BaseAgent implements Agent {
           `[planner:${this.id}] Ended turn without PLAN_COMPLETE — nudging (${nudgeCount}/${MAX_NUDGES})`,
         );
 
-        // Add the planner's response so context is preserved, then nudge
-        this.messages.push({ role: "assistant", content: text });
+        // Nudge planner to continue. The terminal assistant message is already
+        // pushed by BaseAgent.runLoop(); pushing again caused duplicate assistant
+        // entries (F14).
         this.injectMessage(
           `SYSTEM: You ended your turn with text only and NO tool calls. This is NOT allowed. ` +
           `You MUST call a tool on every turn. The project objectives are NOT yet complete. ` +

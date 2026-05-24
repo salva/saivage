@@ -4,16 +4,11 @@
  * research/, produces TaskReport.
  */
 
-import { BaseAgent, type BaseAgentConfig } from "./base.js";
-import type {
-  AgentContext,
-  AgentResult,
-  WorkerInput,
-  Agent,
-} from "./types.js";
-import type { TaskReport } from "../types.js";
-import { log } from "../log.js";
+import { WorkerAgent } from "./worker.js";
+import type { BaseAgentConfig } from "./base.js";
+import type { AgentContext, WorkerInput } from "./types.js";
 import { buildHandoffContext } from "./handoff.js";
+import { renderRosterSummary } from "./roster.js";
 
 const RESEARCHER_PROMPT = `# Researcher — System Prompt
 
@@ -21,10 +16,7 @@ const RESEARCHER_PROMPT = `# Researcher — System Prompt
 
 You are operating inside **Saivage**, an autonomous multi-agent system. Here is where you fit:
 
-- **Planner**: The top-level strategist that creates a multi-stage plan. You never interact with it directly.
-- **Manager** (your boss): The tactical executor that dispatched you. It decomposed a stage into tasks and assigned this research task to you. When you finish, your \`TaskReport\` is returned to the Manager, which uses it to inform subsequent Coder tasks and aggregates all results into a \`StageSummary\` for the Planner.
-- **Coder** (peer worker): A coding agent that writes code and runs tests. The Manager often dispatches you BEFORE dispatching a Coder, so your research findings can inform the coding task. Your output under \`research/\` may be referenced in the Coder's task description.
-- **Researcher** (you): A one-shot information-gathering agent. You receive a research task, investigate it, organize your findings, and return a \`TaskReport\`. You are created for this single task and destroyed when it ends.
+${renderRosterSummary("researcher")}
 
 ### What Happens With Your Output
 
@@ -135,101 +127,21 @@ The \`summary\` field must highlight key findings, not just "research completed.
 
 Return the full TaskReport JSON as your final response.`;
 
-export class ResearcherAgent extends BaseAgent implements Agent {
-  private input: WorkerInput;
-
-  constructor(ctx: AgentContext, input: WorkerInput, config?: Partial<BaseAgentConfig>) {
-    // Normalize task fields — the Manager LLM may use alternate names
-    const task = normalizeTask(input.task);
-    const normalized: WorkerInput = { ...input, task };
-    const initialMessage = buildResearcherMessage(ctx, normalized);
-
-    super(ctx, {
+export class ResearcherAgent extends WorkerAgent {
+  constructor(
+    ctx: AgentContext,
+    input: WorkerInput,
+    config?: Partial<BaseAgentConfig>,
+  ) {
+    super(ctx, input, {
+      role: "researcher",
       systemPrompt: RESEARCHER_PROMPT,
-      skillContext: {
-        agentRole: "researcher",
-        description: task.description,
-        tags: task.tags ?? [],
-      },
-      initialMessage,
+      buildInitialMessage: (i) => buildResearcherMessage(ctx, i),
+      invalidFinalResponseMessage:
+        "Invalid final task response: you have not used any tools for this research task yet.",
       ...config,
     });
-
-    this.input = normalized;
   }
-
-  async run(): Promise<AgentResult> {
-    log.info(
-      `[researcher:${this.id}] Starting task ${this.input.task.id}: ${this.input.task.description.slice(0, 80)}`,
-    );
-
-    const startedAt = new Date().toISOString();
-    const start = Date.now();
-
-    try {
-      const { text, finishReason } = await this.runLoop();
-
-      if (finishReason === "abort" || finishReason === "cancelled") {
-        return {
-          kind: "abort",
-          reason: text,
-          partial: buildFailureReport(this.input, startedAt, start, text),
-        };
-      }
-
-      if (finishReason === "max_compactions" || finishReason === "error") {
-        return {
-          kind: "failure",
-          reason: text,
-          partial: buildFailureReport(this.input, startedAt, start, text),
-        };
-      }
-
-      const report = parseTaskReport(text, this.input, startedAt, start);
-      return { kind: "success", data: report };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log.error(`[researcher:${this.id}] Failed: ${msg}`);
-      return {
-        kind: "failure",
-        reason: msg,
-        partial: buildFailureReport(this.input, startedAt, start, msg),
-      };
-    }
-  }
-
-  protected override validateFinalResponse(): string | null {
-    if (this.hasUsedAnyTool()) return null;
-    return "Invalid final task response: you have not used any tools for this research task yet.";
-  }
-}
-
-/** Normalize a task object that may have alternate field names from LLM output. */
-function normalizeTask(raw: any): import("../types.js").Task {
-  const descriptionParts = [raw.description ?? raw.objective ?? "(no description)"];
-  if (Array.isArray(raw.files) && raw.files.length > 0) {
-    descriptionParts.push(`Suggested files or starting points:\n${raw.files.map((file: string) => `- ${file}`).join("\n")}`);
-  }
-  if (typeof raw.instructions === "string" && raw.instructions.trim()) {
-    descriptionParts.push(`Detailed instructions from Manager:\n${raw.instructions.trim()}`);
-  }
-
-  return {
-    id: raw.id ?? "unknown",
-    type: raw.type ?? "research",
-    assigned_to: raw.assigned_to ?? "researcher",
-    description: descriptionParts.join("\n\n"),
-    checklist: Array.isArray(raw.checklist)
-      ? raw.checklist
-      : (Array.isArray(raw.acceptance_criteria)
-          ? raw.acceptance_criteria.map((c: string) => ({ description: c, required: true }))
-          : []),
-    dependencies: raw.dependencies ?? [],
-    status: raw.status ?? "pending",
-    tags: raw.tags ?? [],
-    attempt: raw.attempt ?? 1,
-    max_attempts: raw.max_attempts ?? 3,
-  };
 }
 
 function buildResearcherMessage(ctx: AgentContext, input: WorkerInput): string {
@@ -257,81 +169,3 @@ function buildResearcherMessage(ctx: AgentContext, input: WorkerInput): string {
   );
 }
 
-function parseTaskReport(
-  text: string,
-  input: WorkerInput,
-  startedAt: string,
-  startMs: number,
-): TaskReport {
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(jsonMatch[0]) as TaskReport;
-      return {
-        task_id: parsed.task_id ?? input.task.id,
-        stage_id: parsed.stage_id ?? input.stageId,
-        agent: "researcher",
-        status: parsed.status ?? "completed",
-        summary: parsed.summary ?? text.slice(0, 500),
-        checklist_results: parsed.checklist_results ?? [],
-        files_modified: parsed.files_modified ?? [],
-        files_created: parsed.files_created ?? [],
-        tests_added: parsed.tests_added ?? [],
-        tests_run: parsed.tests_run ?? [],
-        commits: parsed.commits ?? [],
-        issues_found: parsed.issues_found ?? [],
-        output_truncated: parsed.output_truncated,
-        failure_reason: parsed.failure_reason,
-        started_at: startedAt,
-        completed_at: new Date().toISOString(),
-        duration_ms: Date.now() - startMs,
-      };
-    } catch {
-      // Fall through
-    }
-  }
-
-  return {
-    task_id: input.task.id,
-    stage_id: input.stageId,
-    agent: "researcher",
-    status: "completed",
-    summary: text.slice(0, 1000),
-    checklist_results: [],
-    files_modified: [],
-    files_created: [],
-    tests_added: [],
-    tests_run: [],
-    commits: [],
-    issues_found: [],
-    started_at: startedAt,
-    completed_at: new Date().toISOString(),
-    duration_ms: Date.now() - startMs,
-  };
-}
-
-function buildFailureReport(
-  input: WorkerInput,
-  startedAt: string,
-  startMs: number,
-  reason: string,
-): TaskReport {
-  return {
-    task_id: input.task.id,
-    stage_id: input.stageId,
-    agent: "researcher",
-    status: "failed",
-    summary: `Task failed: ${reason}`,
-    checklist_results: [],
-    files_modified: [],
-    files_created: [],
-    tests_added: [],
-    tests_run: [],
-    commits: [],
-    issues_found: [],
-    failure_reason: reason,
-    started_at: startedAt,
-    completed_at: new Date().toISOString(),
-    duration_ms: Date.now() - startMs,
-  };
-}

@@ -14,6 +14,7 @@ import type {
 import type { InspectionReport } from "../types.js";
 import { log } from "../log.js";
 import { buildHandoffContext } from "./handoff.js";
+import { renderRosterSummary } from "./roster.js";
 
 const INSPECTOR_PROMPT = `# Inspector — System Prompt
 
@@ -21,10 +22,7 @@ const INSPECTOR_PROMPT = `# Inspector — System Prompt
 
 You are operating inside **Saivage**, an autonomous multi-agent system. Here is where you fit:
 
-- **Planner**: The top-level strategist that owns the project plan. It may dispatch you via \`run_inspector()\` when it needs deep analysis before deciding how to replan — typically after a stage escalation, when the root cause is unclear, or when it needs an architecture assessment before creating new stages.
-- **Manager**: The tactical executor. You do NOT interact with the Manager. You are dispatched directly by the Planner or Chat, not through the Manager's task system.
-- **Chat**: The user-facing agent. It may dispatch you when a user asks questions about the project that require deep investigation. In this case, your report is shown to the user.
-- **Inspector** (you): A one-shot deep-analysis agent. You receive an investigation request, perform thorough analysis, and return an \`InspectionReport\`. You are created for this single investigation and destroyed when it ends.
+${renderRosterSummary("inspector")}
 
 ### When You Are Called
 

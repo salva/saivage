@@ -5,6 +5,7 @@
 
 import { z } from "zod";
 import { projectRoutingSchema } from "./routing/resolver.js";
+import { ALL_ROLES, WORKER_ROLES } from "./agents/roster.js";
 
 // ─── 1. Project Config ──────────────────────────────────────────────────────
 
@@ -106,7 +107,7 @@ export type ChecklistItem = z.infer<typeof ChecklistItemSchema>;
 export const TaskSchema = z.object({
   id: z.string(),
   type: z.enum(["code", "research", "data", "review", "test", "document"]),
-  assigned_to: z.enum(["coder", "researcher", "data_agent", "reviewer"]),
+  assigned_to: z.enum(WORKER_ROLES),
   description: z.string(),
   checklist: z.array(ChecklistItemSchema),
   dependencies: z.array(z.string()),
@@ -157,7 +158,7 @@ export type Issue = z.infer<typeof IssueSchema>;
 export const TaskReportSchema = z.object({
   task_id: z.string(),
   stage_id: z.string(),
-  agent: z.enum(["coder", "researcher", "data_agent", "reviewer"]),
+  agent: z.enum(WORKER_ROLES),
   status: z.enum(["completed", "failed"]),
   summary: z.string(),
   checklist_results: z.array(ChecklistResultSchema),
@@ -248,16 +249,7 @@ export type InspectionReport = z.infer<typeof InspectionReportSchema>;
 // ─── 11. Runtime State ──────────────────────────────────────────────────────
 
 export const AgentStateSchema = z.object({
-  agent_type: z.enum([
-    "planner",
-    "manager",
-    "coder",
-    "researcher",
-    "data_agent",
-    "reviewer",
-    "inspector",
-    "chat",
-  ]),
+  agent_type: z.enum(ALL_ROLES),
   agent_id: z.string(),
   status: z.enum(["running", "suspended", "idle"]),
   current_task_id: z.string().optional(),

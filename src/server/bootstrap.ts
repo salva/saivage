@@ -33,6 +33,7 @@ import { DataAgent } from "../agents/data-agent.js";
 import { ReviewerAgent } from "../agents/reviewer.js";
 import { InspectorAgent } from "../agents/inspector.js";
 import type { AgentContext, AgentResult, Agent } from "../agents/types.js";
+import { assertExhaustive } from "../agents/roster.js";
 import type { AgentState } from "../types.js";
 import type { ServiceEntry } from "../mcp/registry.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
@@ -271,7 +272,7 @@ export function createChildSpawner(
   const stageReviewers = new Map<string, { agent: ReviewerAgent; ctx: AgentContext }>();
 
   return async (
-    role: import("../agents/types.js").AgentRole,
+    role: import("../agents/roster.js").DispatchableRole,
     input: unknown,
     parentCtx: AgentContext,
   ): Promise<AgentResult> => {
@@ -368,7 +369,7 @@ export function createChildSpawner(
       }
 
       default:
-        return { kind: "failure", reason: `Unknown agent role: ${role}` };
+        return assertExhaustive(role);
     }
 
       tracker.agentStarted(trackingAgentId, role as AgentState["agent_type"], taskId);
@@ -400,7 +401,7 @@ export function createChildSpawner(
 
 function normalizeWorkerDispatchInput(
   input: unknown,
-  role: import("../agents/types.js").AgentRole,
+  role: import("../agents/roster.js").DispatchableRole,
 ): import("../agents/types.js").WorkerInput {
   const raw = input as Record<string, unknown> | null;
   if (!raw || typeof raw !== "object") {

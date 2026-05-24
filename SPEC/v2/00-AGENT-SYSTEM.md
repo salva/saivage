@@ -158,7 +158,49 @@ This means the Manager maintains its full conversation context throughout the st
 - Self-assesses and flags failures.
 - **Commits** its changes via the MCP git tool. By convention, commits files under `research/` and its task report.
 
-### 2.5 Inspector
+### 2.5 Data Agent
+
+**Purpose:** Acquire, validate, and document external datasets needed by stages.
+
+**Lifecycle:** One-shot worker dispatched by the Manager via `run_data_agent(task)`.
+
+**Inputs:**
+- Task description (data source criteria, target location, validation requirements)
+- Relevant skills (auto-loaded)
+
+**Outputs:**
+- **Data artifacts** under project-appropriate locations (`data/`, `research/data-sources/`, etc.)
+- **Provenance notes** describing source, retrieval method, license, and validation evidence
+- **Task Report** (`stages/<stage-id>/reports/<task-id>.json`): same schema as Coder
+
+**Behaviors:**
+- Searches for real data sources, downloads or queries them, validates the result.
+- Leakage-aware and reproducible by default; records provenance for every artifact.
+- May write small helper scripts strictly required to validate a download; does not write project source code.
+- **Commits** its changes via the MCP git tool.
+
+### 2.6 Reviewer
+
+**Purpose:** Independent quality gate for stage work before the Manager produces a `StageSummary`.
+
+**Lifecycle:** Stage-scoped — persists for the duration of one stage. The Manager may dispatch it multiple times (initial review, post-correction review, final re-review); later calls continue the same review session.
+
+**Inputs:**
+- Stage description, objectives, acceptance criteria
+- Worker `TaskReport`s and work products (code, tests, docs, data artifacts)
+- Relevant skills (auto-loaded)
+
+**Outputs:**
+- **Review findings and reports** under `.saivage/stages/`, `reviews/`, or `reports/`
+- **Task Report** with `status`, `checklist_results`, `issues_found`, and `summary`
+
+**Behaviors:**
+- Inspects worker outputs against acceptance criteria; flags gaps before the Manager closes the stage.
+- Does not redo worker work; may run tiny verification commands.
+- Does not modify implementation, research, or data artifacts.
+- **Commits** review findings via the MCP git tool.
+
+### 2.7 Inspector
 
 **Purpose:** Deep analysis of project state on demand.
 
@@ -193,7 +235,7 @@ This means the Manager maintains its full conversation context throughout the st
 - Planner calls `run_inspector(request)` tool → Inspector spawned
 - Chat calls `run_inspector(request)` tool → Inspector spawned
 
-### 2.6 Chat
+### 2.8 Chat
 
 **Purpose:** User-facing interface for queries, status updates, and steering.
 

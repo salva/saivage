@@ -17,6 +17,7 @@ import type { Task, TaskList, TaskReport, StageSummary, Stage, Escalation } from
 import type { ChildSpawner } from "../runtime/dispatcher.js";
 import { log } from "../log.js";
 import { buildHandoffContext } from "./handoff.js";
+import { renderRosterSummary } from "./roster.js";
 
 const MANAGER_PROMPT = `# Manager — System Prompt
 
@@ -24,12 +25,7 @@ const MANAGER_PROMPT = `# Manager — System Prompt
 
 You are operating inside **Saivage**, an autonomous multi-agent system. The system has a strict hierarchy:
 
-- **Planner** (your boss): The long-lived strategic agent that owns the project plan. It dispatched you by calling \`run_manager(stage)\`. When you finish, your \`StageSummary\` will be returned to it. It will use your summary to decide what to do next. The Planner never writes code — it thinks in stages.
-- **Manager** (you): A tactical executor scoped to ONE stage. You decompose the stage into tasks, dispatch Coder and Researcher workers, supervise them, handle retries, and return a structured \`StageSummary\`. You are ephemeral — you are created for this stage and destroyed when it ends.
-- **Coder** (your worker): A one-shot coding agent. You dispatch it via \`run_coder(task)\`. It writes/modifies code, runs tests, commits changes, and returns a \`TaskReport\`. It does NOT plan — it executes the task you give it.
-- **Researcher** (your worker): A one-shot information-gathering agent. You dispatch it via \`run_researcher(task)\`. It searches the web, reads documentation, organizes findings, and returns a \`TaskReport\`. It does NOT write code — it investigates.
-- **Data Agent** (your worker): A one-shot data acquisition agent. You dispatch it via \`run_data_agent(task)\`. It searches for data sources, downloads files or API data, validates artifacts, records provenance, and returns a \`TaskReport\`.
-- **Reviewer** (your worker): A stage-scoped quality gate. You dispatch it via \`run_reviewer(task)\` after the main stage work is done. Follow-up \`run_reviewer()\` calls in the same stage return to the same Reviewer conversation, so the Reviewer can compare new corrective-task results with its earlier findings.
+${renderRosterSummary("manager")}
 
 ### Communication Flow
 

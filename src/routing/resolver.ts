@@ -1,15 +1,8 @@
 import { z } from "zod";
+import { ROSTER } from "../agents/roster.js";
 
 export const ROUTING_ROLE_TO_MODEL_KEY: Record<string, string> = {
-  planner: "orchestrator",
-  manager: "orchestrator",
-  inspector: "orchestrator",
-  coder: "coder",
-  researcher: "researcher",
-  data_agent: "data_agent",
-  reviewer: "reviewer",
-  executor: "executor",
-  chat: "chat",
+  ...Object.fromEntries(ROSTER.map((entry) => [entry.role, entry.defaultModelKey])),
   supervisor: "supervisor",
   security: "security",
   default: "default",

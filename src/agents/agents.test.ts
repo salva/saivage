@@ -142,6 +142,83 @@ describe("ReviewerAgent", () => {
     expect(secondMessages).toContain("Follow-up Review 2");
     expect(secondMessages).toContain("Recheck blocker after corrective task t2");
   });
+
+  it("does not duplicate the final assistant message in this.messages after review()", async () => {
+    // Regression for F14 (reviewer half, owned by F09): runLoop() pushes the
+    // terminal assistant message; the old reviewer.run() also pushed it,
+    // resulting in two identical assistant entries in the conversation.
+    const calls: ChatRequest[] = [];
+    const router = {
+      getMaxContextTokens: () => 200_000,
+      chat: async (request: ChatRequest): Promise<ChatResponse> => {
+        calls.push(request);
+        // Calls 1 and 3 are first turns of each review (need a tool call to
+        // satisfy validateFinalResponse on the no-tool turn that follows).
+        if (calls.length === 1) {
+          return {
+            content: "Inspecting evidence.",
+            toolCalls: [{ id: "tool-1", name: "test_tool", input: {} }],
+            finishReason: "tool_use",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        if (calls.length === 2) {
+          return {
+            content: "REVIEW DONE",
+            toolCalls: [],
+            finishReason: "end_turn",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        if (calls.length === 3) {
+          return {
+            content: "Re-inspecting.",
+            toolCalls: [{ id: "tool-2", name: "test_tool", input: {} }],
+            finishReason: "tool_use",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        return {
+          content: "REVIEW DONE 2",
+          toolCalls: [],
+          finishReason: "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+
+    const ctx = makeReviewerContext(tmpDir, router, {
+      getAllTools: () => [
+        { name: "test_tool", description: "test", inputSchema: {}, service: "test" },
+      ],
+      callTool: async () => ({ ok: true }),
+    });
+    const firstInput = makeReviewInput("review-1", "Initial review");
+    const agent = new ReviewerAgent(ctx, firstInput);
+
+    await agent.review(firstInput);
+    await agent.review(makeReviewInput("review-2", "Recheck"));
+
+    const assistantTextEquals = (
+      m: { role: string; content: unknown },
+      target: string,
+    ): boolean => {
+      if (m.role !== "assistant") return false;
+      if (typeof m.content === "string") return m.content === target;
+      if (Array.isArray(m.content)) {
+        const textBlocks = (m.content as any[])
+          .filter((b: any) => b?.type === "text")
+          .map((b: any) => b.text ?? "");
+        return textBlocks.join("") === target;
+      }
+      return false;
+    };
+
+    // Messages snapshotted on call 3 = state after review 1 finished.
+    const msgs = calls[2].messages as any[];
+    const count = msgs.filter((m) => assistantTextEquals(m, "REVIEW DONE")).length;
+    expect(count).toBe(1);
+  });
 });
 
 describe("ChatAgent", () => {

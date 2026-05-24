@@ -35,14 +35,10 @@ const configSchema = z.object({
   models: z
     .object({
       orchestrator: modelAssignmentSchema.optional(),
-      planner: modelAssignmentSchema.optional(),
-      manager: modelAssignmentSchema.optional(),
       coder: modelAssignmentSchema.optional(),
       researcher: modelAssignmentSchema.optional(),
       data_agent: modelAssignmentSchema.optional(),
       reviewer: modelAssignmentSchema.optional(),
-      inspector: modelAssignmentSchema.optional(),
-      executor: modelAssignmentSchema.optional(),
       chat: modelAssignmentSchema.optional(),
       default: modelAssignmentSchema.optional(),
     })

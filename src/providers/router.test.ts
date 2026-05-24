@@ -7,9 +7,7 @@ function makeConfig(overrides: Partial<SaivageConfig> = {}): SaivageConfig {
   return {
     models: {
       orchestrator: "anthropic/claude-sonnet-4-20250514",
-      coder: "anthropic/claude-sonnet-4-20250514",
       researcher: "openai/gpt-4o",
-      executor: "anthropic/claude-haiku-3",
       chat: "anthropic/claude-sonnet-4-20250514",
       default: "anthropic/claude-sonnet-4-20250514",
     },

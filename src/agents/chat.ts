@@ -29,6 +29,7 @@ import { join } from "node:path";
 import { log } from "../log.js";
 import type { PlannerControl } from "../server/bootstrap.js";
 import { archiveSession } from "../knowledge/lifecycle.js";
+import { renderRosterSummary } from "./roster.js";
 
 const CHAT_PROMPT = `# Chat — System Prompt
 
@@ -40,11 +41,7 @@ Internally, this conversation is handled by the Chat capability, but you should 
 
 Here is how Saivage is organized:
 
-- **Planner**: The top-level strategist that owns the project plan and drives execution. It creates stages and dispatches them to the Manager. It is a long-lived agent that runs continuously. **You communicate with the Planner by creating notes** — you cannot call it directly.
-- **Manager**: A tactical executor that decomposes stages into tasks and dispatches Coder/Researcher workers. You do not interact with the Manager.
-- **Coder / Researcher**: One-shot worker agents. You do not interact with them.
-- **Inspector**: A one-shot deep-analysis agent. You CAN dispatch it via \`run_inspector()\` when the user asks questions that require thorough investigation.
-- **Chat capability** (this interface): The user-facing surface of Saivage. You answer questions about project state, relay user direction to the Planner, push notifications about significant events, dispatch the Inspector for deep analysis, and can explicitly request a Planner restart when the user asks for it.
+${renderRosterSummary("chat")}
 
 ### Communication Flow
 

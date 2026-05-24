@@ -17,6 +17,7 @@ import type {
   AgentResult,
   AgentRole,
 } from "./types.js";
+import { ROSTER } from "./roster.js";
 import { Dispatcher, DISPATCH_TOOLS } from "../runtime/dispatcher.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
 import {
@@ -952,112 +953,87 @@ const RUN_INSPECTOR_SCHEMA: ToolSchema = {
   },
 };
 
-const RUN_CODER_SCHEMA: ToolSchema = {
-  name: "run_coder",
-  description:
-    "Dispatch a coding task to a Coder worker agent. Returns a TaskReport.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      task: {
-        type: "object",
-        description: "The task to execute",
-        properties: {
-          id: { type: "string" },
-          objective: { type: "string" },
-          files: { type: "array", items: { type: "string" } },
-          instructions: { type: "string" },
-          acceptance_criteria: { type: "array", items: { type: "string" } },
-        },
-        required: ["id", "objective", "files", "instructions", "acceptance_criteria"],
-      },
-      stageId: { type: "string", description: "Parent stage ID" },
-    },
-    required: ["task", "stageId"],
-  },
-};
+const RUN_CODER_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
+  "run_coder",
+  "Dispatch a coding task to a Coder worker agent. Returns a TaskReport.",
+  "The task to execute",
+);
 
-const RUN_RESEARCHER_SCHEMA: ToolSchema = {
-  name: "run_researcher",
-  description:
-    "Dispatch a research task to a Researcher worker agent. Returns a TaskReport.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      task: {
-        type: "object",
-        description: "The research task",
-        properties: {
-          id: { type: "string" },
-          objective: { type: "string" },
-          files: { type: "array", items: { type: "string" } },
-          instructions: { type: "string" },
-          acceptance_criteria: { type: "array", items: { type: "string" } },
-        },
-        required: ["id", "objective", "files", "instructions", "acceptance_criteria"],
-      },
-      stageId: { type: "string", description: "Parent stage ID" },
-    },
-    required: ["task", "stageId"],
-  },
-};
+const RUN_RESEARCHER_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
+  "run_researcher",
+  "Dispatch a research task to a Researcher worker agent. Returns a TaskReport.",
+  "The research task",
+);
 
-const RUN_DATA_AGENT_SCHEMA: ToolSchema = {
-  name: "run_data_agent",
-  description:
-    "Dispatch a data acquisition task to a Data Agent. Use for finding, downloading, validating, and documenting external datasets or API data. Returns a TaskReport.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      task: {
-        type: "object",
-        description: "The data acquisition task",
-        properties: {
-          id: { type: "string" },
-          objective: { type: "string" },
-          files: { type: "array", items: { type: "string" } },
-          instructions: { type: "string" },
-          acceptance_criteria: { type: "array", items: { type: "string" } },
-        },
-        required: ["id", "objective", "files", "instructions", "acceptance_criteria"],
-      },
-      stageId: { type: "string", description: "Parent stage ID" },
-    },
-    required: ["task", "stageId"],
-  },
-};
+const RUN_DATA_AGENT_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
+  "run_data_agent",
+  "Dispatch a data acquisition task to a Data Agent. Use for finding, downloading, validating, and documenting external datasets or API data. Returns a TaskReport.",
+  "The data acquisition task",
+);
 
-const RUN_REVIEWER_SCHEMA: ToolSchema = {
-  name: "run_reviewer",
-  description:
-    "Dispatch a review task to a Reviewer worker agent after stage work is done. Use to validate stage objectives, acceptance criteria, work products, data/statistical quality, and issues before writing StageSummary. Returns a TaskReport.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      task: {
-        type: "object",
-        description: "The review task",
-        properties: {
-          id: { type: "string" },
-          objective: { type: "string" },
-          files: { type: "array", items: { type: "string" } },
-          instructions: { type: "string" },
-          acceptance_criteria: { type: "array", items: { type: "string" } },
+const RUN_REVIEWER_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
+  "run_reviewer",
+  "Dispatch a review task to a Reviewer worker agent after stage work is done. Use to validate stage objectives, acceptance criteria, work products, data/statistical quality, and issues before writing StageSummary. Returns a TaskReport.",
+  "The review task",
+);
+
+function makeWorkerDispatchSchema(
+  name: string,
+  description: string,
+  taskDescription: string,
+): ToolSchema {
+  return {
+    name,
+    description,
+    inputSchema: {
+      type: "object",
+      properties: {
+        task: {
+          type: "object",
+          description: taskDescription,
+          properties: {
+            id: { type: "string" },
+            objective: { type: "string" },
+            files: { type: "array", items: { type: "string" } },
+            instructions: { type: "string" },
+            acceptance_criteria: { type: "array", items: { type: "string" } },
+          },
+          required: ["id", "objective", "files", "instructions", "acceptance_criteria"],
         },
-        required: ["id", "objective", "files", "instructions", "acceptance_criteria"],
+        stageId: { type: "string", description: "Parent stage ID" },
       },
-      stageId: { type: "string", description: "Parent stage ID" },
+      required: ["task", "stageId"],
     },
-    required: ["task", "stageId"],
-  },
-};
+  };
+}
 
 /** Role → dispatch tools mapping. Only expose tools each role should use. */
-const ROLE_DISPATCH_TOOLS: Record<string, ToolSchema[]> = {
-  planner: [RUN_MANAGER_SCHEMA, RUN_INSPECTOR_SCHEMA],
-  manager: [RUN_CODER_SCHEMA, RUN_RESEARCHER_SCHEMA, RUN_DATA_AGENT_SCHEMA, RUN_REVIEWER_SCHEMA],
-  chat: [RUN_INSPECTOR_SCHEMA],
+/** Tool schema indexed by dispatch tool name (derived from roster). */
+const DISPATCH_SCHEMA_BY_TOOL: Record<string, ToolSchema> = {
+  run_manager: RUN_MANAGER_SCHEMA,
+  run_inspector: RUN_INSPECTOR_SCHEMA,
+  run_coder: RUN_CODER_SCHEMA,
+  run_researcher: RUN_RESEARCHER_SCHEMA,
+  run_data_agent: RUN_DATA_AGENT_SCHEMA,
+  run_reviewer: RUN_REVIEWER_SCHEMA,
 };
+
+/** Role → dispatch tools mapping, derived from `ROSTER[*].dispatchableBy`. */
+const ROLE_DISPATCH_TOOLS: Partial<Record<AgentRole, ToolSchema[]>> = (() => {
+  const map: Partial<Record<AgentRole, ToolSchema[]>> = {};
+  for (const entry of ROSTER) {
+    if (!entry.dispatchTool) continue;
+    const schema = DISPATCH_SCHEMA_BY_TOOL[entry.dispatchTool];
+    if (!schema) {
+      throw new Error(`Missing dispatch schema for tool ${entry.dispatchTool}`);
+    }
+    for (const parent of entry.dispatchableBy) {
+      const key = parent as AgentRole;
+      (map[key] ??= []).push(schema);
+    }
+  }
+  return map;
+})();
 
 function getDispatchToolsForRole(role: AgentRole): ToolSchema[] {
   return ROLE_DISPATCH_TOOLS[role] ?? [];
@@ -1073,8 +1049,10 @@ const READ_ONLY_TOOLS = new Set([
 
 /** Tools that only the planner (and manager for delegation) should use. */
 const PLAN_TOOLS = new Set([
-  "read_plan", "update_plan", "complete_stage", "escalate",
-  "read_note", "list_notes", "acknowledge_note",
+  "plan_get", "plan_get_stage", "plan_get_current_stage",
+  "plan_set_stages", "plan_add_stage", "plan_remove_stage",
+  "plan_set_current", "plan_complete_stage",
+  "plan_get_history", "plan_init", "plan_commit",
 ]);
 
 /** Tools workers (coder/researcher/data_agent) do NOT need. */
@@ -1089,11 +1067,10 @@ const WORKER_EXCLUDED_TOOLS = new Set([
  * Roles without an entry get all available tools (no filtering).
  */
 const ROLE_TOOL_FILTER: Partial<Record<AgentRole, (toolName: string, service: string) => boolean>> = {
-  // Planner: plan tools + read-only filesystem + notes + skills — no shell, no write_file
+  // Planner: plan tools + read-only filesystem + skills — no shell, no write_file
   planner: (name, _service) =>
     PLAN_TOOLS.has(name) || READ_ONLY_TOOLS.has(name) ||
-    name === "read_stash" ||
-    name === "write_note" || name === "list_notes" || name === "acknowledge_note" || name === "read_note",
+    name === "read_stash",
 
   // Inspector: read-only tools only
   inspector: (name, _service) =>

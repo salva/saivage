@@ -160,7 +160,7 @@ interface TaskList {
 interface Task {
   id: string;
   type: "code" | "research" | "test" | "document";
-  assigned_to: "coder" | "researcher";
+  assigned_to: "coder" | "researcher" | "data_agent" | "reviewer";
   description: string;               // detailed work description
   checklist: ChecklistItem[];
   dependencies: string[];            // task IDs that must complete first
@@ -184,13 +184,13 @@ interface ChecklistItem {
 
 **Path:** `<project>/.saivage/stages/<stage-id>/reports/<task-id>.json`
 
-Written by Coder or Researcher after executing a task.
+Written by Coder, Researcher, Data Agent, or Reviewer after executing a task.
 
 ```typescript
 interface TaskReport {
   task_id: string;
   stage_id: string;
-  agent: "coder" | "researcher";
+  agent: "coder" | "researcher" | "data_agent" | "reviewer";
   status: "completed" | "failed";
   summary: string;                   // what was done
   checklist_results: ChecklistResult[];
@@ -368,7 +368,7 @@ interface RuntimeState {
 }
 
 interface AgentState {
-  agent_type: "planner" | "manager" | "coder" | "researcher" | "inspector" | "chat";
+  agent_type: "planner" | "manager" | "coder" | "researcher" | "data_agent" | "reviewer" | "inspector" | "chat";
   agent_id: string;                  // unique instance ID
   status: "running" | "suspended" | "idle";
   current_task_id?: string;          // for coder/researcher
