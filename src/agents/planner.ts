@@ -13,6 +13,7 @@ import type {
 import type { ChildSpawner } from "../runtime/dispatcher.js";
 import { NoteManager } from "../runtime/notes.js";
 import { log } from "../log.js";
+import { loadContract } from "../repo-layout/contract.js";
 import { buildHandoffContext } from "./handoff.js";
 import { renderRosterSummary } from "./roster.js";
 
@@ -281,6 +282,8 @@ function buildPlannerMessage(ctx: AgentContext): string {
     ? `### Runtime Directives\n${startupDirectives.map((directive) => `- ${directive}`).join("\n")}\n\n`
     : "";
 
+  const repoLayoutBlock = buildRepoLayoutBlock(ctx);
+
   return (
     `## Project Planning Session\n\n` +
     `${buildHandoffContext(ctx)}\n\n` +
@@ -288,6 +291,7 @@ function buildPlannerMessage(ctx: AgentContext): string {
     `**Project Root:** ${ctx.project.projectRoot}\n` +
     `**Saivage Dir:** ${ctx.project.saivageDir}\n\n` +
     `### Project Objectives\n${objList}\n\n` +
+    `${repoLayoutBlock}` +
     `### Instructions\n` +
     `1. Read the project configuration and assess current state.\n` +
     `2. Call plan_get() before changing the plan. If plan_get() returns PLAN_NOT_FOUND, create the first multi-stage plan with plan_init(stages). If plan_get() returns an existing plan, DO NOT call plan_init(); continue it, or use plan_add_stage() / plan_set_stages() to add or replace remaining stages.\n` +
@@ -295,5 +299,36 @@ function buildPlannerMessage(ctx: AgentContext): string {
     `4. Process results, adapt the plan, and continue until all objectives are met.\n` +
     `5. If all objectives are achieved but a continuous-improvement note is present, create and dispatch the next improvement/verification/hardening stage with plan_add_stage() or plan_set_stages(), not plan_init().\n` +
     `6. Only respond with "PLAN_COMPLETE" when objectives are verified and no continuous-improvement instruction is active.`
+  );
+}
+
+/**
+ * Render the project's repo-layout contract (if any) into a generic block of
+ * planner-facing instructions. The block is data-driven: topic names,
+ * artifact directories, and stage-id patterns come from the contract, so this
+ * function stays project-agnostic.
+ */
+function buildRepoLayoutBlock(ctx: AgentContext): string {
+  const result = loadContract(ctx.project.projectRoot);
+  if (!result.present || result.error || !result.contract) {
+    return "";
+  }
+  const c = result.contract;
+  const openTopics = c.topics.filter((t) => t.newStagesAllowed);
+  const closedTopics = c.topics.filter((t) => !t.newStagesAllowed);
+
+  const openList = openTopics
+    .map((t) => `- \`${t.name}\` — artifacts under \`${t.artifactDir}\`; stage id must match \`${t.stageIdRe.source}\``)
+    .join("\n");
+  const closedList = closedTopics.length > 0
+    ? `\nClosed topics (no new stages may be queued): ${closedTopics.map((t) => `\`${t.name}\``).join(", ")}.`
+    : "";
+  const whitelist = [...c.trackedDotSaivageWhitelist].sort().map((p) => `\`${p}\``).join(", ");
+
+  return (
+    `### Repo-Layout Contract\n` +
+    `The target project declares a repo-layout contract at \`.saivage/repo-layout.json\`. Every new stage id MUST resolve to exactly one open topic below; do NOT create stages that match no topic or multiple topics. Every artifact written by a stage MUST land under that topic's \`artifact_dir\`. Files outside the contract's \`allowed_top_level_dirs\` or matching \`forbidden_paths\` must not be created or moved. Inside \`.saivage/\` only this whitelist may be tracked: ${whitelist || "(none)"}.\n\n` +
+    `Open topics:\n${openList}${closedList}\n\n` +
+    `You may verify a candidate stage id by invoking \`validate-stage-id\` (it returns the resolved topic or a reason like \`no_topic_match\`, \`multiple_topic_match\`, or \`topic_closed\`).\n\n`
   );
 }

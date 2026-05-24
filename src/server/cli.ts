@@ -547,6 +547,47 @@ program
     console.log("Restart the service to apply changes.");
   });
 
+// --- Repo-layout: validate-stage-id ---
+program
+  .command("validate-stage-id <stage-id>")
+  .description(
+    "Resolve a stage id against the target project's .saivage/repo-layout.json contract.",
+  )
+  .option("-p, --project <project-path>", "Project root (defaults to CWD)")
+  .action(async (stageId: string, opts: { project?: string }) => {
+    const { resolve } = await import("node:path");
+    const projectRoot = resolve(opts.project ?? process.cwd());
+    const { loadContract } = await import("../repo-layout/contract.js");
+    const { validateStageId } = await import("../repo-layout/validate-stage-id.js");
+
+    const result = loadContract(projectRoot);
+    if (!result.present) {
+      console.log(
+        JSON.stringify({ status: "skipped", reason: "contract_absent", stage_id: stageId }),
+      );
+      return;
+    }
+    if (result.error) {
+      console.error(
+        JSON.stringify({ status: "error", reason: "contract_invalid", detail: result.error }),
+      );
+      process.exitCode = 2;
+      return;
+    }
+    const v = validateStageId(result.contract!, stageId);
+    const payload = {
+      status: v.topic ? "accepted" : "rejected",
+      stage_id: stageId,
+      topic: v.topic,
+      reason: v.reason,
+      matches: v.matches,
+    };
+    console.log(JSON.stringify(payload));
+    if (!v.topic) {
+      process.exitCode = 1;
+    }
+  });
+
 program.parse();
 
 async function readAllStdin(): Promise<string> {
