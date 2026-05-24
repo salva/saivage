@@ -8,13 +8,9 @@
 
 `src/agents/designer.ts` defines a fully-formed `DesignerAgent` class with a ~250-line system prompt, normalisation helpers, and a `run()` method, but no part of the system can reach it: it is not in the public barrel, not in the role enum, not in the dispatcher tool map, and not in the runtime spawner.
 
-## Evidence
+## Status
 
-- The file itself exists and is non-trivial: [src/agents/designer.ts](src/agents/designer.ts#L1-L40), [src/agents/designer.ts](src/agents/designer.ts#L140-L267).
-- The barrel does not export it (the other seven agents are all listed): [src/index.ts](src/index.ts#L55-L65).
-- The `AgentRole` enum has eight roles but `designer` is not among them: [src/agents/types.ts](src/agents/types.ts).
-- The dispatcher does not register a `run_designer` tool: [src/runtime/dispatcher.ts](src/runtime/dispatcher.ts#L16-L33).
-- The schema enums in `TaskSchema.assigned_to` and `TaskReportSchema.agent` likewise do not include `designer`: [src/types.ts](src/types.ts#L110-L116), [src/types.ts](src/types.ts#L160-L165).
+F09 deleted `src/agents/designer.ts` (the orphan), and F02 derived the role surface from `src/agents/roster.ts`. The remaining task for F01 is constructive: implement `class DesignerAgent extends WorkerAgent`, widen `ROSTER` to include `designer` (which regenerates `AgentRole`, `WorkerRole`, `DispatchableRole`, the dispatcher tool map, `TaskSchema.assigned_to`, `TaskReportSchema.agent`, `AgentStateSchema.agent_type`, the supervisor abort priority, the self-check schedule, and the planner-prompt roster summary), add the `run_designer` dispatcher tool wiring, and update the Manager prompt. The `[F01/APPROVED.md](F01/APPROVED.md)` Proposal C plan applies as written.
 
 ## Why this matters
 

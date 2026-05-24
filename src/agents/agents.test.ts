@@ -12,6 +12,7 @@ import { ensureDir } from "../store/documents.js";
 import { ReviewerAgent } from "./reviewer.js";
 import { ChatAgent } from "./chat.js";
 import { CoderAgent } from "./coder.js";
+import { DesignerAgent } from "./designer.js";
 import { ManagerAgent } from "./manager.js";
 import { EventBus } from "../events/bus.js";
 import type { ChatChannel } from "../channels/types.js";
@@ -93,6 +94,7 @@ describe("ReviewerAgent", () => {
     const calls: ChatRequest[] = [];
     const router = {
       getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         calls.push(request);
         const reviewNumber = Math.ceil(calls.length / 2);
@@ -150,6 +152,7 @@ describe("ReviewerAgent", () => {
     const calls: ChatRequest[] = [];
     const router = {
       getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         calls.push(request);
         // Calls 1 and 3 are first turns of each review (need a tool call to
@@ -228,6 +231,7 @@ describe("ChatAgent", () => {
     const routerCalls: ChatRequest[] = [];
     const router = {
       getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         routerCalls.push(request);
         if (routerCalls.length === 1) {
@@ -275,6 +279,7 @@ describe("ChatAgent", () => {
     const routerCalls: ChatRequest[] = [];
     const router = {
       getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         routerCalls.push(request);
         if (routerCalls.length === 1) await firstResponse.promise;
@@ -328,6 +333,7 @@ describe("Execution guards", () => {
     const calls: ChatRequest[] = [];
     const router = {
       getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         calls.push(request);
         if (calls.length === 1) {
@@ -385,6 +391,7 @@ describe("Execution guards", () => {
     const calls: ChatRequest[] = [];
     const router = {
       getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         calls.push(request);
         if (calls.length === 1) {
@@ -462,6 +469,100 @@ describe("Execution guards", () => {
     expect(result.kind).toBe("success");
     expect(calls).toHaveLength(3);
     expect(JSON.stringify(calls[1].messages)).toContain("Invalid final stage response");
+  });
+});
+
+describe("DesignerAgent", () => {
+  it("runs a design task and returns a Designer TaskReport", async () => {
+    const router = {
+      getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
+      chat: async (): Promise<ChatResponse> => ({
+        content: JSON.stringify({
+          task_id: "design-1",
+          stage_id: "stage-1",
+          status: "completed",
+          summary: "Produced a dashboard design brief.",
+        }),
+        toolCalls: [{ id: "t1", name: "test_tool", input: {} }],
+        finishReason: "tool_use",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      }),
+    };
+
+    // Second call: end_turn with the final TaskReport.
+    let callCount = 0;
+    const router2 = {
+      getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
+      chat: async (): Promise<ChatResponse> => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            content: "Inspecting context first.",
+            toolCalls: [{ id: "t1", name: "test_tool", input: {} }],
+            finishReason: "tool_use",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        return {
+          content: JSON.stringify({
+            task_id: "design-1",
+            stage_id: "stage-1",
+            agent: "designer",
+            status: "completed",
+            summary: "Produced a dashboard design brief.",
+            checklist_results: [],
+            files_modified: [],
+            files_created: [],
+            tests_added: [],
+            tests_run: [],
+            commits: [],
+            issues_found: [],
+            started_at: new Date().toISOString(),
+            completed_at: new Date().toISOString(),
+            duration_ms: 1,
+          }),
+          toolCalls: [],
+          finishReason: "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+    void router;
+
+    const input: WorkerInput = {
+      stageId: "stage-1",
+      task: {
+        id: "design-1",
+        type: "design",
+        assigned_to: "designer",
+        description: "Design the dashboard layout",
+        checklist: [{ description: "states enumerated", required: true }],
+        dependencies: [],
+        status: "pending",
+        tags: [],
+        attempt: 1,
+        max_attempts: 3,
+      },
+    };
+
+    const agent = new DesignerAgent(
+      makeReviewerContext(tmpDir, router2, {
+        getAllTools: () => [
+          { name: "test_tool", description: "test", inputSchema: {}, service: "test" },
+        ],
+        callTool: async () => ({ ok: true }),
+      }),
+      input,
+    );
+
+    const result = await agent.run();
+    expect(result.kind).toBe("success");
+    if (result.kind === "success") {
+      const data = result.data as { agent: string };
+      expect(data.agent).toBe("designer");
+    }
   });
 });
 

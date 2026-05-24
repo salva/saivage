@@ -11,7 +11,7 @@ the REST endpoints + WebSocket described in [Web Dashboard](/guide/web-ui).
 - Vue 3 (composition API, `<script setup>`).
 - Vite for build & dev server.
 - `lucide-vue-next` for icons.
-- Plain CSS (`web/src/styles.css`); no UI framework.
+- Plain CSS pipeline under `web/src/styles/` (entry: `index.css`, layers: `tokens`, `semantic`, `base`, `patterns`); no UI framework.
 
 ## Component map
 
@@ -54,7 +54,7 @@ before bundling the server with tsup.
 ## Customizing
 
 - Branding: edit `App.vue` header and `index.html`.
-- Theming: `styles.css` exposes CSS variables for colors / spacing.
+- Theming: `web/src/styles/tokens.css` defines the raw design tokens; `web/src/styles/semantic.css` maps them to semantic roles.
 - New panel: add a Vue component, register it in `App.vue`'s panel
   switcher, and wire any new REST/WS calls through `useWebSocket.ts`.
 

@@ -8,7 +8,7 @@
  * `scope_ref == ctx.stageId`).
  */
 
-import type { ToolEntry } from "./registry.js";
+import type { ToolEntry } from "./types.js";
 import type { InProcessToolHandler } from "./runtime.js";
 import { canCall, checkScope } from "../knowledge/permissions.js";
 import { KnowledgeStoreError } from "../knowledge/store.js";
@@ -195,7 +195,7 @@ export const knowledgeMemoryHandler: InProcessToolHandler = async (toolName, arg
         const scope = args.scope as KnowledgeScope;
         const scope_ref = args.scope_ref !== undefined ? String(args.scope_ref) : undefined;
         gateScope(role, "create", scope, scope_ref, { stageId: ctx.stageId, channelId: ctx.channelId });
-        const result = createMemory(root, {
+        const result = await createMemory(root, {
           topic: args.topic as { domain: string; subject: string; aspect?: string },
           keys: (args.keys as string[] | undefined) ?? [],
           body: String(args.body),
@@ -216,7 +216,7 @@ export const knowledgeMemoryHandler: InProcessToolHandler = async (toolName, arg
       case "update_memory": {
         gateRole(role, "create"); // update follows create per §F
         // Coder/Researcher (Y†) need scope check — fetch the record's scope first.
-        const result = updateMemory(root, {
+        const result = await updateMemory(root, {
           id: String(args.id),
           ...(args.body !== undefined ? { body: String(args.body) } : {}),
           ...(args.keys !== undefined ? { keys: args.keys as string[] } : {}),
@@ -233,7 +233,7 @@ export const knowledgeMemoryHandler: InProcessToolHandler = async (toolName, arg
         const newScope = nr.scope as KnowledgeScope;
         const newScopeRef = nr.scope_ref !== undefined ? String(nr.scope_ref) : undefined;
         gateScope(role, "supersede", newScope, newScopeRef, { stageId: ctx.stageId, channelId: ctx.channelId });
-        const result = supersedeMemory(root, {
+        const result = await supersedeMemory(root, {
           old_id: String(args.old_id),
           new_record: {
             topic: nr.topic as { domain: string; subject: string; aspect?: string },
@@ -256,16 +256,16 @@ export const knowledgeMemoryHandler: InProcessToolHandler = async (toolName, arg
       }
       case "archive_memory": {
         gateRole(role, "archive");
-        return ok(archiveMemory(root, String(args.id), String(args.reason), author));
+        return ok(await archiveMemory(root, String(args.id), String(args.reason), author));
       }
       case "delete_memory": {
         gateRole(role, "archive"); // delete follows archive per §F
-        return ok(deleteMemory(root, String(args.id), String(args.reason), author));
+        return ok(await deleteMemory(root, String(args.id), String(args.reason), author));
       }
       case "list_memories": {
         gateRole(role, "read");
         return ok({
-          memories: listMemories(root, {
+          memories: await listMemories(root, {
             ...(args.scope !== undefined ? { scope: args.scope as KnowledgeScope } : {}),
             ...(args.topic_domain !== undefined ? { topic_domain: String(args.topic_domain) } : {}),
             ...(args.include_archived !== undefined ? { include_archived: Boolean(args.include_archived) } : {}),
@@ -275,7 +275,7 @@ export const knowledgeMemoryHandler: InProcessToolHandler = async (toolName, arg
       }
       case "get_memory": {
         gateRole(role, "read");
-        const result = getMemory(root, {
+        const result = await getMemory(root, {
           ...(args.id !== undefined ? { id: String(args.id) } : {}),
           ...(args.topic !== undefined ? { topic: args.topic as { domain: string; subject: string; aspect?: string } } : {}),
         });
@@ -285,7 +285,7 @@ export const knowledgeMemoryHandler: InProcessToolHandler = async (toolName, arg
       case "search_memories": {
         gateRole(role, "search");
         return ok({
-          hits: searchMemories(root, String(args.query), {
+          hits: await searchMemories(root, String(args.query), {
             ...(args.scope !== undefined ? { scope: args.scope as KnowledgeScope } : {}),
             ...(args.limit !== undefined ? { limit: Number(args.limit) } : {}),
           }),

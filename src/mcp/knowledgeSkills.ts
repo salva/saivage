@@ -14,7 +14,7 @@
  * §F (permission matrix).
  */
 
-import type { ToolEntry } from "./registry.js";
+import type { ToolEntry } from "./types.js";
 import type { InProcessToolHandler } from "./runtime.js";
 import { canCall } from "../knowledge/permissions.js";
 import { KnowledgeStoreError } from "../knowledge/store.js";
@@ -187,7 +187,7 @@ export const knowledgeSkillsHandler: InProcessToolHandler = async (toolName, arg
     switch (toolName) {
       case "create_skill": {
         gateRole(role, "create");
-        const result = createSkill(root, {
+        const result = await createSkill(root, {
           name: String(args.name),
           description: String(args.description),
           body: String(args.body),
@@ -204,7 +204,7 @@ export const knowledgeSkillsHandler: InProcessToolHandler = async (toolName, arg
       }
       case "update_skill": {
         gateRole(role, "create"); // update follows create per §F
-        const result = updateSkill(root, {
+        const result = await updateSkill(root, {
           id: String(args.id),
           ...(args.body !== undefined ? { body: String(args.body) } : {}),
           ...(args.description !== undefined ? { description: String(args.description) } : {}),
@@ -219,7 +219,7 @@ export const knowledgeSkillsHandler: InProcessToolHandler = async (toolName, arg
       case "supersede_skill": {
         gateRole(role, "supersede");
         const nr = (args.new_record ?? {}) as Record<string, unknown>;
-        const result = supersedeSkill(root, {
+        const result = await supersedeSkill(root, {
           old_id: String(args.old_id),
           new_record: {
             name: String(nr.name),
@@ -240,16 +240,16 @@ export const knowledgeSkillsHandler: InProcessToolHandler = async (toolName, arg
       }
       case "archive_skill": {
         gateRole(role, "archive");
-        return ok(archiveSkill(root, String(args.id), String(args.reason), author));
+        return ok(await archiveSkill(root, String(args.id), String(args.reason), author));
       }
       case "delete_skill": {
         gateRole(role, "archive"); // delete follows archive per §F
-        return ok(deleteSkill(root, String(args.id), String(args.reason), author));
+        return ok(await deleteSkill(root, String(args.id), String(args.reason), author));
       }
       case "list_skills": {
         gateRole(role, "read");
         return ok({
-          skills: listSkills(root, {
+          skills: await listSkills(root, {
             ...(args.scope !== undefined ? { scope: args.scope as KnowledgeScope } : {}),
             ...(args.target_agent !== undefined ? { target_agent: args.target_agent as KnowledgeAgentRole } : {}),
             ...(args.include_archived !== undefined ? { include_archived: Boolean(args.include_archived) } : {}),
@@ -259,12 +259,12 @@ export const knowledgeSkillsHandler: InProcessToolHandler = async (toolName, arg
       }
       case "read_skill": {
         gateRole(role, "read");
-        return ok(readSkillById(root, String(args.id)));
+        return ok(await readSkillById(root, String(args.id)));
       }
       case "search_skills": {
         gateRole(role, "search");
         return ok({
-          hits: searchSkills(root, String(args.query), {
+          hits: await searchSkills(root, String(args.query), {
             ...(args.scope !== undefined ? { scope: args.scope as KnowledgeScope } : {}),
             ...(args.limit !== undefined ? { limit: Number(args.limit) } : {}),
           }),

@@ -5,13 +5,14 @@
  * runs crash recovery, starts the Planner, handles graceful shutdown.
  */
 
-import { loadConfig, type SaivageConfig } from "../config.js";
+import { loadConfig, type SaivageConfig, configPath } from "../config.js";
+import { validateModelCoverage } from "../config-validation.js";
 import { ModelRouter } from "../providers/router.js";
 import { McpRuntime } from "../mcp/runtime.js";
 import { registerBuiltinServices } from "../mcp/builtins.js";
 import { createPromptInjectionCop } from "../security/prompt-injection-cop.js";
-import { getOAuthApiKey, hasOAuthCredentials } from "../auth/index.js";
 import { cleanStash } from "../runtime/stash.js";
+import { writeFileSync } from "node:fs";
 
 import { EventBus } from "../events/bus.js";
 import { PlanService } from "../mcp/plan-server.js";
@@ -31,11 +32,12 @@ import { CoderAgent } from "../agents/coder.js";
 import { ResearcherAgent } from "../agents/researcher.js";
 import { DataAgent } from "../agents/data-agent.js";
 import { ReviewerAgent } from "../agents/reviewer.js";
+import { DesignerAgent } from "../agents/designer.js";
 import { InspectorAgent } from "../agents/inspector.js";
 import type { AgentContext, AgentResult, Agent } from "../agents/types.js";
 import { assertExhaustive } from "../agents/roster.js";
 import type { AgentState } from "../types.js";
-import type { ServiceEntry } from "../mcp/registry.js";
+import type { ServiceEntry } from "../mcp/types.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
 import { agentId } from "../ids.js";
 import { log } from "../log.js";
@@ -109,13 +111,13 @@ export async function bootstrap(
   projectPath?: string,
 ): Promise<SaivageRuntime> {
   // 1. Discover project
-  const projectRoot = projectPath ?? discoverProject(process.cwd());
+  const projectRoot = projectPath ?? await discoverProject(process.cwd());
   if (!projectRoot) {
     throw new Error(
       "No .saivage/ project found. Run `saivage init <path>` first.",
     );
   }
-  const project = loadProject(projectRoot);
+  const project = await loadProject(projectRoot);
   log.info(`[v2] Project: ${project.projectRoot}`);
 
   // Set env vars for subprocess inheritance and project-local path resolution.
@@ -131,22 +133,28 @@ export async function bootstrap(
     securityModel: config.security.injectionModel,
   });
 
-  // 3. Initialize model router + OAuth
+  validateModelCoverage(config, routing, configPath(project.projectRoot));
+
+  // 3. Initialize model router (OAuth credentials are resolved lazily on first use)
   const router = new ModelRouter(config);
-  await injectOAuthTokens(router);
   await router.inspectUsageAtStartup();
   log.info(`[v2] Providers: ${router.listProviders().join(", ")}`);
 
   // 4. Initialize MCP runtime + builtin services
-  const mcpRuntime = new McpRuntime(config.runtime);
-  registerBuiltinServices(mcpRuntime, {
-    promptInjectionCop: createPromptInjectionCop(config, router, routing.resolve("security").modelSpec),
+  const mcpRuntime = new McpRuntime(config);
+  registerBuiltinServices(mcpRuntime, config.mcp, {
+    promptInjectionCop: createPromptInjectionCop(
+      config,
+      router,
+      config.security.injectionScanner ? routing.resolve("security").modelSpec : undefined,
+    ),
   });
   await startConfiguredMcpServers(mcpRuntime, config);
   mcpRuntime.startMonitoring();
 
   // 5. Register Plan MCP service (in-process)
   const planService = new PlanService(project.saivageDir);
+  await planService.init();
   planService.setGitCommit(async (files: string[], message: string) => {
     // Use MCP git service to commit
     const result = await mcpRuntime.callTool("git", "git_commit", { files, message });
@@ -164,12 +172,12 @@ export async function bootstrap(
   // 6. Single-instance guard: PID-liveness check (fast path) plus an
   // O_CREAT|O_EXCL lockfile that closes the TOCTOU between the check and
   // the first writeRuntimeState call.
-  if (isAnotherInstanceRunning(project.paths.runtimeState)) {
+  if (await isAnotherInstanceRunning(project.paths.runtimeState)) {
     throw new Error(
       "Another Saivage instance is already running. Stop it first or check runtime.json.",
     );
   }
-  const runtimeLock = acquireRuntimeLock(project.saivageDir);
+  const runtimeLock = await acquireRuntimeLock(project.saivageDir);
 
   // 7. Crash recovery
   const recovery = await recoverFromCrash(project, planService);
@@ -183,7 +191,7 @@ export async function bootstrap(
   // 7b. Clean up stale/expired notes from previous runs
   {
     const noteCleanup = new NoteManager(project.paths.notes);
-    const cleaned = noteCleanup.cleanupStaleNotes();
+    const cleaned = await noteCleanup.cleanupStaleNotes(config.runtime.notes.volatileTtlMs);
     if (cleaned > 0) {
       log.info(`[v2] Cleaned ${cleaned} stale/expired notes from previous run`);
     }
@@ -224,7 +232,7 @@ export async function bootstrap(
       // during teardown cannot race the final "idle" write below.
       tracker.freeze("shutdown");
       try {
-        writeShutdownSummary(project);
+        await writeShutdownSummary(project);
       } catch (err) {
         log.warn(`[shutdown] Failed to save shutdown summary: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -249,11 +257,15 @@ export async function bootstrap(
       noteService.handleToolCall(toolName, args),
   );
 
-  supervisor = new RuntimeSupervisor(config, { router, agentRegistry }, routing.resolve("supervisor").modelSpec);
+  supervisor = new RuntimeSupervisor(
+    config,
+    { router, agentRegistry },
+    config.supervisor.enabled ? routing.resolve("supervisor").modelSpec : undefined,
+  );
   runtime.supervisor = supervisor;
   supervisor.start();
 
-  const shutdownHandoff = consumeShutdownHandoff(project);
+  const shutdownHandoff = await consumeShutdownHandoff(project);
   if (shutdownHandoff) {
     queuePlannerDirective(runtime, shutdownHandoff);
     log.info("[shutdown] Loaded restart handoff directive for next planner session");
@@ -296,7 +308,7 @@ export function createChildSpawner(
         const managerInput = input as import("../agents/types.js").ManagerInput;
         const managerSpawner = createChildSpawner(runtime);
         ctx.stageId = managerInput.stage?.id;
-        agent = new ManagerAgent(ctx, managerInput, managerSpawner, {
+        agent = await ManagerAgent.create(ctx, managerInput, managerSpawner, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
         });
         tracker.setCurrentStage(managerInput.stage?.id ?? null);
@@ -306,7 +318,7 @@ export function createChildSpawner(
       case "coder": {
         const workerInput = normalizeWorkerDispatchInput(input, role);
         ctx.stageId = workerInput.stageId;
-        agent = new CoderAgent(ctx, workerInput, {
+        agent = await CoderAgent.create(ctx, workerInput, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
         });
         taskId = workerInput.task?.id;
@@ -317,7 +329,7 @@ export function createChildSpawner(
       case "researcher": {
         const workerInput = normalizeWorkerDispatchInput(input, role);
         ctx.stageId = workerInput.stageId;
-        agent = new ResearcherAgent(ctx, workerInput, {
+        agent = await ResearcherAgent.create(ctx, workerInput, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
         });
         taskId = workerInput.task?.id;
@@ -328,7 +340,7 @@ export function createChildSpawner(
       case "data_agent": {
         const workerInput = normalizeWorkerDispatchInput(input, role);
         ctx.stageId = workerInput.stageId;
-        agent = new DataAgent(ctx, workerInput, {
+        agent = await DataAgent.create(ctx, workerInput, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
         });
         taskId = workerInput.task?.id;
@@ -349,7 +361,7 @@ export function createChildSpawner(
           break;
         }
 
-        const reviewer = new ReviewerAgent(ctx, workerInput, {
+        const reviewer = await ReviewerAgent.create(ctx, workerInput, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
         });
         agent = reviewer;
@@ -359,10 +371,21 @@ export function createChildSpawner(
         break;
       }
 
+      case "designer": {
+        const workerInput = normalizeWorkerDispatchInput(input, role);
+        ctx.stageId = workerInput.stageId;
+        agent = await DesignerAgent.create(ctx, workerInput, {
+          onActivity: (agentId) => tracker.agentActivity(agentId),
+        });
+        taskId = workerInput.task?.id;
+        tracker.setCurrentStage(workerInput.stageId);
+        break;
+      }
+
       case "inspector": {
         const inspectorInput = input as import("../agents/types.js").InspectorInput;
         ctx.stageId = tracker.getCurrentStage() ?? undefined;
-        agent = new InspectorAgent(ctx, inspectorInput, {
+        agent = await InspectorAgent.create(ctx, inspectorInput, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
         });
         break;
@@ -472,7 +495,7 @@ export async function runPlanner(
   };
 
   const childSpawner = createChildSpawner(runtime);
-  const planner = new PlannerAgent(ctx, childSpawner, {
+  const planner = await PlannerAgent.create(ctx, childSpawner, {
     abortSignal: options.abortSignal,
     onActivity: (agentId) => tracker.agentActivity(agentId),
   });
@@ -498,8 +521,6 @@ export async function runPlanner(
     process.off("SIGTERM", shutdownHandler);
   }
 }
-
-const RECOVERY_DELAY_MS = 60 * 1000; // 1 minute (reduced from 5 to keep momentum)
 
 const RECOVERY_PROMPT =
   `SYSTEM RECOVERY: The planner session ended without completing all objectives. ` +
@@ -542,7 +563,7 @@ function queuePlannerDirective(runtime: SaivageRuntime, content: string): void {
 
 /**
  * Run the planner in a recovery loop. When the planner exits (success or
- * max-nudges), wait RECOVERY_DELAY_MS then restart with a continuation prompt.
+ * max-nudges), wait the configured recovery delay then restart with a continuation prompt.
  * Only stops on explicit PLAN_COMPLETE, abort, or process shutdown.
  */
 export async function runPlannerWithRecovery(
@@ -618,18 +639,19 @@ export async function runPlannerWithRecovery(
       if (cancelled) break;
 
       // For success (nudge-out) or failure — always retry
+      const recoveryDelayMs = runtime.config.runtime.recoveryDelayMs;
       log.info(
         `[recovery] Planner ended without PLAN_COMPLETE (${result.kind}). ` +
-        `Waiting ${RECOVERY_DELAY_MS / 1000}s before restart...`,
+        `Waiting ${recoveryDelayMs / 1000}s before restart...`,
       );
 
       await runtime.eventBus.publish({
         type: "plan_updated",
-        summary: `Planner ended (${result.kind}). Recovery restart in ${Math.round(RECOVERY_DELAY_MS / 1000)}s.`,
+        summary: `Planner ended (${result.kind}). Recovery restart in ${Math.round(recoveryDelayMs / 1000)}s.`,
         timestamp: new Date().toISOString(),
       });
 
-      if (await waitForRecoveryDelay(RECOVERY_DELAY_MS)) cancelled = true;
+      if (await waitForRecoveryDelay(recoveryDelayMs)) cancelled = true;
 
       if (cancelled) break;
 
@@ -693,7 +715,13 @@ function installFatalHandlers(runtime: SaivageRuntime, lock: RuntimeLock): void 
     try {
       const failState = createRuntimeState();
       failState.status = "error";
-      writeRuntimeState(runtime.project.paths.runtimeState, failState);
+      // Sync write — we're about to exit and cannot await reliably from a
+      // fatal handler. Best-effort only.
+      writeFileSync(
+        runtime.project.paths.runtimeState,
+        JSON.stringify(failState, null, 2),
+        "utf-8",
+      );
     } catch (writeErr) {
       log.warn(`[fatal] Failed to mark runtime state as error: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`);
     }
@@ -726,7 +754,6 @@ async function startConfiguredMcpServers(
       transport: server.transport,
       tools: [],
       capabilities: [],
-      status: "active",
       createdAt: new Date().toISOString(),
     };
 
@@ -738,29 +765,6 @@ async function startConfiguredMcpServers(
   }
 }
 
-async function injectOAuthTokens(router: ModelRouter): Promise<void> {
-  const oauthIds: Record<string, string> = {
-    "openai-codex": "openai-codex",
-    "anthropic": "anthropic",
-    "github-copilot": "github-copilot",
-  };
-
-  for (const providerName of router.listProviders()) {
-    const oauthId = oauthIds[providerName] ?? providerName;
-    if (hasOAuthCredentials(oauthId)) {
-      try {
-        const key = await getOAuthApiKey(oauthId);
-        const provider = router.getProvider(providerName);
-        if (key && provider?.setApiKey) {
-          provider.setApiKey(key);
-          log.info(`[v2] OAuth credentials loaded for ${providerName}`);
-        }
-      } catch {
-        // Non-fatal — provider may still work with env vars
-      }
-    }
-  }
-}
 
 function resolveAgentRoute(runtime: SaivageRuntime, role: string): Pick<AgentContext, "modelSpec" | "authProfileKey" | "accountRef"> {
   const route = runtime.routing.resolve(role);

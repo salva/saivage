@@ -15,7 +15,7 @@
 import { describe, expect, it } from "vitest";
 import { McpRuntime } from "./runtime.js";
 import { defaultAuthor, withContext, type ToolCallContext } from "./toolContext.js";
-import type { ToolEntry } from "./registry.js";
+import type { ToolEntry } from "./types.js";
 
 const ctx: ToolCallContext = {
   role: "coder",
@@ -32,7 +32,17 @@ const toolDef: ToolEntry = {
 
 function makeRuntime(): McpRuntime {
   return new McpRuntime(
-    { restartOnCrash: false, continuousImprovement: false, healthCheckIntervalMs: 0, idleShutdownMs: 0, maxServices: 50 },
+    {
+      runtime: { restartOnCrash: false, continuousImprovement: false, healthCheckIntervalMs: 0, idleShutdownMs: 0, maxServices: 50 },
+      mcp: {
+        shellTimeoutMs: 4 * 60 * 60 * 1000,
+        shellTimeoutFloorMs: 10 * 60 * 1000,
+        inProcessTimeoutMs: 300_000,
+        maxOutputBytes: 100 * 1024,
+        maxFetchChars: 200_000,
+        maxDownloadBytes: 250 * 1024 * 1024,
+      },
+    } as any,
     {
       now: () => 0,
       crashFailureThreshold: 99,

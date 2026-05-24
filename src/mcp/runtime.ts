@@ -1,10 +1,5 @@
 import { McpClient } from "./client.js";
-import type { ServiceEntry, ToolEntry } from "./registry.js";
-import {
-  listRegisteredServices,
-  updateServiceStatus,
-  getService,
-} from "./registry.js";
+import type { ServiceEntry, ToolEntry } from "./types.js";
 import { log } from "../log.js";
 import type { SaivageConfig } from "../config.js";
 
@@ -63,14 +58,21 @@ export class McpRuntime {
   private crashFailureThreshold: number;
   private crashFailureWindowMs: number;
   private crashCooldownMs: number;
+  private readonly inProcessTimeoutMs: number;
+  private readonly shellTimeoutMs: number;
 
-  constructor(config: SaivageConfig["runtime"], options: McpRuntimeOptions = {}) {
-    this.config = config;
+  constructor(
+    config: SaivageConfig,
+    options: McpRuntimeOptions = {},
+  ) {
+    this.config = config.runtime;
     this.clientFactory = options.clientFactory ?? ((entry) => new McpClient(entry));
     this.now = options.now ?? (() => Date.now());
     this.crashFailureThreshold = options.crashFailureThreshold ?? 3;
     this.crashFailureWindowMs = options.crashFailureWindowMs ?? 60_000;
     this.crashCooldownMs = options.crashCooldownMs ?? 60_000;
+    this.inProcessTimeoutMs = config.mcp.inProcessTimeoutMs;
+    this.shellTimeoutMs = config.mcp.shellTimeoutMs;
   }
 
   /** Start health-check and idle-shutdown loops */
@@ -94,7 +96,7 @@ export class McpRuntime {
     if (this.idleInterval) clearInterval(this.idleInterval);
   }
 
-  /** Start a service by name (from registry) */
+  /** Start a service by name (must already be running, declared in config.mcpServers, and started). */
   async startService(name: string): Promise<McpClient> {
     this.assertNotCoolingDown(name);
 
@@ -104,10 +106,9 @@ export class McpRuntime {
       return existing.client;
     }
 
-    const entry = getService(name);
-    if (!entry) throw new Error(`Service "${name}" not found in registry`);
-
-    return this.startFromEntry(entry);
+    throw new Error(
+      `MCP service "${name}" is not running; declare it under config.mcpServers with autostart: true`,
+    );
   }
 
   /** Start a service from an entry (not necessarily in registry) */
@@ -126,10 +127,8 @@ export class McpRuntime {
       };
       this.services.set(entry.name, managed);
       this.clearExternalFailures(entry.name);
-      updateServiceStatus(entry.name, "active");
       return client;
     } catch (err) {
-      updateServiceStatus(entry.name, "error");
       this.recordExternalFailure(entry.name, err);
       throw err;
     }
@@ -165,12 +164,6 @@ export class McpRuntime {
     );
   }
 
-  /** Default timeout for in-process tool handlers (5 minutes). */
-  private static readonly IN_PROCESS_TIMEOUT_MS = 300_000;
-  /** Shell commands get a much longer timeout (4 hours) — the command's
-   *  own timeout_ms / inactivity_timeout_ms handle liveness. */
-  private static readonly SHELL_TIMEOUT_MS = 4 * 60 * 60 * 1000;
-
   /** Call a tool on a service (lazy-start) */
   async callTool(
     serviceName: string,
@@ -185,8 +178,8 @@ export class McpRuntime {
         throw new Error(`Service "${serviceName}" is registered but unavailable`);
       }
       const timeoutMs = serviceName === "shell"
-        ? McpRuntime.SHELL_TIMEOUT_MS
-        : McpRuntime.IN_PROCESS_TIMEOUT_MS;
+        ? this.shellTimeoutMs
+        : this.inProcessTimeoutMs;
       const result = await withTimeout(
         inProc.handler(toolName, args, ctx),
         timeoutMs,
@@ -213,7 +206,7 @@ export class McpRuntime {
     return result.content;
   }
 
-  /** Get all tool schemas across all services (in-process + running + registry) */
+  /** Get all tool schemas across all services (in-process + running) */
   getAllTools(): RuntimeToolEntry[] {
     const tools: RuntimeToolEntry[] = [];
     const seen = new Set<string>();
@@ -232,17 +225,6 @@ export class McpRuntime {
       for (const tool of managed.client.getTools()) {
         tools.push({ ...tool, service: name });
         seen.add(tool.name);
-      }
-    }
-
-    // Second: tools from registry for services not yet started
-    for (const entry of listRegisteredServices()) {
-      if (entry.status !== "active") continue;
-      for (const tool of entry.tools) {
-        if (!seen.has(tool.name)) {
-          tools.push({ ...tool, service: entry.name });
-          seen.add(tool.name);
-        }
       }
     }
 
@@ -291,20 +273,6 @@ export class McpRuntime {
         seen.add(tool.name);
       }
     }
-    for (const entry of listRegisteredServices()) {
-      if (entry.status !== "active") continue;
-      for (const tool of entry.tools) {
-        if (seen.has(tool.name)) continue;
-        out.push({
-          name: tool.name,
-          service: entry.name,
-          description: tool.description,
-          inputSchema: tool.inputSchema,
-          available: true,
-        });
-        seen.add(tool.name);
-      }
-    }
     return out;
   }
 
@@ -342,7 +310,6 @@ export class McpRuntime {
     managed.crashCount++;
     if (managed.crashCount > 3) {
       log.error(`Service "${name}" crashed ${managed.crashCount} times, giving up`);
-      updateServiceStatus(name, "error");
       this.services.delete(name);
       return;
     }
@@ -362,7 +329,6 @@ export class McpRuntime {
     } catch (err) {
       log.error(`Failed to restart "${name}": ${err}`);
       if (this.recordExternalFailure(name, err)) {
-        updateServiceStatus(name, "error");
         this.services.delete(name);
       }
     }

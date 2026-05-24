@@ -26,9 +26,9 @@ const AUTHOR: AuthorAgent = { role: "manager", agent_id: "agent-conc" };
 let projectRoot: string;
 let saivage: string;
 
-beforeEach(() => {
+beforeEach(async () => {
   projectRoot = mkdtempSync(join(tmpdir(), "saivage-conc-"));
-  initProjectTree(projectRoot);
+  await initProjectTree(projectRoot);
   saivage = join(projectRoot, ".saivage");
 });
 afterEach(() => rmSync(projectRoot, { recursive: true, force: true }));
@@ -125,7 +125,7 @@ describe("parallel lifecycle writes — same scope", () => {
   });
 
   it("parallel updateMemory of same id is serialized; final state is one of the arrivals", async () => {
-    const mem = createMemory(
+    const mem = await createMemory(
       saivage,
       {
         topic: { domain: "x", subject: "y" },
@@ -147,7 +147,7 @@ describe("parallel lifecycle writes — same scope", () => {
     expect(results.length).toBe(4);
     // Read final state — must equal exactly one of the four bodies (no
     // interleaved/corrupted write).
-    const final = getMemory(saivage, { id: mem.id });
+    const final = await getMemory(saivage, { id: mem.id });
     expect(final).not.toBeNull();
     expect(bodies).toContain(final!.body);
   });
@@ -156,13 +156,13 @@ describe("parallel lifecycle writes — same scope", () => {
 // ─── Supersede atomicity (FR-31g, §C.1.3) ─────────────────────────────────
 
 describe("supersedeMemory — two-key atomicity & chain repair", () => {
-  it("after supersede, getMemory(OLD) walks chain to NEW", () => {
-    const v1 = createMemory(
+  it("after supersede, getMemory(OLD) walks chain to NEW", async () => {
+    const v1 = await createMemory(
       saivage,
       { topic: { domain: "d", subject: "s" }, body: "v1", scope: "project", reason: "init" },
       AUTHOR,
     );
-    const r = supersedeMemory(
+    const r = await supersedeMemory(
       saivage,
       {
         old_id: v1.id,
@@ -175,13 +175,13 @@ describe("supersedeMemory — two-key atomicity & chain repair", () => {
       },
       AUTHOR,
     );
-    const walked = getMemory(saivage, { id: v1.id });
+    const walked = await getMemory(saivage, { id: v1.id });
     expect(walked?.id).toBe(r.new_id);
     expect(walked?.body).toBe("v2");
   });
 
   it("parallel supersede of the SAME old id → exactly one wins, other fails INVALID_SUPERSEDE_TARGET", async () => {
-    const v1 = createMemory(
+    const v1 = await createMemory(
       saivage,
       { topic: { domain: "z", subject: "y" }, body: "v1", scope: "project", reason: "init" },
       AUTHOR,

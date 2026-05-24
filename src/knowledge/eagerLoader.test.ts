@@ -10,15 +10,15 @@ import { resolveEagerRecords } from "./loader.js";
 describe("eagerLoader (WI-13)", () => {
   let projectRoot: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     projectRoot = mkdtempSync(join(tmpdir(), "wi13-"));
-    initProjectTree(projectRoot);
+    await initProjectTree(projectRoot);
   });
   afterEach(() => rmSync(projectRoot, { recursive: true, force: true }));
 
-  it("loads project-scope skills and memories as candidates", () => {
+  it("loads project-scope skills and memories as candidates", async () => {
     const saivage = join(projectRoot, ".saivage");
-    createSkill(
+    await createSkill(
       saivage,
       {
         name: "coder-skill",
@@ -31,7 +31,7 @@ describe("eagerLoader (WI-13)", () => {
       },
       { role: "manager", agent_id: "test" },
     );
-    createMemory(
+    await createMemory(
       saivage,
       {
         topic: { domain: "build", subject: "web", aspect: "command" },
@@ -43,14 +43,14 @@ describe("eagerLoader (WI-13)", () => {
       { role: "manager", agent_id: "test" },
     );
 
-    const cands = loadAllCandidates(projectRoot, "/nonexistent-builtin-dir");
+    const cands = await loadAllCandidates(projectRoot, "/nonexistent-builtin-dir");
     expect(cands.some((c) => c.record.kind === "skill")).toBe(true);
     expect(cands.some((c) => c.record.kind === "memory")).toBe(true);
   });
 
-  it("formatEagerBlock emits the §D.6 header and END marker", () => {
+  it("formatEagerBlock emits the §D.6 header and END marker", async () => {
     const saivage = join(projectRoot, ".saivage");
-    createSkill(
+    await createSkill(
       saivage,
       {
         name: "always-on",
@@ -64,13 +64,13 @@ describe("eagerLoader (WI-13)", () => {
       },
       { role: "manager", agent_id: "test" },
     );
-    const block = buildEagerBlock(projectRoot, "coder", "context", ["foo"]);
+    const block = await buildEagerBlock(projectRoot, "coder", "context", ["foo"]);
     expect(block).toContain("--- SAIVAGE KNOWLEDGE");
     expect(block).toContain("--- END SAIVAGE KNOWLEDGE ---");
     expect(block).toContain("--- SKILL: always-on (project) ---");
   });
 
-  it("walkBuiltinSkills picks up bundled SKILL.md", () => {
+  it("walkBuiltinSkills picks up bundled SKILL.md", async () => {
     const builtin = join(projectRoot, "fake-builtin");
     mkdirSync(join(builtin, "planning"), { recursive: true });
     writeFileSync(
@@ -78,7 +78,7 @@ describe("eagerLoader (WI-13)", () => {
       "# planning\nbuiltin body",
       "utf-8",
     );
-    const cands = loadAllCandidates(projectRoot, builtin);
+    const cands = await loadAllCandidates(projectRoot, builtin);
     const builtinCand = cands.find((c) => c.origin === "builtin");
     expect(builtinCand).toBeDefined();
     expect(builtinCand?.body).toContain("builtin body");

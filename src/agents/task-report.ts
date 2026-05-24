@@ -8,16 +8,28 @@
  * unification noted in `buildFailureReport`.
  */
 
-import type { Task, TaskReport } from "../types.js";
+import { TaskReportSchema, type Task, type TaskReport } from "../types.js";
+import { parseLlmJsonAs } from "../parse-llm-json.js";
 import type { WorkerInput } from "./types.js";
 
-export type WorkerRole = "coder" | "researcher" | "data_agent" | "reviewer";
+/**
+ * Per-call validation schema for worker-emitted TaskReport payloads.
+ *
+ * `agent` is owned by the runtime (each worker injects its own role literal
+ * after validation), so it is omitted here. This keeps the schema role-agnostic
+ * and means worker payloads do not need to repeat (or correctly spell) the
+ * `agent` field.
+ */
+const WorkerPayloadSchema = TaskReportSchema.omit({ agent: true }).partial();
+
+export type WorkerRole = "coder" | "researcher" | "data_agent" | "reviewer" | "designer";
 
 const ROLE_TO_TASK_TYPE: Record<WorkerRole, Task["type"]> = {
   coder: "code",
   researcher: "research",
   data_agent: "data",
   reviewer: "review",
+  designer: "design",
 };
 
 /** Normalize a task object that may have alternate field names from LLM output. */
@@ -66,47 +78,32 @@ export function parseTaskReport(
   startedAt: string,
   startMs: number,
 ): TaskReport {
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(jsonMatch[0]) as TaskReport;
-      return {
-        task_id: parsed.task_id ?? input.task.id,
-        stage_id: parsed.stage_id ?? input.stageId,
-        agent: role,
-        status: parsed.status ?? "completed",
-        summary: parsed.summary ?? text.slice(0, 500),
-        checklist_results: parsed.checklist_results ?? [],
-        files_modified: parsed.files_modified ?? [],
-        files_created: parsed.files_created ?? [],
-        tests_added: parsed.tests_added ?? [],
-        tests_run: parsed.tests_run ?? [],
-        commits: parsed.commits ?? [],
-        issues_found: parsed.issues_found ?? [],
-        output_truncated: parsed.output_truncated,
-        failure_reason: parsed.failure_reason,
-        started_at: startedAt,
-        completed_at: new Date().toISOString(),
-        duration_ms: Date.now() - startMs,
-      };
-    } catch {
-      // Fall through to default
-    }
+  const result = parseLlmJsonAs(text, WorkerPayloadSchema);
+  if (!result.ok) {
+    return buildFailureReport(
+      input,
+      role,
+      startedAt,
+      startMs,
+      `worker emitted ${result.reason}: ${result.detail}`,
+    );
   }
-
+  const parsed = result.value;
   return {
-    task_id: input.task.id,
-    stage_id: input.stageId,
+    task_id: parsed.task_id ?? input.task.id,
+    stage_id: parsed.stage_id ?? input.stageId,
     agent: role,
-    status: "completed",
-    summary: text.slice(0, 1000),
-    checklist_results: [],
-    files_modified: [],
-    files_created: [],
-    tests_added: [],
-    tests_run: [],
-    commits: [],
-    issues_found: [],
+    status: parsed.status ?? "completed",
+    summary: parsed.summary ?? "",
+    checklist_results: parsed.checklist_results ?? [],
+    files_modified: parsed.files_modified ?? [],
+    files_created: parsed.files_created ?? [],
+    tests_added: parsed.tests_added ?? [],
+    tests_run: parsed.tests_run ?? [],
+    commits: parsed.commits ?? [],
+    issues_found: parsed.issues_found ?? [],
+    output_truncated: parsed.output_truncated,
+    failure_reason: parsed.failure_reason,
     started_at: startedAt,
     completed_at: new Date().toISOString(),
     duration_ms: Date.now() - startMs,

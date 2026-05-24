@@ -6,11 +6,11 @@
  */
 
 import type { Message, ContentBlock, ToolCallResult, ChatResponse, ToolSchema } from "../providers/types.js";
+import { ProviderError } from "../providers/error.js";
 import type { AgentContext, AgentResult } from "../agents/types.js";
 import { ROSTER, type DispatchableRole } from "../agents/roster.js";
 import type { McpRuntime, RuntimeToolEntry } from "../mcp/runtime.js";
 import { readStash } from "./stash.js";
-import { NoteManager } from "./notes.js";
 import { log } from "../log.js";
 
 /** Maps dispatch tool name to child agent role. */
@@ -132,8 +132,6 @@ export class Dispatcher {
     const dispatchResults = await Promise.all(dispatchPromises);
     results.push(...dispatchResults);
 
-    this.attachPendingNotesNotice(results, ctx);
-
     return { toolResults: results, aborted };
   }
 
@@ -164,9 +162,10 @@ export class Dispatcher {
         this.consecutiveInvalidCalls++;
         const available = allTools.map((t: RuntimeToolEntry) => t.name).join(", ");
         if (this.consecutiveInvalidCalls >= Dispatcher.MAX_CONSECUTIVE_INVALID) {
-          throw new Error(
-            `${Dispatcher.MAX_CONSECUTIVE_INVALID} consecutive invalid tool calls`,
-          );
+          throw new ProviderError({
+            kind: "non_retryable",
+            message: `${Dispatcher.MAX_CONSECUTIVE_INVALID} consecutive invalid tool calls`,
+          });
         }
         return {
           toolUseId: tc.id,
@@ -200,8 +199,11 @@ export class Dispatcher {
       const message = err instanceof Error ? err.message : String(err);
 
       // Check for 3 consecutive invalid calls
-      if (message.includes("consecutive invalid tool calls")) {
+      if (err instanceof ProviderError && err.kind === "non_retryable") {
         throw err; // Propagate to terminate the agent
+      }
+      if (message.includes("consecutive invalid tool calls")) {
+        throw err;
       }
 
       return {
@@ -298,55 +300,4 @@ export class Dispatcher {
   get invalidCallCount(): number {
     return this.consecutiveInvalidCalls;
   }
-
-  private attachPendingNotesNotice(
-    results: ToolCallResultEntry[],
-    ctx: AgentContext,
-  ): void {
-    if (ctx.role !== "planner" || results.length === 0) return;
-
-    const notes = new NoteManager(ctx.project.paths.notes).peekUnacknowledgedNotes();
-    if (notes.length === 0) return;
-
-    const notice = {
-      count: notes.length,
-      urgent_count: notes.filter((note) => note.urgent).length,
-      notes: notes.map((note) => ({
-        id: note.id,
-        urgent: note.urgent,
-        permanent: note.permanent,
-        channel: note.channel,
-        created_at: note.created_at,
-        path: `${ctx.project.paths.notes}/${note.id}.json`,
-        content_preview: truncateNoteContent(note.content),
-      })),
-      instruction: "Pending user notes exist. Consider them before choosing the next Planner action; urgent notes are high priority but do not mean any running work was interrupted.",
-    };
-
-    const target = results[results.length - 1];
-    target.content = attachNoticeToContent(target.content, notice);
-    log.info(`[dispatcher] Attached ${notes.length} pending note pointer(s) to Planner tool result`);
-  }
-}
-
-function attachNoticeToContent(content: string, notice: Record<string, unknown>): string {
-  try {
-    const parsed = JSON.parse(content) as unknown;
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return JSON.stringify({
-        ...(parsed as Record<string, unknown>),
-        __saivage_pending_user_notes: notice,
-      });
-    }
-    return JSON.stringify({
-      result: parsed,
-      __saivage_pending_user_notes: notice,
-    });
-  } catch {
-    return `${content}\n\n--- SAIVAGE_PENDING_USER_NOTES ---\n${JSON.stringify(notice)}\n---`;
-  }
-}
-
-function truncateNoteContent(content: string, max = 1000): string {
-  return content.length <= max ? content : `${content.slice(0, max)}...`;
 }

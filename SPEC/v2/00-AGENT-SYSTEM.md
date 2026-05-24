@@ -200,7 +200,26 @@ This means the Manager maintains its full conversation context throughout the st
 - Does not modify implementation, research, or data artifacts.
 - **Commits** review findings via the MCP git tool.
 
-### 2.7 Inspector
+### 2.7 Designer
+
+**Purpose:** Produce product, UX, interface, information-architecture, and system-design artifacts that make ambiguous implementation work concrete before coding starts.
+
+**Lifecycle:** Designer is **one-shot**, dispatched by the Manager via `run_designer(task)`. It executes the design task, returns a `TaskReport`, and terminates.
+
+**Inputs:**
+- A design `Task` with description, checklist, dependencies, and stage context.
+
+**Outputs:**
+- **Task Reports** (`stages/<stage-id>/reports/<task-id>.json`).
+- Design artifacts written under `research/design/`, `docs/`, or the stage artifact directory named by the task.
+
+**Behaviors:**
+- Produces concrete, implementation-ready design briefs, flows, state inventories, accessibility notes, and architecture/design decisions; does **not** produce production source code.
+- Inspects existing product, UI, docs, and code to fit the existing design system and constraints.
+- Self-assesses every checklist item.
+- **Commits** design artifacts via the MCP git tool when files are created or modified.
+
+### 2.8 Inspector
 
 **Purpose:** Deep analysis of project state on demand.
 
@@ -235,7 +254,7 @@ This means the Manager maintains its full conversation context throughout the st
 - Planner calls `run_inspector(request)` tool → Inspector spawned
 - Chat calls `run_inspector(request)` tool → Inspector spawned
 
-### 2.8 Chat
+### 2.9 Chat
 
 **Purpose:** User-facing interface for queries, status updates, and steering.
 
@@ -528,7 +547,7 @@ Before compaction triggers on a Planner agent, `BaseAgent` injects a one-message
 
 ## 6. External Systems (Carried from v1)
 
-- **LLM Providers**: Router with model config, failover, timeout settings — same as v1. **Model precedence**: `ProjectConfig.model_overrides[role]` > `RuntimeConfig.providers[name].models[role]` > most capable model available.
+- **LLM Providers**: Router with model config, failover, timeout settings — same as v1. **Model precedence**: `ProjectConfig.model_overrides[role]` > `SaivageConfig.providers[name].models[role]` > most capable model available.
 - **MCP Providers**: Tool generation and runtime — same as v1.
 - **Web Interface**: Maintained from v1.
 - **Telegram Bot**: Maintained from v1 + push notification support with user-configurable filters.

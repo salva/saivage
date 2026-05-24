@@ -12,19 +12,15 @@
 
 import {
   closeSync,
-  existsSync,
   fsyncSync,
-  mkdirSync,
   openSync,
-  readdirSync,
-  readFileSync,
-  unlinkSync,
   writeSync,
 } from "node:fs";
+import { mkdir, readdir, readFile, unlink } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import type { z, ZodTypeAny } from "zod";
 
-import { writeDoc } from "../store/documents.js";
+import { writeDoc, pathExists } from "../store/documents.js";
 import { isBlockedPath, redact, scanForSecrets, type SecretMatch } from "../security/secrets.js";
 import {
   AuditEntrySchema,
@@ -129,8 +125,8 @@ export async function acquireScopeLock(key: string): Promise<() => void> {
   return acquire(scopeLocks, key);
 }
 
-function ensureDir(p: string): void {
-  if (!existsSync(p)) mkdirSync(p, { recursive: true });
+async function ensureDir(p: string): Promise<void> {
+  await mkdir(p, { recursive: true });
 }
 
 /**
@@ -219,13 +215,13 @@ export function assertNotBlockedPath(path: string | undefined | null, field = "b
  * naturally present in the record. The record-level body/topic/keys
  * (kind-dependent) are always scanned.
  */
-export function writeRecordAtomic<S extends ZodTypeAny>(
+export async function writeRecordAtomic<S extends ZodTypeAny>(
   dir: string,
   id: string,
   schema: S,
   data: z.input<S>,
   opts: { secretsScanFields?: Record<string, string | undefined | null> } = {},
-): z.output<S> {
+): Promise<z.output<S>> {
   const validated = schema.parse(data) as KnowledgeRecord;
   assertScopePathCoherence(dir, validated);
 
@@ -245,18 +241,18 @@ export function writeRecordAtomic<S extends ZodTypeAny>(
   assertNoSecrets(fields);
 
   const recordsDir = join(dir, "records");
-  ensureDir(recordsDir);
+  await ensureDir(recordsDir);
   const target = join(recordsDir, `${id}.json`);
-  writeDoc(target, validated as unknown as z.input<S>, schema as z.ZodType<unknown>);
+  await writeDoc(target, validated as unknown as z.input<S>, schema as z.ZodType<unknown>);
   return validated as z.output<S>;
 }
 
 /** Roll back a record JSON write (used by supersede's step-3 failure path). */
-export function unlinkRecordIfExists(dir: string, id: string): void {
+export async function unlinkRecordIfExists(dir: string, id: string): Promise<void> {
   const p = join(dir, "records", `${id}.json`);
-  if (existsSync(p)) {
+  if (await pathExists(p)) {
     try {
-      unlinkSync(p);
+      await unlink(p);
     } catch {
       /* best-effort */
     }
@@ -269,8 +265,8 @@ export function unlinkRecordIfExists(dir: string, id: string): void {
  * (4096) atomicity guarantee holds even under concurrent writers in the
  * same process. Reader tolerates a truncated trailing line.
  */
-export function appendJsonlAtomic(path: string, entry: unknown): void {
-  ensureDir(dirname(path));
+export async function appendJsonlAtomic(path: string, entry: unknown): Promise<void> {
+  await ensureDir(dirname(path));
   let json = JSON.stringify(entry);
   if (Buffer.byteLength(json, "utf-8") + 1 > AUDIT_LINE_MAX_BYTES) {
     json = truncateAuditLine(entry, AUDIT_LINE_MAX_BYTES - 1);
@@ -327,9 +323,9 @@ function truncateAuditLine(entry: unknown, maxBytes: number): string {
  * Write a properly-typed AuditEntry. Validates against AuditEntrySchema
  * before serializing; see design §C.3 transaction order.
  */
-export function appendAuditEntry(path: string, entry: AuditEntry): void {
+export async function appendAuditEntry(path: string, entry: AuditEntry): Promise<void> {
   const validated = AuditEntrySchema.parse(entry);
-  appendJsonlAtomic(path, validated);
+  await appendJsonlAtomic(path, validated);
 }
 
 /**
@@ -337,9 +333,14 @@ export function appendAuditEntry(path: string, entry: AuditEntry): void {
  * (POSIX append windows). Malformed mid-file lines are returned as
  * `MALFORMED_AUDIT_LINE` markers so the loader can surface a warning.
  */
-export function readAuditLines(path: string): Array<{ ok: true; entry: AuditEntry } | { ok: false; line: string }> {
-  if (!existsSync(path)) return [];
-  const raw = readFileSync(path, "utf-8");
+export async function readAuditLines(path: string): Promise<Array<{ ok: true; entry: AuditEntry } | { ok: false; line: string }>> {
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
   const lines = raw.split("\n");
   const out: Array<{ ok: true; entry: AuditEntry } | { ok: false; line: string }> = [];
   lines.forEach((line, idx) => {
@@ -380,18 +381,18 @@ export interface IndexSummary {
  * Throws `INDEX_REBUILD_FAILED` if the write step itself fails (callers
  * may catch + log; next loader will retry).
  */
-export function rebuildIndex<S extends ZodTypeAny>(
+export async function rebuildIndex<S extends ZodTypeAny>(
   scopeDir: string,
   schema: S,
   indexSchema: z.ZodType<{ entries: IndexSummary[] }>,
-): { entries: IndexSummary[] } {
+): Promise<{ entries: IndexSummary[] }> {
   const recordsDir = join(scopeDir, "records");
   const entries: IndexSummary[] = [];
-  if (existsSync(recordsDir)) {
-    for (const name of readdirSync(recordsDir).sort()) {
+  if (await pathExists(recordsDir)) {
+    for (const name of (await readdir(recordsDir)).sort()) {
       if (!name.endsWith(".json")) continue;
       try {
-        const raw = readFileSync(join(recordsDir, name), "utf-8");
+        const raw = await readFile(join(recordsDir, name), "utf-8");
         const parsed = JSON.parse(raw);
         const validated = schema.parse(parsed) as KnowledgeRecord;
         entries.push({
@@ -411,7 +412,7 @@ export function rebuildIndex<S extends ZodTypeAny>(
   entries.sort((a, b) => a.id.localeCompare(b.id));
   const doc = { entries };
   try {
-    writeDoc(join(scopeDir, "index.json"), doc, indexSchema);
+    await writeDoc(join(scopeDir, "index.json"), doc, indexSchema);
   } catch (err) {
     throw new KnowledgeStoreError(
       "INDEX_REBUILD_FAILED",

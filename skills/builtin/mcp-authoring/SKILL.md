@@ -17,7 +17,7 @@ When creating an MCP service:
 4. **Error handling** — catch errors and return `isError: true` with a message.
 5. **Transport** — use `StdioServerTransport` from `@modelcontextprotocol/sdk/server/stdio.js`.
 6. **Self-contained** — each service is a standalone Node.js script with its own imports.
-7. **Register in `<project>/.saivage/registry.json`** — include name, command, args, tools list.
+7. **Declare the service in your project's `.saivage/saivage.json`** under `"mcpServers"` with `command`, `args`, `env`, and `autostart: true`.
 
 ### Template
 

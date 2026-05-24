@@ -17,15 +17,15 @@ describe("archiveStage / archiveSession (WI-11)", () => {
   let projectRoot: string;
   let saivage: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     projectRoot = mkdtempSync(join(tmpdir(), "wi11-"));
-    initProjectTree(projectRoot);
+    await initProjectTree(projectRoot);
     saivage = join(projectRoot, ".saivage");
   });
   afterEach(() => rmSync(projectRoot, { recursive: true, force: true }));
 
-  it("moves active stage-scoped skill+memory into archive/ and updates status", () => {
-    const skill = createSkill(
+  it("moves active stage-scoped skill+memory into archive/ and updates status", async () => {
+    const skill = await createSkill(
       saivage,
       {
         name: "stage-skill",
@@ -37,7 +37,7 @@ describe("archiveStage / archiveSession (WI-11)", () => {
       },
       AUTHOR,
     );
-    const mem = createMemory(
+    const mem = await createMemory(
       saivage,
       {
         body: "stage memory body",
@@ -49,7 +49,7 @@ describe("archiveStage / archiveSession (WI-11)", () => {
       AUTHOR,
     );
 
-    const res = archiveStage(projectRoot, "stage-1");
+    const res = await archiveStage(projectRoot, "stage-1");
     expect(res.archivedSkills).toContain(skill.id);
     expect(res.archivedMemories).toContain(mem.id);
 
@@ -77,8 +77,8 @@ describe("archiveStage / archiveSession (WI-11)", () => {
     expect(audit).toContain(skill.id);
   });
 
-  it("is idempotent: second invocation is a no-op", () => {
-    createSkill(
+  it("is idempotent: second invocation is a no-op", async () => {
+    await createSkill(
       saivage,
       {
         name: "s2",
@@ -90,15 +90,15 @@ describe("archiveStage / archiveSession (WI-11)", () => {
       },
       AUTHOR,
     );
-    const first = archiveStage(projectRoot, "s2");
+    const first = await archiveStage(projectRoot, "s2");
     expect(first.archivedSkills.length).toBe(1);
-    const second = archiveStage(projectRoot, "s2");
+    const second = await archiveStage(projectRoot, "s2");
     expect(second.archivedSkills).toEqual([]);
     expect(second.archivedMemories).toEqual([]);
   });
 
-  it("archiveSession archives session-scoped records", () => {
-    const skill = createSkill(
+  it("archiveSession archives session-scoped records", async () => {
+    const skill = await createSkill(
       saivage,
       {
         name: "sess-skill",
@@ -110,14 +110,14 @@ describe("archiveStage / archiveSession (WI-11)", () => {
       },
       AUTHOR,
     );
-    const res = archiveSession(projectRoot, "chan-1");
+    const res = await archiveSession(projectRoot, "chan-1");
     expect(res.archivedSkills).toContain(skill.id);
     const live = join(saivage, "skills", "sessions", "chan-1", "records");
     expect(existsSync(live) ? readdirSync(live) : []).toEqual([]);
   });
 
-  it("non-existent scope dir is a clean no-op", () => {
-    const res = archiveStage(projectRoot, "never-existed");
+  it("non-existent scope dir is a clean no-op", async () => {
+    const res = await archiveStage(projectRoot, "never-existed");
     expect(res).toEqual({ archivedSkills: [], archivedMemories: [] });
   });
 });

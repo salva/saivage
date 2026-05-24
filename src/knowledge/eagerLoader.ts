@@ -7,7 +7,8 @@
  * or budgeting decisions live here.
  */
 
-import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { readdir, readFile, stat } from "node:fs/promises";
+import { pathExists } from "../store/documents.js";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -32,18 +33,19 @@ export interface RawCandidate {
   origin?: "builtin" | "project";
 }
 
-function collectRecordsFromDir<T extends SkillRecord | MemoryRecord>(
+async function collectRecordsFromDir<T extends SkillRecord | MemoryRecord>(
   dir: string,
   schema: z.ZodTypeAny,
   origin: "builtin" | "project",
   out: RawCandidate[],
-): void {
+): Promise<void> {
   const recordsDir = join(dir, "records");
-  if (!existsSync(recordsDir)) return;
-  for (const name of readdirSync(recordsDir).sort()) {
+  if (!(await pathExists(recordsDir))) return;
+  const names = (await readdir(recordsDir)).sort();
+  for (const name of names) {
     if (!name.endsWith(".json")) continue;
     try {
-      const raw = JSON.parse(readFileSync(join(recordsDir, name), "utf-8"));
+      const raw = JSON.parse(await readFile(join(recordsDir, name), "utf-8"));
       const rec = schema.parse(raw) as T;
       if (rec.status !== "active") continue;
       let body = "";
@@ -51,7 +53,7 @@ function collectRecordsFromDir<T extends SkillRecord | MemoryRecord>(
         const skill = rec as SkillRecord;
         if (skill.body_path) {
           const bodyAbs = join(dir, skill.body_path);
-          if (existsSync(bodyAbs)) body = readFileSync(bodyAbs, "utf-8");
+          if (await pathExists(bodyAbs)) body = await readFile(bodyAbs, "utf-8");
         }
       } else {
         body = (rec as MemoryRecord).body;
@@ -61,24 +63,24 @@ function collectRecordsFromDir<T extends SkillRecord | MemoryRecord>(
   }
 }
 
-function walkScopeTree(
+async function walkScopeTree(
   root: string,
   schema: z.ZodTypeAny,
   out: RawCandidate[],
-): void {
-  if (!existsSync(root)) return;
+): Promise<void> {
+  if (!(await pathExists(root))) return;
   // <root>/{project, stages/<id>, sessions/<id>}
   const projectDir = join(root, "project");
-  if (existsSync(projectDir)) collectRecordsFromDir(projectDir, schema, "project", out);
+  if (await pathExists(projectDir)) await collectRecordsFromDir(projectDir, schema, "project", out);
   for (const sub of ["stages", "sessions"]) {
     const subRoot = join(root, sub);
-    if (!existsSync(subRoot)) continue;
-    for (const id of readdirSync(subRoot)) {
+    if (!(await pathExists(subRoot))) continue;
+    for (const id of await readdir(subRoot)) {
       const dir = join(subRoot, id);
       try {
-        if (!statSync(dir).isDirectory()) continue;
+        if (!(await stat(dir)).isDirectory()) continue;
       } catch { continue; }
-      collectRecordsFromDir(dir, schema, "project", out);
+      await collectRecordsFromDir(dir, schema, "project", out);
     }
   }
 }
@@ -88,14 +90,14 @@ function walkScopeTree(
  * (post-WI-16 layout). Each file becomes a synthetic active SkillRecord with
  * origin=builtin. Returns empty if the directory does not exist.
  */
-export function walkBuiltinSkills(builtinRoot: string, out: RawCandidate[]): void {
-  if (!existsSync(builtinRoot)) return;
-  for (const topic of readdirSync(builtinRoot).sort()) {
+export async function walkBuiltinSkills(builtinRoot: string, out: RawCandidate[]): Promise<void> {
+  if (!(await pathExists(builtinRoot))) return;
+  for (const topic of (await readdir(builtinRoot)).sort()) {
     const skillPath = join(builtinRoot, topic, "SKILL.md");
-    if (!existsSync(skillPath)) continue;
+    if (!(await pathExists(skillPath))) continue;
     let body: string;
     try {
-      body = readFileSync(skillPath, "utf-8");
+      body = await readFile(skillPath, "utf-8");
     } catch { continue; }
     const now = new Date(0).toISOString();
     const rec: SkillRecord = SkillRecordSchema.parse({
@@ -137,15 +139,15 @@ export function defaultBuiltinSkillsRoot(): string {
  * {@link resolveEagerRecords} (or {@link reinjectSurvivors}) on the
  * result.
  */
-export function loadAllCandidates(
+export async function loadAllCandidates(
   projectRoot: string,
   builtinRoot: string = defaultBuiltinSkillsRoot(),
-): RawCandidate[] {
+): Promise<RawCandidate[]> {
   const saivage = join(projectRoot, ".saivage");
   const out: RawCandidate[] = [];
-  walkScopeTree(join(saivage, "skills"), SkillRecordSchema, out);
-  walkScopeTree(join(saivage, "memory"), MemoryRecordSchema, out);
-  walkBuiltinSkills(builtinRoot, out);
+  await walkScopeTree(join(saivage, "skills"), SkillRecordSchema, out);
+  await walkScopeTree(join(saivage, "memory"), MemoryRecordSchema, out);
+  await walkBuiltinSkills(builtinRoot, out);
   return out;
 }
 
@@ -205,13 +207,13 @@ export function formatSurvivorReinjectionBlock(
  * Convenience wrapper used by `BaseAgent` ctor: load candidates and
  * resolve into a §D.6 block.
  */
-export function buildEagerBlock(
+export async function buildEagerBlock(
   projectRoot: string,
   agentRole: KnowledgeAgentRole,
   description?: string,
   tags?: string[],
-): string {
-  const candidates = loadAllCandidates(projectRoot);
+): Promise<string> {
+  const candidates = await loadAllCandidates(projectRoot);
   const ctx: ResolveContext = { agentRole, description, tags };
   const resolution = resolveEagerRecords(ctx, candidates);
   return formatEagerBlock(resolution);
@@ -221,12 +223,12 @@ export function buildEagerBlock(
  * Convenience wrapper used by `BaseAgent` post-compaction: load and
  * return the survivor reinjection block (or empty string if none).
  */
-export function buildSurvivorBlock(
+export async function buildSurvivorBlock(
   projectRoot: string,
   agentRole: KnowledgeAgentRole,
   compactionN: number,
-): string {
-  const candidates = loadAllCandidates(projectRoot);
+): Promise<string> {
+  const candidates = await loadAllCandidates(projectRoot);
   const ctx: ResolveContext = { agentRole };
   const survivors = reinjectSurvivors(ctx, candidates);
   if (survivors.length === 0) return "";

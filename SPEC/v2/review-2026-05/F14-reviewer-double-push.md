@@ -4,15 +4,13 @@
 **Severity**: medium
 **Transversality**: local
 
-## Summary
-
-`BaseAgent.runLoop` already pushes the final no-tool assistant response into `this.messages` before returning. `ReviewerAgent.review` then pushes it again so the reviewer can compare follow-up reviews against earlier text. The result is that the reviewer's conversation history contains every final answer twice from the second review onward.
+**Status**: landed in working tree (pre-commit). The reviewer half was superseded by F09's `WorkerAgent` rewrite of `ReviewerAgent.review` (no more `this.messages.push` after `runLoop`); the planner one-line nudge fix landed in [src/agents/planner.ts](src/agents/planner.ts#L228). Regression tests live in `src/agents/agents.test.ts` (reviewer) and `src/agents/planner.nudge.test.ts` (planner).
 
 ## Evidence
 
 - `runLoop` pushes the final assistant message and only then returns the text: [src/agents/base.ts](src/agents/base.ts#L264-L286).
-- Reviewer pushes again after `runLoop` returns: [src/agents/reviewer.ts](src/agents/reviewer.ts#L195-L205) (the `this.messages.push({ role: "assistant", content: text })` block).
-- The planner's nudge path has the same problem (less critical because it's only on the error path): [src/agents/planner.ts](src/agents/planner.ts#L258-L259).
+- Reviewer double-push: superseded by F09's `ReviewerAgent` rewrite (history retained for review trail).
+- The planner's nudge path had the same problem; fix landed at [src/agents/planner.ts](src/agents/planner.ts#L228).
 
 ## Why this matters
 

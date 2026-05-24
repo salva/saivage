@@ -75,6 +75,7 @@ describe("PlannerAgent — nudge path", () => {
     const calls: ChatRequest[] = [];
     const router = {
       getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         calls.push(request);
         // Call 1: text only, no PLAN_COMPLETE → planner enters nudge branch.

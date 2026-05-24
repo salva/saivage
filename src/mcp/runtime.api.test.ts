@@ -1,9 +1,24 @@
 import { describe, it, expect } from "vitest";
 import { McpRuntime } from "./runtime.js";
+import type { SaivageConfig } from "../config.js";
+
+function testConfig(): SaivageConfig {
+  return {
+    runtime: { maxServices: 50, restartOnCrash: true, healthCheckIntervalMs: 0, idleShutdownMs: 0 },
+    mcp: {
+      shellTimeoutMs: 4 * 60 * 60 * 1000,
+      shellTimeoutFloorMs: 10 * 60 * 1000,
+      inProcessTimeoutMs: 300_000,
+      maxOutputBytes: 100 * 1024,
+      maxFetchChars: 200_000,
+      maxDownloadBytes: 250 * 1024 * 1024,
+    },
+  } as unknown as SaivageConfig;
+}
 
 describe("McpRuntime.listAllToolsForApi (WI-12)", () => {
   it("emits available flag for in-process services", () => {
-    const rt = new McpRuntime();
+    const rt = new McpRuntime(testConfig());
     rt.registerInProcess(
       "alpha",
       [{ name: "alpha_do", description: "ok", inputSchema: { type: "object" } }],
@@ -28,7 +43,7 @@ describe("McpRuntime.listAllToolsForApi (WI-12)", () => {
   });
 
   it("does not duplicate tools when same name exists in multiple sources", () => {
-    const rt = new McpRuntime();
+    const rt = new McpRuntime(testConfig());
     rt.registerInProcess(
       "svc1",
       [{ name: "do_thing", description: "d", inputSchema: { type: "object" } }],

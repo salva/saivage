@@ -62,13 +62,15 @@ describe("task-report shared helpers", () => {
     expect(r.summary).toBe("ok");
   });
 
-  it("parseTaskReport falls back when no JSON found", () => {
+  it("parseTaskReport returns a failure report when no JSON is found", () => {
     const input = makeInput("researcher");
     const text = "plain text answer no JSON here";
     const r = parseTaskReport(text, input, "researcher", new Date().toISOString(), Date.now());
     expect(r.agent).toBe("researcher");
-    expect(r.status).toBe("completed");
-    expect(r.summary).toContain("plain text");
+    expect(r.status).toBe("failed");
+    expect(r.failure_reason).toContain("no_json");
+    expect(r.issues_found).toHaveLength(1);
+    expect(r.issues_found[0].severity).toBe("error");
   });
 
   it("buildFailureReport sets issues_found uniformly across all worker roles", () => {

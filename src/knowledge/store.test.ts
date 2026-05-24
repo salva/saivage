@@ -51,9 +51,9 @@ function memoryRecord(over: Partial<MemoryRecord> = {}): MemoryRecord {
   };
 }
 
-function expectKnowledgeError(fn: () => unknown, code: string): void {
+async function expectKnowledgeError(fn: () => unknown | Promise<unknown>, code: string): Promise<void> {
   try {
-    fn();
+    await fn();
     expect.fail(`expected KnowledgeStoreError with code ${code}, but no error was thrown`);
   } catch (err) {
     expect(err).toBeInstanceOf(KnowledgeStoreError);
@@ -116,9 +116,9 @@ describe("assertReason", () => {
   it("accepts non-empty string", () => {
     expect(assertReason("ok")).toBe("ok");
   });
-  it("rejects empty / whitespace / non-string", () => {
-    expectKnowledgeError(() => assertReason(""), "EMPTY_REASON");
-    expectKnowledgeError(() => assertReason("   "), "EMPTY_REASON");
+  it("rejects empty / whitespace / non-string", async () => {
+    await expectKnowledgeError(() => assertReason(""), "EMPTY_REASON");
+    await expectKnowledgeError(() => assertReason("   "), "EMPTY_REASON");
     expect(() => assertReason(undefined)).toThrow();
   });
 });
@@ -139,22 +139,22 @@ describe("assertScopePathCoherence", () => {
     ).not.toThrow();
   });
 
-  it("rejects scope=project with non-project path", () => {
-    expectKnowledgeError(
+  it("rejects scope=project with non-project path", async () => {
+    await expectKnowledgeError(
       () => assertScopePathCoherence("/x/memory/stages/s1", { scope: "project" }),
       "INVALID_SCOPE_REF",
     );
   });
 
-  it("rejects stage without scope_ref", () => {
-    expectKnowledgeError(
+  it("rejects stage without scope_ref", async () => {
+    await expectKnowledgeError(
       () => assertScopePathCoherence("/x/memory/stages/s1", { scope: "stage" }),
       "INVALID_SCOPE_REF",
     );
   });
 
-  it("rejects mismatched scope_ref", () => {
-    expectKnowledgeError(
+  it("rejects mismatched scope_ref", async () => {
+    await expectKnowledgeError(
       () =>
         assertScopePathCoherence("/x/memory/stages/other", {
           scope: "stage",
@@ -172,8 +172,8 @@ describe("assertNoSecrets", () => {
     ).not.toThrow();
   });
 
-  it("rejects fields with secret-shaped content", () => {
-    expectKnowledgeError(
+  it("rejects fields with secret-shaped content", async () => {
+    await expectKnowledgeError(
       () => assertNoSecrets({ body: "use sk-" + "x".repeat(40) }),
       "SECRET_DETECTED",
     );
@@ -181,43 +181,43 @@ describe("assertNoSecrets", () => {
 });
 
 describe("writeRecordAtomic", () => {
-  it("writes a record file under <dir>/records/<id>.json", () => {
+  it("writes a record file under <dir>/records/<id>.json", async () => {
     const root = newTempProject();
     const dir = join(root, ".saivage", "memory", "project");
     const r = memoryRecord();
-    writeRecordAtomic(dir, r.id, MemoryRecordSchema, r);
+    await writeRecordAtomic(dir, r.id, MemoryRecordSchema, r);
     const file = join(dir, "records", `${r.id}.json`);
     expect(existsSync(file)).toBe(true);
     const parsed = JSON.parse(readFileSync(file, "utf-8"));
     expect(parsed.id).toBe(r.id);
   });
 
-  it("rejects INVALID_SCOPE_REF when path disagrees with scope", () => {
+  it("rejects INVALID_SCOPE_REF when path disagrees with scope", async () => {
     const root = newTempProject();
     const dir = join(root, ".saivage", "memory", "stages", "s1");
     const r = memoryRecord({ scope: "project" }); // mismatched
-    expectKnowledgeError(
+    await expectKnowledgeError(
       () => writeRecordAtomic(dir, r.id, MemoryRecordSchema, r),
       "INVALID_SCOPE_REF",
     );
     expect(existsSync(join(dir, "records", `${r.id}.json`))).toBe(false);
   });
 
-  it("rejects SECRET_DETECTED before writing", () => {
+  it("rejects SECRET_DETECTED before writing", async () => {
     const root = newTempProject();
     const dir = join(root, ".saivage", "memory", "project");
     const r = memoryRecord({ body: "key sk-" + "a".repeat(40) });
-    expectKnowledgeError(
+    await expectKnowledgeError(
       () => writeRecordAtomic(dir, r.id, MemoryRecordSchema, r),
       "SECRET_DETECTED",
     );
     expect(existsSync(join(dir, "records", `${r.id}.json`))).toBe(false);
   });
 
-  it("scans skill description for secrets", () => {
+  it("scans skill description for secrets", async () => {
     const root = newTempProject();
     const dir = join(root, ".saivage", "skills", "project");
-    expectKnowledgeError(
+    await expectKnowledgeError(
       () =>
         writeRecordAtomic(dir, ID, SkillRecordSchema, {
         id: ID,
@@ -240,23 +240,23 @@ describe("writeRecordAtomic", () => {
     );
   });
 
-  it("unlinkRecordIfExists removes record JSON", () => {
+  it("unlinkRecordIfExists removes record JSON", async () => {
     const root = newTempProject();
     const dir = join(root, ".saivage", "memory", "project");
     const r = memoryRecord();
-    writeRecordAtomic(dir, r.id, MemoryRecordSchema, r);
-    unlinkRecordIfExists(dir, r.id);
+    await writeRecordAtomic(dir, r.id, MemoryRecordSchema, r);
+    await unlinkRecordIfExists(dir, r.id);
     expect(existsSync(join(dir, "records", `${r.id}.json`))).toBe(false);
     // idempotent
-    expect(() => unlinkRecordIfExists(dir, r.id)).not.toThrow();
+    await expect(unlinkRecordIfExists(dir, r.id)).resolves.not.toThrow();
   });
 });
 
 describe("appendJsonlAtomic / readAuditLines", () => {
-  it("appends one line per call", () => {
+  it("appends one line per call", async () => {
     const root = newTempProject();
     const path = join(root, ".saivage", "memory", "project", "audit.jsonl");
-    appendAuditEntry(path, {
+    await appendAuditEntry(path, {
       ts: NOW,
       record_id: ID,
       op: "create",
@@ -264,7 +264,7 @@ describe("appendJsonlAtomic / readAuditLines", () => {
       author_agent: AUTHOR,
       reason: "first",
     });
-    appendAuditEntry(path, {
+    await appendAuditEntry(path, {
       ts: NOW,
       record_id: ID,
       op: "update",
@@ -272,16 +272,16 @@ describe("appendJsonlAtomic / readAuditLines", () => {
       author_agent: AUTHOR,
       reason: "second",
     });
-    const lines = readAuditLines(path);
+    const lines = await readAuditLines(path);
     expect(lines.length).toBe(2);
     expect(lines.every((l) => l.ok)).toBe(true);
   });
 
-  it("truncates lines > 2048 B with …[truncated] suffix", () => {
+  it("truncates lines > 2048 B with …[truncated] suffix", async () => {
     const root = newTempProject();
     const path = join(root, ".saivage", "memory", "project", "audit.jsonl");
     const big = "x".repeat(4096);
-    appendAuditEntry(path, {
+    await appendAuditEntry(path, {
       ts: NOW,
       record_id: ID,
       op: "update",
@@ -293,12 +293,12 @@ describe("appendJsonlAtomic / readAuditLines", () => {
     expect(raw).toMatch(/…\[truncated\]/);
   });
 
-  it("tolerates truncated trailing line", () => {
+  it("tolerates truncated trailing line", async () => {
     const root = newTempProject();
     const dir = join(root, ".saivage", "memory", "project");
     mkdirSync(dir, { recursive: true });
     const path = join(dir, "audit.jsonl");
-    appendAuditEntry(path, {
+    await appendAuditEntry(path, {
       ts: NOW,
       record_id: ID,
       op: "create",
@@ -307,17 +307,17 @@ describe("appendJsonlAtomic / readAuditLines", () => {
     });
     // simulate a torn last line
     writeFileSync(path, readFileSync(path, "utf-8") + '{"partial":', "utf-8");
-    const lines = readAuditLines(path);
+    const lines = await readAuditLines(path);
     expect(lines.length).toBe(1);
     expect(lines[0].ok).toBe(true);
   });
 
-  it("reports MALFORMED_AUDIT_LINE markers for mid-file garbage", () => {
+  it("reports MALFORMED_AUDIT_LINE markers for mid-file garbage", async () => {
     const root = newTempProject();
     const dir = join(root, ".saivage", "memory", "project");
     mkdirSync(dir, { recursive: true });
     const path = join(dir, "audit.jsonl");
-    appendAuditEntry(path, {
+    await appendAuditEntry(path, {
       ts: NOW,
       record_id: ID,
       op: "create",
@@ -325,48 +325,48 @@ describe("appendJsonlAtomic / readAuditLines", () => {
       reason: "first",
     });
     writeFileSync(path, readFileSync(path, "utf-8") + "not-json\n", "utf-8");
-    appendAuditEntry(path, {
+    await appendAuditEntry(path, {
       ts: NOW,
       record_id: ID,
       op: "update",
       author_agent: AUTHOR,
       reason: "after-garbage",
     });
-    const lines = readAuditLines(path);
+    const lines = await readAuditLines(path);
     expect(lines.length).toBe(3);
     expect(lines[1].ok).toBe(false);
   });
 });
 
 describe("rebuildIndex", () => {
-  it("projects records to summaries, sorted by id", () => {
+  it("projects records to summaries, sorted by id", async () => {
     const root = newTempProject();
     const dir = join(root, ".saivage", "memory", "project");
     const r1 = memoryRecord({ id: ID2 });
     const r2 = memoryRecord({ id: ID });
-    writeRecordAtomic(dir, r1.id, MemoryRecordSchema, r1);
-    writeRecordAtomic(dir, r2.id, MemoryRecordSchema, r2);
-    const idx = rebuildIndex(dir, MemoryRecordSchema, IndexFileSchema);
+    await writeRecordAtomic(dir, r1.id, MemoryRecordSchema, r1);
+    await writeRecordAtomic(dir, r2.id, MemoryRecordSchema, r2);
+    const idx = await rebuildIndex(dir, MemoryRecordSchema, IndexFileSchema);
     expect(idx.entries.map((e) => e.id)).toEqual([ID, ID2]);
     expect(idx.entries[0]).toMatchObject({ kind: "memory", scope: "project", status: "active" });
     expect(existsSync(join(dir, "index.json"))).toBe(true);
   });
 
-  it("is idempotent (running twice yields equal output)", () => {
+  it("is idempotent (running twice yields equal output)", async () => {
     const root = newTempProject();
     const dir = join(root, ".saivage", "memory", "project");
-    writeRecordAtomic(dir, ID, MemoryRecordSchema, memoryRecord());
-    const a = rebuildIndex(dir, MemoryRecordSchema, IndexFileSchema);
-    const b = rebuildIndex(dir, MemoryRecordSchema, IndexFileSchema);
+    await writeRecordAtomic(dir, ID, MemoryRecordSchema, memoryRecord());
+    const a = await rebuildIndex(dir, MemoryRecordSchema, IndexFileSchema);
+    const b = await rebuildIndex(dir, MemoryRecordSchema, IndexFileSchema);
     expect(a).toEqual(b);
   });
 
-  it("skips malformed record files instead of crashing", () => {
+  it("skips malformed record files instead of crashing", async () => {
     const root = newTempProject();
     const dir = join(root, ".saivage", "memory", "project");
-    writeRecordAtomic(dir, ID, MemoryRecordSchema, memoryRecord());
+    await writeRecordAtomic(dir, ID, MemoryRecordSchema, memoryRecord());
     writeFileSync(join(dir, "records", `${ID2}.json`), "not json", "utf-8");
-    const idx = rebuildIndex(dir, MemoryRecordSchema, IndexFileSchema);
+    const idx = await rebuildIndex(dir, MemoryRecordSchema, IndexFileSchema);
     expect(idx.entries.map((e) => e.id)).toEqual([ID]);
   });
 });

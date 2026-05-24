@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { apiFetch, apiFetchJson } from "./utils/api";
+import { apiFetch, apiFetchJson, ApiError } from "./utils/api";
+import { useAuthState } from "./composables/useAuthState";
 import {
   Activity,
   BookOpen,
@@ -43,6 +44,7 @@ const chatRef = ref<InstanceType<typeof ChatWindow> | null>(null);
 const showHelp = ref(false);
 const runtimeStatus = ref<string>("");
 const runtimeStage = ref<string>("");
+const { unauthorized, markUnauthorized } = useAuthState();
 const activeTabConfig = computed(() => tabs.find((tab) => tab.id === activeTab.value) ?? tabs[0]);
 
 onMounted(async () => {
@@ -128,9 +130,9 @@ async function pollTitleStatus() {
     runtimeStatus.value = (data.status ?? data.phase ?? "").toString();
     runtimeStage.value = data.currentStage?.id ?? "";
   } catch (err) {
-    // Distinguish auth errors so the title reflects them.
-    if (err && typeof err === "object" && "status" in err && (err as { status: number }).status === 401) {
-      runtimeStatus.value = "unauthorized";
+    if (err instanceof ApiError && err.status === 401) {
+      markUnauthorized();
+      runtimeStatus.value = "";
       runtimeStage.value = "";
       return;
     }
@@ -149,14 +151,18 @@ function stopTitleSync() {
   titleTimer = null;
 }
 
-watch([runtimeStatus, runtimeStage, activeTabConfig], ([status, stage, tab]) => {
-  const parts: string[] = ["Saivage"];
-  if (status === "unauthorized") parts.push("⚠ unauthorized");
-  else if (status) parts.push(status);
-  if (stage) parts.push(stage);
-  parts.push(`· ${tab.label}`);
-  document.title = parts.join(" · ").replace("· ·", "·");
-}, { immediate: true });
+watch(
+  [runtimeStatus, runtimeStage, activeTabConfig, unauthorized],
+  ([status, stage, tab, isUnauthorized]) => {
+    const parts: string[] = ["Saivage"];
+    if (isUnauthorized) parts.push("⚠ unauthorized");
+    else if (status) parts.push(status);
+    if (stage) parts.push(stage);
+    parts.push(`· ${tab.label}`);
+    document.title = parts.join(" · ").replace("· ·", "·");
+  },
+  { immediate: true },
+);
 </script>
 
 <template>

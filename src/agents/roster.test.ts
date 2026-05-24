@@ -21,7 +21,6 @@ import {
 } from "./roster.js";
 import { DISPATCH_ROLE_MAP, DISPATCH_TOOLS } from "../runtime/dispatcher.js";
 import { DEFAULT_SELF_CHECK_FREQUENCY } from "../runtime/self-check.js";
-import { ROLE_ABORT_PRIORITY } from "../runtime/supervisor.js";
 import { getConvention } from "./conventions.js";
 
 describe("ROSTER — declarative source of truth", () => {
@@ -35,6 +34,7 @@ describe("ROSTER — declarative source of truth", () => {
       "researcher",
       "data_agent",
       "reviewer",
+      "designer",
       "inspector",
       "chat",
     ]);
@@ -48,6 +48,7 @@ describe("ROSTER — declarative source of truth", () => {
       "researcher",
       "data_agent",
       "reviewer",
+      "designer",
       "inspector",
       "chat",
     ]);
@@ -56,6 +57,7 @@ describe("ROSTER — declarative source of truth", () => {
       "researcher",
       "data_agent",
       "reviewer",
+      "designer",
     ]);
     expect([...DISPATCHABLE_ROLES]).toEqual([
       "manager",
@@ -63,6 +65,7 @@ describe("ROSTER — declarative source of truth", () => {
       "researcher",
       "data_agent",
       "reviewer",
+      "designer",
       "inspector",
     ]);
   });
@@ -103,27 +106,6 @@ describe("ROSTER — runtime/dispatcher parity", () => {
       .map((e) => e.dispatchTool as string)
       .sort();
     expect([...DISPATCH_TOOLS].sort()).toEqual(expected);
-  });
-});
-
-describe("ROSTER — supervisor abort priority", () => {
-  it("ROLE_ABORT_PRIORITY is sorted by abortPriority ascending", () => {
-    const expected = ROSTER.filter((e) => e.abortPriority !== null)
-      .slice()
-      .sort(
-        (a, b) =>
-          (a.abortPriority as number) - (b.abortPriority as number),
-      )
-      .map((e) => e.role);
-    expect(ROLE_ABORT_PRIORITY).toEqual(expected);
-    // Sanity: reviewer aborts before data_agent before coder before researcher before manager.
-    expect(ROLE_ABORT_PRIORITY).toEqual([
-      "reviewer",
-      "data_agent",
-      "coder",
-      "researcher",
-      "manager",
-    ]);
   });
 });
 

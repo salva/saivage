@@ -10,16 +10,9 @@
  *
  * Mirrors the pi-ai/OpenClaw implementation.
  */
-import type { OAuthCredentials, OAuthLoginCallbacks, OAuthProviderDef } from "./types.js";
-
-const CLIENT_ID = atob("SXYxLmI1MDdhMDhjODdlY2ZlOTg="); // Iv1.b507a08c87ecfe98
-
-const COPILOT_HEADERS: Record<string, string> = {
-  "User-Agent": "GitHubCopilotChat/0.35.0",
-  "Editor-Version": "vscode/1.107.0",
-  "Editor-Plugin-Version": "copilot-chat/0.35.0",
-  "Copilot-Integration-Id": "vscode-chat",
-};
+import type { OAuthCredentials, OAuthLoginCallbacks, OAuthProviderDef, OAuthProviderOptions } from "./types.js";
+import { loadConfig } from "../config.js";
+import { resolveCopilotHeaders } from "../providers/copilot-client-headers.js";
 
 interface DeviceCodeResponse {
   device_code: string;
@@ -70,17 +63,18 @@ async function fetchJson(url: string, init: RequestInit): Promise<Record<string,
   return response.json() as Promise<Record<string, unknown>>;
 }
 
-async function startDeviceFlow(domain: string): Promise<DeviceCodeResponse> {
+async function startDeviceFlow(domain: string, headers: Record<string, string>): Promise<DeviceCodeResponse> {
+  const clientId = loadConfig().oauth.githubCopilot.clientId;
   const urls = getUrls(domain);
   const data = await fetchJson(urls.deviceCodeUrl, {
     method: "POST",
     headers: {
       Accept: "application/json",
       "Content-Type": "application/x-www-form-urlencoded",
-      "User-Agent": "GitHubCopilotChat/0.35.0",
+      "User-Agent": headers["User-Agent"]!,
     },
     body: new URLSearchParams({
-      client_id: CLIENT_ID,
+      client_id: clientId,
       scope: "read:user",
     }),
   });
@@ -115,7 +109,9 @@ async function pollForAccessToken(
   deviceCode: string,
   intervalSeconds: number,
   expiresIn: number,
+  headers: Record<string, string>,
 ): Promise<string> {
+  const clientId = loadConfig().oauth.githubCopilot.clientId;
   const urls = getUrls(domain);
   const deadline = Date.now() + expiresIn * 1000;
   let intervalMs = Math.max(1000, Math.floor(intervalSeconds * 1000));
@@ -131,10 +127,10 @@ async function pollForAccessToken(
       headers: {
         Accept: "application/json",
         "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "GitHubCopilotChat/0.35.0",
+        "User-Agent": headers["User-Agent"]!,
       },
       body: new URLSearchParams({
-        client_id: CLIENT_ID,
+        client_id: clientId,
         device_code: deviceCode,
         grant_type: "urn:ietf:params:oauth:grant-type:device_code",
       }),
@@ -168,16 +164,17 @@ async function pollForAccessToken(
  */
 export async function refreshGitHubCopilotToken(
   githubToken: string,
-  enterpriseDomain?: string,
+  options: { enterpriseDomain?: string; headers?: Record<string, string> } = {},
 ): Promise<OAuthCredentials> {
-  const domain = enterpriseDomain || "github.com";
+  const domain = options.enterpriseDomain || "github.com";
   const urls = getUrls(domain);
+  const headers = resolveCopilotHeaders(options.headers);
 
   const raw = await fetchJson(urls.copilotTokenUrl, {
     headers: {
       Accept: "application/json",
       Authorization: `Bearer ${githubToken}`,
-      ...COPILOT_HEADERS,
+      ...headers,
     },
   });
 
@@ -198,11 +195,13 @@ export async function refreshGitHubCopilotToken(
 
 export async function loginGitHubCopilot(
   callbacks: OAuthLoginCallbacks,
+  options: { headers?: Record<string, string> } = {},
 ): Promise<OAuthCredentials> {
   // For now, always use github.com (no enterprise prompt)
   const domain = "github.com";
+  const headers = resolveCopilotHeaders(options.headers);
 
-  const device = await startDeviceFlow(domain);
+  const device = await startDeviceFlow(domain, headers);
 
   callbacks.onAuth({
     url: device.verification_uri,
@@ -216,11 +215,12 @@ export async function loginGitHubCopilot(
     device.device_code,
     device.interval,
     device.expires_in,
+    headers,
   );
 
   callbacks.onProgress?.("Exchanging for Copilot token...");
 
-  const credentials = await refreshGitHubCopilotToken(githubAccessToken);
+  const credentials = await refreshGitHubCopilotToken(githubAccessToken, { headers: options.headers });
   return credentials;
 }
 
@@ -228,12 +228,12 @@ export const githubCopilotOAuthProvider: OAuthProviderDef = {
   id: "github-copilot",
   name: "GitHub Copilot",
 
-  async login(callbacks) {
-    return loginGitHubCopilot(callbacks);
+  async login(callbacks, options?: OAuthProviderOptions) {
+    return loginGitHubCopilot(callbacks, options ?? {});
   },
 
-  async refreshToken(credentials) {
-    return refreshGitHubCopilotToken(credentials.refresh);
+  async refreshToken(credentials, options?: OAuthProviderOptions) {
+    return refreshGitHubCopilotToken(credentials.refresh, { headers: options?.headers });
   },
 
   getApiKey(credentials) {

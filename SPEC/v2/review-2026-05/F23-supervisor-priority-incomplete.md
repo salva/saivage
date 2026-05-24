@@ -6,7 +6,7 @@
 
 ## Summary
 
-`ROLE_ABORT_PRIORITY` is the supervisor's only mechanism for picking who to cancel when the LLM verdict says "stuck". It lists only `["reviewer", "data_agent", "coder", "researcher", "manager"]`. If a chat session, an inspector run, or the planner itself is the stuck party, the supervisor logs "no lower-level agent is running" and does nothing.
+`ROLE_ABORT_PRIORITY` is now derived from `ROSTER` (post-F02), but it still only lists worker roles. F23 must widen the priority table to a typed `Record<AgentRole, number>` so the supervisor can also abort Chat, Inspector, and Planner when the LLM verdict picks them. It lists only `["reviewer", "data_agent", "coder", "researcher", "manager"]`. If a chat session, an inspector run, or the planner itself is the stuck party, the supervisor logs "no lower-level agent is running" and does nothing.
 
 ## Evidence
 

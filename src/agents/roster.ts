@@ -62,7 +62,7 @@ export const ROSTER = [
     dispatchTool: "run_manager",
     dispatchableBy: ["planner"],
     toolFilter: "worker",
-    abortPriority: 5,
+    abortPriority: 6,
     selfCheckFrequency: 20,
     convention: {
       writeTerritory: [".saivage/stages/"],
@@ -147,6 +147,25 @@ export const ROSTER = [
     displayName: "Reviewer",
     summary:
       "A stage-scoped quality gate. Reviews worker outputs at end of stage and persists across the stage so follow-up review requests build on earlier findings. Returns a `TaskReport`.",
+  },
+  {
+    role: "designer",
+    worker: true,
+    dispatchTool: "run_designer",
+    dispatchableBy: ["manager"],
+    toolFilter: "worker",
+    abortPriority: 5,
+    selfCheckFrequency: 15,
+    convention: {
+      writeTerritory: ["research/design/", "docs/", ".saivage/stages/"],
+      excludeTerritory: ["src/"],
+      description:
+        "Designer writes design briefs, UX/product notes, and architecture design docs, not production code",
+    },
+    defaultModelKey: "designer",
+    displayName: "Designer",
+    summary:
+      "A one-shot design agent. Produces product, UX, interface, information-architecture, and system-design artifacts that make ambiguous implementation work concrete before coding starts. Returns a `TaskReport`.",
   },
   {
     role: "inspector",

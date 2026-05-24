@@ -38,7 +38,7 @@ export interface AgentContext {
   agentId: string;
   /** Role of this agent. */
   role: AgentRole;
-  /** Model spec to use (e.g. "openai-codex/gpt-5.3-codex"). */
+  /** Model spec to use (e.g. "provider/model"). */
   modelSpec: string;
   /** Optional exact auth profile to use for the selected provider. */
   authProfileKey?: string;
@@ -88,4 +88,12 @@ export interface Agent {
    * Cancel the agent (used during abort).
    */
   cancel(): void;
+}
+
+/** Input channel for BaseAgent — pushes pending messages and reacts to context resets. */
+export interface InputChannel {
+  /** Return a single user-role message to inject before the next LLM turn, or null if nothing is pending. */
+  drain(): Promise<{ message: string } | null>;
+  /** Called by BaseAgent immediately after any successful compaction (after replaceMessages). */
+  onContextReset(): void;
 }

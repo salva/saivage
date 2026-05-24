@@ -28,21 +28,30 @@ import type { KnowledgeAgentRole } from "./types.js";
 
 function makeRuntime(): McpRuntime {
   const rt = new McpRuntime({
-    maxServices: 10,
-    restartOnCrash: false,
-    continuousImprovement: false,
-    healthCheckIntervalMs: 0,
-    idleShutdownMs: 0,
-  });
+    runtime: {
+      maxServices: 10,
+      restartOnCrash: false,
+      continuousImprovement: false,
+      healthCheckIntervalMs: 0,
+      idleShutdownMs: 0,
+    },
+    mcp: {
+      shellTimeoutMs: 4 * 60 * 60 * 1000,
+      shellTimeoutFloorMs: 10 * 60 * 1000,
+      inProcessTimeoutMs: 300_000,
+      maxOutputBytes: 100 * 1024,
+      maxFetchChars: 200_000,
+      maxDownloadBytes: 250 * 1024 * 1024,
+    },
+  } as any);
   rt.registerInProcess("skills", knowledgeSkillsTools, knowledgeSkillsHandler);
   rt.registerInProcess("memory", knowledgeMemoryTools, knowledgeMemoryHandler);
   return rt;
 }
 
-function makeProject(): string {
+function makeProject(): Promise<string> {
   const root = mkdtempSync(join(tmpdir(), "saivage-int-"));
-  initProjectTree(root);
-  return root;
+  return initProjectTree(root).then(() => root);
 }
 
 function ctxFor(role: KnowledgeAgentRole, projectRoot: string, stageId?: string): ToolCallContext {
@@ -88,8 +97,8 @@ async function callExpectingError(
 let projectRoot: string;
 let rt: McpRuntime;
 
-beforeEach(() => {
-  projectRoot = makeProject();
+beforeEach(async () => {
+  projectRoot = await makeProject();
   rt = makeRuntime();
 });
 afterEach(() => {
@@ -384,7 +393,7 @@ describe("MCP integration — §C.3 error taxonomy (15 codes)", () => {
     const { readAuditLines } = await import("./store.js");
     const auditPath = join(projectRoot, "audit-test.jsonl");
     writeFileSync(auditPath, "not-json\n{\"ts\":\"2026-01-01T00:00:00Z\",\"record_id\":\"00000000-0000-4000-8000-bbbbbbbbbbbb\",\"op\":\"create\",\"outcome\":\"ok\",\"author_agent\":{\"role\":\"manager\",\"agent_id\":\"x\"},\"reason\":\"r\"}\n", "utf-8");
-    const lines = readAuditLines(auditPath);
+    const lines = await readAuditLines(auditPath);
     // First line is malformed (mid-file), second parses.
     expect(lines.some((l) => !l.ok)).toBe(true);
     expect(lines.some((l) => l.ok)).toBe(true);

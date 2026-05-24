@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { BaseAgent } from "./base.js";
-import type { AgentContext, AgentRole } from "./types.js";
+import type { AgentContext, AgentRole, InputChannel } from "./types.js";
 import type { ChatRequest, ChatResponse, Message } from "../providers/types.js";
 import { initProjectTree } from "../store/project.js";
 import { createSkill } from "../knowledge/lifecycle.js";
@@ -29,9 +29,9 @@ class TestAgent extends BaseAgent {
 }
 
 let tmpDir: string;
-beforeEach(() => {
+beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "wi14-"));
-  initProjectTree(tmpDir);
+  await initProjectTree(tmpDir);
 });
 afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
@@ -73,6 +73,7 @@ function makeContext(
     router: {
       chat,
       getMaxContextTokens: () => 100_000,
+      countTokens: () => 0,
       resetModelHealth: () => undefined,
     } as unknown as AgentContext["router"],
     mcpRuntime: {
@@ -88,7 +89,7 @@ function makeContext(
 
 describe("BaseAgent compaction integration (WI-14)", () => {
   it("§E.1 — appends survivor reinjection block after compaction", async () => {
-    createSkill(
+    await createSkill(
       join(tmpDir, ".saivage"),
       {
         name: "always-on-survivor",
@@ -165,5 +166,64 @@ describe("BaseAgent compaction integration (WI-14)", () => {
     agent.seedMessage({ role: "user", content: "history" });
     await agent.runCompaction();
     expect(called).toBe(false);
+  });
+});
+
+describe("BaseAgent input channels (F06)", () => {
+  function makeChannel(messages: string[]): { channel: InputChannel; resets: number; drains: number } {
+    const state = { resets: 0, drains: 0, channel: null as unknown as InputChannel };
+    let i = 0;
+    state.channel = {
+      drain() {
+        state.drains++;
+        if (i >= messages.length) return null;
+        return { message: messages[i++] };
+      },
+      onContextReset() {
+        state.resets++;
+        i = 0;
+      },
+    };
+    return state as { channel: InputChannel; resets: number; drains: number };
+  }
+
+  it("onContextReset fires once after replaceMessages inside compactWithReinjection", async () => {
+    const ch = makeChannel([]);
+    const agent = new TestAgent(
+      makeContext("coder", async () => ({
+        content: "summary",
+        toolCalls: [],
+        finishReason: "end_turn",
+        usage: { inputTokens: 0, outputTokens: 0 },
+      })),
+      { systemPrompt: "sys", inputChannels: [ch.channel] },
+    );
+    agent.seedMessage({ role: "user", content: "history" });
+    await agent.runCompaction();
+    expect(ch.resets).toBe(1);
+  });
+
+  it("onContextReset still fires when role is planner (after pre-compaction hook + compactConversation)", async () => {
+    let hookComplete = false;
+    const ch = makeChannel([]);
+    const agent = new TestAgent(
+      makeContext("planner", async () => ({
+        content: "summary",
+        toolCalls: [],
+        finishReason: "end_turn",
+        usage: { inputTokens: 0, outputTokens: 0 },
+      })),
+      {
+        systemPrompt: "sys",
+        inputChannels: [ch.channel],
+        onCompactionHookComplete: () => {
+          hookComplete = true;
+        },
+      },
+    );
+    agent.seedMessage({ role: "user", content: "history" });
+    await agent.runCompaction();
+    expect(hookComplete).toBe(true);
+    expect(ch.resets).toBe(1);
   });
 });

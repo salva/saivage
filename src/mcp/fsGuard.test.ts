@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { initProjectTree } from "../store/project.js";
 import { registerBuiltinServices } from "./builtins.js";
 import { McpRuntime } from "./runtime.js";
+import { loadConfig } from "../config.js";
 
 let tmpDir: string;
 let prevCwd: string;
@@ -18,8 +19,9 @@ beforeEach(() => {
   initProjectTree(tmpDir);
   prevCwd = process.cwd();
   process.chdir(tmpDir);
-  runtime = new McpRuntime();
-  registerBuiltinServices(runtime);
+  const cfg = loadConfig(true, tmpDir);
+  runtime = new McpRuntime(cfg);
+  registerBuiltinServices(runtime, cfg.mcp);
 });
 afterEach(() => {
   process.chdir(prevCwd);

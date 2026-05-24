@@ -1,10 +1,38 @@
 import { z } from "zod";
-import { readFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { runtimeProviderConfigSchema } from "./routing/resolver.js";
+import {
+  DEFAULT_ANTHROPIC_CLIENT_ID,
+  DEFAULT_OPENAI_CODEX_CLIENT_ID,
+  DEFAULT_GITHUB_COPILOT_CLIENT_ID,
+} from "./auth/defaults.js";
+import { WALL_CLOCK_HEADROOM_MS } from "./mcp/builtins.js";
 
 // --- Schema ---
+
+const runtimeProviderAccountSchema = z.object({
+  apiKey: z.string().optional(),
+  baseUrl: z.string().optional(),
+  authProfile: z.string().optional(),
+  priority: z.number().default(100),
+  models: z.array(z.string()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
+  quota: z
+    .object({
+      usedTokens: z.number().optional(),
+      totalTokens: z.number().optional(),
+      remainingTokens: z.number().optional(),
+      remainingRatio: z.number().min(0).max(1).optional(),
+    })
+    .optional(),
+});
+
+const runtimeProviderConfigSchema = runtimeProviderAccountSchema.extend({
+  defaultAccount: z.string().optional(),
+  accounts: z.record(z.string(), runtimeProviderAccountSchema).default({}),
+  defaultContextWindow: z.number().optional(),
+});
 
 const modelAssignmentSchema = z.union([z.string(), z.array(z.string())]);
 
@@ -39,10 +67,11 @@ const configSchema = z.object({
       researcher: modelAssignmentSchema.optional(),
       data_agent: modelAssignmentSchema.optional(),
       reviewer: modelAssignmentSchema.optional(),
+      designer: modelAssignmentSchema.optional(),
       chat: modelAssignmentSchema.optional(),
       default: modelAssignmentSchema.optional(),
     })
-    .default({ orchestrator: "anthropic/claude-sonnet-4-20250514" }),
+    .default({}),
 
   providers: z.record(z.string(), runtimeProviderConfigSchema).default({}),
 
@@ -70,13 +99,19 @@ const configSchema = z.object({
       continuousImprovement: z.boolean().default(true),
       healthCheckIntervalMs: z.number().default(30_000),
       idleShutdownMs: z.number().default(300_000),
+      recoveryDelayMs: z.number().default(60_000),
+      notes: z
+        .object({
+          volatileTtlMs: z.number().default(2 * 60 * 60 * 1000),
+        })
+        .default({}),
     })
     .default({}),
 
   security: z
     .object({
       injectionScanner: z.boolean().default(true),
-      injectionModel: z.string().default("github-copilot/gpt-5.4"),
+      injectionModel: z.string().optional(),
       maxScanLengthBytes: z.number().default(100_000),
     })
     .default({}),
@@ -84,10 +119,11 @@ const configSchema = z.object({
   supervisor: z
     .object({
       enabled: z.boolean().default(true),
-      model: z.string().default("github-copilot/gpt-5.4"),
+      model: z.string().optional(),
       intervalMs: z.number().default(20 * 60 * 1000),
       consecutiveStuckVerdicts: z.number().default(3),
       logLines: z.number().default(400),
+      forceCancelDelayMs: z.number().default(600_000),
     })
     .default({}),
 
@@ -98,10 +134,57 @@ const configSchema = z.object({
     })
     .default({}),
 
+  mcp: z
+    .object({
+      shellTimeoutMs: z.number().default(4 * 60 * 60 * 1000),
+      shellTimeoutFloorMs: z.number().default(10 * 60 * 1000),
+      inProcessTimeoutMs: z.number().default(300_000),
+      maxOutputBytes: z.number().default(100 * 1024),
+      maxFetchChars: z.number().default(200_000),
+      maxDownloadBytes: z.number().default(250 * 1024 * 1024),
+    })
+    .default({})
+    .superRefine((mcp, ctx) => {
+      if (mcp.shellTimeoutMs <= WALL_CLOCK_HEADROOM_MS) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["shellTimeoutMs"],
+          message:
+            `mcp.shellTimeoutMs must exceed WALL_CLOCK_HEADROOM_MS (${WALL_CLOCK_HEADROOM_MS}ms); ` +
+            `got ${mcp.shellTimeoutMs}`,
+        });
+        return;
+      }
+      const innerCap = mcp.shellTimeoutMs - WALL_CLOCK_HEADROOM_MS;
+      if (mcp.shellTimeoutFloorMs > innerCap) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["shellTimeoutFloorMs"],
+          message:
+            `mcp.shellTimeoutFloorMs (${mcp.shellTimeoutFloorMs}) must not exceed the derived inner cap ` +
+            `mcp.shellTimeoutMs - WALL_CLOCK_HEADROOM_MS (${innerCap})`,
+        });
+      }
+    }),
+
   notifications: z
     .object({
       channels: z.array(z.enum(["telegram", "web"])).default(["web"]),
       filters: notificationFiltersSchema.default({}),
+    })
+    .default({}),
+
+  oauth: z
+    .object({
+      anthropic: z
+        .object({ clientId: z.string().default(DEFAULT_ANTHROPIC_CLIENT_ID) })
+        .default({}),
+      openaiCodex: z
+        .object({ clientId: z.string().default(DEFAULT_OPENAI_CODEX_CLIENT_ID) })
+        .default({}),
+      githubCopilot: z
+        .object({ clientId: z.string().default(DEFAULT_GITHUB_COPILOT_CLIENT_ID) })
+        .default({}),
     })
     .default({}),
 
@@ -195,39 +278,4 @@ export function loadConfig(force = false, projectRoot?: string): SaivageConfig {
 
 export function ensureDir(p: string): void {
   if (!existsSync(p)) mkdirSync(p, { recursive: true });
-}
-
-export function writeDefaultConfig(projectRoot?: string): void {
-  const fp = configPath(projectRoot);
-  if (existsSync(fp)) return;
-
-  ensureDir(saivageDir(projectRoot));
-  const defaultConfig = {
-    models: {},
-    providers: {
-      anthropic: {},
-      openai: {},
-      ollama: { baseUrl: "http://localhost:11434" },
-      llamacpp: { baseUrl: "http://localhost:8080" },
-    },
-    failover: {},
-    modelEquivalents: {},
-    server: { port: 8080, host: "0.0.0.0" },
-    agent: { maxConcurrentAgents: 3 },
-    notifications: {
-      channels: ["web"],
-      filters: { min_severity: "info", categories: [] },
-    },
-    mcpServers: {
-      playwright: {
-        command: "npx",
-        args: ["-y", "@playwright/mcp@latest", "--headless"],
-        env: { PLAYWRIGHT_BROWSERS_PATH: "${HOME}/.cache/ms-playwright" },
-        disabled: false,
-        autostart: true,
-        transport: "stdio",
-      },
-    },
-  };
-  writeFileSync(fp, JSON.stringify(defaultConfig, null, 2) + "\n", "utf-8");
 }

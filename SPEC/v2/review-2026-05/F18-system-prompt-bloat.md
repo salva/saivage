@@ -17,7 +17,6 @@ Seven agents each declare a multi-hundred-line system prompt as a template-liter
 - `REVIEWER_PROMPT`: [src/agents/reviewer.ts](src/agents/reviewer.ts#L20-L130).
 - `INSPECTOR_PROMPT`: [src/agents/inspector.ts](src/agents/inspector.ts#L20-L200).
 - `CHAT_PROMPT`: [src/agents/chat.ts](src/agents/chat.ts#L20-L260).
-- `DESIGNER_PROMPT` (orphan): [src/agents/designer.ts](src/agents/designer.ts#L19-L140).
 
 ## Why this matters
 

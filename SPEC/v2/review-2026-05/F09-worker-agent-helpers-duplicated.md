@@ -4,6 +4,8 @@
 **Severity**: high
 **Transversality**: architectural
 
+**Status**: landed in working tree (pre-commit). The four `TaskReport`-producing workers (coder / researcher / data-agent / reviewer) now share [src/agents/task-report.ts](src/agents/task-report.ts) and the [src/agents/worker.ts](src/agents/worker.ts) `WorkerAgent` base. The orphan `src/agents/designer.ts` was deleted (F01 will reinstate Designer on the new base). **Open follow-up**: `InspectorAgent` did not migrate because it produces `InspectionReport`, not `TaskReport`; the metaplan's "Open follow-ups" section captures the disposition decision (close-as-expected vs. widen `WorkerAgent` vs. defer to F01).
+
 ## Summary
 
 Five worker-style agents (coder, researcher, data-agent, reviewer, designer) ship near-identical copies of `normalizeTask`, `parseTaskReport`, and `buildFailureReport`. Inspector replicates a sixth variant for `InspectionReport`. The functions are ~150 lines combined per file and use the same `raw: any` shape — meaning each fix must be applied five (or six) times and currently isn't.

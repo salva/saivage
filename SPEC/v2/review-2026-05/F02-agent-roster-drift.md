@@ -4,6 +4,8 @@
 **Severity**: high
 **Transversality**: architectural
 
+**Status**: landed in working tree (pre-commit); see [src/agents/roster.ts](src/agents/roster.ts) and [src/agents/roster.test.ts](src/agents/roster.test.ts). Card retained for review-trail purposes.
+
 ## Summary
 
 The set of agent roles described in `SPEC/v2` no longer matches what the code implements. The schemas, dispatcher, supervisor priority list, and `AgentRole` enum each draw a slightly different boundary, and none of them matches the documentation. A new contributor has to triangulate four sources to find the real roster.

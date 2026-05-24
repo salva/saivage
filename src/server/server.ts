@@ -8,9 +8,9 @@ import Fastify from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
 import { join, resolve, relative } from "node:path";
-import { existsSync, readFileSync, statSync, readdirSync } from "node:fs";
+import { readdir, stat, readFile } from "node:fs/promises";
 import type { SaivageRuntime } from "./bootstrap.js";
-import { readDocOrNull, readDocLenient, readJsonOrNull, listDocs } from "../store/documents.js";
+import { readDocOrNull, readDocLenient, readJsonOrNull, listDocs, pathExists as pathExistsP } from "../store/documents.js";
 import {
   PlanSchema,
   PlanHistorySchema,
@@ -100,7 +100,7 @@ export async function startServer(
   const docsDistPath = thisDir.includes("/src/")
     ? join(thisDir, "..", "..", "docs", ".vitepress", "dist")
     : join(thisDir, "..", "docs", ".vitepress", "dist");
-  if (existsSync(docsDistPath)) {
+  if (await pathExistsP(docsDistPath)) {
     await app.register(fastifyStatic, {
       root: docsDistPath,
       prefix: "/docs/",
@@ -125,7 +125,7 @@ export async function startServer(
   // ─── Health ─────────────────────────────────────────────────────────────
 
   app.get("/health", async () => {
-    const state = readDocOrNull(
+    const state = await readDocOrNull(
       runtime.project.paths.runtimeState,
       RuntimeStateSchema,
     );
@@ -140,14 +140,10 @@ export async function startServer(
   // ─── Plan API ───────────────────────────────────────────────────────────
 
   app.get("/api/plan", async () => {
-    const plan = readDocOrNull(
-      runtime.project.paths.plan,
-      PlanSchema,
-    );
-    const history = readDocOrNull(
-      runtime.project.paths.planHistory,
-      PlanHistorySchema,
-    );
+    const [plan, history] = await Promise.all([
+      readDocOrNull(runtime.project.paths.plan, PlanSchema),
+      readDocOrNull(runtime.project.paths.planHistory, PlanHistorySchema),
+    ]);
     return { plan, history };
   });
 
@@ -155,20 +151,18 @@ export async function startServer(
     const { id } = req.params as { id: string };
     const stageDir = join(runtime.project.paths.stages, id);
 
-    const tasks = readDocLenient(
-      join(stageDir, "tasks.json"),
-      TaskListSchema,
-    );
-    const summary = readDocLenient(
-      join(stageDir, "summary.json"),
-      StageSummarySchema,
-    );
+    const [tasks, summary] = await Promise.all([
+      readDocLenient(join(stageDir, "tasks.json"), TaskListSchema),
+      readDocLenient(join(stageDir, "summary.json"), StageSummarySchema),
+    ]);
 
     // Load task reports
     const reportsDir = join(stageDir, "reports");
-    const reportFiles = listDocs(reportsDir);
-    const reports = reportFiles.map((f) =>
-      readDocLenient(join(reportsDir, f), TaskReportSchema),
+    const reportFiles = await listDocs(reportsDir);
+    const reports = (
+      await Promise.all(
+        reportFiles.map((f) => readDocLenient(join(reportsDir, f), TaskReportSchema)),
+      )
     ).filter(Boolean);
 
     return { stage_id: id, tasks, summary, reports };
@@ -177,14 +171,10 @@ export async function startServer(
   // ─── State API ──────────────────────────────────────────────────────────
 
   app.get("/api/state", async () => {
-    const state = readDocOrNull(
-      runtime.project.paths.runtimeState,
-      RuntimeStateSchema,
-    );
-    const plan = readDocOrNull(
-      runtime.project.paths.plan,
-      PlanSchema,
-    );
+    const [state, plan] = await Promise.all([
+      readDocOrNull(runtime.project.paths.runtimeState, RuntimeStateSchema),
+      readDocOrNull(runtime.project.paths.plan, PlanSchema),
+    ]);
     return { state, plan };
   });
 
@@ -246,12 +236,16 @@ export async function startServer(
   // ─── Inspections API ───────────────────────────────────────────────────
 
   app.get("/api/inspections", async () => {
-    const files = listDocs(runtime.project.paths.inspections);
-    const reports = files.map((f) =>
-      readDocOrNull(
-        join(runtime.project.paths.inspections, f),
-        InspectionReportSchema,
-      ),
+    const files = await listDocs(runtime.project.paths.inspections);
+    const reports = (
+      await Promise.all(
+        files.map((f) =>
+          readDocOrNull(
+            join(runtime.project.paths.inspections, f),
+            InspectionReportSchema,
+          ),
+        ),
+      )
     ).filter(Boolean);
     return { reports };
   });
@@ -260,13 +254,13 @@ export async function startServer(
 
   app.get("/api/notes", async () => {
     const noteManager = new NoteManager(runtime.project.paths.notes);
-    return { notes: noteManager.listNotes() };
+    return { notes: await noteManager.listNotes() };
   });
 
   app.post("/api/notes/:noteId/acknowledge", async (req, reply) => {
     const { noteId } = req.params as { noteId: string };
     const noteManager = new NoteManager(runtime.project.paths.notes);
-    const result = noteManager.acknowledgeNote(noteId);
+    const result = await noteManager.acknowledgeNote(noteId);
     if (!result) {
       return reply.status(404).send({ error: "Note not found" });
     }
@@ -276,7 +270,7 @@ export async function startServer(
   app.delete("/api/notes/:noteId", async (req, reply) => {
     const { noteId } = req.params as { noteId: string };
     const noteManager = new NoteManager(runtime.project.paths.notes);
-    if (!noteManager.deleteNote(noteId)) {
+    if (!(await noteManager.deleteNote(noteId))) {
       return reply.status(404).send({ error: "Note not found" });
     }
     return { deleted: true };
@@ -284,7 +278,7 @@ export async function startServer(
 
   app.delete("/api/notes", async () => {
     const noteManager = new NoteManager(runtime.project.paths.notes);
-    return { deleted: noteManager.clearNotes() };
+    return { deleted: await noteManager.clearNotes() };
   });
 
   // ─── Chat Sessions API ─────────────────────────────────────────────────
@@ -299,17 +293,17 @@ export async function startServer(
       message_count: number;
     }[] = [];
 
-    if (!existsSync(chatsDir)) return { sessions };
+    if (!(await pathExistsP(chatsDir))) return { sessions };
 
-    for (const channel of readdirSync(chatsDir)) {
+    for (const channel of await readdir(chatsDir)) {
       const channelDir = join(chatsDir, channel);
       try {
-        if (!statSync(channelDir).isDirectory()) continue;
+        if (!(await stat(channelDir)).isDirectory()) continue;
       } catch { continue; }
 
-      for (const file of readdirSync(channelDir)) {
+      for (const file of await readdir(channelDir)) {
         if (!file.endsWith(".json")) continue;
-        const chatLog = readDocOrNull(
+        const chatLog = await readDocOrNull(
           join(channelDir, file),
           ChatLogSchema,
         );
@@ -332,19 +326,19 @@ export async function startServer(
     const { sessionId } = req.params as { sessionId: string };
     const chatsDir = runtime.project.paths.chats;
 
-    if (!existsSync(chatsDir)) {
+    if (!(await pathExistsP(chatsDir))) {
       return reply.status(404).send({ error: "Not found" });
     }
 
     // Search across all channels
-    for (const channel of readdirSync(chatsDir)) {
+    for (const channel of await readdir(chatsDir)) {
       const channelDir = join(chatsDir, channel);
       try {
-        if (!statSync(channelDir).isDirectory()) continue;
+        if (!(await stat(channelDir)).isDirectory()) continue;
       } catch { continue; }
 
       const filePath = join(channelDir, `${sessionId}.json`);
-      const chatLog = readDocOrNull(filePath, ChatLogSchema);
+      const chatLog = await readDocOrNull(filePath, ChatLogSchema);
       if (chatLog) return chatLog;
     }
 
@@ -401,28 +395,30 @@ export async function startServer(
       return reply.status(403).send({ error: "Access denied" });
     }
 
-    if (!existsSync(targetDir)) {
+    if (!(await pathExistsP(targetDir))) {
       return { entries: [] };
     }
 
     try {
-      const items = readdirSync(targetDir);
-      const entries = items
-        .filter((name) => !isPathHiddenForRoot(rootKind, relPath ? `${relPath}/${name}` : name))
-        .map((name) => {
-          const fullPath = join(targetDir, name);
-          try {
-            const st = statSync(fullPath);
-            return {
-              name,
-              type: st.isDirectory() ? "dir" as const : "file" as const,
-              size: st.isFile() ? st.size : undefined,
-              modified: st.mtime.toISOString(),
-            };
-          } catch {
-            return { name, type: "file" as const };
-          }
-        });
+      const items = await readdir(targetDir);
+      const entries = await Promise.all(
+        items
+          .filter((name) => !isPathHiddenForRoot(rootKind, relPath ? `${relPath}/${name}` : name))
+          .map(async (name) => {
+            const fullPath = join(targetDir, name);
+            try {
+              const st = await stat(fullPath);
+              return {
+                name,
+                type: st.isDirectory() ? "dir" as const : "file" as const,
+                size: st.isFile() ? st.size : undefined,
+                modified: st.mtime.toISOString(),
+              };
+            } catch {
+              return { name, type: "file" as const };
+            }
+          }),
+      );
       return { entries };
     } catch {
       return { entries: [] };
@@ -453,21 +449,21 @@ export async function startServer(
       return reply.status(403).send({ error: "Access denied" });
     }
 
-    if (!existsSync(targetFile)) {
+    if (!(await pathExistsP(targetFile))) {
       return reply.status(404).send({ error: "Not found" });
     }
 
     try {
-      const st = statSync(targetFile);
+      const st = await stat(targetFile);
       if (st.isDirectory()) {
         return reply.status(400).send({ error: "Path is a directory" });
       }
       // Limit to 1MB for safety
       if (st.size > 1_048_576) {
-        const partial = readFileSync(targetFile, "utf-8").slice(0, 1_048_576);
+        const partial = (await readFile(targetFile, "utf-8")).slice(0, 1_048_576);
         return { path: relPath, content: partial, size: st.size, truncated: true };
       }
-      const content = readFileSync(targetFile, "utf-8");
+      const content = await readFile(targetFile, "utf-8");
       const ext = relPath.split(".").pop()?.toLowerCase();
       const type = ext === "json" ? "json" : ext === "md" ? "md" : "txt";
       return { path: relPath, content, size: st.size, type, truncated: false };
@@ -479,25 +475,18 @@ export async function startServer(
   // ─── Debug API ─────────────────────────────────────────────────────────
 
   app.get("/api/debug/state", async () => {
-    const runtimeState = readDocOrNull(
-      runtime.project.paths.runtimeState,
-      RuntimeStateSchema,
-    );
-    const plan = readDocOrNull(
-      runtime.project.paths.plan,
-      PlanSchema,
-    );
-    const history = readDocOrNull(
-      runtime.project.paths.planHistory,
-      PlanHistorySchema,
-    );
+    const [runtimeState, plan, history] = await Promise.all([
+      readDocOrNull(runtime.project.paths.runtimeState, RuntimeStateSchema),
+      readDocOrNull(runtime.project.paths.plan, PlanSchema),
+      readDocOrNull(runtime.project.paths.planHistory, PlanHistorySchema),
+    ]);
 
     // Read raw config files
     let saivageConfig = null;
     try {
       const saivagePath = join(runtime.project.saivageDir, "saivage.json");
-      if (existsSync(saivagePath)) {
-        saivageConfig = JSON.parse(readFileSync(saivagePath, "utf-8"));
+      if (await pathExistsP(saivagePath)) {
+        saivageConfig = JSON.parse(await readFile(saivagePath, "utf-8"));
       }
     } catch { /* ignore */ }
 
@@ -522,7 +511,7 @@ export async function startServer(
     const errors: ErrorEntry[] = [];
 
     // Collect from plan history
-    const history = readDocOrNull(
+    const history = await readDocOrNull(
       runtime.project.paths.planHistory,
       PlanHistorySchema,
     );
@@ -543,16 +532,16 @@ export async function startServer(
 
     // Collect from stage summaries and reports
     const stagesDir = runtime.project.paths.stages;
-    if (existsSync(stagesDir)) {
-      for (const stageId of readdirSync(stagesDir)) {
+    if (await pathExistsP(stagesDir)) {
+      for (const stageId of await readdir(stagesDir)) {
         const stageDir = join(stagesDir, stageId);
-        try { if (!statSync(stageDir).isDirectory()) continue; } catch { continue; }
+        try { if (!(await stat(stageDir)).isDirectory()) continue; } catch { continue; }
 
         // Summary issues (read raw JSON — schema may be incomplete)
         try {
           const summaryPath = join(stageDir, "summary.json");
-          if (existsSync(summaryPath)) {
-            const summary = JSON.parse(readFileSync(summaryPath, "utf-8"));
+          if (await pathExistsP(summaryPath)) {
+            const summary = JSON.parse(await readFile(summaryPath, "utf-8"));
             if (Array.isArray(summary?.issues)) {
               for (const issue of summary.issues) {
                 errors.push({
@@ -579,11 +568,11 @@ export async function startServer(
 
         // Failed task reports (read raw JSON)
         const reportsDir = join(stageDir, "reports");
-        if (existsSync(reportsDir)) {
-          for (const f of readdirSync(reportsDir)) {
+        if (await pathExistsP(reportsDir)) {
+          for (const f of await readdir(reportsDir)) {
             if (!f.endsWith(".json")) continue;
             try {
-              const report = JSON.parse(readFileSync(join(reportsDir, f), "utf-8"));
+              const report = JSON.parse(await readFile(join(reportsDir, f), "utf-8"));
               if (report && report.status === "failed") {
                 errors.push({
                   source: `${stageId}/${report.task_id ?? f}`,
@@ -616,7 +605,7 @@ export async function startServer(
     const events: TimelineEvent[] = [];
 
     // From plan history
-    const history = readDocOrNull(
+    const history = await readDocOrNull(
       runtime.project.paths.planHistory,
       PlanHistorySchema,
     );
@@ -643,14 +632,14 @@ export async function startServer(
 
     // From task reports (across all stages)
     const stagesDir = runtime.project.paths.stages;
-    if (existsSync(stagesDir)) {
-      for (const stageId of readdirSync(stagesDir)) {
+    if (await pathExistsP(stagesDir)) {
+      for (const stageId of await readdir(stagesDir)) {
         const reportsDir = join(stagesDir, stageId, "reports");
-        if (!existsSync(reportsDir)) continue;
-        for (const f of readdirSync(reportsDir)) {
+        if (!(await pathExistsP(reportsDir))) continue;
+        for (const f of await readdir(reportsDir)) {
           if (!f.endsWith(".json")) continue;
           try {
-            const report = JSON.parse(readFileSync(join(reportsDir, f), "utf-8"));
+            const report = JSON.parse(await readFile(join(reportsDir, f), "utf-8"));
             if (report?.completed_at) {
               events.push({
                 timestamp: report.completed_at,
@@ -670,7 +659,7 @@ export async function startServer(
 
   // ─── WebSocket Chat ────────────────────────────────────────────────────
 
-  app.get("/ws", { websocket: true }, (socket, req) => {
+  app.get("/ws", { websocket: true }, async (socket, req) => {
     if (apiToken && extractRequestToken(req) !== apiToken) {
       log.warn("[server] WebSocket rejected: missing or invalid token");
       // 1008 = policy violation; the SPA stops reconnecting on this code.
@@ -691,7 +680,7 @@ export async function startServer(
       ...resolveChatRoute(runtime),
     };
 
-    const chatAgent = new ChatAgent(
+    const chatAgent = await ChatAgent.create(
       ctx,
       { channel: "web", sessionId },
       channel,
@@ -705,10 +694,18 @@ export async function startServer(
 
     log.info(`[server] WebSocket chat session started: ${sessionId}`);
 
+    runtime.agentRegistry.set(ctx.agentId, chatAgent);
+
     // Run the chat agent (non-blocking — it runs until the socket closes)
-    chatAgent.run().catch((err) => {
-      log.error(`[server] Chat agent error: ${err}`);
-    });
+    void (async () => {
+      try {
+        await chatAgent.run();
+      } catch (err) {
+        log.error(`[server] Chat agent error: ${err}`);
+      } finally {
+        runtime.agentRegistry.delete(ctx.agentId);
+      }
+    })();
   });
 
   // ─── SPA Fallback ──────────────────────────────────────────────────────
@@ -731,13 +728,10 @@ export async function startServer(
 }
 
 function getEventFilter(runtime: SaivageRuntime) {
-  const filters = runtime.project.config.notifications?.filters;
-  if (!filters) return undefined;
+  const filters = runtime.config.notifications.filters;
   return {
-    minSeverity: filters.min_severity as "info" | "warning" | "error",
-    allowedTypes: filters.categories?.length
-      ? filters.categories
-      : undefined,
+    minSeverity: filters.min_severity,
+    allowedTypes: filters.categories.length ? filters.categories : undefined,
   };
 }
 

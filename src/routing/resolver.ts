@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { ROSTER } from "../agents/roster.js";
+import { MissingModelForRoleError } from "../config-validation.js";
+import { configPath } from "../config.js";
 
 export const ROUTING_ROLE_TO_MODEL_KEY: Record<string, string> = {
   ...Object.fromEntries(ROSTER.map((entry) => [entry.role, entry.defaultModelKey])),
@@ -28,33 +30,13 @@ export const projectRoutingSchema = z.object({
 export type RoutingRule = z.infer<typeof routingRuleSchema>;
 export type ProjectRoutingConfig = z.infer<typeof projectRoutingSchema>;
 
-export const runtimeProviderAccountSchema = z.object({
-  apiKey: z.string().optional(),
-  baseUrl: z.string().optional(),
-  authProfile: z.string().optional(),
-  priority: z.number().default(100),
-  models: z.array(z.string()).optional(),
-  quota: z
-    .object({
-      usedTokens: z.number().optional(),
-      totalTokens: z.number().optional(),
-      remainingTokens: z.number().optional(),
-      remainingRatio: z.number().min(0).max(1).optional(),
-    })
-    .optional(),
-});
-
-export const runtimeProviderConfigSchema = runtimeProviderAccountSchema.extend({
-  defaultAccount: z.string().optional(),
-  accounts: z.record(z.string(), runtimeProviderAccountSchema).default({}),
-});
-
 export interface RuntimeProviderAccountLike {
   apiKey?: string;
   baseUrl?: string;
   authProfile?: string;
   priority?: number;
   models?: string[];
+  headers?: Record<string, string>;
   quota?: {
     usedTokens?: number;
     totalTokens?: number;
@@ -66,10 +48,10 @@ export interface RuntimeProviderAccountLike {
 export interface RuntimeProviderConfigLike extends RuntimeProviderAccountLike {
   defaultAccount?: string;
   accounts?: Record<string, RuntimeProviderAccountLike | undefined>;
+  defaultContextWindow?: number;
 }
 
 export interface ProjectRoutingConfigLike {
-  provider?: string;
   model_overrides?: Record<string, string>;
   routing?: ProjectRoutingConfig;
 }
@@ -90,7 +72,7 @@ export interface ResolvedModelRoute {
   accountRef?: string;
   preferredModels: string[];
   preferredAccounts: string[];
-  source: "routing" | "legacy" | "runtime-default" | "project-default" | "hardcoded-default";
+  source: "routing" | "legacy" | "runtime-default";
   profileName?: string;
 }
 
@@ -125,7 +107,9 @@ export class ModelRoutingResolver {
     const roleRule = this.resolveRoleRule(role);
     const merged = this.mergeRuleChain(roleRule.rule);
     const preferredModels = this.resolvePreferredModels(role, merged);
-    const modelSpec = preferredModels[0] ?? this.resolveLegacyModels(role)[0] ?? "openai-codex/gpt-5.3-codex";
+    const candidate = preferredModels[0] ?? this.resolveLegacyModels(role)[0];
+    if (!candidate) throw new MissingModelForRoleError([role], configPath());
+    const modelSpec = candidate;
     const parsed = tryParseModelSpec(modelSpec);
     const provider = parsed?.provider ?? "";
     const model = parsed?.model ?? modelSpec;
@@ -274,16 +258,14 @@ export class ModelRoutingResolver {
     const runtimeDefault = this.resolveRuntimeDefaultModels(role);
     if (runtimeDefault.length) return runtimeDefault;
 
-    if (this.project.provider) return [this.project.provider];
-    return ["openai-codex/gpt-5.3-codex"];
+    throw new MissingModelForRoleError([role], configPath());
   }
 
   private resolveSource(role: string, rule: NormalizedRule, preferredModels: string[]): ResolvedModelRoute["source"] {
-    if (rule.model || rule.preferredModels.length || rule.profile) return "routing";
+    if (rule.model || rule.preferredModels.length || rule.allowedModels?.length || rule.profile) return "routing";
     if (this.project.model_overrides?.[role]) return "legacy";
     if (this.resolveRuntimeDefaultModels(role).length) return "runtime-default";
-    if (this.project.provider) return "project-default";
-    return "hardcoded-default";
+    throw new Error("unreachable: resolveLegacyModels would have thrown first");
   }
 }
 

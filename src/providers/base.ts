@@ -1,4 +1,5 @@
-import type { ModelProvider, RateLimitStatus, UsageStatus } from "./types.js";
+import type { ModelProvider, RateLimitStatus, UsageStatus, Message, ToolSchema, ModelCapabilities } from "./types.js";
+import { countWithTiktoken } from "../runtime/token-counting.js";
 
 export abstract class BaseProvider implements ModelProvider {
   abstract readonly name: string;
@@ -16,8 +17,12 @@ export abstract class BaseProvider implements ModelProvider {
   supportsStreaming(): boolean {
     return false;
   }
-  maxContextTokens(_model: string): number {
-    return 200_000;
+
+  abstract modelCapabilities(model: string): ModelCapabilities | undefined;
+
+  countTokens(model: string, messages: Message[], system?: string, tools?: ToolSchema[]): number {
+    const encoding = this.modelCapabilities(model)?.tokenEncoding ?? "cl100k_base";
+    return countWithTiktoken(messages, system, tools, encoding);
   }
 
   async isAvailable(): Promise<boolean> {

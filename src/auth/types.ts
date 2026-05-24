@@ -27,11 +27,15 @@ export interface OAuthLoginCallbacks {
   onProgress?: (message: string) => void;
 }
 
+export interface OAuthProviderOptions {
+  headers?: Record<string, string>;
+}
+
 export interface OAuthProviderDef {
   readonly id: string;
   readonly name: string;
-  login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials>;
-  refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials>;
+  login(callbacks: OAuthLoginCallbacks, options?: OAuthProviderOptions): Promise<OAuthCredentials>;
+  refreshToken(credentials: OAuthCredentials, options?: OAuthProviderOptions): Promise<OAuthCredentials>;
   getApiKey(credentials: OAuthCredentials): string;
 }
 

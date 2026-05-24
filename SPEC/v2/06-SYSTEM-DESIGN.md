@@ -193,10 +193,12 @@ Full agent behaviors, inputs, outputs, and trigger events are specified in [00-A
 The Provider Router manages all LLM API communication. It is a **singleton** reused from v1.
 
 **Responsibilities:**
-- **Model selection**: for each agent role, select the model from configuration. Precedence: `ProjectConfig.model_overrides[role]` → `RuntimeConfig.providers[name].models[role]` → most capable available.
+- **Model selection**: for each agent role, select the model from configuration. Precedence: `ProjectConfig.model_overrides[role]` → `SaivageConfig.providers[name].models[role]` → most capable available.
 - **Retry with backoff**: all retryable errors (HTTP 429, 5xx, timeouts) are retried with exponential backoff (1s→60s, ±20% jitter). Retries are bounded by a maximum retry duration per request (default: 10 minutes). If exceeded, the error is surfaced as an agent failure. Provider failover may resolve the issue before the timeout.
 - **Provider failover**: if a provider fails 5+ consecutive times within 2 minutes, switch to the configured failover provider. Try the primary again on the next agent invocation.
 - **Request timeout**: configurable per provider (default: 120s).
+
+> The full `SaivageConfig` shape — including `security`, `supervisor`, `mcpServers`, and `runtime.continuousImprovement` — lives in [`src/config.ts`](../../src/config.ts) and is referenced by [01-DATA-MODEL.md §1](01-DATA-MODEL.md#1-runtime-config-saivageconfig).
 
 **Non-retryable errors** (surfaced as agent failure): HTTP 400 (bad request), HTTP 401/403 (auth failure), context window exceeded.
 
@@ -310,7 +312,6 @@ graph TB
     subgraph "Project (.saivage/)"
         GCONF["saivage.json<br/><i>Runtime/provider config</i>"]
         AUTH["auth/<br/><i>Provider tokens</i>"]
-        REG["registry.json<br/><i>MCP service registry</i>"]
         GSKILLS["skills/<br/><i>Project skills</i>"]
         MEMDB["data/memory.db<br/><i>Long-term memory (SQLite)</i>"]
         IDXDB["data/index.db<br/><i>Full-text index (SQLite)</i>"]
@@ -685,7 +686,7 @@ graph TB
 
 **Project-local configuration:**
 
-- **Runtime/provider config** (`<project>/.saivage/saivage.json`): LLM provider credentials (API keys, model assignments per role, timeout, failover), Telegram bot token and user ID, auth directory.
+- **Runtime config** (`SaivageConfig`, `<project>/.saivage/saivage.json`): LLM provider credentials (API keys, model assignments per role, timeout, failover), Telegram bot token and user ID, auth directory. Full shape and operator prose in [01-DATA-MODEL.md](01-DATA-MODEL.md) §1.
 - **Project config** (`<project>/.saivage/config.json`): project name and objectives, provider selection, model overrides, notification preferences (channels, severity filters, category filters), skill loading budget, per-agent tuning (compaction threshold, self-check frequency, max compactions).
 
 Full schema in [01-DATA-MODEL.md](01-DATA-MODEL.md) §1-2.
@@ -790,7 +791,7 @@ The git log provides a complete, append-only timeline of all changes.
 |-------------|---------------|
 | `src/providers/` | **Kept** — model router, all provider abstractions |
 | `src/auth/` | **Kept** — auth flows |
-| `src/mcp/` | **Kept** — client, runtime, registry |
+| `src/mcp/` | **Kept** — client, runtime, types |
 | `src/services/*` | **Replaced** — core services (filesystem, shell, git, skills) reimplemented as in-process handlers in `src/mcp/builtins.ts`; web/memory/index/lock registered as stubs |
 | `src/channels/` | **Adapted** — wired to v2 Chat agent |
 | `src/generator/` | **Removed** — MCP service scaffold no longer needed (in-process model) |

@@ -11,26 +11,22 @@
  * (search scoring).
  */
 
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { rename, unlink, writeFile, mkdir, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 
+import { pathExists } from "../store/documents.js";
+
 import {
   KnowledgeStoreError,
+  acquireRecordLock,
   appendAuditEntry,
   assertNotBlockedPath,
   assertReason,
   detectSecrets,
   rebuildIndex,
+  recordLockKey,
   unlinkRecordIfExists,
   writeRecordAtomic,
   type IndexSummary,
@@ -85,8 +81,12 @@ export function scopeDir(
 
 const auditPath = (dir: string): string => join(dir, "audit.jsonl");
 
-function ensureDir(p: string): void {
-  if (!existsSync(p)) mkdirSync(p, { recursive: true });
+async function ensureDir(p: string): Promise<void> {
+  await mkdir(p, { recursive: true });
+}
+
+async function pathExistsSafe(p: string): Promise<boolean> {
+  return pathExists(p);
 }
 
 function buildAudit(
@@ -108,44 +108,44 @@ function buildAudit(
   });
 }
 
-function writeAuditSafe(dir: string, entry: AuditEntry): void {
-  ensureDir(dir);
-  appendAuditEntry(auditPath(dir), entry);
+async function writeAuditSafe(dir: string, entry: AuditEntry): Promise<void> {
+  await ensureDir(dir);
+  await appendAuditEntry(auditPath(dir), entry);
 }
 
-function safeRebuild<S extends z.ZodTypeAny>(dir: string, schema: S): void {
-  try { rebuildIndex(dir, schema, IndexFileSchema); } catch { /* design §C.3 step-4: next loader rebuilds */ }
+async function safeRebuild<S extends z.ZodTypeAny>(dir: string, schema: S): Promise<void> {
+  try { await rebuildIndex(dir, schema, IndexFileSchema); } catch { /* design §C.3 step-4: next loader rebuilds */ }
 }
 
 type ParseFn<T> = (data: unknown) => T;
 
-function collectRecords<T extends KnowledgeRecord>(
+async function collectRecords<T extends KnowledgeRecord>(
   dir: string,
   parse: ParseFn<T>,
   out: T[],
-): void {
+): Promise<void> {
   const recordsDir = join(dir, "records");
-  if (!existsSync(recordsDir)) return;
-  for (const name of readdirSync(recordsDir).sort()) {
+  if (!(await pathExistsSafe(recordsDir))) return;
+  for (const name of (await readdir(recordsDir)).sort()) {
     if (!name.endsWith(".json")) continue;
     try {
-      const parsed = JSON.parse(readFileSync(join(recordsDir, name), "utf-8"));
+      const parsed = JSON.parse(await readFile(join(recordsDir, name), "utf-8"));
       out.push(parse(parsed));
     } catch { /* skip malformed */ }
   }
 }
 
-function collectScopeActiveRecords<T extends KnowledgeRecord>(dir: string, parse: ParseFn<T>): T[] {
+async function collectScopeActiveRecords<T extends KnowledgeRecord>(dir: string, parse: ParseFn<T>): Promise<T[]> {
   const out: T[] = [];
-  collectRecords(dir, parse, out);
+  await collectRecords(dir, parse, out);
   return out.filter((r) => r.status === "active");
 }
 
-export function listAllRecords<T extends KnowledgeRecord>(
+export async function listAllRecords<T extends KnowledgeRecord>(
   saivageRoot: string,
   kind: "skill" | "memory",
   parse: ParseFn<T>,
-): T[] {
+): Promise<T[]> {
   const out: T[] = [];
   const kindDir = kind === "skill" ? "skills" : "memory";
   const roots = [
@@ -154,13 +154,13 @@ export function listAllRecords<T extends KnowledgeRecord>(
     join(saivageRoot, kindDir, "sessions"),
   ];
   for (const root of roots) {
-    if (!existsSync(root)) continue;
+    if (!(await pathExistsSafe(root))) continue;
     if (root.endsWith("/project")) {
-      collectRecords(root, parse, out);
+      await collectRecords(root, parse, out);
       continue;
     }
-    for (const sub of readdirSync(root)) {
-      collectRecords(join(root, sub), parse, out);
+    for (const sub of await readdir(root)) {
+      await collectRecords(join(root, sub), parse, out);
     }
   }
   return out;
@@ -219,22 +219,22 @@ export interface CreateSkillInput {
   reason: string;
 }
 
-export function createSkill(
+export async function createSkill(
   saivageRoot: string,
   input: CreateSkillInput,
   author: AuthorAgent,
-): { id: string; status: "active" } {
+): Promise<{ id: string; status: "active" }> {
   const reason = assertReason(input.reason);
   const dir = scopeDir(saivageRoot, "skill", input.scope, input.scope_ref);
-  ensureDir(join(dir, "records"));
-  const existing = collectScopeActiveRecords(dir, parseSkill);
+  await ensureDir(join(dir, "records"));
+  const existing = await collectScopeActiveRecords(dir, parseSkill);
   if (existing.some((r) => r.name === input.name)) {
-    writeAuditSafe(dir, buildAudit(SENTINEL_ID, "create", "rejected", author, reason, { error_code: "NAME_COLLISION" }));
+    await writeAuditSafe(dir, buildAudit(SENTINEL_ID, "create", "rejected", author, reason, { error_code: "NAME_COLLISION" }));
     throw new KnowledgeStoreError("NAME_COLLISION", `skill name '${input.name}' already active in scope`);
   }
   const bodyScan = detectSecrets({ body: input.body, reason });
   if (bodyScan.matches.length > 0) {
-    writeAuditSafe(dir, buildAudit(SENTINEL_ID, "create", "rejected", author, reason, { error_code: "SECRET_DETECTED" }));
+    await writeAuditSafe(dir, buildAudit(SENTINEL_ID, "create", "rejected", author, reason, { error_code: "SECRET_DETECTED" }));
     throw new KnowledgeStoreError("SECRET_DETECTED", `secret in: ${[...new Set(bodyScan.matches.map((m) => m.field))].join(", ")}`);
   }
   assertBodyHasNoBlockedPath(input.body, "body");
@@ -261,10 +261,10 @@ export function createSkill(
     ...(input.expires_at ? { expires_at: input.expires_at } : {}),
     ...(input.ttl_ms ? { ttl_ms: input.ttl_ms } : {}),
   });
-  writeFileSync(join(dir, bodyPath), input.body, "utf-8");
-  writeRecordAtomic(dir, id, SkillRecordSchema, record);
-  writeAuditSafe(dir, buildAudit(id, "create", "ok", author, reason, { next_status: "active" }));
-  safeRebuild(dir, SkillRecordSchema);
+  await writeFile(join(dir, bodyPath), input.body, "utf-8");
+  await writeRecordAtomic(dir, id, SkillRecordSchema, record);
+  await writeAuditSafe(dir, buildAudit(id, "create", "ok", author, reason, { next_status: "active" }));
+  await safeRebuild(dir, SkillRecordSchema);
   return { id, status: "active" };
 }
 
@@ -279,19 +279,19 @@ export interface UpdateSkillInput {
   reason: string;
 }
 
-export function updateSkill(
+export async function updateSkill(
   saivageRoot: string,
   input: UpdateSkillInput,
   author: AuthorAgent,
-): { id: string; updated_at: string } {
+): Promise<{ id: string; updated_at: string }> {
   const reason = assertReason(input.reason);
-  const existing = findSkillById(saivageRoot, input.id);
+  const existing = await findSkillById(saivageRoot, input.id);
   if (!existing) throw new KnowledgeStoreError("NOT_FOUND", `skill ${input.id} not found`);
   const { dir, record } = existing;
   if (input.body !== undefined) {
     const scan = detectSecrets({ body: input.body });
     if (scan.matches.length > 0) {
-      writeAuditSafe(dir, buildAudit(input.id, "update", "rejected", author, reason, { error_code: "SECRET_DETECTED" }));
+      await writeAuditSafe(dir, buildAudit(input.id, "update", "rejected", author, reason, { error_code: "SECRET_DETECTED" }));
       throw new KnowledgeStoreError("SECRET_DETECTED", "secret in: body");
     }
     assertBodyHasNoBlockedPath(input.body, "body");
@@ -306,45 +306,45 @@ export function updateSkill(
     ...(input.ttl_ms !== undefined ? { ttl_ms: input.ttl_ms } : {}),
     updated_at: now,
   });
-  if (input.body !== undefined) writeFileSync(join(dir, updated.body_path), input.body, "utf-8");
-  writeRecordAtomic(dir, updated.id, SkillRecordSchema, updated);
-  writeAuditSafe(dir, buildAudit(updated.id, "update", "ok", author, reason));
-  safeRebuild(dir, SkillRecordSchema);
+  if (input.body !== undefined) await writeFile(join(dir, updated.body_path), input.body, "utf-8");
+  await writeRecordAtomic(dir, updated.id, SkillRecordSchema, updated);
+  await writeAuditSafe(dir, buildAudit(updated.id, "update", "ok", author, reason));
+  await safeRebuild(dir, SkillRecordSchema);
   return { id: updated.id, updated_at: now };
 }
 
-export function archiveSkill(
+export async function archiveSkill(
   saivageRoot: string,
   id: string,
   reasonRaw: string,
   author: AuthorAgent,
-): { id: string; status: "archived" } {
+): Promise<{ id: string; status: "archived" }> {
   const reason = assertReason(reasonRaw);
-  const found = findSkillById(saivageRoot, id);
+  const found = await findSkillById(saivageRoot, id);
   if (!found) throw new KnowledgeStoreError("NOT_FOUND", `skill ${id} not found`);
   const { dir, record } = found;
   const updated = SkillRecordSchema.parse({ ...record, status: "archived", updated_at: new Date().toISOString() });
-  writeRecordAtomic(dir, updated.id, SkillRecordSchema, updated);
-  writeAuditSafe(dir, buildAudit(updated.id, "archive", "ok", author, reason, { prev_status: record.status, next_status: "archived" }));
-  safeRebuild(dir, SkillRecordSchema);
+  await writeRecordAtomic(dir, updated.id, SkillRecordSchema, updated);
+  await writeAuditSafe(dir, buildAudit(updated.id, "archive", "ok", author, reason, { prev_status: record.status, next_status: "archived" }));
+  await safeRebuild(dir, SkillRecordSchema);
   return { id, status: "archived" };
 }
 
-export function deleteSkill(
+export async function deleteSkill(
   saivageRoot: string,
   id: string,
   reasonRaw: string,
   author: AuthorAgent,
-): { id: string } {
+): Promise<{ id: string }> {
   const reason = assertReason(reasonRaw);
-  const found = findSkillById(saivageRoot, id);
+  const found = await findSkillById(saivageRoot, id);
   if (!found) throw new KnowledgeStoreError("NOT_FOUND", `skill ${id} not found`);
   const { dir, record } = found;
-  unlinkRecordIfExists(dir, id);
+  await unlinkRecordIfExists(dir, id);
   const bodyAbs = join(dir, record.body_path);
-  if (existsSync(bodyAbs)) { try { unlinkSync(bodyAbs); } catch { /* */ } }
-  writeAuditSafe(dir, buildAudit(id, "delete", "ok", author, reason, { prev_status: record.status }));
-  safeRebuild(dir, SkillRecordSchema);
+  if (await pathExistsSafe(bodyAbs)) { try { await unlink(bodyAbs); } catch { /* */ } }
+  await writeAuditSafe(dir, buildAudit(id, "delete", "ok", author, reason, { prev_status: record.status }));
+  await safeRebuild(dir, SkillRecordSchema);
   return { id };
 }
 
@@ -354,32 +354,32 @@ export interface SupersedeSkillInput {
   reason: string;
 }
 
-export function supersedeSkill(
+export async function supersedeSkill(
   saivageRoot: string,
   input: SupersedeSkillInput,
   author: AuthorAgent,
-): { new_id: string; old_id: string } {
+): Promise<{ new_id: string; old_id: string }> {
   const reason = assertReason(input.reason);
-  const oldFound = findSkillById(saivageRoot, input.old_id);
+  const oldFound = await findSkillById(saivageRoot, input.old_id);
   if (!oldFound) throw new KnowledgeStoreError("NOT_FOUND", `skill ${input.old_id} not found`);
   if (!isAllowedSupersedeScopePair(oldFound.record.scope, input.new_record.scope)) {
-    writeAuditSafe(oldFound.dir, buildAudit(input.old_id, "supersede", "rejected", author, reason, { error_code: "INVALID_SUPERSEDE_SCOPE" }));
+    await writeAuditSafe(oldFound.dir, buildAudit(input.old_id, "supersede", "rejected", author, reason, { error_code: "INVALID_SUPERSEDE_SCOPE" }));
     throw new KnowledgeStoreError("INVALID_SUPERSEDE_SCOPE", `supersede ${oldFound.record.scope}→${input.new_record.scope} not allowed`);
   }
   if (oldFound.record.status !== "active") {
-    writeAuditSafe(oldFound.dir, buildAudit(input.old_id, "supersede", "rejected", author, reason, { error_code: "INVALID_SUPERSEDE_TARGET" }));
+    await writeAuditSafe(oldFound.dir, buildAudit(input.old_id, "supersede", "rejected", author, reason, { error_code: "INVALID_SUPERSEDE_TARGET" }));
     throw new KnowledgeStoreError("INVALID_SUPERSEDE_TARGET", `target ${input.old_id} is not active (status=${oldFound.record.status})`);
   }
   const bodyScan = detectSecrets({ body: input.new_record.body, reason });
   if (bodyScan.matches.length > 0) {
-    writeAuditSafe(oldFound.dir, buildAudit(SENTINEL_ID, "supersede", "rejected", author, reason, { error_code: "SECRET_DETECTED" }));
+    await writeAuditSafe(oldFound.dir, buildAudit(SENTINEL_ID, "supersede", "rejected", author, reason, { error_code: "SECRET_DETECTED" }));
     throw new KnowledgeStoreError("SECRET_DETECTED", `secret in: ${[...new Set(bodyScan.matches.map((m) => m.field))].join(", ")}`);
   }
   assertBodyHasNoBlockedPath(input.new_record.body, "body");
   const newId = randomUUID();
   const now = new Date().toISOString();
   const newDir = scopeDir(saivageRoot, "skill", input.new_record.scope, input.new_record.scope_ref);
-  ensureDir(join(newDir, "records"));
+  await ensureDir(join(newDir, "records"));
   const newBodyPath = `records/${newId}.md`;
   const newRecord: SkillRecord = SkillRecordSchema.parse({
     id: newId,
@@ -402,8 +402,8 @@ export function supersedeSkill(
     ...(input.new_record.expires_at ? { expires_at: input.new_record.expires_at } : {}),
     ...(input.new_record.ttl_ms ? { ttl_ms: input.new_record.ttl_ms } : {}),
   });
-  writeFileSync(join(newDir, newBodyPath), input.new_record.body, "utf-8");
-  writeRecordAtomic(newDir, newId, SkillRecordSchema, newRecord);
+  await writeFile(join(newDir, newBodyPath), input.new_record.body, "utf-8");
+  await writeRecordAtomic(newDir, newId, SkillRecordSchema, newRecord);
   try {
     const updatedOld = SkillRecordSchema.parse({
       ...oldFound.record,
@@ -411,21 +411,21 @@ export function supersedeSkill(
       superseded_by: newId,
       updated_at: now,
     });
-    writeRecordAtomic(oldFound.dir, oldFound.record.id, SkillRecordSchema, updatedOld);
+    await writeRecordAtomic(oldFound.dir, oldFound.record.id, SkillRecordSchema, updatedOld);
   } catch (err) {
-    unlinkRecordIfExists(newDir, newId);
-    try { unlinkSync(join(newDir, newBodyPath)); } catch { /* */ }
-    writeAuditSafe(newDir, buildAudit(newId, "supersede", "rejected", author, reason, { error_code: "INVALID_SUPERSEDE_TARGET" }));
+    await unlinkRecordIfExists(newDir, newId);
+    try { await unlink(join(newDir, newBodyPath)); } catch { /* */ }
+    await writeAuditSafe(newDir, buildAudit(newId, "supersede", "rejected", author, reason, { error_code: "INVALID_SUPERSEDE_TARGET" }));
     throw err;
   }
-  writeAuditSafe(newDir, buildAudit(newId, "supersede", "ok", author, `${reason} (old_id=${input.old_id})`, { next_status: "active" }));
-  safeRebuild(newDir, SkillRecordSchema);
-  if (oldFound.dir !== newDir) safeRebuild(oldFound.dir, SkillRecordSchema);
+  await writeAuditSafe(newDir, buildAudit(newId, "supersede", "ok", author, `${reason} (old_id=${input.old_id})`, { next_status: "active" }));
+  await safeRebuild(newDir, SkillRecordSchema);
+  if (oldFound.dir !== newDir) await safeRebuild(oldFound.dir, SkillRecordSchema);
   return { new_id: newId, old_id: input.old_id };
 }
 
-function findSkillById(saivageRoot: string, id: string): { dir: string; record: SkillRecord } | null {
-  const all = listAllRecords(saivageRoot, "skill", parseSkill);
+async function findSkillById(saivageRoot: string, id: string): Promise<{ dir: string; record: SkillRecord } | null> {
+  const all = await listAllRecords(saivageRoot, "skill", parseSkill);
   for (const r of all) {
     if (r.id === id) return { dir: scopeDir(saivageRoot, "skill", r.scope, r.scope_ref), record: r };
   }
@@ -453,25 +453,25 @@ function topicKey(t: { domain: string; subject: string; aspect?: string }): stri
   return `${t.domain}/${t.subject}/${t.aspect ?? ""}`;
 }
 
-export function createMemory(
+export async function createMemory(
   saivageRoot: string,
   input: CreateMemoryInput,
   author: AuthorAgent,
-): { id: string; status: "active" } {
+): Promise<{ id: string; status: "active" }> {
   const reason = assertReason(input.reason);
   const dir = scopeDir(saivageRoot, "memory", input.scope, input.scope_ref);
-  ensureDir(join(dir, "records"));
+  await ensureDir(join(dir, "records"));
   if (input.body_path !== undefined) assertNotBlockedPath(input.body_path, "body_path");
   assertBodyHasNoBlockedPath(input.body, "body");
-  const existing = collectScopeActiveRecords(dir, parseMemory);
+  const existing = await collectScopeActiveRecords(dir, parseMemory);
   const key = topicKey(input.topic);
   if (existing.some((r) => topicKey(r.topic) === key)) {
-    writeAuditSafe(dir, buildAudit(SENTINEL_ID, "create", "rejected", author, reason, { error_code: "TOPIC_COLLISION" }));
+    await writeAuditSafe(dir, buildAudit(SENTINEL_ID, "create", "rejected", author, reason, { error_code: "TOPIC_COLLISION" }));
     throw new KnowledgeStoreError("TOPIC_COLLISION", `topic ${key} already active in scope`);
   }
   const reasonScan = detectSecrets({ reason });
   if (reasonScan.matches.length > 0) {
-    writeAuditSafe(dir, buildAudit(SENTINEL_ID, "create", "rejected", author, reason, { error_code: "SECRET_DETECTED" }));
+    await writeAuditSafe(dir, buildAudit(SENTINEL_ID, "create", "rejected", author, reason, { error_code: "SECRET_DETECTED" }));
     throw new KnowledgeStoreError("SECRET_DETECTED", "secret in: reason");
   }
   const id = randomUUID();
@@ -495,9 +495,9 @@ export function createMemory(
     ...(input.expires_at ? { expires_at: input.expires_at } : {}),
     ...(input.ttl_ms ? { ttl_ms: input.ttl_ms } : {}),
   });
-  writeRecordAtomic(dir, id, MemoryRecordSchema, record);
-  writeAuditSafe(dir, buildAudit(id, "create", "ok", author, reason, { next_status: "active" }));
-  safeRebuild(dir, MemoryRecordSchema);
+  await writeRecordAtomic(dir, id, MemoryRecordSchema, record);
+  await writeAuditSafe(dir, buildAudit(id, "create", "ok", author, reason, { next_status: "active" }));
+  await safeRebuild(dir, MemoryRecordSchema);
   return { id, status: "active" };
 }
 
@@ -511,13 +511,13 @@ export interface UpdateMemoryInput {
   reason: string;
 }
 
-export function updateMemory(
+export async function updateMemory(
   saivageRoot: string,
   input: UpdateMemoryInput,
   author: AuthorAgent,
-): { id: string; updated_at: string } {
+): Promise<{ id: string; updated_at: string }> {
   const reason = assertReason(input.reason);
-  const existing = findMemoryById(saivageRoot, input.id);
+  const existing = await findMemoryById(saivageRoot, input.id);
   if (!existing) throw new KnowledgeStoreError("NOT_FOUND", `memory ${input.id} not found`);
   const { dir, record } = existing;
   if (input.body !== undefined) assertBodyHasNoBlockedPath(input.body, "body");
@@ -531,42 +531,42 @@ export function updateMemory(
     ...(input.ttl_ms !== undefined ? { ttl_ms: input.ttl_ms } : {}),
     updated_at: now,
   });
-  writeRecordAtomic(dir, updated.id, MemoryRecordSchema, updated);
-  writeAuditSafe(dir, buildAudit(updated.id, "update", "ok", author, reason));
-  safeRebuild(dir, MemoryRecordSchema);
+  await writeRecordAtomic(dir, updated.id, MemoryRecordSchema, updated);
+  await writeAuditSafe(dir, buildAudit(updated.id, "update", "ok", author, reason));
+  await safeRebuild(dir, MemoryRecordSchema);
   return { id: updated.id, updated_at: now };
 }
 
-export function archiveMemory(
+export async function archiveMemory(
   saivageRoot: string,
   id: string,
   reasonRaw: string,
   author: AuthorAgent,
-): { id: string; status: "archived" } {
+): Promise<{ id: string; status: "archived" }> {
   const reason = assertReason(reasonRaw);
-  const found = findMemoryById(saivageRoot, id);
+  const found = await findMemoryById(saivageRoot, id);
   if (!found) throw new KnowledgeStoreError("NOT_FOUND", `memory ${id} not found`);
   const { dir, record } = found;
   const updated = MemoryRecordSchema.parse({ ...record, status: "archived", updated_at: new Date().toISOString() });
-  writeRecordAtomic(dir, updated.id, MemoryRecordSchema, updated);
-  writeAuditSafe(dir, buildAudit(updated.id, "archive", "ok", author, reason, { prev_status: record.status, next_status: "archived" }));
-  safeRebuild(dir, MemoryRecordSchema);
+  await writeRecordAtomic(dir, updated.id, MemoryRecordSchema, updated);
+  await writeAuditSafe(dir, buildAudit(updated.id, "archive", "ok", author, reason, { prev_status: record.status, next_status: "archived" }));
+  await safeRebuild(dir, MemoryRecordSchema);
   return { id, status: "archived" };
 }
 
-export function deleteMemory(
+export async function deleteMemory(
   saivageRoot: string,
   id: string,
   reasonRaw: string,
   author: AuthorAgent,
-): { id: string } {
+): Promise<{ id: string }> {
   const reason = assertReason(reasonRaw);
-  const found = findMemoryById(saivageRoot, id);
+  const found = await findMemoryById(saivageRoot, id);
   if (!found) throw new KnowledgeStoreError("NOT_FOUND", `memory ${id} not found`);
   const { dir, record } = found;
-  unlinkRecordIfExists(dir, id);
-  writeAuditSafe(dir, buildAudit(id, "delete", "ok", author, reason, { prev_status: record.status }));
-  safeRebuild(dir, MemoryRecordSchema);
+  await unlinkRecordIfExists(dir, id);
+  await writeAuditSafe(dir, buildAudit(id, "delete", "ok", author, reason, { prev_status: record.status }));
+  await safeRebuild(dir, MemoryRecordSchema);
   return { id };
 }
 
@@ -576,27 +576,36 @@ export interface SupersedeMemoryInput {
   reason: string;
 }
 
-export function supersedeMemory(
+export async function supersedeMemory(
   saivageRoot: string,
   input: SupersedeMemoryInput,
   author: AuthorAgent,
-): { new_id: string; old_id: string } {
+): Promise<{ new_id: string; old_id: string }> {
   const reason = assertReason(input.reason);
-  const oldFound = findMemoryById(saivageRoot, input.old_id);
-  if (!oldFound) throw new KnowledgeStoreError("NOT_FOUND", `memory ${input.old_id} not found`);
+  const preFound = await findMemoryById(saivageRoot, input.old_id);
+  if (!preFound) throw new KnowledgeStoreError("NOT_FOUND", `memory ${input.old_id} not found`);
+  const release = await acquireRecordLock(recordLockKey({
+    kind: "memory",
+    scope: preFound.record.scope,
+    scope_ref: preFound.record.scope_ref,
+    id: preFound.record.id,
+  }));
+  try {
+    const oldFound = await findMemoryById(saivageRoot, input.old_id);
+    if (!oldFound) throw new KnowledgeStoreError("NOT_FOUND", `memory ${input.old_id} not found`);
   if (!isAllowedSupersedeScopePair(oldFound.record.scope, input.new_record.scope)) {
-    writeAuditSafe(oldFound.dir, buildAudit(input.old_id, "supersede", "rejected", author, reason, { error_code: "INVALID_SUPERSEDE_SCOPE" }));
+    await writeAuditSafe(oldFound.dir, buildAudit(input.old_id, "supersede", "rejected", author, reason, { error_code: "INVALID_SUPERSEDE_SCOPE" }));
     throw new KnowledgeStoreError("INVALID_SUPERSEDE_SCOPE", `supersede ${oldFound.record.scope}→${input.new_record.scope} not allowed`);
   }
   if (oldFound.record.status !== "active") {
-    writeAuditSafe(oldFound.dir, buildAudit(input.old_id, "supersede", "rejected", author, reason, { error_code: "INVALID_SUPERSEDE_TARGET" }));
+    await writeAuditSafe(oldFound.dir, buildAudit(input.old_id, "supersede", "rejected", author, reason, { error_code: "INVALID_SUPERSEDE_TARGET" }));
     throw new KnowledgeStoreError("INVALID_SUPERSEDE_TARGET", `target ${input.old_id} is not active (status=${oldFound.record.status})`);
   }
   assertBodyHasNoBlockedPath(input.new_record.body, "body");
   const newId = randomUUID();
   const now = new Date().toISOString();
   const newDir = scopeDir(saivageRoot, "memory", input.new_record.scope, input.new_record.scope_ref);
-  ensureDir(join(newDir, "records"));
+  await ensureDir(join(newDir, "records"));
   const newRecord: MemoryRecord = MemoryRecordSchema.parse({
     id: newId,
     kind: "memory",
@@ -617,7 +626,7 @@ export function supersedeMemory(
     ...(input.new_record.expires_at ? { expires_at: input.new_record.expires_at } : {}),
     ...(input.new_record.ttl_ms ? { ttl_ms: input.new_record.ttl_ms } : {}),
   });
-  writeRecordAtomic(newDir, newId, MemoryRecordSchema, newRecord);
+  await writeRecordAtomic(newDir, newId, MemoryRecordSchema, newRecord);
   try {
     const updatedOld = MemoryRecordSchema.parse({
       ...oldFound.record,
@@ -625,20 +634,23 @@ export function supersedeMemory(
       superseded_by: newId,
       updated_at: now,
     });
-    writeRecordAtomic(oldFound.dir, oldFound.record.id, MemoryRecordSchema, updatedOld);
+    await writeRecordAtomic(oldFound.dir, oldFound.record.id, MemoryRecordSchema, updatedOld);
   } catch (err) {
-    unlinkRecordIfExists(newDir, newId);
-    writeAuditSafe(newDir, buildAudit(newId, "supersede", "rejected", author, reason, { error_code: "INVALID_SUPERSEDE_TARGET" }));
+    await unlinkRecordIfExists(newDir, newId);
+    await writeAuditSafe(newDir, buildAudit(newId, "supersede", "rejected", author, reason, { error_code: "INVALID_SUPERSEDE_TARGET" }));
     throw err;
   }
-  writeAuditSafe(newDir, buildAudit(newId, "supersede", "ok", author, `${reason} (old_id=${input.old_id})`, { next_status: "active" }));
-  safeRebuild(newDir, MemoryRecordSchema);
-  if (oldFound.dir !== newDir) safeRebuild(oldFound.dir, MemoryRecordSchema);
+  await writeAuditSafe(newDir, buildAudit(newId, "supersede", "ok", author, `${reason} (old_id=${input.old_id})`, { next_status: "active" }));
+  await safeRebuild(newDir, MemoryRecordSchema);
+  if (oldFound.dir !== newDir) await safeRebuild(oldFound.dir, MemoryRecordSchema);
   return { new_id: newId, old_id: input.old_id };
+  } finally {
+    release();
+  }
 }
 
-function findMemoryById(saivageRoot: string, id: string): { dir: string; record: MemoryRecord } | null {
-  const all = listAllRecords(saivageRoot, "memory", parseMemory);
+async function findMemoryById(saivageRoot: string, id: string): Promise<{ dir: string; record: MemoryRecord } | null> {
+  const all = await listAllRecords(saivageRoot, "memory", parseMemory);
   for (const r of all) {
     if (r.id === id) return { dir: scopeDir(saivageRoot, "memory", r.scope, r.scope_ref), record: r };
   }
@@ -647,15 +659,15 @@ function findMemoryById(saivageRoot: string, id: string): { dir: string; record:
 
 // ─── Read / list / search ─────────────────────────────────────────────────
 
-export function readSkillById(
+export async function readSkillById(
   saivageRoot: string,
   id: string,
-): { record: SkillRecord; body: string; redacted_spans: number } {
-  const found = findSkillById(saivageRoot, id);
+): Promise<{ record: SkillRecord; body: string; redacted_spans: number }> {
+  const found = await findSkillById(saivageRoot, id);
   if (!found) throw new KnowledgeStoreError("NOT_FOUND", `skill ${id} not found`);
   const bodyAbs = join(found.dir, found.record.body_path);
-  if (!existsSync(bodyAbs)) throw new KnowledgeStoreError("BODY_PATH_BROKEN", `body file missing for ${id}`);
-  const raw = readFileSync(bodyAbs, "utf-8");
+  if (!(await pathExistsSafe(bodyAbs))) throw new KnowledgeStoreError("BODY_PATH_BROKEN", `body file missing for ${id}`);
+  const raw = await readFile(bodyAbs, "utf-8");
   const redacted = redactForRead(raw);
   return {
     record: { ...found.record, description: redactForRead(found.record.description).text },
@@ -664,11 +676,11 @@ export function readSkillById(
   };
 }
 
-export function getMemory(
+export async function getMemory(
   saivageRoot: string,
   query: { id?: string; topic?: { domain: string; subject: string; aspect?: string } },
-): (MemoryRecord & { redacted_spans: number }) | null {
-  const all = listAllRecords(saivageRoot, "memory", parseMemory);
+): Promise<(MemoryRecord & { redacted_spans: number }) | null> {
+  const all = await listAllRecords(saivageRoot, "memory", parseMemory);
   let start: MemoryRecord | undefined;
   if (query.id) {
     start = all.find((r) => r.id === query.id);
@@ -697,11 +709,11 @@ export interface ListSkillsFilter {
   include_superseded?: boolean;
 }
 
-export function listSkills(saivageRoot: string, filter: ListSkillsFilter = {}): Array<{
+export async function listSkills(saivageRoot: string, filter: ListSkillsFilter = {}): Promise<Array<{
   id: string; name: string; scope: KnowledgeScope; scope_ref?: string; status: string; updated_at: string;
   triggers: string[]; target_agents: KnowledgeAgentRole[]; survive_compaction: boolean; description: string;
-}> {
-  const all = listAllRecords(saivageRoot, "skill", parseSkill);
+}>> {
+  const all = await listAllRecords(saivageRoot, "skill", parseSkill);
   return all
     .filter((r) => {
       if (filter.scope && r.scope !== filter.scope) return false;
@@ -732,11 +744,11 @@ export interface ListMemoriesFilter {
   older_than_days?: number;
 }
 
-export function listMemories(saivageRoot: string, filter: ListMemoriesFilter = {}): Array<{
+export async function listMemories(saivageRoot: string, filter: ListMemoriesFilter = {}): Promise<Array<{
   id: string; topic: MemoryRecord["topic"]; scope: KnowledgeScope; scope_ref?: string; status: string; updated_at: string;
   keys: string[]; target_agents: KnowledgeAgentRole[]; source_ref?: MemoryRecord["source_ref"];
-}> {
-  const all = listAllRecords(saivageRoot, "memory", parseMemory);
+}>> {
+  const all = await listAllRecords(saivageRoot, "memory", parseMemory);
   const olderCutoff = filter.older_than_days !== undefined
     ? Date.now() - filter.older_than_days * 86400_000
     : undefined;
@@ -769,14 +781,14 @@ export interface SearchHit {
   snippet: string;
 }
 
-export function searchSkills(
+export async function searchSkills(
   saivageRoot: string,
   query: string,
   opts: { scope?: KnowledgeScope; limit?: number } = {},
-): SearchHit[] {
+): Promise<SearchHit[]> {
   const tokens = canonicalizeTokens(query);
   if (tokens.length === 0) return [];
-  const all = listAllRecords(saivageRoot, "skill", parseSkill)
+  const all = (await listAllRecords(saivageRoot, "skill", parseSkill))
     .filter((r) => r.status === "active")
     .filter((r) => !opts.scope || r.scope === opts.scope);
   const hits: Array<{ r: SkillRecord; score: number; snippet: string }> = [];
@@ -784,7 +796,7 @@ export function searchSkills(
     const dir = scopeDir(saivageRoot, "skill", r.scope, r.scope_ref);
     const bodyAbs = join(dir, r.body_path);
     let body = "";
-    if (existsSync(bodyAbs)) body = readFileSync(bodyAbs, "utf-8");
+    if (await pathExistsSafe(bodyAbs)) body = await readFile(bodyAbs, "utf-8");
     const snippet = body.slice(0, BODY_SNIPPET_MAX);
     const score = scoreSkillForSearch(tokens, {
       id: r.id, name: r.name, description: r.description, triggers: r.triggers,
@@ -802,14 +814,14 @@ export function searchSkills(
   }));
 }
 
-export function searchMemories(
+export async function searchMemories(
   saivageRoot: string,
   query: string,
   opts: { scope?: KnowledgeScope; limit?: number } = {},
-): SearchHit[] {
+): Promise<SearchHit[]> {
   const tokens = canonicalizeTokens(query);
   if (tokens.length === 0) return [];
-  const all = listAllRecords(saivageRoot, "memory", parseMemory)
+  const all = (await listAllRecords(saivageRoot, "memory", parseMemory))
     .filter((r) => r.status === "active")
     .filter((r) => !opts.scope || r.scope === opts.scope);
   const hits: Array<{ r: MemoryRecord; score: number; snippet: string }> = [];
@@ -854,21 +866,21 @@ interface ScopeArchiveResult {
   archivedMemories: string[];
 }
 
-function archiveScope(
+async function archiveScope(
   projectRoot: string,
   scope: Exclude<KnowledgeScope, "project">,
   scopeRef: string,
-): ScopeArchiveResult {
+): Promise<ScopeArchiveResult> {
   const saivageRoot = join(projectRoot, ".saivage");
   const result: ScopeArchiveResult = { archivedSkills: [], archivedMemories: [] };
 
-  archiveOneKind(saivageRoot, "skill", SkillRecordSchema, parseSkill, scope, scopeRef, result.archivedSkills);
-  archiveOneKind(saivageRoot, "memory", MemoryRecordSchema, parseMemory, scope, scopeRef, result.archivedMemories);
+  await archiveOneKind(saivageRoot, "skill", SkillRecordSchema, parseSkill, scope, scopeRef, result.archivedSkills);
+  await archiveOneKind(saivageRoot, "memory", MemoryRecordSchema, parseMemory, scope, scopeRef, result.archivedMemories);
 
   return result;
 }
 
-function archiveOneKind<T extends KnowledgeRecord>(
+async function archiveOneKind<T extends KnowledgeRecord>(
   saivageRoot: string,
   kind: "skill" | "memory",
   schema: z.ZodTypeAny,
@@ -876,15 +888,15 @@ function archiveOneKind<T extends KnowledgeRecord>(
   scope: Exclude<KnowledgeScope, "project">,
   scopeRef: string,
   bucket: string[],
-): void {
+): Promise<void> {
   const dir = scopeDir(saivageRoot, kind, scope, scopeRef);
-  if (!existsSync(dir)) return;
-  const records = collectScopeActiveRecords(dir, parse);
+  if (!(await pathExistsSafe(dir))) return;
+  const records = await collectScopeActiveRecords(dir, parse);
   if (records.length === 0) return;
 
   const recordsDir = join(dir, "records");
   const archiveRecordsDir = join(dir, "archive", "records");
-  ensureDir(archiveRecordsDir);
+  await ensureDir(archiveRecordsDir);
 
   const now = new Date().toISOString();
   for (const rec of records) {
@@ -893,7 +905,7 @@ function archiveOneKind<T extends KnowledgeRecord>(
       status: "archived",
       updated_at: now,
     }) as T;
-    writeFileSync(
+    await writeFile(
       join(archiveRecordsDir, `${archived.id}.json`),
       JSON.stringify(archived, null, 2),
       "utf-8",
@@ -902,16 +914,16 @@ function archiveOneKind<T extends KnowledgeRecord>(
     if (bodyRel && typeof bodyRel === "string") {
       const liveBody = join(dir, bodyRel);
       const archivedBody = join(dir, "archive", bodyRel);
-      if (existsSync(liveBody)) {
-        ensureDir(join(archivedBody, ".."));
-        try { renameSync(liveBody, archivedBody); } catch { /* best-effort */ }
+      if (await pathExistsSafe(liveBody)) {
+        await ensureDir(join(archivedBody, ".."));
+        try { await rename(liveBody, archivedBody); } catch { /* best-effort */ }
       }
     }
     const liveRecord = join(recordsDir, `${archived.id}.json`);
-    if (existsSync(liveRecord)) {
-      try { unlinkSync(liveRecord); } catch { /* best-effort */ }
+    if (await pathExistsSafe(liveRecord)) {
+      try { await unlink(liveRecord); } catch { /* best-effort */ }
     }
-    writeAuditSafe(
+    await writeAuditSafe(
       dir,
       buildAudit(archived.id, "archive", "ok", SYSTEM_AUTHOR, `${scope} ${scopeRef} archived`, {
         prev_status: rec.status,
@@ -921,7 +933,7 @@ function archiveOneKind<T extends KnowledgeRecord>(
     bucket.push(archived.id);
   }
 
-  safeRebuild(dir, schema);
+  await safeRebuild(dir, schema);
 }
 
 /**
@@ -932,7 +944,7 @@ function archiveOneKind<T extends KnowledgeRecord>(
  * `resolveEagerRecords` calls for the next stage do not see them
  * (FR-9).
  */
-export function archiveStage(projectRoot: string, stageId: string): ScopeArchiveResult {
+export async function archiveStage(projectRoot: string, stageId: string): Promise<ScopeArchiveResult> {
   return archiveScope(projectRoot, "stage", stageId);
 }
 
@@ -941,7 +953,7 @@ export function archiveStage(projectRoot: string, stageId: string): ScopeArchive
  * `<projectRoot>/.saivage/{skills,memory}/sessions/<channelId>/`.
  * Called from `ChatAgent` at the channel-close log point.
  */
-export function archiveSession(projectRoot: string, channelId: string): ScopeArchiveResult {
+export async function archiveSession(projectRoot: string, channelId: string): Promise<ScopeArchiveResult> {
   return archiveScope(projectRoot, "session", channelId);
 }
 

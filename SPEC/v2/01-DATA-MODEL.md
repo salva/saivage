@@ -5,53 +5,29 @@ Timestamps are ISO 8601 strings. IDs are opaque strings (nanoid or UUID).
 
 ---
 
-## 1. Runtime Config
+## 1. Runtime Config (`SaivageConfig`)
 
-**Path:** `<project>/.saivage/saivage.json`
+**Path:** `<saivageDir>/saivage.json` (see [`docs/guide/config-runtime.md`](../../docs/guide/config-runtime.md) for the precise resolution rules).
 
-Runtime/provider settings stored inside the project. Loaded by `src/config.ts`.
+**Canonical source.** The runtime config schema is defined in
+[`src/config.ts`](../../src/config.ts) as the Zod `configSchema` and exported
+as the TypeScript type `SaivageConfig`. The schema — including every
+top-level block (`models`, `providers`, `failover`, `modelEquivalents`,
+`server`, `agent`, `runtime`, `security`, `supervisor`, `telegram`, `mcp`,
+`notifications`, `oauth`, `mcpServers`) — is authoritative. This SPEC does
+not mirror it; the Zod source plus the operator guide are the contract.
 
-```typescript
-interface RuntimeConfig {
-  models: {
-    orchestrator: string;            // default: "anthropic/claude-sonnet-4-20250514"
-    coder: string;
-    researcher: string;
-    executor: string;
-    chat: string;
-    default: string;
-  };
-  providers: {
-    [name: string]: {                // e.g. "anthropic", "openai", "ollama"
-      apiKey?: string;               // API key (or use env var / OAuth)
-      baseUrl?: string;              // custom endpoint
-    };
-  };
-  failover: {
-    [provider: string]: string[];    // fallback chain, e.g. "anthropic": ["openai"]
-  };
-  modelEquivalents: {
-    [modelSpec: string]: string[];   // bidirectional equivalent model specs, e.g. "github-copilot/gpt-5.4": ["openai-codex/gpt-5.4"]
-  };
-  server: {
-    port: number;                    // default: 8080
-    host: string;                    // default: "0.0.0.0"
-  };
-  agent: {
-    maxConcurrentAgents: number;     // default: 3 (not yet enforced)
-  };
-  runtime: {
-    maxServices: number;             // default: 50
-    restartOnCrash: boolean;         // default: true
-    healthCheckIntervalMs: number;   // default: 30000
-    idleShutdownMs: number;          // default: 300000
-  };
-  telegram: {
-    botToken: string;
-    allowedUserIds: number[];
-  };
-}
-```
+**Operator prose.** [`docs/guide/config-runtime.md`](../../docs/guide/config-runtime.md)
+walks every top-level block, documents defaults, and describes environment
+variable interpolation and reloading.
+
+**Cross-cutting policy tickets.** Specific schema rules and defaults are
+owned by these review findings:
+
+- [F02 — agent roster drift](review-2026-05/F02-agent-roster-drift.md): final list of `models.*` role keys.
+- [F04 — hardcoded default models](review-2026-05/F04-hardcoded-default-models.md): which `models.*`, `security.injectionModel`, and `supervisor.model` are required vs optional.
+- [F11 — magic constants → config](review-2026-05/F11-magic-constants-not-in-config.md): the `mcp.*` block and the `runtime.notes`, `runtime.recoveryDelayMs`, `supervisor.forceCancelDelayMs` keys.
+- [F33 — config-default drift](review-2026-05/F33-config-default-drift.md): the `seedProject` writer and removal of duplicate default literals.
 
 ---
 

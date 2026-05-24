@@ -12,25 +12,8 @@ import { ALL_ROLES, WORKER_ROLES } from "./agents/roster.js";
 export const ProjectConfigSchema = z.object({
   project_name: z.string(),
   objectives: z.array(z.string()),
-  provider: z.string().optional(),
   model_overrides: z.record(z.string(), z.string()).optional(),
   routing: projectRoutingSchema.optional(),
-  notifications: z.object({
-    channels: z.array(z.enum(["telegram", "web"])),
-    filters: z.object({
-      min_severity: z.enum(["info", "warning", "error"]),
-      categories: z.array(
-        z.enum([
-          "stage_completed",
-          "stage_failed",
-          "escalation",
-          "task_failed",
-          "inspector_complete",
-          "plan_updated",
-        ]),
-      ),
-    }),
-  }),
   skills: z.object({
     max_per_agent: z.number().default(5),
   }),
@@ -96,6 +79,12 @@ export const PlanHistorySchema = z.object({
 });
 export type PlanHistory = z.infer<typeof PlanHistorySchema>;
 
+/** Persisted Telegram chat-id subscriptions (notification destinations). */
+export const TelegramSubscriptionsSchema = z.object({
+  chatIds: z.array(z.number()).default([]),
+});
+export type TelegramSubscriptions = z.infer<typeof TelegramSubscriptionsSchema>;
+
 // ─── 5. Tasks ───────────────────────────────────────────────────────────────
 
 export const ChecklistItemSchema = z.object({
@@ -106,7 +95,7 @@ export type ChecklistItem = z.infer<typeof ChecklistItemSchema>;
 
 export const TaskSchema = z.object({
   id: z.string(),
-  type: z.enum(["code", "research", "data", "review", "test", "document"]),
+  type: z.enum(["code", "research", "data", "review", "test", "document", "design"]),
   assigned_to: z.enum(WORKER_ROLES),
   description: z.string(),
   checklist: z.array(ChecklistItemSchema),

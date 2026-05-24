@@ -7,10 +7,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
 import { generatePKCE } from "./pkce.js";
+import { loadConfig } from "../config.js";
 import type { OAuthCredentials, OAuthLoginCallbacks, OAuthProviderDef } from "./types.js";
 
-// base64-decoded: "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-const CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const AUTHORIZE_URL = "https://claude.ai/oauth/authorize";
 const TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
 const CALLBACK_PORT = 53692;
@@ -49,12 +48,13 @@ async function exchangeCode(
   code: string,
   verifier: string,
 ): Promise<OAuthCredentials> {
+  const clientId = loadConfig().oauth.anthropic.clientId;
   const response = await fetch(TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "authorization_code",
-      client_id: CLIENT_ID,
+      client_id: clientId,
       code,
       code_verifier: verifier,
       redirect_uri: REDIRECT_URI,
@@ -79,13 +79,14 @@ async function exchangeCode(
 }
 
 async function refreshAccessToken(refreshToken: string): Promise<OAuthCredentials> {
+  const clientId = loadConfig().oauth.anthropic.clientId;
   const response = await fetch(TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: refreshToken,
-      client_id: CLIENT_ID,
+      client_id: clientId,
     }),
   });
 
@@ -162,12 +163,13 @@ function startCallbackServer(
 export async function loginAnthropic(
   callbacks: OAuthLoginCallbacks,
 ): Promise<OAuthCredentials> {
+  const clientId = loadConfig().oauth.anthropic.clientId;
   const { verifier, challenge } = await generatePKCE();
   const state = createState();
 
   const url = new URL(AUTHORIZE_URL);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("client_id", CLIENT_ID);
+  url.searchParams.set("client_id", clientId);
   url.searchParams.set("redirect_uri", REDIRECT_URI);
   url.searchParams.set("scope", SCOPES);
   url.searchParams.set("code_challenge", challenge);
@@ -217,10 +219,10 @@ export async function refreshAnthropicToken(
 export const anthropicOAuthProvider: OAuthProviderDef = {
   id: "anthropic",
   name: "Anthropic (Claude Pro/Max)",
-  async login(callbacks) {
+  async login(callbacks, _options) {
     return loginAnthropic(callbacks);
   },
-  async refreshToken(credentials) {
+  async refreshToken(credentials, _options) {
     return refreshAnthropicToken(credentials.refresh);
   },
   getApiKey(credentials) {

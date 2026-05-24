@@ -2,6 +2,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { SendHorizontal, Wifi, WifiOff, ShieldAlert, Loader2, ArrowDown, KeyRound } from "lucide-vue-next";
 import { useWebSocket } from "../composables/useWebSocket";
+import { useAuthState } from "../composables/useAuthState";
 import { renderMarkdown } from "../utils/markdown";
 import { apiFetchJson, getApiToken, setApiToken } from "../utils/api";
 import { clockTime } from "../utils/time";
@@ -35,14 +36,15 @@ const stickToBottom = ref(true);
 const unseenCount = ref(0);
 const tokenInput = ref("");
 
-const { connected, status, events, send, reconnect } = useWebSocket();
+const { connected, status, events, send } = useWebSocket();
+const { unauthorized } = useAuthState();
 
 // Debounce the visible status by 400 ms so rapid connecting/closed flicker
 // during reconnect attempts doesn't strobe the chip.
 const displayStatus = ref(status.value);
 let statusDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 watch(status, (next) => {
-  if (next === "open" || next === "unauthorized") {
+  if (next === "open") {
     if (statusDebounceTimer) clearTimeout(statusDebounceTimer);
     statusDebounceTimer = null;
     displayStatus.value = next;
@@ -57,10 +59,10 @@ watch(status, (next) => {
 
 const sessionLabel = computed(() => sessionId.value ? sessionId.value.slice(0, 14) : "new session");
 const connectionLabel = computed(() => {
+  if (unauthorized.value) return "unauthorized";
   switch (displayStatus.value) {
     case "open": return "connected";
     case "connecting": return "connecting…";
-    case "unauthorized": return "unauthorized";
     default: return "offline";
   }
 });
@@ -218,7 +220,6 @@ function submitToken() {
   if (!value) return;
   setApiToken(value);
   tokenInput.value = "";
-  reconnect();
 }
 
 onMounted(() => {
@@ -263,8 +264,8 @@ function shortModelLabel(msg: Message): string {
         <h2>Command Stream</h2>
         <span>{{ sessionLabel }}</span>
       </div>
-      <div class="connection" :class="{ online: connected, unauthorized: displayStatus === 'unauthorized', connecting: displayStatus === 'connecting' }">
-        <ShieldAlert v-if="displayStatus === 'unauthorized'" :size="15" />
+      <div class="connection" :class="{ online: connected, unauthorized: unauthorized, connecting: displayStatus === 'connecting' }">
+        <ShieldAlert v-if="unauthorized" :size="15" />
         <Loader2 v-else-if="displayStatus === 'connecting'" :size="15" class="spin" />
         <Wifi v-else-if="connected" :size="15" />
         <WifiOff v-else :size="15" />
@@ -273,7 +274,7 @@ function shortModelLabel(msg: Message): string {
     </div>
 
     <div
-      v-if="displayStatus === 'unauthorized'"
+      v-if="unauthorized"
       class="auth-panel"
       role="alert"
       aria-live="polite"

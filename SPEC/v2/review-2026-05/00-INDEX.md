@@ -4,6 +4,8 @@
 **Method**: Read-only inventory phase. Each finding cites file + line evidence. No source edits were made.
 **Companion**: [00-SUBSYSTEM-MAP.md](00-SUBSYSTEM-MAP.md) describes the twelve subsystems referenced below.
 
+**Implementation status** (as of meta-review r2): F02, F09, F14 have landed in the working tree (pre-commit); remaining 32 issues are unimplemented.
+
 ## All findings
 
 | ID | Slug | Category | Severity | Transversality |
@@ -49,12 +51,12 @@
 | Category | Count |
 |---|---|
 | dead-code | 5 (F01, F08, F10, F28, F35) |
-| documentation-mismatch | 4 (F02, F31, F32, plus partial F33) |
+| documentation-mismatch | 4 (F02, F31, F32, F33) |
 | duplication | 5 (F03, F09, F15, F26, F30) |
-| inconsistency | 2 (F04, F33) |
+| inconsistency | 1 (F04) |
 | bad-design | 5 (F05, F12, F17, F22, F34) |
 | leaky-abstraction | 2 (F06, F14) |
-| short-sighted | 5 (F07, F13, F20, F21, F25, F27) |
+| short-sighted | 6 (F07, F13, F20, F21, F25, F27) |
 | over-engineering | 1 (F11) |
 | half-implemented | 2 (F19, F23) |
 | unsafe-pattern | 3 (F16, F24, F29) |
@@ -64,15 +66,13 @@
 
 | Severity | Count | IDs |
 |---|---|---|
-| high | 6 | F02, F03, F09, F16, F22 plus partial F18/F34 escalation candidates |
-| medium | 18 | F01, F04, F05, F06, F07, F11, F12, F13, F14, F17 (low actually), F18, F20, F21, F23, F24, F25, F29, F32, F33, F34 |
+| high | 5 | F02, F03, F09, F16, F22 |
+| medium | 19 | F01, F04, F05, F06, F07, F11, F12, F13, F14, F18, F20, F21, F23, F24, F25, F29, F32, F33, F34 |
 | low | 11 | F08, F10, F15, F17, F19, F26, F27, F28, F30, F31, F35 |
-
-(Recount: high=5, medium=19, low=11 — counts above were quick; see per-file headers for the authoritative value.)
 
 ## Cross-cutting clusters
 
-1. **Worker-agent monoculture** — F01, F02, F09, F18, F31. Six (counting orphan designer) worker files copy the same boilerplate (normalize/parse/buildFailureReport) AND each ship an inline system prompt of their own. Together these are the biggest single refactor opportunity.
+1. **Worker-agent monoculture** — F01, F18, F31. F02 and F09 landed: the canonical `ROSTER` exists and the `WorkerAgent` base + `task-report.ts` collapsed the prior duplication. Remaining work is reinstating Designer on top of `WorkerAgent` (F01) and externalising the per-role prompts (F18, with F31 retired as a side-effect).
 2. **JSON in source-of-truth boundaries** — F03, F06, F25. Free-form text crossing into structured land via greedy regex; also the dispatcher contaminates tool-result text with `__saivage_pending_user_notes`.
 3. **Hardcoded model identifiers** — F04, F11, F20. Provider/model strings baked into the supervisor, the security cop, the config defaults, and the per-provider context-window helpers.
 4. **Operational constants outside config** — F11, F12, F21, F27. Knobs that operators want to tune live in TypeScript source instead of `SaivageConfig`.
@@ -84,11 +84,11 @@
 
 These are the items where a single architectural fix unblocks the largest number of downstream issues:
 
-1. **F09 — Worker-agent helpers duplicated** (`architectural`). Extracting one `task-report.ts` module collapses ~750 lines and prevents F01-style drift from re-emerging.
+1. **F09 — Worker-agent helpers duplicated** (`architectural`) [landed]. Extracted `src/agents/task-report.ts` + `src/agents/worker.ts` base class; four worker roles now share the helpers.
 2. **F22 — Documents store sync fs** (`architectural`). Migrating to async I/O unblocks F08 (kill the legacy mirror cheaply) and F34 (plan server can adopt an in-memory cache).
 3. **F18 — System prompt bloat** (`architectural`). Moving prompts to `prompts/<role>.md` resolves F31, makes F30 trivial (declarative command tables), and makes prompt iteration deploy-free.
-4. **F02 — Agent roster drift** (`architectural`). Picking one authoritative `AgentRole` enum and deleting the rest (incl. F01 designer, F35 CLI channel) realigns dispatcher, schemas, supervisor priority, and planner prompt at once.
-5. **F03 — Naive JSON extraction** (`cross-cutting`). A single shared `extractJsonObject(text)` removes the same regex from at least eight call sites and is a prerequisite for any structured-output strictness work.
+4. **F02 — Agent roster drift** (`architectural`) [landed]. Picked one authoritative `AgentRole` enum and derived dispatcher, schemas, supervisor priority, conventions, default-model keys, and the planner-prompt roster from `src/agents/roster.ts`.
+5. **F03 — Naive JSON extraction** (`cross-cutting`). A single shared `extractJsonObject(text)` removes the same regex from at least five call sites and is a prerequisite for any structured-output strictness work.
 
 ## What this review does NOT cover
 

@@ -4,51 +4,65 @@
  */
 
 import {
-  readFileSync,
-  writeFileSync,
-  renameSync,
-  unlinkSync,
-  readdirSync,
-  mkdirSync,
-  existsSync,
-  openSync,
-  closeSync,
-  fsyncSync,
-  statSync,
-} from "node:fs";
+  open,
+  readFile,
+  rename,
+  unlink,
+  readdir,
+  mkdir,
+  stat,
+  access,
+} from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { z, ZodTypeAny } from "zod";
 
 /** Read a JSON document from disk, validating against a Zod schema. */
-export function readDoc<S extends ZodTypeAny>(path: string, schema: S): z.output<S> {
-  const raw = readFileSync(path, "utf-8");
+export async function readDoc<S extends ZodTypeAny>(path: string, schema: S): Promise<z.output<S>> {
+  const raw = await readFile(path, "utf-8");
   const data = JSON.parse(raw);
   return schema.parse(data);
 }
 
 /** Read a JSON document, returning null if the file does not exist. */
-export function readDocOrNull<S extends ZodTypeAny>(
+export async function readDocOrNull<S extends ZodTypeAny>(
   path: string,
   schema: S,
-): z.output<S> | null {
-  if (!existsSync(path)) return null;
-  return readDoc(path, schema);
+): Promise<z.output<S> | null> {
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+  const data = JSON.parse(raw);
+  return schema.parse(data);
 }
 
 /** Read a JSON file without schema validation, returning null if missing. */
-export function readJsonOrNull(path: string): unknown | null {
-  if (!existsSync(path)) return null;
-  const raw = readFileSync(path, "utf-8");
+export async function readJsonOrNull(path: string): Promise<unknown | null> {
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
   return JSON.parse(raw);
 }
 
 /** Read with schema validation, falling back to raw JSON on validation error. */
-export function readDocLenient<S extends ZodTypeAny>(
+export async function readDocLenient<S extends ZodTypeAny>(
   path: string,
   schema: S,
-): z.output<S> | null {
-  if (!existsSync(path)) return null;
-  const raw = readFileSync(path, "utf-8");
+): Promise<z.output<S> | null> {
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf-8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
   const data = JSON.parse(raw);
   const result = schema.safeParse(data);
   return result.success ? result.data : data;
@@ -57,39 +71,31 @@ export function readDocLenient<S extends ZodTypeAny>(
 /**
  * Write a JSON document atomically (tmp + fsync + rename + fsync parent).
  * Validates against the Zod schema before writing.
- *
- * The fsync calls make this durable against power loss: without them, the
- * rename can be ordered before the data hits disk on some filesystems,
- * leaving an empty file after reboot. Cost is one extra syscall per write,
- * which is acceptable for the volume of state writes Saivage performs.
  */
-export function writeDoc<T>(
+export async function writeDoc<T>(
   path: string,
   data: T,
   schema: z.ZodType<T>,
-): void {
+): Promise<void> {
   const validated = schema.parse(data);
-  const tmp = path + ".tmp";
-  ensureParentDir(path);
+  const tmp = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+  await ensureParentDir(path);
   const payload = JSON.stringify(validated, null, 2) + "\n";
 
-  // Write + fsync the data file before renaming so the rename can't be
-  // committed before the bytes reach the disk.
-  const fd = openSync(tmp, "w");
+  const handle = await open(tmp, "w");
   try {
-    writeFileSync(fd, payload, "utf-8");
-    try { fsyncSync(fd); } catch { /* fsync may fail on tmpfs / Windows */ }
+    await handle.writeFile(payload, "utf-8");
+    try { await handle.sync(); } catch { /* fsync may fail on tmpfs / Windows */ }
   } finally {
-    closeSync(fd);
+    await handle.close();
   }
 
-  renameSync(tmp, path);
+  await rename(tmp, path);
 
-  // fsync the directory so the rename itself is durable.
   try {
-    const dirFd = openSync(dirname(path), "r");
-    try { fsyncSync(dirFd); } catch { /* not supported on every FS */ }
-    finally { closeSync(dirFd); }
+    const dirHandle = await open(dirname(path), "r");
+    try { await dirHandle.sync(); } catch { /* not supported on every FS */ }
+    finally { await dirHandle.close(); }
   } catch {
     // Some platforms (Windows) don't allow opening directories for fsync.
   }
@@ -97,19 +103,18 @@ export function writeDoc<T>(
 
 /**
  * Append an item to a JSON array document.
- * The schema validates the container document, and the itemKey is the
- * array field to append to. E.g. append to `{ stages: [...] }`.
  */
-export function appendDoc<T extends Record<string, unknown>>(
+export async function appendDoc<T extends Record<string, unknown>>(
   path: string,
   itemKey: string & keyof T,
   item: unknown,
   schema: z.ZodType<T>,
   defaultDoc?: Omit<T, typeof itemKey>,
-): void {
+): Promise<void> {
   let doc: T;
-  if (existsSync(path)) {
-    doc = readDoc(path, schema);
+  const existing = await readDocOrNull(path, schema);
+  if (existing !== null) {
+    doc = existing as T;
   } else {
     doc = { ...defaultDoc, [itemKey]: [] } as unknown as T;
   }
@@ -118,69 +123,85 @@ export function appendDoc<T extends Record<string, unknown>>(
     throw new Error(`Field "${itemKey}" is not an array`);
   }
   arr.push(item);
-  writeDoc(path, doc, schema);
+  await writeDoc(path, doc, schema);
 }
 
 /** List files in a directory (returns filenames, not full paths). */
-export function listDir(dirPath: string): string[] {
-  if (!existsSync(dirPath)) return [];
-  return readdirSync(dirPath);
+export async function listDir(dirPath: string): Promise<string[]> {
+  try {
+    return await readdir(dirPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
 }
 
 /** List files matching a filter in a directory. */
-export function listDocs(
+export async function listDocs(
   dirPath: string,
   filter?: (name: string) => boolean,
-): string[] {
-  const entries = listDir(dirPath);
+): Promise<string[]> {
+  const entries = await listDir(dirPath);
   return filter ? entries.filter(filter) : entries;
 }
 
 /** Delete a file if it exists. */
-export function deleteDoc(path: string): boolean {
-  if (!existsSync(path)) return false;
-  unlinkSync(path);
-  return true;
-}
-
-/** Ensure a directory exists (recursive). */
-export function ensureDir(dirPath: string): void {
-  if (!existsSync(dirPath)) {
-    mkdirSync(dirPath, { recursive: true });
+export async function deleteDoc(path: string): Promise<boolean> {
+  try {
+    await unlink(path);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw err;
   }
 }
 
+/** Rename a file, atomically replacing the destination if it exists. */
+export async function renameDoc(src: string, dst: string): Promise<void> {
+  await rename(src, dst);
+}
+
+/** Ensure a directory exists (recursive). */
+export async function ensureDir(dirPath: string): Promise<void> {
+  await mkdir(dirPath, { recursive: true });
+}
+
 /** Ensure the parent directory of a path exists. */
-function ensureParentDir(filePath: string): void {
-  ensureDir(dirname(filePath));
+async function ensureParentDir(filePath: string): Promise<void> {
+  await ensureDir(dirname(filePath));
 }
 
 /**
  * Sweep orphan `*.tmp` files left behind by interrupted `writeDoc` calls.
- *
- * `writeDoc` writes a tmp file then renames it. If the process dies between
- * those steps the tmp file survives forever. This walks `dirPath` (one level)
- * and removes `*.tmp` files older than `maxAgeMs`. Returns the number removed.
  */
-export function sweepStaleTempFiles(
+export async function sweepStaleTempFiles(
   dirPath: string,
   maxAgeMs: number = 5 * 60 * 1000,
-): number {
-  if (!existsSync(dirPath)) return 0;
+): Promise<number> {
   const cutoff = Date.now() - maxAgeMs;
   let removed = 0;
   let entries: string[];
-  try { entries = readdirSync(dirPath); } catch { return 0; }
+  try { entries = await readdir(dirPath); } catch { return 0; }
   for (const name of entries) {
     if (!name.endsWith(".tmp")) continue;
     const fp = join(dirPath, name);
     try {
-      const st = statSync(fp);
+      const st = await stat(fp);
       if (st.isFile() && st.mtimeMs < cutoff) {
-        unlinkSync(fp);
+        await unlink(fp);
         removed += 1;
       }
     } catch { /* concurrent delete or permission — ignore */ }
   }
   return removed;
+}
+
+/** Async helper: returns true if a path exists (any kind). */
+export async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
 }

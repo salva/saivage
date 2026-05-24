@@ -15,12 +15,12 @@ interface HandoffOptions {
   includeTasks?: boolean;
 }
 
-export function buildHandoffContext(
+export async function buildHandoffContext(
   ctx: AgentContext,
   options: HandoffOptions = {},
-): string {
-  const plan = readDocLenient(ctx.project.paths.plan, PlanSchema);
-  const history = readDocLenient(ctx.project.paths.planHistory, PlanHistorySchema);
+): Promise<string> {
+  const plan = await readDocLenient(ctx.project.paths.plan, PlanSchema);
+  const history = await readDocLenient(ctx.project.paths.planHistory, PlanHistorySchema);
   const stage = options.stage ?? findStage(plan, options.stageId);
 
   const lines: string[] = [
@@ -82,7 +82,7 @@ export function buildHandoffContext(
   }
 
   if (options.includeTasks && options.stageId) {
-    const tasks = readDocLenient(
+    const tasks = await readDocLenient(
       join(ctx.project.paths.stages, options.stageId, "tasks.json"),
       TaskListSchema,
     );

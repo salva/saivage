@@ -42,9 +42,9 @@ const AUTHOR: AuthorAgent = { role: "manager", agent_id: "m1" };
 let projectRoot: string;
 let saivage: string;
 
-beforeEach(() => {
+beforeEach(async () => {
   projectRoot = mkdtempSync(join(tmpdir(), "saivage-regress-"));
-  initProjectTree(projectRoot);
+  await initProjectTree(projectRoot);
   saivage = join(projectRoot, ".saivage");
 });
 afterEach(() => rmSync(projectRoot, { recursive: true, force: true }));
@@ -53,7 +53,7 @@ afterEach(() => rmSync(projectRoot, { recursive: true, force: true }));
 
 describe("FR-31c — update refreshes updated_at + audit + index", () => {
   it("updateSkill bumps updated_at strictly later and appends an audit row", async () => {
-    const s = createSkill(
+    const s = await createSkill(
       saivage,
       { name: "u1", description: "d", body: "v1", scope: "project", reason: "init" },
       AUTHOR,
@@ -62,7 +62,7 @@ describe("FR-31c — update refreshes updated_at + audit + index", () => {
     const before = JSON.parse(readFileSync(recordPath, "utf-8")) as { created_at: string; updated_at: string };
     // Ensure clock progresses past 1ms (ISO timestamps have ms granularity).
     await new Promise((r) => setTimeout(r, 5));
-    const u = updateSkill(saivage, { id: s.id, description: "d2", reason: "doc" }, AUTHOR);
+    const u = await updateSkill(saivage, { id: s.id, description: "d2", reason: "doc" }, AUTHOR);
     expect(new Date(u.updated_at).getTime()).toBeGreaterThan(new Date(before.created_at).getTime());
 
     const audit = readFileSync(join(saivage, "skills", "project", "audit.jsonl"), "utf-8");
@@ -80,7 +80,7 @@ describe("FR-31c — update refreshes updated_at + audit + index", () => {
   });
 
   it("updateMemory persists new body and refreshes the index snippet", async () => {
-    const m = createMemory(
+    const m = await createMemory(
       saivage,
       {
         topic: { domain: "d", subject: "s" },
@@ -91,12 +91,12 @@ describe("FR-31c — update refreshes updated_at + audit + index", () => {
       AUTHOR,
     );
     await new Promise((r) => setTimeout(r, 5));
-    updateMemory(
+    await updateMemory(
       saivage,
       { id: m.id, body: "rewritten body content keyword", reason: "rewrite" },
       AUTHOR,
     );
-    const read = getMemory(saivage, { id: m.id });
+    const read = await getMemory(saivage, { id: m.id });
     expect(read?.body).toBe("rewritten body content keyword");
   });
 });
@@ -104,8 +104,8 @@ describe("FR-31c — update refreshes updated_at + audit + index", () => {
 // ─── FR-31d — nested body_path (subdirectories under records/) ────────────
 
 describe("FR-31d — body_path is a nested relative path under records/", () => {
-  it("createSkill persists body under records/<id>.md and indexes that relative path", () => {
-    const s = createSkill(
+  it("createSkill persists body under records/<id>.md and indexes that relative path", async () => {
+    const s = await createSkill(
       saivage,
       {
         name: "nested",
@@ -178,11 +178,11 @@ describe("FR-31f (read-side) — redactForRead masks provider tokens on the wire
     expect(out.text.includes("sk-")).toBe(false);
   });
 
-  it("getMemory on a body-with-secret returns the redacted form with redacted_spans counter", () => {
+  it("getMemory on a body-with-secret returns the redacted form with redacted_spans counter", async () => {
     // Bypass the write-side guard by hand-editing the record JSON to
     // contain a secret pattern. The store layer's redactForRead is
     // applied on read in lifecycle.getMemory.
-    const m = createMemory(
+    const m = await createMemory(
       saivage,
       {
         topic: { domain: "d", subject: "leaky-on-disk" },
@@ -196,7 +196,7 @@ describe("FR-31f (read-side) — redactForRead masks provider tokens on the wire
     const raw = JSON.parse(readFileSync(recordPath, "utf-8")) as { body: string };
     raw.body = `key: sk-${"A".repeat(40)} more`;
     writeFileSync(recordPath, JSON.stringify(raw), "utf-8");
-    const read = getMemory(saivage, { id: m.id });
+    const read = await getMemory(saivage, { id: m.id });
     expect(read).not.toBeNull();
     expect(read!.redacted_spans).toBeGreaterThanOrEqual(1);
     expect(read!.body.includes("sk-")).toBe(false);
@@ -206,13 +206,13 @@ describe("FR-31f (read-side) — redactForRead masks provider tokens on the wire
 // ─── §5.12 — plan-history vs memory boundary (no cross-store duplication) ──
 
 describe("§5.12 — plan-history and knowledge stores stay distinct", () => {
-  it("creating a memory does not write to plan-history.json", () => {
+  it("creating a memory does not write to plan-history.json", async () => {
     const planHist = join(saivage, "plan-history.json");
     // Seed plan-history with a known shape so we can detect mutations.
     const seed = { stages: [] as unknown[] };
     writeFileSync(planHist, JSON.stringify(seed), "utf-8");
 
-    createMemory(
+    await createMemory(
       saivage,
       {
         topic: { domain: "build", subject: "web" },

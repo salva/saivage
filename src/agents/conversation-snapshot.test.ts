@@ -89,6 +89,7 @@ function stubRouter(chat: (req: ChatRequest) => Promise<ChatResponse>) {
   return {
     chat,
     getMaxContextTokens: () => 100_000,
+    countTokens: () => 0,
     resetModelHealth: () => undefined,
   };
 }

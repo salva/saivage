@@ -4,26 +4,9 @@
  * Max compactions per conversation (default: 3).
  */
 
-import type { Message, ContentBlock } from "../providers/types.js";
+import type { Message, ContentBlock, ToolSchema } from "../providers/types.js";
 import type { ModelRouter } from "../providers/router.js";
 import { log } from "../log.js";
-
-/** Rough token estimation: ~4 chars per token. */
-function estimateTokens(messages: Message[]): number {
-  let chars = 0;
-  for (const msg of messages) {
-    if (typeof msg.content === "string") {
-      chars += msg.content.length;
-    } else if (Array.isArray(msg.content)) {
-      for (const block of msg.content) {
-        chars += (block.text ?? "").length;
-        chars += (block.content ?? "").length;
-        if (block.input) chars += JSON.stringify(block.input).length;
-      }
-    }
-  }
-  return Math.ceil(chars / 4);
-}
 
 export interface CompactionConfig {
   /** Model context window size in tokens. */
@@ -52,15 +35,14 @@ const COMPACTION_PROMPT = `Summarize this conversation for continuation. You mus
 Be concise but do not lose critical context. This summary will replace the full conversation history.`;
 
 /**
- * Check if compaction should trigger based on current token usage.
+ * Check if compaction should trigger based on the running token count.
  */
 export function shouldCompact(
-  messages: Message[],
+  runningTokens: number,
   config: CompactionConfig,
 ): boolean {
-  const tokens = estimateTokens(messages);
   const threshold = (config.thresholdPct / 100) * config.contextWindow;
-  return tokens > threshold;
+  return runningTokens > threshold;
 }
 
 /**
@@ -87,10 +69,12 @@ export async function compactConversation(
   router: ModelRouter,
   config: CompactionConfig,
   state: CompactionState,
+  modelSpec: string,
+  tools: ToolSchema[] | undefined,
 ): Promise<Message[]> {
   log.info(
     `[compaction] Compacting conversation (count: ${state.compactionCount + 1}/${config.maxCompactions}, ` +
-    `tokens: ~${estimateTokens(messages)}, threshold: ${Math.floor((config.thresholdPct / 100) * config.contextWindow)})`,
+    `tokens: ~${router.countTokens(modelSpec, messages, systemPrompt, tools)}, threshold: ${Math.floor((config.thresholdPct / 100) * config.contextWindow)})`,
   );
 
   // Serialize conversation for summarization

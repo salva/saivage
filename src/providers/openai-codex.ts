@@ -6,6 +6,7 @@
  * to call the Codex Responses endpoint.
  */
 import { BaseProvider } from "./base.js";
+import { ProviderError, classifyProviderError } from "./error.js";
 import type {
   ChatRequest,
   ChatResponse,
@@ -13,11 +14,19 @@ import type {
   ToolSchema,
   Message,
   ContentBlock,
+  ModelCapabilities,
 } from "./types.js";
 import { responsesFunctionCallItemId } from "./responses-ids.js";
 
 const DEFAULT_BASE_URL = "https://chatgpt.com/backend-api";
 const JWT_CLAIM = "https://api.openai.com/auth";
+
+const MODEL_CAPABILITIES: Array<[RegExp, ModelCapabilities]> = [
+  [/^gpt-5/, { contextWindow: 200_000, tokenEncoding: "o200k_base" }],
+  [/^o[134]/, { contextWindow: 200_000, tokenEncoding: "o200k_base" }],
+  [/^gpt-4o/, { contextWindow: 128_000, tokenEncoding: "o200k_base" }],
+  [/^gpt-4/, { contextWindow: 128_000, tokenEncoding: "cl100k_base" }],
+];
 
 // ── helpers ─────────────────────────────────────────────
 
@@ -94,7 +103,13 @@ export class OpenAICodexProvider extends BaseProvider {
   }
 
   async chat(request: ChatRequest): Promise<ChatResponse> {
-    if (!this.apiKey) throw new Error("OpenAI Codex provider not configured");
+    if (!this.apiKey) {
+      throw new ProviderError({
+        kind: "non_retryable",
+        message: "OpenAI Codex provider not configured",
+        providerName: this.name,
+      });
+    }
 
     const input = this.convertMessages(request);
     const tools = request.tools?.map((t) => this.convertTool(t));
@@ -125,16 +140,29 @@ export class OpenAICodexProvider extends BaseProvider {
       "OpenAI-Beta": "responses=experimental",
     };
 
-    const response = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: request.signal,
-    });
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal: request.signal,
+      });
+    } catch (err) {
+      throw classifyProviderError(err, this.name);
+    }
 
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw new Error(`Codex API ${response.status}: ${text.slice(0, 200)}`);
+      const message = `Codex API ${response.status}: ${text.slice(0, 200)}`;
+      const status = response.status;
+      let kind: import("./error.js").ProviderErrorKind;
+      if (status === 429) kind = "throttling";
+      else if (status === 413) kind = "context_overflow";
+      else if (status >= 500) kind = "transient";
+      else if (status >= 400) kind = /context.length|too long|context.{0,20}window/i.test(text) ? "context_overflow" : "non_retryable";
+      else kind = "transient";
+      throw new ProviderError({ kind, message, status, providerName: this.name });
     }
 
     return this.parseSSE(response);
@@ -371,11 +399,9 @@ export class OpenAICodexProvider extends BaseProvider {
     };
   }
 
-  maxContextTokens(model: string): number {
-    if (model.includes("gpt-5")) return 200_000;
-    if (model.includes("gpt-4o")) return 128_000;
-    if (model.includes("gpt-4")) return 128_000;
-    return 128_000;
+  modelCapabilities(model: string): ModelCapabilities | undefined {
+    for (const [pattern, caps] of MODEL_CAPABILITIES) if (pattern.test(model)) return caps;
+    return undefined;
   }
 
   async isAvailable(): Promise<boolean> {

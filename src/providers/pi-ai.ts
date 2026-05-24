@@ -8,14 +8,13 @@
  */
 import {
   complete,
-  getModel,
-  getModels,
   getProviders,
 } from "@mariozechner/pi-ai";
+import { piGetModel, piGetModels, UnknownModelError } from "./pi-ai-types.js";
+import { classifyProviderError } from "./error.js";
 import type {
   Model,
   Api,
-  KnownProvider,
   Context,
   Message as PiMessage,
   UserMessage,
@@ -31,9 +30,7 @@ import type {
   ChatRequest,
   ChatResponse,
   ToolCallResult,
-  Message,
-  ContentBlock,
-  ToolSchema,
+  ModelCapabilities,
 } from "./types.js";
 
 /**
@@ -42,7 +39,7 @@ import type {
  */
 export class PiAiProvider extends BaseProvider {
   readonly name: string;
-  private piProvider: string;
+  private readonly piProvider: string;
   private apiKey: string = "";
 
   constructor(piProvider: string, displayName?: string) {
@@ -58,71 +55,54 @@ export class PiAiProvider extends BaseProvider {
   async chat(request: ChatRequest): Promise<ChatResponse> {
     const model = this.resolveModel(request.model);
     if (!model) {
-      throw new Error(`Model "${request.model}" not found for provider "${this.piProvider}"`);
+      throw new UnknownModelError(
+        this.piProvider,
+        request.model,
+        piGetModels(this.piProvider).map((m) => m.id),
+      );
     }
 
     const context = this.buildContext(request);
 
-    const result = await complete(model, context, {
-      apiKey: this.apiKey || undefined,
-      temperature: request.temperature,
-      maxTokens: request.maxTokens,
-    });
+    let result;
+    try {
+      result = await complete(model, context, {
+        apiKey: this.apiKey || undefined,
+        temperature: request.temperature,
+        maxTokens: request.maxTokens,
+      });
+    } catch (err) {
+      throw classifyProviderError(err, this.name);
+    }
 
     if (result.stopReason === "error") {
-      throw new Error(`LLM error: ${result.errorMessage ?? "unknown"}`);
+      const message = `LLM error: ${result.errorMessage ?? "unknown"}`;
+      throw classifyProviderError(new Error(message), this.name);
     }
 
     return this.convertResponse(result);
   }
 
   private resolveModel(modelId: string): Model<Api> | undefined {
-    // pi-ai's getModel/getModels have strict generic constraints for compile-time
-    // safety, but we use dynamic strings at runtime. Cast via any.
-    const _getModel = getModel as (provider: string, modelId: string) => Model<Api> | undefined;
-    const _getModels = getModels as (provider: string) => Model<Api>[];
-
-    // Try exact match first
-    let model = _getModel(this.piProvider, modelId);
-    if (model) return this.withProviderCompat(model);
-
-    // Search by ID in case the key doesn't match exactly
-    const models = _getModels(this.piProvider);
-    model = models.find((m) => m.id === modelId);
-    if (model) return this.withProviderCompat(model);
-
-    // Fuzzy prefix match (e.g., "gpt-4o" matches "gpt-4o-2024-11-20")
-    model = models.find((m) => modelId.startsWith(m.id) || m.id.startsWith(modelId));
-    if (model) return this.withProviderCompat(model);
-
-    // Synthesise a model entry for IDs the provider serves but pi-ai
-    // doesn't know about yet (e.g. kimi-k2.6 when only k2.5 is catalogued).
-    // Clone the closest sibling model (shared prefix before the last version
-    // segment) and override the ID.
-    const prefix = modelId.replace(/[.\-][\d]+$/, "");
-    const sibling = models.find((m) => m.id.startsWith(prefix));
-    if (sibling) {
-      return this.withProviderCompat({ ...sibling, id: modelId } as Model<Api>);
-    }
-
-    return undefined;
+    const exact = piGetModel(this.piProvider, modelId);
+    if (exact) return this.withProviderCompat(exact);
+    const byId = piGetModels(this.piProvider).find((m) => m.id === modelId);
+    return byId ? this.withProviderCompat(byId) : undefined;
   }
 
   private withProviderCompat(model: Model<Api>): Model<Api> {
-    // OpenCode's Kimi K2.x deployment rejects replayed assistant tool-call
-    // messages while thinking is enabled unless every assistant message has
-    // a `reasoning_content` field. pi-ai already supports this compat flag,
-    // but as of 0.73.0 only auto-enables it for DeepSeek-style endpoints.
-    if (this.isOpenCodeKimi(model)) {
-      return {
-        ...model,
-        compat: {
-          ...(model.compat as Record<string, unknown> | undefined),
-          requiresReasoningContentOnAssistantMessages: true,
-        },
-      } as Model<Api>;
-    }
-    return model;
+    if (!this.isOpenCodeKimi(model)) return model;
+    if (model.api !== "openai-completions") return model;
+    // Discriminant narrows model to Model<"openai-completions">; its compat
+    // is OpenAICompletionsCompat, which declares
+    // requiresReasoningContentOnAssistantMessages.
+    return {
+      ...model,
+      compat: {
+        ...model.compat,
+        requiresReasoningContentOnAssistantMessages: true,
+      },
+    };
   }
 
   private isOpenCodeKimi(model: Model<Api>): boolean {
@@ -137,46 +117,70 @@ export class PiAiProvider extends BaseProvider {
   private buildContext(request: ChatRequest): Context {
     const messages: PiMessage[] = [];
     const now = Date.now();
+    const piProvider = this.piProvider;
+
+    const userMsg = (content: UserMessage["content"]): UserMessage => ({
+      role: "user",
+      content,
+      timestamp: now,
+    });
+
+    const assistantMsg = (
+      content: AssistantMessage["content"],
+    ): AssistantMessage => ({
+      role: "assistant",
+      content,
+      api: "openai-completions",
+      provider: piProvider,
+      model: "",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: now,
+    });
+
+    const toolResultMsg = (
+      toolCallId: string,
+      text: string,
+      isError: boolean,
+    ): ToolResultMessage => ({
+      role: "toolResult",
+      toolCallId,
+      toolName: "",
+      content: [{ type: "text", text }],
+      isError,
+      timestamp: now,
+    });
 
     for (const m of request.messages) {
       if (typeof m.content === "string") {
         if (m.role === "user") {
-          messages.push({
-            role: "user",
-            content: m.content,
-            timestamp: now,
-          } as UserMessage);
+          messages.push(userMsg(m.content));
         } else if (m.role === "assistant") {
-          messages.push({
-            role: "assistant",
-            content: [{ type: "text", text: m.content }],
-            api: "openai-completions",
-            provider: this.piProvider,
-            model: "",
-            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-            stopReason: "stop",
-            timestamp: now,
-          } as AssistantMessage);
+          messages.push(
+            assistantMsg([{ type: "text", text: m.content }]),
+          );
         }
       } else {
-        const blocks = m.content as ContentBlock[];
+        const blocks = m.content;
         if (m.role === "user") {
           for (const b of blocks) {
             if (b.type === "tool_result") {
-              messages.push({
-                role: "toolResult",
-                toolCallId: b.tool_use_id!,
-                toolName: "",
-                content: [{ type: "text", text: b.content ?? "" }],
-                isError: b.is_error ?? false,
-                timestamp: now,
-              } as ToolResultMessage);
+              messages.push(
+                toolResultMsg(
+                  b.tool_use_id!,
+                  b.content ?? "",
+                  b.is_error ?? false,
+                ),
+              );
             } else if (b.type === "text" && b.text) {
-              messages.push({
-                role: "user",
-                content: b.text,
-                timestamp: now,
-              } as UserMessage);
+              messages.push(userMsg(b.text));
             }
           }
         } else if (m.role === "assistant") {
@@ -194,6 +198,8 @@ export class PiAiProvider extends BaseProvider {
                 });
               }
             } else if (b.type === "tool_use") {
+              // ContentBlock.input is unknown by design (provider-agnostic);
+              // pi-ai's ToolCall.arguments is Record<string, unknown>.
               content.push({
                 type: "toolCall",
                 id: b.id!,
@@ -202,24 +208,18 @@ export class PiAiProvider extends BaseProvider {
               });
             }
           }
-          messages.push({
-            role: "assistant",
-            content,
-            api: "openai-completions",
-            provider: this.piProvider,
-            model: "",
-            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-            stopReason: "stop",
-            timestamp: now,
-          } as AssistantMessage);
+          messages.push(assistantMsg(content));
         }
       }
     }
 
+    // pi-ai types Tool.parameters as a typebox TSchema; Saivage hand-writes
+    // JSON Schema objects. pi-ai serialises parameters as JSON without
+    // consulting typebox metadata, so the runtime is sound.
     const tools: Tool[] | undefined = request.tools?.map((t) => ({
       name: t.name,
       description: t.description,
-      parameters: t.inputSchema as Tool["parameters"],
+      parameters: t.inputSchema as unknown as Tool["parameters"],
     }));
 
     return {
@@ -267,9 +267,26 @@ export class PiAiProvider extends BaseProvider {
     };
   }
 
-  maxContextTokens(model: string): number {
-    const m = this.resolveModel(model);
-    return m?.contextWindow ?? 128_000;
+  modelCapabilities(model: string): ModelCapabilities | undefined {
+    const resolved = this.resolveModel(model);
+    if (!resolved?.contextWindow) return undefined;
+    return {
+      contextWindow: resolved.contextWindow,
+      tokenEncoding: this.encodingFor(model),
+    };
+  }
+
+  private encodingFor(model: string): "cl100k_base" | "o200k_base" {
+    switch (this.piProvider) {
+      case "openai":
+      case "openai-codex":
+        return /^(gpt-5|o1|o3|o4)/.test(model) ? "o200k_base" : "cl100k_base";
+      case "anthropic":
+      case "opencode":
+      case "opencode-go":
+      default:
+        return "cl100k_base";
+    }
   }
 
   async isAvailable(): Promise<boolean> {
@@ -278,8 +295,7 @@ export class PiAiProvider extends BaseProvider {
 
   /** List model IDs available under this pi-ai provider */
   listModels(): string[] {
-    const _getModels = getModels as (provider: string) => Model<Api>[];
-    return _getModels(this.piProvider).map((m) => m.id);
+    return piGetModels(this.piProvider).map((m) => m.id);
   }
 
   /** List all available pi-ai providers */

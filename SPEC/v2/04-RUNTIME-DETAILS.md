@@ -100,7 +100,7 @@ The runtime never crashes on bad tool calls — it always returns an error resul
 
 ### 2.3 Provider Failover
 
-If a provider becomes persistently unavailable (5+ consecutive retryable errors within 2 minutes), and a `failover` provider is configured in RuntimeConfig, the runtime switches to the failover provider for the remainder of the current agent's conversation. The switch is logged. On next agent invocation, the primary provider is tried first again.
+If a provider becomes persistently unavailable (5+ consecutive retryable errors within 2 minutes), and a `failover` provider is configured in SaivageConfig, the runtime switches to the failover provider for the remainder of the current agent's conversation. The switch is logged. On next agent invocation, the primary provider is tried first again.
 
 ---
 

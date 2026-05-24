@@ -16,7 +16,7 @@ This map orients the inventory phase. Each subsystem lists its responsibilities,
 - [src/config.ts](src/config.ts) — `SaivageConfig` schema, `loadConfig`, `writeDefaultConfig`, `resolveProjectRoot`.
 
 **Boundary observations**:
-- Agent enums in `TaskSchema.assigned_to`, `TaskReportSchema.agent`, `AgentStateSchema.agent_type` enumerate seven roles; the source tree implements eight (`designer` is orphaned).
+- Agent enums in `TaskSchema.assigned_to`, `TaskReportSchema.agent`, `AgentStateSchema.agent_type` and the dispatcher/supervisor maps are now all derived from [src/agents/roster.ts](src/agents/roster.ts) (F02 landed). F01 still owes reinstating Designer.
 - `SaivageConfig` adds `security`, `supervisor`, `mcpServers`, `runtime.continuousImprovement` blocks not described in SPEC.
 - Hardcoded model identifiers (`"anthropic/claude-sonnet-4-20250514"`, `"github-copilot/gpt-5.4"`) live inside the schema defaults.
 
@@ -29,19 +29,20 @@ This map orients the inventory phase. Each subsystem lists its responsibilities,
 **Files**:
 - [src/agents/base.ts](src/agents/base.ts) — 1012 lines. Loop, retries, compaction wiring, tool-result conversion, diagnostics buffer.
 - [src/agents/types.ts](src/agents/types.ts) — `AgentRole`, context/result types.
+- [src/agents/roster.ts](src/agents/roster.ts) — single declarative source of truth for every role (worker?, dispatch tool, dispatchableBy, tool filter, abort priority, self-check frequency, convention, default model key, prompt summary).
+- [src/agents/worker.ts](src/agents/worker.ts) — `WorkerAgent` base class extended by Coder / Researcher / Data Agent / Reviewer.
+- [src/agents/task-report.ts](src/agents/task-report.ts) — shared `normalizeTask`, `parseTaskReport`, `buildFailureReport` for the four worker roles (JSON regex at line 69).
 - [src/agents/planner.ts](src/agents/planner.ts) — long-lived strategist, `MAX_NUDGES=15`, note injection.
 - [src/agents/manager.ts](src/agents/manager.ts) — stage executor, stage decomposition, reviewer loop.
-- [src/agents/coder.ts](src/agents/coder.ts), [researcher.ts](src/agents/researcher.ts), [data-agent.ts](src/agents/data-agent.ts), [reviewer.ts](src/agents/reviewer.ts) — worker agents.
-- [src/agents/inspector.ts](src/agents/inspector.ts) — one-shot deep analysis.
+- [src/agents/coder.ts](src/agents/coder.ts), [researcher.ts](src/agents/researcher.ts), [data-agent.ts](src/agents/data-agent.ts), [reviewer.ts](src/agents/reviewer.ts) — worker agents (extend `WorkerAgent`).
+- [src/agents/inspector.ts](src/agents/inspector.ts) — one-shot deep analysis; still extends `BaseAgent` (returns `InspectionReport`, not `TaskReport`).
 - [src/agents/chat.ts](src/agents/chat.ts) — user-facing channel agent with slash commands.
-- [src/agents/designer.ts](src/agents/designer.ts) — **orphan**: not exported, not in role enum, not in dispatcher.
 - [src/agents/handoff.ts](src/agents/handoff.ts) — handoff-context formatter shared by initial messages.
 - [src/agents/conventions.ts](src/agents/conventions.ts) — soft territory rules (warn-only).
 
 **Boundary observations**:
-- Six worker-style files (coder, researcher, data-agent, reviewer, inspector, designer) duplicate `normalizeTask`, `parseTaskReport`, and `buildFailureReport` almost verbatim.
+- Inspector still duplicates its own `normalize…/parseInspectionReport/buildFailureReport`; the four `TaskReport`-producing workers now share `task-report.ts` (post-F09).
 - Each role embeds a multi-hundred-line system prompt as a string literal inside the TypeScript module.
-- BaseAgent owns the assistant push, but [`ReviewerAgent.review`](src/agents/reviewer.ts) pushes another `{role: "assistant"}` message after `runLoop()` returns.
 
 ---
 
@@ -92,7 +93,7 @@ This map orients the inventory phase. Each subsystem lists its responsibilities,
 
 **Files**:
 - [src/mcp/runtime.ts](src/mcp/runtime.ts) — `McpRuntime`, in-process tool registry, crash-failure threshold.
-- [src/mcp/registry.ts](src/mcp/registry.ts) — `.saivage/registry.json` persistence (largely vestigial since builtins are in-process).
+- [src/mcp/types.ts](src/mcp/types.ts) — service & tool entry shapes (no persistence).
 - [src/mcp/builtins.ts](src/mcp/builtins.ts) — shell, fs, git, web tool implementations.
 - [src/mcp/plan-server.ts](src/mcp/plan-server.ts) — plan/PlanHistory/Stage CRUD (re-reads from disk on every operation; no caching).
 - [src/mcp/notes-server.ts](src/mcp/notes-server.ts) — `create_note` thin wrapper.

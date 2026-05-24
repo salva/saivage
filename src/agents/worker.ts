@@ -30,8 +30,9 @@ import { log } from "../log.js";
 export interface WorkerAgentConfig extends Partial<BaseAgentConfig> {
   role: WorkerRole;
   systemPrompt: string;
-  buildInitialMessage: (input: WorkerInput) => string;
+  initialMessage: string;
   invalidFinalResponseMessage: string;
+  eagerSkillBlock: string;
 }
 
 export abstract class WorkerAgent extends BaseAgent implements Agent {
@@ -49,18 +50,20 @@ export abstract class WorkerAgent extends BaseAgent implements Agent {
     const {
       role,
       systemPrompt,
-      buildInitialMessage,
+      initialMessage,
       invalidFinalResponseMessage,
+      eagerSkillBlock,
       ...rest
     } = config;
     super(ctx, {
       systemPrompt,
+      eagerSkillBlock,
       skillContext: {
         agentRole: role,
         description: task.description,
         tags: task.tags ?? [],
       },
-      initialMessage: buildInitialMessage(normalized),
+      initialMessage,
       ...rest,
     });
     this.input = normalized;

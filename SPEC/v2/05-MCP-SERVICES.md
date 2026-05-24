@@ -408,10 +408,4 @@ Managed by `McpRuntime` (carried from v1):
 
 ## Generated Services
 
-Agents (primarily Coder, directed by Manager) can **generate new MCP services** at runtime using the scaffold system from v1 (`src/generator/scaffold.ts`). Generated services:
-- Are registered in `<project>/.saivage/registry.json` with `origin: "generated"`.
-- Follow the same stdio transport protocol.
-- Are auto-discovered on next startup.
-- Can be created to wrap external APIs, data sources, or project-specific tooling.
-
-The scaffold generates: `package.json`, `tsconfig.json`, `src/index.ts` (MCP server template), and `src/index.test.ts`.
+Not supported in v2. The v1 MCP-generator feature (`src/generator/scaffold.ts`, `origin: "generated"` services persisted to `.saivage/registry.json`) is not part of the v2 runtime. External MCP services are declared statically in `.saivage/saivage.json` under `"mcpServers"`.

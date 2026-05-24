@@ -1,4 +1,4 @@
-# F03 — Naive `\{[\s\S]*\}` JSON extraction duplicated across 7 sites
+# F03 — Naive `\{[\s\S]*\}` JSON extraction duplicated across 5 sites
 
 **Category**: duplication
 **Severity**: high
@@ -10,13 +10,9 @@ Seven different files independently use the same brittle regex `text.match(/\{[\
 
 ## Evidence
 
-- [src/agents/coder.ts](src/agents/coder.ts#L270)
-- [src/agents/manager.ts](src/agents/manager.ts#L398)
-- [src/agents/researcher.ts](src/agents/researcher.ts#L266)
-- [src/agents/reviewer.ts](src/agents/reviewer.ts#L212)
-- [src/agents/inspector.ts](src/agents/inspector.ts#L224)
-- [src/agents/data-agent.ts](src/agents/data-agent.ts#L182)
-- [src/agents/designer.ts](src/agents/designer.ts#L197)
+- Shared worker JSON regex (post-F09): [src/agents/task-report.ts](src/agents/task-report.ts#L69) — used by coder / researcher / data-agent / reviewer.
+- [src/agents/manager.ts](src/agents/manager.ts#L394)
+- [src/agents/inspector.ts](src/agents/inspector.ts#L222) — inspector did not migrate to `WorkerAgent`, retains its own parser.
 - The supervisor uses an internal `parseJsonObject` helper that has the same semantics: [src/runtime/supervisor.ts](src/runtime/supervisor.ts#L176-L200).
 - The prompt-injection cop uses the same approach: [src/security/prompt-injection-cop.ts](src/security/prompt-injection-cop.ts).
 
