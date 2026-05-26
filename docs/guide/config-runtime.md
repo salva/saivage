@@ -247,9 +247,10 @@ Wall-clock and output caps for the in-process MCP tooling layer (F11).
   "shellTimeoutFloorMs": 600000,
   "inProcessTimeoutMs": 300000,
   "maxOutputBytes": 102400,
-  "maxFetchChars": 200000,
+  "maxFetchBytes": 200000,
   "maxDownloadBytes": 262144000,
-  "maxFileReadBytes": 200000
+  "maxFileReadBytes": 200000,
+  "fetchTimeoutMs": 60000
 }
 ```
 
@@ -262,6 +263,30 @@ caller requests less; it must not exceed `shellTimeoutMs - WALL_CLOCK_HEADROOM_M
 Whole-file reads above the cap return `FILE_TOO_LARGE`; callers must use the
 `offset`/`length` window (each capped by the same value) or fall back to
 `run_command` with `head`/`tail`/`grep`.
+
+`maxFetchBytes` is the cap on **raw upstream response bytes** read by the
+`fetch_url` and `fetch_page_text` MCP tools (clamped to `[1_000, 1_000_000]`
+when overridden per call via `max_bytes`). For `fetch_page_text` it bounds the
+raw HTML stream before stripping — the returned `text` is therefore bounded by
+this byte cap, not by character count. Truncation is non-lossy at the UTF-8
+codepoint boundary: partial multi-byte runes at the cap are dropped rather
+than emitted as U+FFFD. Responses are returned with `bytes_read` and
+`truncated` so callers can detect cap-induced truncation. Note: the legacy
+`maxFetchChars` field was removed without a migration shim — stale configs
+that still reference it fail loud at load time.
+
+`fetchTimeoutMs` is the per-request wall-clock cap for every outbound HTTP
+fetch (`fetch_url`, `fetch_page_text`, `download_file`,
+`download_with_fallbacks`). The timer covers both the time to receive headers
+and the time to drain the body; expiry cancels the upstream socket via
+`AbortSignal` and produces a structured error envelope. Valid range:
+`[1_000, 600_000]`, default `60_000`.
+
+Error envelopes from these tools carry a stable `code` field — one of
+`INVALID_ARGUMENT`, `TIMEOUT`, `NETWORK_ERROR`, `UPSTREAM_HTTP_ERROR`,
+`RESPONSE_TOO_LARGE`, or `IO_ERROR` — alongside the human-readable `error`
+message and an optional `errno` (e.g. `ECONNREFUSED`, `EACCES`) when the
+underlying failure exposed one.
 
 ### `oauth`
 

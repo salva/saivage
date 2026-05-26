@@ -43,9 +43,10 @@ describe("config", () => {
       expect(config.mcp.shellTimeoutFloorMs).toBe(10 * 60 * 1000);
       expect(config.mcp.inProcessTimeoutMs).toBe(300_000);
       expect(config.mcp.maxOutputBytes).toBe(100 * 1024);
-      expect(config.mcp.maxFetchChars).toBe(200_000);
+      expect(config.mcp.maxFetchBytes).toBe(200_000);
       expect(config.mcp.maxDownloadBytes).toBe(250 * 1024 * 1024);
       expect(config.mcp.maxFileReadBytes).toBe(200_000);
+      expect(config.mcp.fetchTimeoutMs).toBe(60_000);
     });
 
     it("loads overrides from the on-disk config", () => {

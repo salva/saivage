@@ -214,7 +214,7 @@ describe("built-in MCP services", () => {
       urls: ["file:///etc/passwd", "ftp://example.com/data.csv"],
       path: "cache/source-a/out.csv",
       manifest_path: "tmp/acquisition/attempts.json",
-    })).rejects.toThrow("All download sources failed");
+    })).rejects.toThrow("ALL_SOURCES_FAILED");
 
     const manifestPath = join(projectRoot, "tmp", "acquisition", "attempts.json");
     expect(existsSync(manifestPath)).toBe(true);
@@ -531,6 +531,157 @@ describe("built-in MCP shell — inner wall-clock cap", () => {
     if (previousSaivageRoot === undefined) delete process.env["SAIVAGE_ROOT"];
     else process.env["SAIVAGE_ROOT"] = previousSaivageRoot;
     rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  it("fetch_url returns INVALID_ARGUMENT for non-http schemes", async () => {
+    await expect(runtime.callTool("data", "fetch_url", { url: "file:///etc/passwd" }))
+      .rejects.toThrow("INVALID_ARGUMENT");
+  });
+
+  it("fetch_url maps refused connections to NETWORK_ERROR with errno", async () => {
+    // Bind+close to obtain a free port that is then guaranteed refused.
+    const probe: Server = createServer();
+    await new Promise<void>((r) => probe.listen(0, "127.0.0.1", r));
+    const addr = probe.address();
+    if (!addr || typeof addr === "string") throw new Error("no port");
+    const port = addr.port;
+    await new Promise<void>((r) => probe.close(() => r()));
+
+    await expect(runtime.callTool("data", "fetch_url", {
+      url: `http://127.0.0.1:${port}/`,
+    })).rejects.toThrow(/NETWORK_ERROR/);
+  });
+
+  it("fetch_url returns UPSTREAM_HTTP_ERROR for HTTP 500 (body discarded)", async () => {
+    let bodyBytesWritten = 0;
+    const server: Server = createServer((_req, res) => {
+      res.statusCode = 500;
+      res.setHeader("content-type", "text/plain");
+      const chunk = Buffer.alloc(16 * 1024, 0x42);
+      const writeMore = (): void => {
+        if (bodyBytesWritten >= 200_000) { res.end(); return; }
+        if (!res.write(chunk)) { res.once("drain", writeMore); return; }
+        bodyBytesWritten += chunk.length;
+        setImmediate(writeMore);
+      };
+      writeMore();
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const addr = server.address();
+    if (!addr || typeof addr === "string") throw new Error("no port");
+    try {
+      await expect(runtime.callTool("data", "fetch_url", {
+        url: `http://127.0.0.1:${addr.port}/boom`,
+      })).rejects.toThrow(/UPSTREAM_HTTP_ERROR.*500/);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it("fetch_url truncates streamed bodies above max_bytes and cancels the socket", async () => {
+    let aborted = false;
+    const server: Server = createServer((req, res) => {
+      req.on("close", () => { if (!res.writableEnded) aborted = true; });
+      res.statusCode = 200;
+      res.setHeader("content-type", "text/plain");
+      const chunk = Buffer.alloc(64 * 1024, 65);
+      let written = 0;
+      const writeMore = (): void => {
+        if (written >= 5 * 1024 * 1024) { res.end(); return; }
+        if (!res.write(chunk)) { res.once("drain", writeMore); return; }
+        written += chunk.length;
+        setImmediate(writeMore);
+      };
+      writeMore();
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const addr = server.address();
+    if (!addr || typeof addr === "string") throw new Error("no port");
+    try {
+      const result = await runtime.callTool("data", "fetch_url", {
+        url: `http://127.0.0.1:${addr.port}/big`,
+        max_bytes: 2_000,
+      }) as { content: string; bytes_read: number; truncated: boolean; ok: boolean };
+      expect(result.ok).toBe(true);
+      expect(result.truncated).toBe(true);
+      expect(result.bytes_read).toBe(2_000);
+      await new Promise((r) => setTimeout(r, 80));
+      expect(aborted).toBe(true);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it("fetch_page_text caps raw HTML bytes (not the stripped text)", async () => {
+    // Body is just text bytes, no HTML tags — bytes_read should reflect the raw stream cap.
+    const big = "x".repeat(50_000);
+    await withTextServer(big, async (url) => {
+      const result = await runtime.callTool("data", "fetch_page_text", {
+        url,
+        max_bytes: 1_000,
+      }) as { bytes_read: number; truncated: boolean; text: string };
+      expect(result.truncated).toBe(true);
+      expect(result.bytes_read).toBe(1_000);
+      // stripHtml leaves plain text intact, so it equals the bounded raw slice.
+      expect(result.text.length).toBeLessThanOrEqual(1_000);
+    });
+  });
+
+  it("download_file rejects a lying Content-Length above the cap before reading the body", async () => {
+    let bodyBytesWritten = 0;
+    const server: Server = createServer((_req, res) => {
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/octet-stream");
+      res.setHeader("content-length", String(10 * 1024 * 1024));
+      // Stream a small body that the cap rejects before we even read it.
+      const chunk = Buffer.alloc(8 * 1024, 0);
+      const writeMore = (): void => {
+        if (bodyBytesWritten >= 64 * 1024) { res.end(); return; }
+        if (!res.write(chunk)) { res.once("drain", writeMore); return; }
+        bodyBytesWritten += chunk.length;
+        setImmediate(writeMore);
+      };
+      writeMore();
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const addr = server.address();
+    if (!addr || typeof addr === "string") throw new Error("no port");
+    try {
+      await expect(runtime.callTool("data", "download_file", {
+        url: `http://127.0.0.1:${addr.port}/oversize`,
+        path: "cache/big.bin",
+        max_bytes: 1024 * 1024,
+      })).rejects.toThrow("RESPONSE_TOO_LARGE");
+      // No partial file should be left on disk.
+      expect(existsSync(join(projectRoot, "cache", "big.bin"))).toBe(false);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
+  it("download_file maps unwritable destinations to IO_ERROR with errno", async () => {
+    const server: Server = createServer((_req, res) => {
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/octet-stream");
+      res.end(Buffer.from("payload"));
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const addr = server.address();
+    if (!addr || typeof addr === "string") throw new Error("no port");
+    // Pre-create the destination directory and make it read-only so the
+    // sync mkdir/writeFile branch fails with EACCES / EROFS.
+    const lockedDir = join(projectRoot, "locked");
+    mkdirSync(lockedDir, { recursive: true });
+    chmodSync(lockedDir, 0o500);
+    try {
+      await expect(runtime.callTool("data", "download_file", {
+        url: `http://127.0.0.1:${addr.port}/p`,
+        path: "locked/out.bin",
+      })).rejects.toThrow(/IO_ERROR|EACCES|EROFS/);
+    } finally {
+      chmodSync(lockedDir, 0o700);
+      await new Promise<void>((r) => server.close(() => r()));
+    }
   });
 
   it("clamps caller-supplied timeout_ms above mcpConfig.shellTimeoutMs - WALL_CLOCK_HEADROOM_MS", async () => {

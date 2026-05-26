@@ -140,9 +140,10 @@ const configSchema = z.object({
       shellTimeoutFloorMs: z.number().default(10 * 60 * 1000),
       inProcessTimeoutMs: z.number().default(300_000),
       maxOutputBytes: z.number().default(100 * 1024),
-      maxFetchChars: z.number().default(200_000),
+      maxFetchBytes: z.number().default(200_000),
       maxDownloadBytes: z.number().default(250 * 1024 * 1024),
       maxFileReadBytes: z.number().default(200_000),
+      fetchTimeoutMs: z.number().int().min(1_000).max(600_000).default(60_000),
     })
     .default({})
     .superRefine((mcp, ctx) => {

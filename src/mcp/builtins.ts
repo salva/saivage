@@ -21,6 +21,17 @@ import { promisify } from "node:util";
 import { log } from "../log.js";
 import type { PromptInjectionCop, PromptInjectionScanResult } from "../security/prompt-injection-cop.js";
 import { disabledCop } from "../security/prompt-injection-cop.js";
+import {
+  fetchWithTimeout,
+  readBoundedTextBody,
+  readBoundedBinaryBody,
+  discardBody,
+  classifyNetworkError,
+  type BoundedReadResult,
+  type ClassifiedHttpError,
+  type HttpFetchErrorCode,
+  type TimedFetch,
+} from "./httpFetch.js";
 
 const execFileAsync = promisify(execFile);
 /** Headroom between the inner wall-clock cap and the outer McpRuntime
@@ -29,9 +40,10 @@ export const WALL_CLOCK_HEADROOM_MS = 30_000;
 let MAX_OUTPUT = 100 * 1024; // 100 KB
 const PROCESS_KILL_GRACE_MS = 2_000;
 const OUTPUT_GROWTH_POLL_MS = 1_000;
-let MAX_FETCH_CHARS = 200_000;
+let MAX_FETCH_BYTES = 200_000;
 let MAX_DOWNLOAD_BYTES = 250 * 1024 * 1024;
 let MAX_FILE_READ_BYTES = 200_000;
+let FETCH_TIMEOUT_MS = 60_000;
 let SHELL_TIMEOUT_FLOOR_MS = 10 * 60 * 1000; // 10 minutes
 const MAX_SCAN_DECODE_BYTES = 1_000_000;
 
@@ -97,7 +109,9 @@ interface DownloadAttempt {
   attempt: number;
   status?: number;
   ok?: boolean;
+  code?: HttpFetchErrorCode;
   error?: string;
+  errno?: string;
   bytes?: number;
   headers?: Record<string, string>;
 }
@@ -111,6 +125,14 @@ interface DownloadSuccess {
   attempts: DownloadAttempt[];
   prompt_injection_scan?: PromptInjectionScanResult;
 }
+
+type DownloadOutcome =
+  | { ok: true; success: DownloadSuccess }
+  | {
+      ok: false;
+      failure: ClassifiedHttpError & { status?: number };
+      attempt: DownloadAttempt;
+    };
 
 interface BuiltinServicesOptions {
   promptInjectionCop?: PromptInjectionCop;
@@ -160,71 +182,143 @@ async function downloadUrl(
     attemptNumber: number;
     promptInjectionCop: PromptInjectionCop;
   },
-): Promise<DownloadSuccess | null> {
-  const response = await fetch(url, {
-    headers: { "User-Agent": "Saivage/0.1 data-agent", ...(options.headers ?? {}) },
-  });
-  const responseHeaders = headersObject(response.headers);
-  const attempt: DownloadAttempt = {
-    url: url.toString(),
-    attempt: options.attemptNumber,
-    status: response.status,
-    ok: response.ok,
-    headers: responseHeaders,
-  };
-  options.attempts.push(attempt);
-
-  if (!response.ok) {
-    attempt.error = `HTTP ${response.status}`;
-    return null;
+): Promise<DownloadOutcome> {
+  let timed: TimedFetch;
+  try {
+    timed = await fetchWithTimeout(
+      url,
+      { headers: { "User-Agent": "Saivage/0.1 data-agent", ...(options.headers ?? {}) } },
+      FETCH_TIMEOUT_MS,
+    );
+  } catch (err) {
+    const cls = classifyNetworkError(err, url.toString());
+    const attempt: DownloadAttempt = {
+      url: url.toString(),
+      attempt: options.attemptNumber,
+      code: cls.code,
+      error: cls.error,
+      errno: cls.errno,
+    };
+    options.attempts.push(attempt);
+    return { ok: false, failure: cls, attempt };
   }
+  try {
+    const { response, signal, timedOut } = timed;
+    const responseHeaders = headersObject(response.headers);
+    const attempt: DownloadAttempt = {
+      url: url.toString(),
+      attempt: options.attemptNumber,
+      status: response.status,
+      ok: response.ok,
+      headers: responseHeaders,
+    };
+    options.attempts.push(attempt);
 
-  const contentLength = Number(response.headers.get("content-length") ?? 0);
-  if (contentLength > options.maxBytes) {
-    attempt.error = `Download size ${contentLength} exceeds max_bytes ${options.maxBytes}`;
-    return null;
-  }
-
-  const buffer = Buffer.from(await response.arrayBuffer());
-  attempt.bytes = buffer.byteLength;
-  if (buffer.byteLength > options.maxBytes) {
-    attempt.error = `Download size ${buffer.byteLength} exceeds max_bytes ${options.maxBytes}`;
-    return null;
-  }
-
-  const scannableText = bufferToScannableText(buffer, response.headers.get("content-type") ?? undefined);
-  let promptInjectionScan: PromptInjectionScanResult = {
-    allowed: true,
-    verdict: "allow",
-    reason: "download appears to be binary/non-text content; prompt-injection scan not applicable",
-    confidence: 0,
-    scanner: "skipped",
-  };
-  if (scannableText !== null) {
-    try {
-      promptInjectionScan = await scanUntrustedText(
-        options.promptInjectionCop,
-        url.toString(),
-        scannableText,
-        response.headers.get("content-type") ?? undefined,
-      );
-    } catch (err) {
-      attempt.error = err instanceof Error ? err.message : String(err);
-      return null;
+    if (!response.ok) {
+      await discardBody(response);
+      const failure: ClassifiedHttpError & { status?: number } = {
+        code: "UPSTREAM_HTTP_ERROR",
+        error: `UPSTREAM_HTTP_ERROR: ${url} returned HTTP ${response.status}.`,
+        status: response.status,
+      };
+      attempt.code = failure.code;
+      attempt.error = failure.error;
+      return { ok: false, failure, attempt };
     }
-  }
 
-  await mkdir(dirname(outPath), { recursive: true });
-  await writeFile(outPath, buffer);
-  return {
-    url: url.toString(),
-    path: relative(projectRoot(), outPath),
-    bytes: buffer.byteLength,
-    sha256: createHash("sha256").update(buffer).digest("hex"),
-    headers: responseHeaders,
-    attempts: options.attempts,
-    prompt_injection_scan: promptInjectionScan,
-  };
+    const contentLength = Number(response.headers.get("content-length") ?? 0);
+    if (contentLength > options.maxBytes) {
+      await discardBody(response);
+      const failure: ClassifiedHttpError = {
+        code: "RESPONSE_TOO_LARGE",
+        error: `RESPONSE_TOO_LARGE: Content-Length ${contentLength} exceeds max_bytes ${options.maxBytes}`,
+      };
+      attempt.code = failure.code;
+      attempt.error = failure.error;
+      return { ok: false, failure, attempt };
+    }
+
+    let read: BoundedReadResult<Buffer>;
+    try {
+      read = await readBoundedBinaryBody(response, options.maxBytes, signal);
+    } catch (err) {
+      const cls = classifyNetworkError(err, url.toString(), { timedOut: timedOut() });
+      attempt.code = cls.code;
+      attempt.error = cls.error;
+      attempt.errno = cls.errno;
+      return { ok: false, failure: cls, attempt };
+    }
+    attempt.bytes = read.bytes;
+    if (read.truncated) {
+      const failure: ClassifiedHttpError = {
+        code: "RESPONSE_TOO_LARGE",
+        error: `RESPONSE_TOO_LARGE: body exceeds max_bytes ${options.maxBytes}`,
+      };
+      attempt.code = failure.code;
+      attempt.error = failure.error;
+      return { ok: false, failure, attempt };
+    }
+
+    const scannableText = bufferToScannableText(
+      read.body,
+      response.headers.get("content-type") ?? undefined,
+    );
+    let promptInjectionScan: PromptInjectionScanResult = {
+      allowed: true,
+      verdict: "allow",
+      reason: "download appears to be binary/non-text content; prompt-injection scan not applicable",
+      confidence: 0,
+      scanner: "skipped",
+    };
+    if (scannableText !== null) {
+      try {
+        promptInjectionScan = await scanUntrustedText(
+          options.promptInjectionCop,
+          url.toString(),
+          scannableText,
+          response.headers.get("content-type") ?? undefined,
+        );
+      } catch (err) {
+        const failure: ClassifiedHttpError = {
+          code: "NETWORK_ERROR",
+          error: err instanceof Error ? err.message : String(err),
+        };
+        attempt.code = failure.code;
+        attempt.error = failure.error;
+        return { ok: false, failure, attempt };
+      }
+    }
+
+    try {
+      await mkdir(dirname(outPath), { recursive: true });
+      await writeFile(outPath, read.body);
+    } catch (err) {
+      const failure: ClassifiedHttpError = {
+        code: "IO_ERROR",
+        error: `IO_ERROR: ${err instanceof Error ? err.message : String(err)}`,
+        errno: (err as NodeJS.ErrnoException).code,
+      };
+      attempt.code = failure.code;
+      attempt.error = failure.error;
+      attempt.errno = failure.errno;
+      return { ok: false, failure, attempt };
+    }
+
+    return {
+      ok: true,
+      success: {
+        url: url.toString(),
+        path: relative(projectRoot(), outPath),
+        bytes: read.bytes,
+        sha256: createHash("sha256").update(read.body).digest("hex"),
+        headers: responseHeaders,
+        attempts: options.attempts,
+        prompt_injection_scan: promptInjectionScan,
+      },
+    };
+  } finally {
+    timed.dispose();
+  }
 }
 
 // ─── Filesystem ─────────────────────────────────────────────────────────────
@@ -940,24 +1034,24 @@ const dataTools: ToolEntry[] = [
   },
   {
     name: "fetch_url",
-    description: "Fetch a URL as text with status, selected headers, and a truncated body. Use for API docs, CSV previews, metadata pages, and robots-friendly web pages.",
+    description: "Fetch a URL as text with status, selected headers, and a truncated body. Use for API docs, CSV previews, metadata pages, and robots-friendly web pages. The byte cap bounds the raw response stream.",
     inputSchema: {
       type: "object",
       properties: {
         url: { type: "string" },
-        max_chars: { type: "number", description: "Maximum response characters to return (default 200000)" },
+        max_bytes: { type: "number", description: "Maximum response bytes to read from the upstream stream (default mcp.maxFetchBytes; clamped 1000..1000000)" },
       },
       required: ["url"],
     },
   },
   {
     name: "fetch_page_text",
-    description: "Fetch an HTML page and return readable text extracted from it. Use this before falling back to Playwright for simple static pages.",
+    description: "Fetch an HTML page and return readable text extracted from it. Use this before falling back to Playwright for simple static pages. The byte cap bounds the raw HTML stream, not the stripped output.",
     inputSchema: {
       type: "object",
       properties: {
         url: { type: "string" },
-        max_chars: { type: "number", description: "Maximum extracted text characters to return (default 200000)" },
+        max_bytes: { type: "number", description: "Maximum raw HTML bytes to read from the upstream stream before stripping (default mcp.maxFetchBytes; clamped 1000..1000000)" },
       },
       required: ["url"],
     },
@@ -1032,128 +1126,273 @@ function createDataHandler(promptInjectionCop: PromptInjectionCop): InProcessToo
     }
 
     case "fetch_url": {
-      const url = parseHttpUrl(String(args.url));
-      const maxChars = Math.min(Math.max(Number(args.max_chars ?? MAX_FETCH_CHARS), 1_000), 1_000_000);
-      const response = await fetch(url, { headers: { "User-Agent": "Saivage/0.1 data-agent" } });
-      const text = await response.text();
-      const content = text.slice(0, maxChars);
-      let promptInjectionScan: PromptInjectionScanResult;
+      let url: URL;
       try {
-        promptInjectionScan = await scanUntrustedText(
-          promptInjectionCop,
-          url.toString(),
-          content,
-          response.headers.get("content-type") ?? undefined,
+        url = parseHttpUrl(String(args.url));
+      } catch (err) {
+        return {
+          content: {
+            code: "INVALID_ARGUMENT",
+            error: `INVALID_ARGUMENT: ${err instanceof Error ? err.message : String(err)}`,
+            url: String(args.url),
+          },
+          isError: true,
+        };
+      }
+      const maxBytes = Math.min(Math.max(Number(args.max_bytes ?? MAX_FETCH_BYTES), 1_000), 1_000_000);
+      let timed: TimedFetch;
+      try {
+        timed = await fetchWithTimeout(
+          url,
+          { headers: { "User-Agent": "Saivage/0.1 data-agent" } },
+          FETCH_TIMEOUT_MS,
         );
       } catch (err) {
-        return { content: { error: err instanceof Error ? err.message : String(err), url: url.toString() }, isError: true };
+        return {
+          content: { ...classifyNetworkError(err, url.toString()), url: url.toString() },
+          isError: true,
+        };
       }
-      return {
-        content: {
-          url: url.toString(),
-          status: response.status,
-          ok: response.ok,
-          headers: headersObject(response.headers),
-          content,
-          truncated: text.length > maxChars,
-          prompt_injection_scan: promptInjectionScan,
-        },
-        isError: false,
-      };
+      try {
+        const { response, signal, timedOut } = timed;
+        if (!response.ok) {
+          await discardBody(response);
+          return {
+            content: {
+              code: "UPSTREAM_HTTP_ERROR",
+              error: `UPSTREAM_HTTP_ERROR: ${url} returned HTTP ${response.status}.`,
+              url: url.toString(),
+              status: response.status,
+              headers: headersObject(response.headers),
+            },
+            isError: true,
+          };
+        }
+        let read: BoundedReadResult<string>;
+        try {
+          read = await readBoundedTextBody(response, maxBytes, signal);
+        } catch (err) {
+          return {
+            content: {
+              ...classifyNetworkError(err, url.toString(), { timedOut: timedOut() }),
+              url: url.toString(),
+            },
+            isError: true,
+          };
+        }
+        let promptInjectionScan: PromptInjectionScanResult;
+        try {
+          promptInjectionScan = await scanUntrustedText(
+            promptInjectionCop,
+            url.toString(),
+            read.body,
+            response.headers.get("content-type") ?? undefined,
+          );
+        } catch (err) {
+          return {
+            content: { error: err instanceof Error ? err.message : String(err), url: url.toString() },
+            isError: true,
+          };
+        }
+        return {
+          content: {
+            url: url.toString(),
+            status: response.status,
+            ok: response.ok,
+            headers: headersObject(response.headers),
+            content: read.body,
+            bytes_read: read.bytes,
+            truncated: read.truncated,
+            prompt_injection_scan: promptInjectionScan,
+          },
+          isError: false,
+        };
+      } finally {
+        timed.dispose();
+      }
     }
 
     case "fetch_page_text": {
-      const url = parseHttpUrl(String(args.url));
-      const maxChars = Math.min(Math.max(Number(args.max_chars ?? MAX_FETCH_CHARS), 1_000), 1_000_000);
-      const response = await fetch(url, { headers: { "User-Agent": "Saivage/0.1 data-agent" } });
-      const html = await response.text();
-      const text = stripHtml(html);
-      const content = text.slice(0, maxChars);
-      let promptInjectionScan: PromptInjectionScanResult;
+      let url: URL;
       try {
-        promptInjectionScan = await scanUntrustedText(
-          promptInjectionCop,
-          url.toString(),
-          content,
-          response.headers.get("content-type") ?? undefined,
+        url = parseHttpUrl(String(args.url));
+      } catch (err) {
+        return {
+          content: {
+            code: "INVALID_ARGUMENT",
+            error: `INVALID_ARGUMENT: ${err instanceof Error ? err.message : String(err)}`,
+            url: String(args.url),
+          },
+          isError: true,
+        };
+      }
+      const maxBytes = Math.min(Math.max(Number(args.max_bytes ?? MAX_FETCH_BYTES), 1_000), 1_000_000);
+      let timed: TimedFetch;
+      try {
+        timed = await fetchWithTimeout(
+          url,
+          { headers: { "User-Agent": "Saivage/0.1 data-agent" } },
+          FETCH_TIMEOUT_MS,
         );
       } catch (err) {
-        return { content: { error: err instanceof Error ? err.message : String(err), url: url.toString() }, isError: true };
+        return {
+          content: { ...classifyNetworkError(err, url.toString()), url: url.toString() },
+          isError: true,
+        };
       }
-      return {
-        content: {
-          url: url.toString(),
-          status: response.status,
-          ok: response.ok,
-          headers: headersObject(response.headers),
-          text: content,
-          truncated: text.length > maxChars,
-          prompt_injection_scan: promptInjectionScan,
-        },
-        isError: false,
-      };
+      try {
+        const { response, signal, timedOut } = timed;
+        if (!response.ok) {
+          await discardBody(response);
+          return {
+            content: {
+              code: "UPSTREAM_HTTP_ERROR",
+              error: `UPSTREAM_HTTP_ERROR: ${url} returned HTTP ${response.status}.`,
+              url: url.toString(),
+              status: response.status,
+              headers: headersObject(response.headers),
+            },
+            isError: true,
+          };
+        }
+        let read: BoundedReadResult<string>;
+        try {
+          read = await readBoundedTextBody(response, maxBytes, signal);
+        } catch (err) {
+          return {
+            content: {
+              ...classifyNetworkError(err, url.toString(), { timedOut: timedOut() }),
+              url: url.toString(),
+            },
+            isError: true,
+          };
+        }
+        const stripped = stripHtml(read.body);
+        let promptInjectionScan: PromptInjectionScanResult;
+        try {
+          promptInjectionScan = await scanUntrustedText(
+            promptInjectionCop,
+            url.toString(),
+            stripped,
+            response.headers.get("content-type") ?? undefined,
+          );
+        } catch (err) {
+          return {
+            content: { error: err instanceof Error ? err.message : String(err), url: url.toString() },
+            isError: true,
+          };
+        }
+        return {
+          content: {
+            url: url.toString(),
+            status: response.status,
+            ok: response.ok,
+            headers: headersObject(response.headers),
+            text: stripped,
+            bytes_read: read.bytes,
+            truncated: read.truncated,
+            prompt_injection_scan: promptInjectionScan,
+          },
+          isError: false,
+        };
+      } finally {
+        timed.dispose();
+      }
     }
 
     case "download_file": {
-      const url = parseHttpUrl(String(args.url));
+      let url: URL;
+      try {
+        url = parseHttpUrl(String(args.url));
+      } catch (err) {
+        return {
+          content: {
+            code: "INVALID_ARGUMENT",
+            error: `INVALID_ARGUMENT: ${err instanceof Error ? err.message : String(err)}`,
+            url: String(args.url),
+          },
+          isError: true,
+        };
+      }
       const outPath = resolvePath(String(args.path));
       const maxBytes = Math.min(Math.max(Number(args.max_bytes ?? MAX_DOWNLOAD_BYTES), 1), 2 * 1024 * 1024 * 1024);
       const attempts: DownloadAttempt[] = [];
-      try {
-        const result = await downloadUrl(url, outPath, {
-          maxBytes,
-          headers: args.headers as Record<string, string> | undefined,
+      const outcome = await downloadUrl(url, outPath, {
+        maxBytes,
+        headers: args.headers as Record<string, string> | undefined,
+        attempts,
+        attemptNumber: 1,
+        promptInjectionCop,
+      });
+      if (outcome.ok) return { content: outcome.success, isError: false };
+      return {
+        content: {
+          ...outcome.failure,
+          url: url.toString(),
           attempts,
-          attemptNumber: 1,
-          promptInjectionCop,
-        });
-        if (result) return { content: result, isError: false };
-      } catch (err) {
-        attempts.push({ url: url.toString(), attempt: 1, error: err instanceof Error ? err.message : String(err) });
-      }
-      return { content: { error: "Download failed", url: url.toString(), attempts }, isError: true };
+        },
+        isError: true,
+      };
     }
 
     case "download_with_fallbacks": {
-      const urls = Array.isArray(args.urls) ? args.urls.map(String).filter(Boolean) : [];
-      if (urls.length === 0) return { content: { error: "urls must contain at least one source" }, isError: true };
+      const rawUrls = Array.isArray(args.urls) ? args.urls.map(String).filter(Boolean) : [];
+      if (rawUrls.length === 0) {
+        return {
+          content: {
+            code: "INVALID_ARGUMENT",
+            error: "INVALID_ARGUMENT: urls must contain at least one source",
+          },
+          isError: true,
+        };
+      }
       const outPath = resolvePath(String(args.path));
       const manifestPath = args.manifest_path ? resolvePath(String(args.manifest_path)) : null;
       const maxBytes = Math.min(Math.max(Number(args.max_bytes ?? MAX_DOWNLOAD_BYTES), 1), 2 * 1024 * 1024 * 1024);
       const retriesPerUrl = Math.min(Math.max(Number(args.retries_per_url ?? 2), 1), 5);
       const headers = args.headers as Record<string, string> | undefined;
       const attempts: DownloadAttempt[] = [];
+      let lastFailure: (ClassifiedHttpError & { status?: number }) | null = null;
 
-      for (const rawUrl of urls) {
+      for (const rawUrl of rawUrls) {
         let url: URL;
         try {
           url = parseHttpUrl(rawUrl);
         } catch (err) {
-          attempts.push({ url: rawUrl, attempt: 0, error: err instanceof Error ? err.message : String(err) });
+          const cls: ClassifiedHttpError = {
+            code: "INVALID_ARGUMENT",
+            error: `INVALID_ARGUMENT: ${err instanceof Error ? err.message : String(err)}`,
+          };
+          attempts.push({ url: rawUrl, attempt: 0, code: cls.code, error: cls.error });
+          lastFailure = cls;
           continue;
         }
-
         for (let attemptNumber = 1; attemptNumber <= retriesPerUrl; attemptNumber++) {
-          try {
-            const result = await downloadUrl(url, outPath, { maxBytes, headers, attempts, attemptNumber, promptInjectionCop });
-            if (result) {
-              if (manifestPath) {
-                await mkdir(dirname(manifestPath), { recursive: true });
-                await writeFile(manifestPath, JSON.stringify(result, null, 2) + "\n", "utf-8");
-              }
-              return { content: { ...result, selected_url: result.url }, isError: false };
+          const outcome = await downloadUrl(url, outPath, {
+            maxBytes, headers, attempts, attemptNumber, promptInjectionCop,
+          });
+          if (outcome.ok) {
+            const success = outcome.success;
+            if (manifestPath) {
+              await mkdir(dirname(manifestPath), { recursive: true });
+              await writeFile(manifestPath, JSON.stringify(success, null, 2) + "\n", "utf-8");
             }
-          } catch (err) {
-            attempts.push({
-              url: url.toString(),
-              attempt: attemptNumber,
-              error: err instanceof Error ? err.message : String(err),
-            });
+            return { content: { ...success, selected_url: success.url }, isError: false };
           }
+          lastFailure = outcome.failure;
         }
       }
 
-      const failure = { error: "All download sources failed", path: relative(projectRoot(), outPath), attempts };
+      const baseFailure = lastFailure
+        ?? ({ code: "NETWORK_ERROR" as const, error: "NETWORK_ERROR: all sources failed" } satisfies ClassifiedHttpError);
+      const failure = {
+        ...baseFailure,
+        error: lastFailure
+          ? `ALL_SOURCES_FAILED: last failure: ${lastFailure.error}`
+          : "ALL_SOURCES_FAILED: no sources attempted",
+        path: relative(projectRoot(), outPath),
+        attempts,
+      };
       if (manifestPath) {
         await mkdir(dirname(manifestPath), { recursive: true });
         await writeFile(manifestPath, JSON.stringify(failure, null, 2) + "\n", "utf-8");
@@ -1347,9 +1586,10 @@ export function registerBuiltinServices(
 ): void {
   const promptInjectionCop = options.promptInjectionCop ?? disabledCop();
   MAX_OUTPUT = mcpConfig.maxOutputBytes;
-  MAX_FETCH_CHARS = mcpConfig.maxFetchChars;
+  MAX_FETCH_BYTES = mcpConfig.maxFetchBytes;
   MAX_DOWNLOAD_BYTES = mcpConfig.maxDownloadBytes;
   MAX_FILE_READ_BYTES = mcpConfig.maxFileReadBytes;
+  FETCH_TIMEOUT_MS = mcpConfig.fetchTimeoutMs;
   SHELL_TIMEOUT_FLOOR_MS = mcpConfig.shellTimeoutFloorMs;
   const innerCapMs = mcpConfig.shellTimeoutMs - WALL_CLOCK_HEADROOM_MS;
 
