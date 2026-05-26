@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer, type Server } from "node:http";
 
-import { registerBuiltinServices, classifyFsError } from "./builtins.js";
+import { registerBuiltinServices, classifyFsError, extractDdgResults, type DdgResult } from "./builtins.js";
 import { McpRuntime } from "./runtime.js";
 import { loadConfig } from "../config.js";
 import type { PromptInjectionCop } from "../security/prompt-injection-cop.js";
@@ -22,6 +22,25 @@ async function withTextServer(text: string, fn: (url: string) => Promise<void>):
     await fn(`http://127.0.0.1:${address.port}/data.txt`);
   } finally {
     await new Promise<void>((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()));
+    });
+  }
+}
+
+async function withSearchServer(
+  handler: (req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse) => void,
+  fn: (endpoint: string) => Promise<void>,
+): Promise<void> {
+  const server: Server = createServer(handler);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("search test server did not bind to a TCP port");
+  try {
+    await fn(`http://127.0.0.1:${address.port}/html/`);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      // Force-close any keep-alive sockets so close() doesn't hang.
+      server.closeAllConnections?.();
       server.close((err) => (err ? reject(err) : resolve()));
     });
   }
@@ -701,5 +720,265 @@ describe("built-in MCP shell — inner wall-clock cap", () => {
     expect(result.exitCode).toBe(124);
     expect(result.stderr).toContain("Command timed out after 50ms");
     expect(result.duration_ms).toBeLessThan(5_000);
+  });
+});
+
+describe("data: web_search (G33)", () => {
+  const fixtureUrl = (name: string): URL => new URL(`./${name}`, import.meta.url);
+  const happyFixture = (): string => readFileSync(fixtureUrl("web-search.fixture.html"), "utf8");
+  const driftedFixture = (): string => readFileSync(fixtureUrl("web-search.fixture.drifted.html"), "utf8");
+  const emptyFixture = (): string => readFileSync(fixtureUrl("web-search.fixture.empty.html"), "utf8");
+  const ddg = new URL("https://duckduckgo.com/html/");
+
+  // Rows 1–7: extractDdgResults parser-level
+  it("row 1 — smoke: happy fixture yields >=5 results and skipped===1", () => {
+    const { results, skipped } = extractDdgResults(happyFixture(), ddg, 20);
+    expect(results.length).toBeGreaterThanOrEqual(5);
+    expect(skipped).toBe(1);
+    for (const r of results) {
+      expect(r.title.length).toBeGreaterThan(0);
+      expect(r.url.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("row 2 — nested-escape uddg decodes exactly once (no second decodeURIComponent)", () => {
+    const { results } = extractDdgResults(happyFixture(), ddg, 20);
+    const nested = results[1] as DdgResult | undefined;
+    expect(nested).toBeDefined();
+    expect(nested!.url).toBe("https://example.com/path?ref=a%2Bb%2Fc%26d");
+  });
+
+  it("row 3 — anchor with href attribute before class attribute is recognised", () => {
+    const { results } = extractDdgResults(happyFixture(), ddg, 20);
+    const reordered = results.find((r) => r.title === "Reordered attrs");
+    expect(reordered).toBeDefined();
+    expect(reordered!.url).toBe("https://example.com/c");
+  });
+
+  it("row 4 — multi-class anchor (result__a + modifier) is recognised", () => {
+    const { results } = extractDdgResults(happyFixture(), ddg, 20);
+    const multi = results.find((r) => r.title === "Multi class");
+    expect(multi).toBeDefined();
+    expect(multi!.url).toBe("https://example.com/d");
+  });
+
+  it("row 5 — snippet rendered as <div class=result__snippet> is captured", () => {
+    const { results } = extractDdgResults(happyFixture(), ddg, 20);
+    const divSnip = results.find((r) => r.title === "Div snippet");
+    expect(divSnip).toBeDefined();
+    expect(divSnip!.snippet).toBe("Snippet E rendered as div.");
+  });
+
+  it("row 6 — result with no snippet descendant is kept with empty snippet", () => {
+    const { results } = extractDdgResults(happyFixture(), ddg, 20);
+    const noSnip = results.find((r) => r.title === "No snippet");
+    expect(noSnip).toBeDefined();
+    expect(noSnip!.snippet).toBe("");
+  });
+
+  it("row 7 — drifted markup yields zero results so the handler can flag NO_RESULTS_PARSED", () => {
+    const { results, skipped } = extractDdgResults(driftedFixture(), ddg, 20);
+    expect(results.length).toBe(0);
+    expect(skipped).toBe(0);
+  });
+
+  // Rows 8–17: handler integration
+  let projectRoot: string;
+  let previousProjectRoot: string | undefined;
+  let previousSaivageRoot: string | undefined;
+  let runtime: McpRuntime;
+  let cfg: ReturnType<typeof loadConfig>;
+
+  function makeRuntime(opts: {
+    endpoint?: string;
+    webSearchTimeoutMs?: number;
+    webSearchMaxBytes?: number;
+    webSearchMaxResults?: number;
+  } = {}): void {
+    const mcp = {
+      ...cfg.mcp,
+      webSearchTimeoutMs: opts.webSearchTimeoutMs ?? 1_000,
+      webSearchMaxBytes: opts.webSearchMaxBytes ?? 64 * 1024,
+      webSearchMaxResults: opts.webSearchMaxResults ?? cfg.mcp.webSearchMaxResults,
+    };
+    runtime = new McpRuntime(cfg);
+    registerBuiltinServices(runtime, mcp, { webSearchEndpoint: opts.endpoint });
+  }
+
+  beforeEach(() => {
+    projectRoot = mkdtempSync(join(tmpdir(), "saivage-builtins-g33-"));
+    previousProjectRoot = process.env["PROJECT_ROOT"];
+    previousSaivageRoot = process.env["SAIVAGE_ROOT"];
+    process.env["PROJECT_ROOT"] = projectRoot;
+    process.env["SAIVAGE_ROOT"] = join(projectRoot, ".saivage");
+    mkdirSync(join(projectRoot, ".saivage"), { recursive: true });
+    writeFileSync(
+      join(projectRoot, ".saivage", "saivage.json"),
+      JSON.stringify({
+        runtime: { maxServices: 50, restartOnCrash: true, healthCheckIntervalMs: 0, idleShutdownMs: 0 },
+        mcp: { shellTimeoutFloorMs: 0 },
+      }),
+      "utf-8",
+    );
+    cfg = loadConfig(true, projectRoot);
+  });
+
+  afterEach(async () => {
+    if (runtime) await runtime.shutdown();
+    if (previousProjectRoot === undefined) delete process.env["PROJECT_ROOT"];
+    else process.env["PROJECT_ROOT"] = previousProjectRoot;
+    if (previousSaivageRoot === undefined) delete process.env["SAIVAGE_ROOT"];
+    else process.env["SAIVAGE_ROOT"] = previousSaivageRoot;
+    rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  it("row 8 — empty query rejects with INVALID_ARGUMENT", async () => {
+    makeRuntime({ endpoint: "http://127.0.0.1:1/html/" });
+    await expect(runtime.callTool("data", "web_search", { query: "   " }))
+      .rejects.toThrow(/INVALID_ARGUMENT/);
+  });
+
+  it("row 9 — malformed max_results rejects with INVALID_ARGUMENT", async () => {
+    makeRuntime({ endpoint: "http://127.0.0.1:1/html/" });
+    await expect(runtime.callTool("data", "web_search", { query: "ok", max_results: -1 }))
+      .rejects.toThrow(/INVALID_ARGUMENT/);
+    await expect(runtime.callTool("data", "web_search", { query: "ok", max_results: 1.5 }))
+      .rejects.toThrow(/INVALID_ARGUMENT/);
+    await expect(runtime.callTool("data", "web_search", { query: "ok", max_results: "5" }))
+      .rejects.toThrow(/INVALID_ARGUMENT/);
+  });
+
+  it("row 10 — max_results above ceiling is clamped, not rejected", async () => {
+    const body = happyFixture();
+    await withSearchServer(
+      (_req, res) => { res.statusCode = 200; res.setHeader("content-type", "text/html"); res.end(body); },
+      async (endpoint) => {
+        makeRuntime({ endpoint, webSearchMaxResults: 3 });
+        const out = await runtime.callTool("data", "web_search", { query: "q", max_results: 999 }) as {
+          results: DdgResult[];
+        };
+        expect(out.results.length).toBe(3);
+      },
+    );
+  });
+
+  it("row 11 — happy path returns results, status, and skipped from fixture server", async () => {
+    const body = happyFixture();
+    await withSearchServer(
+      (_req, res) => { res.statusCode = 200; res.setHeader("content-type", "text/html"); res.end(body); },
+      async (endpoint) => {
+        makeRuntime({ endpoint });
+        const out = await runtime.callTool("data", "web_search", { query: "datasets" }) as {
+          query: string;
+          status: number;
+          skipped: number;
+          results: DdgResult[];
+        };
+        expect(out.query).toBe("datasets");
+        expect(out.status).toBe(200);
+        expect(out.skipped).toBe(1);
+        expect(out.results.length).toBeGreaterThanOrEqual(5);
+      },
+    );
+  });
+
+  it("row 12 — non-2xx upstream maps to UPSTREAM_HTTP_ERROR with status", async () => {
+    await withSearchServer(
+      (_req, res) => { res.statusCode = 503; res.end("upstream sad"); },
+      async (endpoint) => {
+        makeRuntime({ endpoint });
+        await expect(runtime.callTool("data", "web_search", { query: "boom" }))
+          .rejects.toThrow(/UPSTREAM_HTTP_ERROR.*503/);
+      },
+    );
+  });
+
+  it("row 13 — body larger than webSearchMaxBytes maps to RESPONSE_TOO_LARGE", async () => {
+    const huge = "<html><body>" + "x".repeat(200 * 1024) + "</body></html>";
+    await withSearchServer(
+      (_req, res) => { res.statusCode = 200; res.setHeader("content-type", "text/html"); res.end(huge); },
+      async (endpoint) => {
+        makeRuntime({ endpoint, webSearchMaxBytes: 64 * 1024 });
+        await expect(runtime.callTool("data", "web_search", { query: "big" }))
+          .rejects.toThrow(/RESPONSE_TOO_LARGE/);
+      },
+    );
+  });
+
+  it("row 14 — upstream hang past webSearchTimeoutMs maps to TIMEOUT", async () => {
+    const sockets: import("node:net").Socket[] = [];
+    await withSearchServer(
+      (req, _res) => {
+        // Hold the request open without responding; the client should abort.
+        req.socket.on("close", () => { /* noop */ });
+        sockets.push(req.socket);
+      },
+      async (endpoint) => {
+        makeRuntime({ endpoint, webSearchTimeoutMs: 1_000 });
+        await expect(runtime.callTool("data", "web_search", { query: "slow" }))
+          .rejects.toThrow(/TIMEOUT/);
+        for (const s of sockets) s.destroy();
+      },
+    );
+  });
+
+  it("row 15 — drifted markup maps to NO_RESULTS_PARSED with markup_signature", async () => {
+    const body = driftedFixture();
+    await withSearchServer(
+      (_req, res) => { res.statusCode = 200; res.setHeader("content-type", "text/html"); res.end(body); },
+      async (endpoint) => {
+        makeRuntime({ endpoint });
+        await expect(runtime.callTool("data", "web_search", { query: "drift" }))
+          .rejects.toThrow(/NO_RESULTS_PARSED.*markup_signature/);
+      },
+    );
+    // Empty-body variant exercises the same path.
+    const empty = emptyFixture();
+    await withSearchServer(
+      (_req, res) => { res.statusCode = 200; res.setHeader("content-type", "text/html"); res.end(empty); },
+      async (endpoint) => {
+        await runtime.shutdown();
+        makeRuntime({ endpoint });
+        await expect(runtime.callTool("data", "web_search", { query: "empty" }))
+          .rejects.toThrow(/NO_RESULTS_PARSED/);
+      },
+    );
+  });
+
+  it("row 16 — connection refused maps to NETWORK_ERROR", async () => {
+    // Port 1 is reserved and refuses TCP connections on Linux.
+    makeRuntime({ endpoint: "http://127.0.0.1:1/html/" });
+    await expect(runtime.callTool("data", "web_search", { query: "down" }))
+      .rejects.toThrow(/NETWORK_ERROR|TIMEOUT/);
+  });
+
+  it("row 17 — timer is cleared after happy-path return (no leaked setTimeout)", async () => {
+    const body = happyFixture();
+    const setSpy = vi.spyOn(global, "setTimeout");
+    const clrSpy = vi.spyOn(global, "clearTimeout");
+    try {
+      await withSearchServer(
+        (_req, res) => { res.statusCode = 200; res.setHeader("content-type", "text/html"); res.end(body); },
+        async (endpoint) => {
+          makeRuntime({ endpoint });
+          const setCountBefore = setSpy.mock.calls.length;
+          const clrCountBefore = clrSpy.mock.calls.length;
+          await runtime.callTool("data", "web_search", { query: "leak-check" });
+          // At least one timer was scheduled (fetchWithTimeout) and cleared (dispose).
+          expect(setSpy.mock.calls.length).toBeGreaterThan(setCountBefore);
+          expect(clrSpy.mock.calls.length).toBeGreaterThan(clrCountBefore);
+          // Every timer handle setTimeout returned during the call must appear
+          // as a clearTimeout argument, proving dispose() ran on success too.
+          const newSetResults = setSpy.mock.results.slice(setCountBefore).map((r) => r.value);
+          const newClrArgs = clrSpy.mock.calls.slice(clrCountBefore).map((c) => c[0]);
+          for (const handle of newSetResults) {
+            expect(newClrArgs).toContain(handle);
+          }
+        },
+      );
+    } finally {
+      setSpy.mockRestore();
+      clrSpy.mockRestore();
+    }
   });
 });

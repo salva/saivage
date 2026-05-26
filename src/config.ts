@@ -144,6 +144,9 @@ const configSchema = z.object({
       maxDownloadBytes: z.number().default(250 * 1024 * 1024),
       maxFileReadBytes: z.number().default(200_000),
       fetchTimeoutMs: z.number().int().min(1_000).max(600_000).default(60_000),
+      webSearchMaxBytes: z.number().int().min(64 * 1024).max(16 * 1024 * 1024).default(2 * 1024 * 1024),
+      webSearchMaxResults: z.number().int().min(1).max(50).default(20),
+      webSearchTimeoutMs: z.number().int().min(1_000).max(60_000).default(15_000),
     })
     .default({})
     .superRefine((mcp, ctx) => {

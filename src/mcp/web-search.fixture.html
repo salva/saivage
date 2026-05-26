@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html><body>
+<!-- Result 1: standard uddg-wrapped anchor with snippet anchor sibling -->
+<div class="result">
+  <h2><a class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.com%2Fa">Example A</a></h2>
+  <a class="result__snippet" href="/l/?uddg=https%3A%2F%2Fexample.com%2Fa">Snippet body for A &amp; friends.</a>
+</div>
+
+<!-- Result 2: nested-escape uddg (row 2): href encodes a URL whose query
+     contains percent-escaped percents; single decode via searchParams must
+     yield the once-decoded form without a second decodeURIComponent pass. -->
+<div class="result">
+  <h2><a class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.com%2Fpath%3Fref%3Da%252Bb%252Fc%2526d">Nested escapes</a></h2>
+  <a class="result__snippet" href="/l/?uddg=https%3A%2F%2Fexample.com%2Fpath">Snippet B with nested escapes.</a>
+</div>
+
+<!-- Result 3: href attribute appears before class attribute (row 3) -->
+<div class="result">
+  <h2><a href="/l/?uddg=https%3A%2F%2Fexample.com%2Fc" class="result__a">Reordered attrs</a></h2>
+  <a class="result__snippet" href="/l/?uddg=https%3A%2F%2Fexample.com%2Fc">Snippet C body.</a>
+</div>
+
+<!-- Result 4: multi-class anchor (row 4): result__a plus a clicktrack modifier -->
+<div class="result">
+  <h2><a class="result__a result__a--clicktrack" href="/l/?uddg=https%3A%2F%2Fexample.com%2Fd">Multi class</a></h2>
+  <a class="result__snippet" href="/l/?uddg=https%3A%2F%2Fexample.com%2Fd">Snippet D body.</a>
+</div>
+
+<!-- Result 5: snippet rendered as <div> rather than <a> (row 5) -->
+<div class="result">
+  <h2><a class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.com%2Fe">Div snippet</a></h2>
+  <div class="result__snippet">Snippet E rendered as div.</div>
+</div>
+
+<!-- Result 6: missing snippet within container; row kept with empty snippet (row 6) -->
+<div class="result">
+  <h2><a class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.com%2Ff">No snippet</a></h2>
+</div>
+
+<!-- Skipped: uddg points to ftp:// — must be dropped, not returned -->
+<div class="result">
+  <h2><a class="result__a" href="/l/?uddg=ftp%3A%2F%2Fexample.com%2Fbad">FTP bad</a></h2>
+  <a class="result__snippet" href="/l/?uddg=ftp%3A%2F%2Fexample.com%2Fbad">Skipped snippet.</a>
+</div>
+</body></html>

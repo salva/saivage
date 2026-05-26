@@ -250,7 +250,10 @@ Wall-clock and output caps for the in-process MCP tooling layer (F11).
   "maxFetchBytes": 200000,
   "maxDownloadBytes": 262144000,
   "maxFileReadBytes": 200000,
-  "fetchTimeoutMs": 60000
+  "fetchTimeoutMs": 60000,
+  "webSearchMaxBytes": 2097152,
+  "webSearchMaxResults": 20,
+  "webSearchTimeoutMs": 15000
 }
 ```
 
@@ -287,6 +290,20 @@ Error envelopes from these tools carry a stable `code` field — one of
 `RESPONSE_TOO_LARGE`, or `IO_ERROR` — alongside the human-readable `error`
 message and an optional `errno` (e.g. `ECONNREFUSED`, `EACCES`) when the
 underlying failure exposed one.
+
+`webSearchMaxBytes`, `webSearchMaxResults`, and `webSearchTimeoutMs` bound the
+DOM-parsed `web_search` tool independently of the general fetch ceilings.
+`webSearchMaxBytes` caps the HTML response read from the DuckDuckGo HTML
+endpoint (valid `[65_536, 16_777_216]`, default `2_097_152` ≈ 2 MiB) and a
+breach maps to `RESPONSE_TOO_LARGE`. `webSearchMaxResults` is the ceiling on
+returned result rows (valid `[1, 50]`, default `20`); callers that pass
+`max_results` above this value are clamped, not rejected.
+`webSearchTimeoutMs` is the per-search wall-clock cap covering header receipt
+and body drain (valid `[1_000, 60_000]`, default `15_000`); expiry produces a
+`TIMEOUT` envelope with `timeout_ms` echoed. In addition to the codes above,
+`web_search` envelopes can carry `PARSE_FAILURE` (DOM parser threw) or
+`NO_RESULTS_PARSED` (parser saw no result anchors — usually upstream markup
+drift; the envelope includes a `markup_signature` to aid triage).
 
 ### `oauth`
 

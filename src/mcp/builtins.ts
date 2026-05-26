@@ -32,6 +32,7 @@ import {
   type HttpFetchErrorCode,
   type TimedFetch,
 } from "./httpFetch.js";
+import { parse as parseHtml, type HTMLElement } from "node-html-parser";
 
 const execFileAsync = promisify(execFile);
 /** Headroom between the inner wall-clock cap and the outer McpRuntime
@@ -45,6 +46,10 @@ let MAX_DOWNLOAD_BYTES = 250 * 1024 * 1024;
 let MAX_FILE_READ_BYTES = 200_000;
 let FETCH_TIMEOUT_MS = 60_000;
 let SHELL_TIMEOUT_FLOOR_MS = 10 * 60 * 1000; // 10 minutes
+let WEB_SEARCH_MAX_BYTES = 2 * 1024 * 1024;
+let WEB_SEARCH_MAX_RESULTS = 20;
+let WEB_SEARCH_TIMEOUT_MS = 15_000;
+let WEB_SEARCH_ENDPOINT = "https://duckduckgo.com/html/";
 const MAX_SCAN_DECODE_BYTES = 1_000_000;
 
 function projectRoot(): string {
@@ -104,6 +109,79 @@ function stripHtml(value: string): string {
     .trim();
 }
 
+export interface DdgResult {
+  title: string;
+  url: string;
+  snippet: string;
+}
+
+export interface DdgExtraction {
+  results: DdgResult[];
+  skipped: number;
+}
+
+function climbToResultContainer(node: HTMLElement): HTMLElement | null {
+  let cur: HTMLElement | null = node;
+  for (let i = 0; cur && i < 6; i += 1) {
+    if (cur.classList?.contains("result")) return cur;
+    cur = (cur.parentNode as HTMLElement | null) ?? null;
+  }
+  return null;
+}
+
+function signatureOf(html: string): string {
+  return createHash("sha256").update(html).digest("hex").slice(0, 16);
+}
+
+/**
+ * Extract DuckDuckGo HTML-endpoint results from a response body. `base`
+ * is the request URL (used to resolve relative anchor hrefs). `max` is
+ * the caller's effective ceiling. Markup with zero candidate anchors
+ * returns an empty result list; the handler upgrades that to
+ * `NO_RESULTS_PARSED`. The `uddg` query parameter is decoded exactly
+ * once via `URLSearchParams.get` and validated by `new URL` — no second
+ * `decodeURIComponent` pass.
+ */
+export function extractDdgResults(html: string, base: URL, max: number): DdgExtraction {
+  const root = parseHtml(html, {
+    lowerCaseTagName: false,
+    comment: false,
+    blockTextElements: { script: false, style: false, noscript: false, pre: false },
+  });
+  const anchors = root.querySelectorAll("a.result__a");
+  const results: DdgResult[] = [];
+  let skipped = 0;
+  for (const a of anchors) {
+    if (results.length >= max) break;
+    const href = a.getAttribute("href");
+    if (!href) { skipped += 1; continue; }
+    let resolvedUrl: string;
+    try {
+      const parsedHref = new URL(href, base);
+      const uddg = parsedHref.searchParams.get("uddg");
+      if (uddg !== null) {
+        const candidate = new URL(uddg);
+        if (candidate.protocol !== "http:" && candidate.protocol !== "https:") {
+          skipped += 1;
+          continue;
+        }
+        resolvedUrl = candidate.toString();
+      } else {
+        resolvedUrl = parsedHref.toString();
+      }
+    } catch {
+      skipped += 1;
+      continue;
+    }
+    const title = (a.text ?? "").replace(/\s+/g, " ").trim();
+    const container = climbToResultContainer(a);
+    const snippetNode = container?.querySelector("a.result__snippet, .result__snippet");
+    const snippet = snippetNode ? (snippetNode.text ?? "").replace(/\s+/g, " ").trim() : "";
+    results.push({ title, url: resolvedUrl, snippet });
+  }
+  return { results, skipped };
+}
+
 interface DownloadAttempt {
   url: string;
   attempt: number;
@@ -136,6 +214,7 @@ type DownloadOutcome =
 
 interface BuiltinServicesOptions {
   promptInjectionCop?: PromptInjectionCop;
+  webSearchEndpoint?: string;
 }
 
 function isTextLikeContentType(contentType: string | undefined): boolean {
@@ -1022,12 +1101,21 @@ function terminateChild(child: ChildProcessWithoutNullStreams, signal: NodeJS.Si
 const dataTools: ToolEntry[] = [
   {
     name: "web_search",
-    description: "Search the public web for data sources, APIs, documentation, and downloadable datasets. Returns candidate URLs with snippets when available.",
+    description:
+      "Search the public web for data sources, APIs, documentation, and downloadable datasets. " +
+      "Returns candidate URLs with snippets when available. On failure the envelope carries a " +
+      "stable `code`: one of `INVALID_ARGUMENT`, `TIMEOUT`, `NETWORK_ERROR`, `UPSTREAM_HTTP_ERROR`, " +
+      "`RESPONSE_TOO_LARGE`, `PARSE_FAILURE`, or `NO_RESULTS_PARSED`.",
     inputSchema: {
       type: "object",
       properties: {
         query: { type: "string" },
-        max_results: { type: "number", description: "Maximum number of results to return (default 8, max 20)" },
+        max_results: {
+          type: "number",
+          description:
+            "Maximum number of results to return. Default and ceiling are controlled by " +
+            "`mcp.webSearchMaxResults` (default 20, max 50). Any larger value is clamped to the ceiling.",
+        },
       },
       required: ["query"],
     },
@@ -1101,28 +1189,130 @@ function createDataHandler(promptInjectionCop: PromptInjectionCop): InProcessToo
   return async (toolName, args) => {
   switch (toolName) {
     case "web_search": {
-      const query = String(args.query ?? "").trim();
-      if (!query) return { content: { error: "query is required" }, isError: true };
-      const maxResults = Math.min(Math.max(Number(args.max_results ?? 8), 1), 20);
-      const searchUrl = new URL("https://duckduckgo.com/html/");
-      searchUrl.searchParams.set("q", query);
-      const response = await fetch(searchUrl, { headers: { "User-Agent": "Saivage/0.1 data-agent" } });
-      const html = await response.text();
-      const results: Array<{ title: string; url: string; snippet?: string }> = [];
-      const resultRegex = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi;
-      for (const match of html.matchAll(resultRegex)) {
-        let url = match[1] ?? "";
-        try {
-          const parsed = new URL(url, searchUrl);
-          const uddg = parsed.searchParams.get("uddg");
-          if (uddg) url = decodeURIComponent(uddg);
-        } catch {
-          // Keep original URL.
-        }
-        results.push({ title: stripHtml(match[2] ?? ""), url, snippet: stripHtml(match[3] ?? "") });
-        if (results.length >= maxResults) break;
+      const query = typeof args.query === "string" ? args.query.trim() : "";
+      if (!query) {
+        return {
+          content: { error: "INVALID_ARGUMENT: query must be a non-empty string", code: "INVALID_ARGUMENT" },
+          isError: true,
+        };
       }
-      return { content: { query, results, status: response.status }, isError: false };
+
+      let maxResults: number;
+      try {
+        const override = parseNonNegativeInt(args.max_results, "max_results");
+        maxResults = override === undefined
+          ? WEB_SEARCH_MAX_RESULTS
+          : Math.min(Math.max(override, 1), WEB_SEARCH_MAX_RESULTS);
+      } catch (err) {
+        return {
+          content: {
+            error: `INVALID_ARGUMENT: ${(err as Error).message}`,
+            code: "INVALID_ARGUMENT",
+            query,
+          },
+          isError: true,
+        };
+      }
+
+      const searchUrl = new URL(WEB_SEARCH_ENDPOINT);
+      searchUrl.searchParams.set("q", query);
+
+      let timed: TimedFetch;
+      try {
+        timed = await fetchWithTimeout(
+          searchUrl,
+          { headers: { "User-Agent": "Saivage/0.1 data-agent" } },
+          WEB_SEARCH_TIMEOUT_MS,
+        );
+      } catch (err) {
+        const classified: ClassifiedHttpError = classifyNetworkError(err, searchUrl.toString());
+        const content: Record<string, unknown> = { ...classified, query };
+        if (classified.code === "TIMEOUT") content.timeout_ms = WEB_SEARCH_TIMEOUT_MS;
+        return { content, isError: true };
+      }
+
+      try {
+        const { response, signal, timedOut } = timed;
+
+        if (!response.ok) {
+          await discardBody(response);
+          return {
+            content: {
+              error: `UPSTREAM_HTTP_ERROR: DuckDuckGo returned ${response.status}`,
+              code: "UPSTREAM_HTTP_ERROR",
+              query,
+              status: response.status,
+            },
+            isError: true,
+          };
+        }
+
+        let read: BoundedReadResult<string>;
+        try {
+          read = await readBoundedTextBody(response, WEB_SEARCH_MAX_BYTES, signal);
+        } catch (err) {
+          const classified: ClassifiedHttpError = classifyNetworkError(
+            err,
+            searchUrl.toString(),
+            { timedOut: timedOut() },
+          );
+          const content: Record<string, unknown> = { ...classified, query };
+          if (classified.code === "TIMEOUT") content.timeout_ms = WEB_SEARCH_TIMEOUT_MS;
+          return { content, isError: true };
+        }
+
+        if (read.truncated) {
+          return {
+            content: {
+              error: `RESPONSE_TOO_LARGE: DuckDuckGo response exceeded ${WEB_SEARCH_MAX_BYTES} bytes`,
+              code: "RESPONSE_TOO_LARGE",
+              query,
+              max_bytes: WEB_SEARCH_MAX_BYTES,
+            },
+            isError: true,
+          };
+        }
+
+        let extracted: DdgExtraction;
+        try {
+          extracted = extractDdgResults(read.body, searchUrl, maxResults);
+        } catch (err) {
+          return {
+            content: {
+              error: `PARSE_FAILURE: ${(err as Error).message}`,
+              code: "PARSE_FAILURE",
+              query,
+            },
+            isError: true,
+          };
+        }
+
+        if (extracted.results.length === 0) {
+          return {
+            content: {
+              error: "NO_RESULTS_PARSED: DuckDuckGo response parsed but no result anchors matched; markup may have drifted",
+              code: "NO_RESULTS_PARSED",
+              query,
+              status: response.status,
+              bytes: read.body.length,
+              markup_signature: signatureOf(read.body),
+            },
+            isError: true,
+          };
+        }
+
+        return {
+          content: {
+            query,
+            results: extracted.results,
+            status: response.status,
+            skipped: extracted.skipped,
+          },
+          isError: false,
+        };
+      } finally {
+        timed.dispose();
+      }
     }
 
     case "fetch_url": {
@@ -1591,6 +1781,10 @@ export function registerBuiltinServices(
   MAX_FILE_READ_BYTES = mcpConfig.maxFileReadBytes;
   FETCH_TIMEOUT_MS = mcpConfig.fetchTimeoutMs;
   SHELL_TIMEOUT_FLOOR_MS = mcpConfig.shellTimeoutFloorMs;
+  WEB_SEARCH_MAX_BYTES = mcpConfig.webSearchMaxBytes;
+  WEB_SEARCH_MAX_RESULTS = mcpConfig.webSearchMaxResults;
+  WEB_SEARCH_TIMEOUT_MS = mcpConfig.webSearchTimeoutMs;
+  WEB_SEARCH_ENDPOINT = options.webSearchEndpoint ?? "https://duckduckgo.com/html/";
   const innerCapMs = mcpConfig.shellTimeoutMs - WALL_CLOCK_HEADROOM_MS;
 
   const shellHandler: InProcessToolHandler = async (toolName, args) => {
