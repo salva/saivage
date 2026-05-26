@@ -23,7 +23,7 @@ function makeConfig(overrides: Partial<SaivageConfig> = {}): SaivageConfig {
       idleShutdownMs: 300000,
     },
     project: { root: "", venv: "", description: "" },
-    security: { injectionScanner: true, maxScanLengthBytes: 100000 },
+    security: { envScrubber: { credentialLexemes: ["API_KEY"], configPointerSuffixes: [] } },
     telegram: { botToken: "", allowedUserIds: [] },
     ...overrides,
   };

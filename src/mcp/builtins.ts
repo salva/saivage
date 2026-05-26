@@ -19,8 +19,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { promisify } from "node:util";
 import { log } from "../log.js";
-import type { PromptInjectionCop, PromptInjectionScanResult } from "../security/prompt-injection-cop.js";
-import { disabledCop } from "../security/prompt-injection-cop.js";
 import {
   createSecretEnvNamePredicate,
   DEFAULT_CREDENTIAL_LEXEMES,
@@ -58,7 +56,6 @@ let WEB_SEARCH_MAX_BYTES = 2 * 1024 * 1024;
 let WEB_SEARCH_MAX_RESULTS = 20;
 let WEB_SEARCH_TIMEOUT_MS = 15_000;
 let WEB_SEARCH_ENDPOINT = "https://duckduckgo.com/html/";
-const MAX_SCAN_DECODE_BYTES = 1_000_000;
 
 function projectRoot(): string {
   return process.env["PROJECT_ROOT"] ?? process.cwd();
@@ -78,13 +75,6 @@ function resolvePath(p: string): string {
   const root = projectRoot();
   const target = p.startsWith("/") ? p : join(root, p);
   return assertInside(root, target, "Path");
-}
-
-function resolveSkillPath(skillsDir: string, name: string): string {
-  if (!/^[a-zA-Z0-9._-]+$/.test(name)) {
-    throw new Error("Skill name may only contain letters, numbers, dots, underscores, and hyphens");
-  }
-  return assertInside(skillsDir, join(skillsDir, `${name}.md`), "Skill path");
 }
 
 function parseHttpUrl(value: string): URL {
@@ -275,7 +265,6 @@ interface DownloadSuccess {
   sha256: string;
   headers: Record<string, string>;
   attempts: DownloadAttempt[];
-  prompt_injection_scan?: PromptInjectionScanResult;
 }
 
 type DownloadOutcome =
@@ -287,42 +276,7 @@ type DownloadOutcome =
     };
 
 interface BuiltinServicesOptions {
-  promptInjectionCop?: PromptInjectionCop;
   webSearchEndpoint?: string;
-}
-
-function isTextLikeContentType(contentType: string | undefined): boolean {
-  if (!contentType) return false;
-  return /\b(text|json|xml|csv|html|javascript|ecmascript|markdown|yaml|toml|plain)\b/i.test(contentType);
-}
-
-function looksTextLike(buffer: Buffer): boolean {
-  const sample = buffer.subarray(0, Math.min(buffer.byteLength, 8192));
-  if (sample.length === 0) return false;
-  let printable = 0;
-  for (const byte of sample) {
-    if (byte === 0) return false;
-    if (byte === 9 || byte === 10 || byte === 13 || (byte >= 32 && byte <= 126) || byte >= 128) printable++;
-  }
-  return printable / sample.length > 0.85;
-}
-
-function bufferToScannableText(buffer: Buffer, contentType: string | undefined): string | null {
-  if (!isTextLikeContentType(contentType) && !looksTextLike(buffer)) return null;
-  return buffer.subarray(0, Math.min(buffer.byteLength, MAX_SCAN_DECODE_BYTES)).toString("utf-8");
-}
-
-async function scanUntrustedText(
-  scanner: PromptInjectionCop,
-  source: string,
-  content: string,
-  contentType?: string,
-): Promise<PromptInjectionScanResult> {
-  const scan = await scanner.scan({ source, content, contentType });
-  if (!scan.allowed) {
-    throw new Error(`Prompt injection blocked: ${scan.reason}`);
-  }
-  return scan;
 }
 
 async function downloadUrl(
@@ -333,7 +287,6 @@ async function downloadUrl(
     headers?: Record<string, string>;
     attempts: DownloadAttempt[];
     attemptNumber: number;
-    promptInjectionCop: PromptInjectionCop;
   },
 ): Promise<DownloadOutcome> {
   let timed: TimedFetch;
@@ -412,36 +365,6 @@ async function downloadUrl(
       return { ok: false, failure, attempt };
     }
 
-    const scannableText = bufferToScannableText(
-      read.body,
-      response.headers.get("content-type") ?? undefined,
-    );
-    let promptInjectionScan: PromptInjectionScanResult = {
-      allowed: true,
-      verdict: "allow",
-      reason: "download appears to be binary/non-text content; prompt-injection scan not applicable",
-      confidence: 0,
-      scanner: "skipped",
-    };
-    if (scannableText !== null) {
-      try {
-        promptInjectionScan = await scanUntrustedText(
-          options.promptInjectionCop,
-          url.toString(),
-          scannableText,
-          response.headers.get("content-type") ?? undefined,
-        );
-      } catch (err) {
-        const failure: ClassifiedHttpError = {
-          code: "NETWORK_ERROR",
-          error: err instanceof Error ? err.message : String(err),
-        };
-        attempt.code = failure.code;
-        attempt.error = failure.error;
-        return { ok: false, failure, attempt };
-      }
-    }
-
     try {
       await mkdir(dirname(outPath), { recursive: true });
       await writeFile(outPath, read.body);
@@ -466,7 +389,6 @@ async function downloadUrl(
         sha256: createHash("sha256").update(read.body).digest("hex"),
         headers: responseHeaders,
         attempts: options.attempts,
-        prompt_injection_scan: promptInjectionScan,
       },
     };
   } finally {
@@ -1436,8 +1358,7 @@ const dataTools: ToolEntry[] = [
   },
 ];
 
-function createDataHandler(promptInjectionCop: PromptInjectionCop): InProcessToolHandler {
-  return async (toolName, args) => {
+const dataHandler: InProcessToolHandler = async (toolName, args) => {
   switch (toolName) {
     case "web_search": {
       const query = typeof args.query === "string" ? args.query.trim() : "";
@@ -1621,20 +1542,6 @@ function createDataHandler(promptInjectionCop: PromptInjectionCop): InProcessToo
             isError: true,
           };
         }
-        let promptInjectionScan: PromptInjectionScanResult;
-        try {
-          promptInjectionScan = await scanUntrustedText(
-            promptInjectionCop,
-            url.toString(),
-            read.body,
-            response.headers.get("content-type") ?? undefined,
-          );
-        } catch (err) {
-          return {
-            content: { error: err instanceof Error ? err.message : String(err), url: url.toString() },
-            isError: true,
-          };
-        }
         return {
           content: {
             url: url.toString(),
@@ -1644,7 +1551,6 @@ function createDataHandler(promptInjectionCop: PromptInjectionCop): InProcessToo
             content: read.body,
             bytes_read: read.bytes,
             truncated: read.truncated,
-            prompt_injection_scan: promptInjectionScan,
           },
           isError: false,
         };
@@ -1709,20 +1615,6 @@ function createDataHandler(promptInjectionCop: PromptInjectionCop): InProcessToo
           };
         }
         const stripped = stripHtml(read.body);
-        let promptInjectionScan: PromptInjectionScanResult;
-        try {
-          promptInjectionScan = await scanUntrustedText(
-            promptInjectionCop,
-            url.toString(),
-            stripped,
-            response.headers.get("content-type") ?? undefined,
-          );
-        } catch (err) {
-          return {
-            content: { error: err instanceof Error ? err.message : String(err), url: url.toString() },
-            isError: true,
-          };
-        }
         return {
           content: {
             url: url.toString(),
@@ -1732,7 +1624,6 @@ function createDataHandler(promptInjectionCop: PromptInjectionCop): InProcessToo
             text: stripped,
             bytes_read: read.bytes,
             truncated: read.truncated,
-            prompt_injection_scan: promptInjectionScan,
           },
           isError: false,
         };
@@ -1763,7 +1654,6 @@ function createDataHandler(promptInjectionCop: PromptInjectionCop): InProcessToo
         headers: args.headers as Record<string, string> | undefined,
         attempts,
         attemptNumber: 1,
-        promptInjectionCop,
       });
       if (outcome.ok) return { content: outcome.success, isError: false };
       return {
@@ -1810,7 +1700,7 @@ function createDataHandler(promptInjectionCop: PromptInjectionCop): InProcessToo
         }
         for (let attemptNumber = 1; attemptNumber <= retriesPerUrl; attemptNumber++) {
           const outcome = await downloadUrl(url, outPath, {
-            maxBytes, headers, attempts, attemptNumber, promptInjectionCop,
+            maxBytes, headers, attempts, attemptNumber,
           });
           if (outcome.ok) {
             const success = outcome.success;
@@ -1850,8 +1740,7 @@ function createDataHandler(promptInjectionCop: PromptInjectionCop): InProcessToo
     default:
       return { content: { error: `Unknown data tool: ${toolName}` }, isError: true };
   }
-  };
-}
+};
 
 // ─── Git ────────────────────────────────────────────────────────────────────
 
@@ -2026,7 +1915,6 @@ export function registerBuiltinServices(
   securityConfig: import("../config.js").SaivageConfig["security"],
   options: BuiltinServicesOptions = {},
 ): void {
-  const promptInjectionCop = options.promptInjectionCop ?? disabledCop();
   MAX_OUTPUT = mcpConfig.maxOutputBytes;
   MAX_FETCH_BYTES = mcpConfig.maxFetchBytes;
   MAX_DOWNLOAD_BYTES = mcpConfig.maxDownloadBytes;
@@ -2072,7 +1960,7 @@ export function registerBuiltinServices(
 
   mcpRuntime.registerInProcess("filesystem", filesystemTools, filesystemHandler);
   mcpRuntime.registerInProcess("shell", shellTools, shellHandler);
-  mcpRuntime.registerInProcess("data", dataTools, createDataHandler(promptInjectionCop));
+  mcpRuntime.registerInProcess("data", dataTools, dataHandler);
   mcpRuntime.registerInProcess("git", gitTools, gitHandler);
   mcpRuntime.registerInProcess("skills", knowledgeSkillsTools, knowledgeSkillsHandler);
   mcpRuntime.registerInProcess("memory", knowledgeMemoryTools, knowledgeMemoryHandler);

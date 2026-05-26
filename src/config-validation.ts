@@ -93,17 +93,6 @@ export function validateModelCoverage(
       }
     }
   }
-  if (config.security.injectionScanner) {
-    try {
-      routing.resolve("security");
-    } catch (err) {
-      if (err instanceof MissingModelForRoleError) {
-        missing.push("security");
-      } else {
-        throw err;
-      }
-    }
-  }
   if (missing.length > 0) {
     throw new MissingModelForRoleError(missing, configPathStr);
   }

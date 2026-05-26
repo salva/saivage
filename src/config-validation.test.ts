@@ -13,6 +13,15 @@ import {
   DEFAULT_CONFIG_POINTER_SUFFIXES,
 } from "./security/secrets.js";
 
+function defaultSecurity(): SaivageConfig["security"] {
+  return {
+    envScrubber: {
+      credentialLexemes: [...DEFAULT_CREDENTIAL_LEXEMES],
+      configPointerSuffixes: [...DEFAULT_CONFIG_POINTER_SUFFIXES],
+    },
+  };
+}
+
 function makeConfig(overrides: Partial<SaivageConfig> = {}): SaivageConfig {
   return {
     models: {},
@@ -28,7 +37,7 @@ function makeConfig(overrides: Partial<SaivageConfig> = {}): SaivageConfig {
       healthCheckIntervalMs: 30_000,
       idleShutdownMs: 300_000,
     },
-    security: { injectionScanner: true, maxScanLengthBytes: 100_000 },
+    security: defaultSecurity(),
     supervisor: {
       enabled: true,
       intervalMs: 1200_000,
@@ -44,12 +53,10 @@ describe("validateModelCoverage", () => {
     const cfg = makeConfig({
       models: { default: "github-copilot/gpt-5.4" } as SaivageConfig["models"],
       supervisor: { ...makeConfig().supervisor, model: "github-copilot/gpt-5.4" } as SaivageConfig["supervisor"],
-      security: { ...makeConfig().security, injectionModel: "github-copilot/gpt-5.4" } as SaivageConfig["security"],
     });
     const routing = new ModelRoutingResolver({}, {
       models: { default: "github-copilot/gpt-5.4" },
       supervisorModel: "github-copilot/gpt-5.4",
-      securityModel: "github-copilot/gpt-5.4",
     });
     expect(() => validateModelCoverage(cfg, routing, "/x/.saivage/saivage.json")).not.toThrow();
   });
@@ -57,7 +64,6 @@ describe("validateModelCoverage", () => {
   it("throws when worker roles have no model", () => {
     const cfg = makeConfig({
       supervisor: { ...makeConfig().supervisor, enabled: false } as SaivageConfig["supervisor"],
-      security: { ...makeConfig().security, injectionScanner: false } as SaivageConfig["security"],
     });
     const routing = new ModelRoutingResolver({}, {});
     expect(() => validateModelCoverage(cfg, routing, "/x/.saivage/saivage.json"))
@@ -67,7 +73,6 @@ describe("validateModelCoverage", () => {
   it("supervisor disabled + no model => no supervisor in error", () => {
     const cfg = makeConfig({
       supervisor: { ...makeConfig().supervisor, enabled: false } as SaivageConfig["supervisor"],
-      security: { ...makeConfig().security, injectionScanner: false } as SaivageConfig["security"],
     });
     const routing = new ModelRoutingResolver({}, {});
     try {
@@ -83,7 +88,6 @@ describe("validateModelCoverage", () => {
   it("supervisor enabled + no model anywhere => supervisor in error", () => {
     const cfg = makeConfig({
       models: { default: "github-copilot/gpt-5.4" } as SaivageConfig["models"],
-      security: { ...makeConfig().security, injectionScanner: false } as SaivageConfig["security"],
     });
     const routing = new ModelRoutingResolver({}, {
       models: { default: "github-copilot/gpt-5.4" },
@@ -97,27 +101,9 @@ describe("validateModelCoverage", () => {
     }
   });
 
-  it("security enabled + no model anywhere => security in error", () => {
-    const cfg = makeConfig({
-      models: { default: "github-copilot/gpt-5.4" } as SaivageConfig["models"],
-      supervisor: { ...makeConfig().supervisor, enabled: false } as SaivageConfig["supervisor"],
-    });
-    const routing = new ModelRoutingResolver({}, {
-      models: { default: "github-copilot/gpt-5.4" },
-    });
-    try {
-      validateModelCoverage(cfg, routing, "/x/.saivage/saivage.json");
-      expect.fail("should have thrown");
-    } catch (err) {
-      expect(err).toBeInstanceOf(MissingModelForRoleError);
-      expect((err as MissingModelForRoleError).roles).toContain("security");
-    }
-  });
-
   it("error message names the config path", () => {
     const cfg = makeConfig({
       supervisor: { ...makeConfig().supervisor, enabled: false } as SaivageConfig["supervisor"],
-      security: { ...makeConfig().security, injectionScanner: false } as SaivageConfig["security"],
     });
     const routing = new ModelRoutingResolver({}, {});
     try {
@@ -131,7 +117,6 @@ describe("validateModelCoverage", () => {
   it("disabled-everything bootability: workers still required", () => {
     const cfg = makeConfig({
       supervisor: { ...makeConfig().supervisor, enabled: false } as SaivageConfig["supervisor"],
-      security: { ...makeConfig().security, injectionScanner: false } as SaivageConfig["security"],
     });
     const routing = new ModelRoutingResolver({}, {});
     try {
@@ -150,7 +135,6 @@ describe("validateModelCoverage", () => {
     const cfg = makeConfig({
       models: { default: "github-copilot/gpt-5.4" } as SaivageConfig["models"],
       supervisor: { ...makeConfig().supervisor, enabled: false } as SaivageConfig["supervisor"],
-      security: { ...makeConfig().security, injectionScanner: false } as SaivageConfig["security"],
     });
     const routing = new ModelRoutingResolver(
       {
@@ -238,7 +222,7 @@ describe("security.envScrubber", async () => {
   }
 
   it("envScrubber is absent → defaults applied", async () => {
-    const result = await withProject({ injectionScanner: false });
+    const result = await withProject({});
     try {
       if ("error" in result) throw result.error;
       expect(result.cfg.security.envScrubber.credentialLexemes).toEqual([
@@ -253,7 +237,7 @@ describe("security.envScrubber", async () => {
   });
 
   it("envScrubber={} → defaults applied", async () => {
-    const result = await withProject({ injectionScanner: false, envScrubber: {} });
+    const result = await withProject({ envScrubber: {} });
     try {
       if ("error" in result) throw result.error;
       expect(result.cfg.security.envScrubber.credentialLexemes).toEqual([
@@ -312,9 +296,19 @@ describe("security.envScrubber", async () => {
     }
   });
 
+  it("rejects stale scanner keys", async () => {
+    const staleKey = ["injection", "Scanner"].join("");
+    const result = await withProject({ [staleKey]: true });
+    try {
+      expect("error" in result).toBe(true);
+      if ("error" in result) expect(result.error.message).toContain(staleKey);
+    } finally {
+      result.cleanup();
+    }
+  });
+
   it("S-R-A: full-replacement singleton credentialLexemes: [\"PII\"]", async () => {
     const result = await withProject({
-      injectionScanner: false,
       envScrubber: { credentialLexemes: ["PII"] },
     });
     try {
@@ -330,7 +324,6 @@ describe("security.envScrubber", async () => {
 
   it("S-R-B: full-replacement singleton configPointerSuffixes: [\"_BUILDFILE\"]", async () => {
     const result = await withProject({
-      injectionScanner: false,
       envScrubber: { configPointerSuffixes: ["_BUILDFILE"] },
     });
     try {

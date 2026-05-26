@@ -21,7 +21,7 @@ saivage/
 │   ├── server/                 # bootstrap, fastify server, cli, telegram bot
 │   ├── store/                  # project context + JSON document store
 │   ├── skills/                 # skill loader (trigger matching)
-│   ├── security/               # prompt-injection cop
+│   ├── security/               # secret env scrubbing
 │   └── events/                 # in-process event bus
 ├── web/                        # Vite + Vue dashboard (built into web/dist)
 ├── deploy/                     # LXC create/provision scripts + Makefile

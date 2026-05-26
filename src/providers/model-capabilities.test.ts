@@ -28,7 +28,7 @@ function makeConfig(overrides: Partial<SaivageConfig> = {}): SaivageConfig {
       idleShutdownMs: 300000,
     },
     project: { root: "", venv: "", description: "" },
-    security: { injectionScanner: true, maxScanLengthBytes: 100000 },
+    security: { envScrubber: { credentialLexemes: ["API_KEY"], configPointerSuffixes: [] } },
     telegram: { botToken: "", allowedUserIds: [] },
     ...overrides,
   };
@@ -98,8 +98,8 @@ describe("PiAiProvider — live-registry modelCapabilities", () => {
     const p = new PiAiProvider("openai");
     const caps = p.modelCapabilities("gpt-5");
     expect(caps).toBeDefined();
-    expect(caps!.contextWindow).toBeGreaterThan(0);
-    expect(caps!.tokenEncoding).toBe("o200k_base");
+    expect(caps?.contextWindow).toBeGreaterThan(0);
+    expect(caps?.tokenEncoding).toBe("o200k_base");
   });
 
   it("modelCapabilities returns undefined for models not in the registry", async () => {

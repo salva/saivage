@@ -32,7 +32,7 @@ The coverage report writes to `coverage/`.
 | `src/providers/**/*.test.ts` | Provider routing, response-id translation. |
 | `src/auth/store.test.ts` | OAuth profile persistence. |
 | `src/mcp/**/*.test.ts` | Built-in MCP tools, runtime registration. |
-| `src/security/*.test.ts` | Prompt-injection cop. |
+| `src/security/*.test.ts` | Secret env scrubbing and removal invariants. |
 | `src/server/server.test.ts` | HTTP/WebSocket integration. |
 | `src/channels/telegram.test.ts` | Telegram message routing. |
 | `src/events/bus.test.ts` | EventBus filter logic. |

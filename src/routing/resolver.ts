@@ -20,7 +20,6 @@ export class RoutingProfileCycleError extends Error {
 export const ROUTING_ROLE_TO_MODEL_KEY: Record<string, string> = {
   ...Object.fromEntries(ROSTER.map((entry) => [entry.role, entry.defaultModelKey])),
   supervisor: "supervisor",
-  security: "security",
   default: "default",
 };
 
@@ -73,7 +72,6 @@ export interface RuntimeRoutingConfigLike {
   models?: Record<string, string | string[] | undefined>;
   providers?: Record<string, RuntimeProviderConfigLike | undefined>;
   supervisorModel?: string;
-  securityModel?: string;
 }
 
 export interface ResolvedModelRoute {
@@ -298,11 +296,6 @@ export class ModelRoutingResolver {
   private resolveRuntimeDefaultModels(role: string): string[] {
     if (role === "supervisor") {
       const models = normalizeModelList(this.runtime.supervisorModel);
-      if (models.length) return models;
-      throw new MissingModelForRoleError([role], configPath());
-    }
-    if (role === "security") {
-      const models = normalizeModelList(this.runtime.securityModel);
       if (models.length) return models;
       throw new MissingModelForRoleError([role], configPath());
     }

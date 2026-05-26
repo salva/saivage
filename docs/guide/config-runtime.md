@@ -184,14 +184,30 @@ before they are auto-expired (2h default).
 
 ```json
 "security": {
-  "injectionScanner": true,
-  "maxScanLengthBytes": 100000
+  "envScrubber": {
+    "credentialLexemes": [
+      "API_KEY",
+      "TOKEN",
+      "SECRET",
+      "PASSWORD",
+      "PASSWD",
+      "CREDENTIAL",
+      "AUTH",
+      "BEARER",
+      "COOKIE",
+      "SESSION",
+      "ACCESS_KEY"
+    ],
+    "configPointerSuffixes": ["_URL", "_HOST", "_ENDPOINT", "_BASE_URL"]
+  }
 }
 ```
 
-Drives the [Prompt-Injection Cop](/internals/security). `injectionModel` is
-required when the scanner is enabled; the daemon refuses to boot otherwise.
-See [F04](../../SPEC/v2/review-2026-05/F04-hardcoded-default-models.md).
+Controls which environment variables are removed before shell commands are
+started. `credentialLexemes` matches secret-like names such as API keys and
+tokens. `configPointerSuffixes` catches pointer-style names such as reset URLs
+that can embed credentials. If either array is supplied, it fully replaces that
+default list.
 
 ### `supervisor`
 

@@ -116,9 +116,6 @@ const configSchema = z.object({
 
   security: z
     .object({
-      injectionScanner: z.boolean().default(true),
-      injectionModel: z.string().optional(),
-      maxScanLengthBytes: z.number().default(100_000),
       envScrubber: z
         .object({
           credentialLexemes: z
@@ -131,6 +128,7 @@ const configSchema = z.object({
         })
         .default({}),
     })
+    .strict()
     .default({}),
 
   supervisor: z
@@ -214,7 +212,7 @@ const configSchema = z.object({
     .default({}),
 
   mcpServers: z.record(z.string(), mcpServerSchema).default({}),
-});
+}).strict();
 
 export type SaivageConfig = z.infer<typeof configSchema>;
 

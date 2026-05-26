@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { ModelRoutingResolver, RoutingProfileCycleError, projectRoutingSchema } from "./resolver.js";
-import { NoAllowedRouteMatchError } from "../config-validation.js";
+import { MissingModelForRoleError, NoAllowedRouteMatchError } from "../config-validation.js";
 
 const routing = (
   raw: z.input<typeof projectRoutingSchema>,
@@ -97,12 +97,11 @@ describe("ModelRoutingResolver", () => {
     });
   });
 
-  it("uses shared runtime defaults for supervisor and security roles", () => {
+  it("uses shared runtime defaults for supervisor role", () => {
     const resolver = new ModelRoutingResolver(
       {},
       {
         supervisorModel: "github-copilot/gpt-5.4",
-        securityModel: "github-copilot/claude-sonnet-4.6",
       },
     );
 
@@ -110,10 +109,7 @@ describe("ModelRoutingResolver", () => {
       modelSpec: "github-copilot/gpt-5.4",
       source: "runtime-default",
     });
-    expect(resolver.resolve("security")).toMatchObject({
-      modelSpec: "github-copilot/claude-sonnet-4.6",
-      source: "runtime-default",
-    });
+    expect(() => resolver.resolve("security")).toThrow(MissingModelForRoleError);
   });
 
   it("classifies allowed_models-only routing rules as routing-derived (F04 r3)", () => {

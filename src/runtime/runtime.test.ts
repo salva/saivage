@@ -327,9 +327,10 @@ function makeSupervisorConfig(overrides: Partial<SaivageConfig["supervisor"]> = 
       idleShutdownMs: 300_000,
     },
     security: {
-      injectionScanner: true,
-      injectionModel: "github-copilot/gpt-5.4",
-      maxScanLengthBytes: 100_000,
+      envScrubber: {
+        credentialLexemes: ["API_KEY"],
+        configPointerSuffixes: [],
+      },
     },
     supervisor: {
       enabled: true,

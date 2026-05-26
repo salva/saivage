@@ -94,6 +94,16 @@ describe("config", () => {
       expect(config.providers["github-copilot"]?.defaultAccount).toBe("main");
       expect(config.providers["github-copilot"]?.accounts.main?.authProfile).toBe("github-copilot-main");
     });
+
+    it("rejects unknown top-level runtime config keys", async () => {
+      const saivageRoot = join(projectRoot, ".saivage");
+      mkdirSync(saivageRoot, { recursive: true });
+      writeFileSync(join(saivageRoot, "saivage.json"), JSON.stringify({
+        unknownBlock: true,
+      }, null, 2));
+
+      await expect(loadConfig(projectRoot)).rejects.toThrow(/unknownBlock/);
+    });
   });
 
   describe("mcp timing envelope validation", () => {

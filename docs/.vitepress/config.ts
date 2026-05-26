@@ -141,7 +141,6 @@ export default withMermaid(defineConfig({
             { text: "Auth & Token Stores", link: "/internals/auth" },
             { text: "Document Store", link: "/internals/store" },
             { text: "Skill Loader", link: "/internals/skill-loader" },
-            { text: "Security: Prompt-Injection Cop", link: "/internals/security" },
           ],
         },
         {

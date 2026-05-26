@@ -10,7 +10,6 @@ import { validateModelCoverage } from "../config-validation.js";
 import { ModelRouter } from "../providers/router.js";
 import { McpRuntime } from "../mcp/runtime.js";
 import { registerBuiltinServices } from "../mcp/builtins.js";
-import { createPromptInjectionCop } from "../security/prompt-injection-cop.js";
 import { cleanStash } from "../runtime/stash.js";
 import { writeFileSync } from "node:fs";
 
@@ -131,7 +130,6 @@ export async function bootstrap(
   const routing = new ModelRoutingResolver(project.config, {
     ...config,
     supervisorModel: config.supervisor.model,
-    securityModel: config.security.injectionModel,
   });
 
   validateModelCoverage(config, routing, configPath(project.projectRoot));
@@ -144,13 +142,7 @@ export async function bootstrap(
 
   // 4. Initialize MCP runtime + builtin services
   const mcpRuntime = new McpRuntime(config);
-  registerBuiltinServices(mcpRuntime, config.mcp, config.security, {
-    promptInjectionCop: createPromptInjectionCop(
-      config,
-      router,
-      config.security.injectionScanner ? routing.resolve("security").modelSpec : undefined,
-    ),
-  });
+  registerBuiltinServices(mcpRuntime, config.mcp, config.security);
   await startConfiguredMcpServers(mcpRuntime, config);
   mcpRuntime.startMonitoring();
 
@@ -288,7 +280,7 @@ export function createChildSpawner(
   return async (
     role: import("../agents/roster.js").DispatchableRole,
     input: unknown,
-    parentCtx: AgentContext,
+    _parentCtx: AgentContext,
   ): Promise<AgentResult> => {
     const { project, router, mcpRuntime, eventBus, tracker } = runtime;
 
@@ -682,8 +674,6 @@ export async function runPlannerWithRecovery(
 export function waitForRecoveryDelay(ms: number): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     let settled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    let onCancel: () => void;
     const finish = (cancelled: boolean) => {
       if (settled) return;
       settled = true;
@@ -692,8 +682,8 @@ export function waitForRecoveryDelay(ms: number): Promise<boolean> {
       process.off("SIGTERM", onCancel);
       resolve(cancelled);
     };
-    timer = setTimeout(() => finish(false), ms);
-    onCancel = () => finish(true);
+    const timer = setTimeout(() => finish(false), ms);
+    const onCancel = () => finish(true);
     process.once("SIGINT", onCancel);
     process.once("SIGTERM", onCancel);
   });
