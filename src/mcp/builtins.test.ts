@@ -258,6 +258,22 @@ describe("built-in MCP services", () => {
       expect(existsSync(join(projectRoot, path))).toBe(false);
     });
   });
+
+  it("does not mis-report a fast normal exit as inactivity timeout", async () => {
+    // 25ms inactivity timeout + a command that exits in <10ms means
+    // checkOutputGrowth will have a stat in flight when child.close
+    // fires on the busy CI runner; the settled guard prevents the
+    // late tick from calling terminate("inactivity").
+    for (let i = 0; i < 20; i++) {
+      const res = await runtime.callTool("shell", "run_command", {
+        command: "echo hello",
+        inactivity_timeout_ms: 25,
+      }) as { exitCode: number; stderr: string };
+      expect(res.exitCode).toBe(0);
+      expect(res.stderr).not.toMatch(/inactivity/);
+      expect(res.stderr).not.toMatch(/timed out/);
+    }
+  });
 });
 
 describe("built-in MCP shell — inner wall-clock cap", () => {

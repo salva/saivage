@@ -12,18 +12,8 @@ import type { ToolEntry } from "./types.js";
 import { knowledgeSkillsTools, knowledgeSkillsHandler } from "./knowledgeSkills.js";
 import { knowledgeMemoryTools, knowledgeMemoryHandler } from "./knowledgeMemory.js";
 
-import {
-  closeSync,
-  createWriteStream,
-  readFileSync,
-  readSync,
-  writeFileSync,
-  readdirSync,
-  mkdirSync,
-  existsSync,
-  openSync,
-  statSync,
-} from "node:fs";
+import { createWriteStream } from "node:fs";
+import { readFile, writeFile, mkdir, readdir, stat, open } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -223,8 +213,8 @@ async function downloadUrl(
     }
   }
 
-  mkdirSync(dirname(outPath), { recursive: true });
-  writeFileSync(outPath, buffer);
+  await mkdir(dirname(outPath), { recursive: true });
+  await writeFile(outPath, buffer);
   return {
     url: url.toString(),
     path: relative(projectRoot(), outPath),
@@ -273,7 +263,7 @@ const filesystemHandler: InProcessToolHandler = async (toolName, args) => {
   switch (toolName) {
     case "read_file": {
       const fp = resolvePath(args.path as string);
-      const content = readFileSync(fp, "utf-8");
+      const content = await readFile(fp, "utf-8");
       return { content: { content }, isError: false };
     }
     case "write_file": {
@@ -295,13 +285,13 @@ const filesystemHandler: InProcessToolHandler = async (toolName, args) => {
           };
         }
       }
-      mkdirSync(dirname(fp), { recursive: true });
-      writeFileSync(fp, args.content as string, "utf-8");
+      await mkdir(dirname(fp), { recursive: true });
+      await writeFile(fp, args.content as string, "utf-8");
       return { content: { written: true, path: fp }, isError: false };
     }
     case "list_dir": {
       const dp = resolvePath(args.path as string);
-      const entries = readdirSync(dp, { withFileTypes: true }).map((e) => ({
+      const entries = (await readdir(dp, { withFileTypes: true })).map((e) => ({
         name: e.name,
         type: e.isDirectory() ? "dir" : "file",
       }));
@@ -437,11 +427,11 @@ async function runShellCommand(
   inactivityTimeoutMs: number | undefined,
   outputPaths: CommandLogPaths,
 ): Promise<CommandResult> {
+  await mkdir(dirname(outputPaths.stdoutAbs), { recursive: true });
+  await mkdir(dirname(outputPaths.stderrAbs), { recursive: true });
   return new Promise((resolve, reject) => {
     const startedAtMs = Date.now();
     const startedAt = new Date(startedAtMs).toISOString();
-    mkdirSync(dirname(outputPaths.stdoutAbs), { recursive: true });
-    mkdirSync(dirname(outputPaths.stderrAbs), { recursive: true });
     const stdoutStream = createWriteStream(outputPaths.stdoutAbs, { flags: "w" });
     const stderrStream = createWriteStream(outputPaths.stderrAbs, { flags: "w" });
     const child = spawn(command, {
@@ -458,6 +448,8 @@ async function runShellCommand(
     let lastOutputBytes = 0;
     let lastGrowthAt = startedAtMs;
     let lastOutputAt: string | null = null;
+    let settled = false;
+    let inFlightTick = false;
 
     const recordOutput = (chunk: Buffer | string) => {
       lastOutputBytes += Buffer.byteLength(chunk);
@@ -472,24 +464,34 @@ async function runShellCommand(
     };
 
     const terminate = (kind: "total" | "inactivity") => {
-      if (timeoutKind) return;
+      if (settled || timeoutKind) return;
       timeoutKind = kind;
       terminateChild(child);
       killTimer = setTimeout(() => terminateChild(child, "SIGKILL"), PROCESS_KILL_GRACE_MS);
     };
 
     const checkOutputGrowth = () => {
-      if (!inactivityTimeoutMs) return;
-      const outputBytes = Math.max(
-        lastOutputBytes,
-        safeFileSize(outputPaths.stdoutAbs) + safeFileSize(outputPaths.stderrAbs),
-      );
-      if (outputBytes > lastOutputBytes) {
-        lastOutputBytes = outputBytes;
-        lastGrowthAt = Date.now();
-        return;
-      }
-      if (Date.now() - lastGrowthAt >= inactivityTimeoutMs) terminate("inactivity");
+      if (!inactivityTimeoutMs || inFlightTick || settled) return;
+      inFlightTick = true;
+      void (async () => {
+        try {
+          const [s1, s2] = await Promise.all([
+            safeFileSize(outputPaths.stdoutAbs),
+            safeFileSize(outputPaths.stderrAbs),
+          ]);
+          if (settled) return;
+          const outputBytes = Math.max(lastOutputBytes, s1 + s2);
+          if (outputBytes > lastOutputBytes) {
+            lastOutputBytes = outputBytes;
+            lastGrowthAt = Date.now();
+            return;
+          }
+          if (settled) return;
+          if (Date.now() - lastGrowthAt >= inactivityTimeoutMs) terminate("inactivity");
+        } finally {
+          inFlightTick = false;
+        }
+      })();
     };
 
     if (timeoutMs) totalTimer = setTimeout(() => terminate("total"), timeoutMs);
@@ -521,14 +523,20 @@ async function runShellCommand(
     });
 
     child.on("close", async (code) => {
+      settled = true;
       clearTimers();
       const completedAtMs = Date.now();
       const completedAt = new Date(completedAtMs).toISOString();
       await Promise.all([finishStream(stdoutStream), finishStream(stderrStream)]);
-      const stdout = readFileTail(outputPaths.stdoutAbs, MAX_OUTPUT);
-      let stderr = readFileTail(outputPaths.stderrAbs, MAX_OUTPUT);
-      const stdoutBytes = safeFileSize(outputPaths.stdoutAbs);
-      const stderrBytes = safeFileSize(outputPaths.stderrAbs);
+      const [stdout, stderrTail] = await Promise.all([
+        readFileTail(outputPaths.stdoutAbs, MAX_OUTPUT),
+        readFileTail(outputPaths.stderrAbs, MAX_OUTPUT),
+      ]);
+      let stderr = stderrTail;
+      const [stdoutBytes, stderrBytes] = await Promise.all([
+        safeFileSize(outputPaths.stdoutAbs),
+        safeFileSize(outputPaths.stderrAbs),
+      ]);
       if (stdoutBytes > MAX_OUTPUT) stderr = appendTimeoutMessage(stderr, `[Saivage returned only the last ${MAX_OUTPUT} bytes of stdout; full log: ${outputPaths.stdoutRel}]`);
       if (stderrBytes > MAX_OUTPUT) stderr = appendTimeoutMessage(stderr, `[Saivage returned only the last ${MAX_OUTPUT} bytes of stderr; full log: ${outputPaths.stderrRel}]`);
       const base = {
@@ -604,9 +612,9 @@ function resolveCommandLogPaths(args: Record<string, unknown>): CommandLogPaths 
   };
 }
 
-function safeFileSize(path: string): number {
+async function safeFileSize(path: string): Promise<number> {
   try {
-    return statSync(path).size;
+    return (await stat(path)).size;
   } catch {
     return 0;
   }
@@ -616,16 +624,16 @@ function growthPollInterval(inactivityTimeoutMs: number): number {
   return Math.max(25, Math.min(OUTPUT_GROWTH_POLL_MS, Math.floor(inactivityTimeoutMs / 4) || 25));
 }
 
-function readFileTail(path: string, maxBytes: number): string {
-  const size = safeFileSize(path);
+async function readFileTail(path: string, maxBytes: number): Promise<string> {
+  const size = await safeFileSize(path);
   if (size === 0) return "";
   const length = Math.min(size, maxBytes);
   const buffer = Buffer.alloc(length);
-  const fd = openSync(path, "r");
+  const handle = await open(path, "r");
   try {
-    readSync(fd, buffer, 0, length, size - length);
+    await handle.read(buffer, 0, length, size - length);
   } finally {
-    closeSync(fd);
+    await handle.close();
   }
   return buffer.toString("utf-8");
 }
@@ -866,8 +874,8 @@ function createDataHandler(promptInjectionCop: PromptInjectionCop): InProcessToo
             const result = await downloadUrl(url, outPath, { maxBytes, headers, attempts, attemptNumber, promptInjectionCop });
             if (result) {
               if (manifestPath) {
-                mkdirSync(dirname(manifestPath), { recursive: true });
-                writeFileSync(manifestPath, JSON.stringify(result, null, 2) + "\n", "utf-8");
+                await mkdir(dirname(manifestPath), { recursive: true });
+                await writeFile(manifestPath, JSON.stringify(result, null, 2) + "\n", "utf-8");
               }
               return { content: { ...result, selected_url: result.url }, isError: false };
             }
@@ -883,8 +891,8 @@ function createDataHandler(promptInjectionCop: PromptInjectionCop): InProcessToo
 
       const failure = { error: "All download sources failed", path: relative(projectRoot(), outPath), attempts };
       if (manifestPath) {
-        mkdirSync(dirname(manifestPath), { recursive: true });
-        writeFileSync(manifestPath, JSON.stringify(failure, null, 2) + "\n", "utf-8");
+        await mkdir(dirname(manifestPath), { recursive: true });
+        await writeFile(manifestPath, JSON.stringify(failure, null, 2) + "\n", "utf-8");
       }
       return { content: failure, isError: true };
     }
