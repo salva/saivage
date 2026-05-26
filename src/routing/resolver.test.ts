@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { ModelRoutingResolver, RoutingProfileCycleError } from "./resolver.js";
+import { z } from "zod";
+import { ModelRoutingResolver, RoutingProfileCycleError, projectRoutingSchema } from "./resolver.js";
+
+const routing = (
+  raw: z.input<typeof projectRoutingSchema>,
+): z.output<typeof projectRoutingSchema> => projectRoutingSchema.parse(raw);
 
 describe("ModelRoutingResolver", () => {
   it("preserves legacy override and runtime fallback behavior", () => {
@@ -30,7 +35,7 @@ describe("ModelRoutingResolver", () => {
   it("resolves a routing profile with preferred model and account", () => {
     const resolver = new ModelRoutingResolver(
       {
-        routing: {
+        routing: routing({
           profiles: {
             safe_coding: {
               preferred_models: [
@@ -43,7 +48,7 @@ describe("ModelRoutingResolver", () => {
           roles: {
             planner: "safe_coding",
           },
-        },
+        }),
       },
       {
         models: {
@@ -72,7 +77,7 @@ describe("ModelRoutingResolver", () => {
   it("supports direct account and auth-profile pinning", () => {
     const resolver = new ModelRoutingResolver(
       {
-        routing: {
+        routing: routing({
           roles: {
             chat: {
               model: "github-copilot/gpt-5.4",
@@ -80,7 +85,7 @@ describe("ModelRoutingResolver", () => {
               account: "main",
             },
           },
-        },
+        }),
       },
       {
         providers: {
@@ -121,11 +126,11 @@ describe("ModelRoutingResolver", () => {
   it("classifies allowed_models-only routing rules as routing-derived (F04 r3)", () => {
     const resolver = new ModelRoutingResolver(
       {
-        routing: {
+        routing: routing({
           roles: {
             coder: { allowed_models: ["github-copilot/gpt-5.4"] },
           },
-        },
+        }),
       },
       {},
     );

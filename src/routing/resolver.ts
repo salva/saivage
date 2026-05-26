@@ -44,6 +44,11 @@ export const projectRoutingSchema = z.object({
 export type RoutingRule = z.infer<typeof routingRuleSchema>;
 export type ProjectRoutingConfig = z.infer<typeof projectRoutingSchema>;
 
+export interface ProjectRoutingInput {
+  model_overrides?: Record<string, string>;
+  routing?: z.output<typeof projectRoutingSchema>;
+}
+
 export interface RuntimeProviderAccountLike {
   apiKey?: string;
   baseUrl?: string;
@@ -63,11 +68,6 @@ export interface RuntimeProviderConfigLike extends RuntimeProviderAccountLike {
   defaultAccount?: string;
   accounts?: Record<string, RuntimeProviderAccountLike | undefined>;
   defaultContextWindow?: number;
-}
-
-export interface ProjectRoutingConfigLike {
-  model_overrides?: Record<string, string>;
-  routing?: ProjectRoutingConfig;
 }
 
 export interface RuntimeRoutingConfigLike {
@@ -102,19 +102,20 @@ interface NormalizedRule {
 }
 
 export class ModelRoutingResolver {
-  private readonly project: ProjectRoutingConfigLike;
+  private readonly project: ProjectRoutingInput;
   private readonly runtime: RuntimeRoutingConfigLike;
+  private readonly routing?: ProjectRoutingConfig;
   private readonly profiles: Record<string, NormalizedRule>;
   private readonly defaultProfile?: string;
 
-  constructor(project: ProjectRoutingConfigLike, runtime: RuntimeRoutingConfigLike) {
+  constructor(project: ProjectRoutingInput, runtime: RuntimeRoutingConfigLike) {
     this.project = project;
     this.runtime = runtime;
-    const routing = project.routing ? projectRoutingSchema.parse(project.routing) : undefined;
+    this.routing = project.routing;
     this.profiles = Object.fromEntries(
-      Object.entries(routing?.profiles ?? {}).map(([name, rule]) => [name, normalizeRule(rule)]),
+      Object.entries(this.routing?.profiles ?? {}).map(([name, rule]) => [name, normalizeRule(rule)]),
     );
-    this.defaultProfile = routing?.default_profile;
+    this.defaultProfile = this.routing?.default_profile;
     this.validateProfileGraph();
   }
 
@@ -184,8 +185,7 @@ export class ModelRoutingResolver {
   }
 
   private resolveRoleRule(role: string): { profileName?: string; rule: NormalizedRule } {
-    const routing = this.project.routing ? projectRoutingSchema.parse(this.project.routing) : undefined;
-    const roleEntry = routing?.roles?.[role] ?? routing?.roles?.default;
+    const roleEntry = this.routing?.roles?.[role] ?? this.routing?.roles?.default;
 
     if (typeof roleEntry === "string") {
       if (roleEntry.includes("/")) {
