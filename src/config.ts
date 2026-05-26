@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { readFileSync, existsSync, mkdirSync } from "node:fs";
+import { existsSync } from "node:fs";          // resolveProjectRoot only
+import { readFile } from "node:fs/promises";   // loadConfig only
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import {
@@ -7,6 +8,7 @@ import {
   DEFAULT_OPENAI_CODEX_CLIENT_ID,
   DEFAULT_GITHUB_COPILOT_CLIENT_ID,
 } from "./auth/defaults.js";
+import { pathExists } from "./store/documents.js";
 import { WALL_CLOCK_HEADROOM_MS } from "./mcp/builtins.js";
 import {
   DEFAULT_CREDENTIAL_LEXEMES,
@@ -278,27 +280,13 @@ export function expandHome(p: string): string {
 
 // --- Load ---
 
-let cached: SaivageConfig | null = null;
-let cachedConfigDir: string | null = null;
-
-export function loadConfig(force = false, projectRoot?: string): SaivageConfig {
-  const dir = saivageDir(projectRoot);
-  if (cached && !force && cachedConfigDir === dir) return cached;
-
+export async function loadConfig(projectRoot?: string): Promise<SaivageConfig> {
   const fp = configPath(projectRoot);
-
   let raw: unknown = {};
-  if (existsSync(fp)) {
-    const text = readFileSync(fp, "utf-8");
+  if (await pathExists(fp)) {
+    const text = await readFile(fp, "utf-8");
     raw = JSON.parse(text);
   }
-
   const interpolated = deepInterpolate(raw);
-  cached = configSchema.parse(interpolated);
-  cachedConfigDir = dir;
-  return cached;
-}
-
-export function ensureDir(p: string): void {
-  if (!existsSync(p)) mkdirSync(p, { recursive: true });
+  return configSchema.parse(interpolated);
 }

@@ -51,9 +51,9 @@ describe("built-in MCP services", () => {
   let previousProjectRoot: string | undefined;
   let previousSaivageRoot: string | undefined;
   let runtime: McpRuntime;
-  let cfg: ReturnType<typeof loadConfig>;
+  let cfg: Awaited<ReturnType<typeof loadConfig>>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     projectRoot = mkdtempSync(join(tmpdir(), "saivage-builtins-"));
     previousProjectRoot = process.env["PROJECT_ROOT"];
     previousSaivageRoot = process.env["SAIVAGE_ROOT"];
@@ -70,7 +70,7 @@ describe("built-in MCP services", () => {
       }),
       "utf-8",
     );
-    cfg = loadConfig(true, projectRoot);
+    cfg = await loadConfig(projectRoot);
     runtime = new McpRuntime(cfg);
     registerBuiltinServices(runtime, cfg.mcp, cfg.security);
   });
@@ -306,9 +306,9 @@ describe("read_file size cap (G31)", () => {
   let previousProjectRoot: string | undefined;
   let previousSaivageRoot: string | undefined;
   let runtime: McpRuntime;
-  let cfg: ReturnType<typeof loadConfig>;
+  let cfg: Awaited<ReturnType<typeof loadConfig>>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     projectRoot = mkdtempSync(join(tmpdir(), "saivage-builtins-g31-"));
     previousProjectRoot = process.env["PROJECT_ROOT"];
     previousSaivageRoot = process.env["SAIVAGE_ROOT"];
@@ -323,7 +323,7 @@ describe("read_file size cap (G31)", () => {
       }),
       "utf-8",
     );
-    cfg = loadConfig(true, projectRoot);
+    cfg = await loadConfig(projectRoot);
     runtime = new McpRuntime(cfg);
     registerBuiltinServices(runtime, cfg.mcp, cfg.security);
   });
@@ -522,7 +522,7 @@ describe("built-in MCP shell — inner wall-clock cap", () => {
   let previousSaivageRoot: string | undefined;
   let runtime: McpRuntime;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     projectRoot = mkdtempSync(join(tmpdir(), "saivage-builtins-cap-"));
     previousProjectRoot = process.env["PROJECT_ROOT"];
     previousSaivageRoot = process.env["SAIVAGE_ROOT"];
@@ -538,7 +538,7 @@ describe("built-in MCP shell — inner wall-clock cap", () => {
       }),
       "utf-8",
     );
-    const cfg = loadConfig(true, projectRoot);
+    const cfg = await loadConfig(projectRoot);
     runtime = new McpRuntime(cfg);
     registerBuiltinServices(runtime, cfg.mcp, cfg.security);
   });
@@ -787,7 +787,7 @@ describe("data: web_search (G33)", () => {
   let previousProjectRoot: string | undefined;
   let previousSaivageRoot: string | undefined;
   let runtime: McpRuntime;
-  let cfg: ReturnType<typeof loadConfig>;
+  let cfg: Awaited<ReturnType<typeof loadConfig>>;
 
   function makeRuntime(opts: {
     endpoint?: string;
@@ -805,7 +805,7 @@ describe("data: web_search (G33)", () => {
     registerBuiltinServices(runtime, mcp, cfg.security, { webSearchEndpoint: opts.endpoint });
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     projectRoot = mkdtempSync(join(tmpdir(), "saivage-builtins-g33-"));
     previousProjectRoot = process.env["PROJECT_ROOT"];
     previousSaivageRoot = process.env["SAIVAGE_ROOT"];
@@ -820,7 +820,7 @@ describe("data: web_search (G33)", () => {
       }),
       "utf-8",
     );
-    cfg = loadConfig(true, projectRoot);
+    cfg = await loadConfig(projectRoot);
   });
 
   afterEach(async () => {
@@ -988,7 +988,7 @@ describe("search_files (G32)", () => {
   let previousProjectRoot: string | undefined;
   let previousSaivageRoot: string | undefined;
   let runtime: McpRuntime;
-  let cfg: ReturnType<typeof loadConfig>;
+  let cfg: Awaited<ReturnType<typeof loadConfig>>;
 
   function setup(mcpOverride: Record<string, unknown> = {}) {
     projectRoot = mkdtempSync(join(tmpdir(), "saivage-builtins-g32-"));
@@ -1005,12 +1005,18 @@ describe("search_files (G32)", () => {
       }),
       "utf-8",
     );
-    cfg = loadConfig(true, projectRoot);
+  }
+
+  async function finishSetup() {
+    cfg = await loadConfig(projectRoot);
     runtime = new McpRuntime(cfg);
     registerBuiltinServices(runtime, cfg.mcp, cfg.security);
   }
 
-  beforeEach(() => setup());
+  beforeEach(async () => {
+    setup();
+    await finishSetup();
+  });
 
   afterEach(async () => {
     await runtime.shutdown();
@@ -1176,6 +1182,7 @@ describe("search_files (G32)", () => {
   it("depth cap produces truncated_reason:depth", async () => {
     await runtime.shutdown();
     setup({ maxSearchDepth: 2 });
+    await finishSetup();
     touch("a/b/c/leaf.ts");
     const r = await runtime.callTool("filesystem", "search_files",
       { directory: ".", pattern: "**/*.ts" });
@@ -1186,6 +1193,7 @@ describe("search_files (G32)", () => {
   it("time cap can produce truncated_reason:time", async () => {
     await runtime.shutdown();
     setup({ maxSearchMs: 1 });
+    await finishSetup();
     for (let i = 0; i < 200; i++) touch(`f${i}.ts`);
     const r = await runtime.callTool("filesystem", "search_files",
       { directory: ".", pattern: "*.ts" });
@@ -1344,7 +1352,7 @@ describe("filterShellEnv (config-driven secret env predicate)", () => {
     rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  function applyConfig(securityBlock: unknown): void {
+  async function applyConfig(securityBlock: unknown): Promise<void> {
     writeFileSync(
       join(projectRoot, ".saivage", "saivage.json"),
       JSON.stringify({
@@ -1354,7 +1362,7 @@ describe("filterShellEnv (config-driven secret env predicate)", () => {
       }),
       "utf-8",
     );
-    const cfg = loadConfig(true, projectRoot);
+    const cfg = await loadConfig(projectRoot);
     runtime = new McpRuntime(cfg);
     registerBuiltinServices(runtime, cfg.mcp, cfg.security);
   }
@@ -1373,14 +1381,14 @@ describe("filterShellEnv (config-driven secret env predicate)", () => {
   }
 
   it("defaults: PATH/HOME/USER preserved (false positives)", async () => {
-    applyConfig({ injectionScanner: false });
+    await applyConfig({ injectionScanner: false });
     const downstream = await spawnAndCaptureEnv({});
     expect(downstream["PATH"]).toBeDefined();
     expect(downstream["HOME"]).toBeDefined();
   });
 
   it("defaults: ANTHROPIC_API_KEY / DATABASE_PASSWORD dropped (false negatives)", async () => {
-    applyConfig({ injectionScanner: false });
+    await applyConfig({ injectionScanner: false });
     const downstream = await spawnAndCaptureEnv({
       ANTHROPIC_API_KEY: "sk-test",
       DATABASE_PASSWORD: "p@ss",
@@ -1390,13 +1398,13 @@ describe("filterShellEnv (config-driven secret env predicate)", () => {
   });
 
   it("defaults: hyphenated forms (ACCESS-KEY) dropped", async () => {
-    applyConfig({ injectionScanner: false });
+    await applyConfig({ injectionScanner: false });
     const downstream = await spawnAndCaptureEnv({ "ACCESS-KEY": "abc" });
     expect(downstream["ACCESS-KEY"]).toBeUndefined();
   });
 
   it("additive override: PII lexeme added — PII_DATA dropped, defaults still applied", async () => {
-    applyConfig({
+    await applyConfig({
       injectionScanner: false,
       envScrubber: { credentialLexemes: ["API_KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL", "AUTH", "BEARER", "COOKIE", "SESSION", "ACCESS_KEY", "PII"] },
     });
@@ -1409,7 +1417,7 @@ describe("filterShellEnv (config-driven secret env predicate)", () => {
   });
 
   it("full-replace lexemes ['PII'] — defaults disabled, only PII names dropped", async () => {
-    applyConfig({
+    await applyConfig({
       injectionScanner: false,
       envScrubber: { credentialLexemes: ["PII"] },
     });
@@ -1422,7 +1430,7 @@ describe("filterShellEnv (config-driven secret env predicate)", () => {
   });
 
   it("empty configPointerSuffixes ([]) disables layer 2 — RESET_PASSWORD_URL dropped", async () => {
-    applyConfig({
+    await applyConfig({
       injectionScanner: false,
       envScrubber: { configPointerSuffixes: [] },
     });
@@ -1434,7 +1442,7 @@ describe("filterShellEnv (config-driven secret env predicate)", () => {
     expect(downstream["OPENAI_BASE_URL"]).toBeDefined();
   });
 
-  it("restores default predicate at end (no test pollution)", () => {
-    applyConfig({ injectionScanner: false });
+  it("restores default predicate at end (no test pollution)", async () => {
+    await applyConfig({ injectionScanner: false });
   });
 });

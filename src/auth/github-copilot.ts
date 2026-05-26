@@ -64,7 +64,7 @@ async function fetchJson(url: string, init: RequestInit): Promise<Record<string,
 }
 
 async function startDeviceFlow(domain: string, headers: Record<string, string>): Promise<DeviceCodeResponse> {
-  const clientId = loadConfig().oauth.githubCopilot.clientId;
+  const clientId = (await loadConfig()).oauth.githubCopilot.clientId;
   const urls = getUrls(domain);
   const data = await fetchJson(urls.deviceCodeUrl, {
     method: "POST",
@@ -111,7 +111,7 @@ async function pollForAccessToken(
   expiresIn: number,
   headers: Record<string, string>,
 ): Promise<string> {
-  const clientId = loadConfig().oauth.githubCopilot.clientId;
+  const clientId = (await loadConfig()).oauth.githubCopilot.clientId;
   const urls = getUrls(domain);
   const deadline = Date.now() + expiresIn * 1000;
   let intervalMs = Math.max(1000, Math.floor(intervalSeconds * 1000));

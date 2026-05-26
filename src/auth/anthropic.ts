@@ -48,7 +48,7 @@ async function exchangeCode(
   code: string,
   verifier: string,
 ): Promise<OAuthCredentials> {
-  const clientId = loadConfig().oauth.anthropic.clientId;
+  const clientId = (await loadConfig()).oauth.anthropic.clientId;
   const response = await fetch(TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -79,7 +79,7 @@ async function exchangeCode(
 }
 
 async function refreshAccessToken(refreshToken: string): Promise<OAuthCredentials> {
-  const clientId = loadConfig().oauth.anthropic.clientId;
+  const clientId = (await loadConfig()).oauth.anthropic.clientId;
   const response = await fetch(TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -163,7 +163,7 @@ function startCallbackServer(
 export async function loginAnthropic(
   callbacks: OAuthLoginCallbacks,
 ): Promise<OAuthCredentials> {
-  const clientId = loadConfig().oauth.anthropic.clientId;
+  const clientId = (await loadConfig()).oauth.anthropic.clientId;
   const { verifier, challenge } = await generatePKCE();
   const state = createState();
 

@@ -76,14 +76,14 @@ describe("seedProject", () => {
   });
   it("writes saivage.json with web channel and info severity", async () => {
     await seedProject(projectRoot, { name: "p", objectives: [] });
-    const cfg = loadConfig(true, projectRoot);
+    const cfg = await loadConfig(projectRoot);
     expect(cfg.notifications.channels).toEqual(["web"]);
     expect(cfg.notifications.filters.min_severity).toBe("info");
   });
 
   it("does not write a default orchestrator model into saivage.json", async () => {
     await seedProject(projectRoot, { name: "p", objectives: [] });
-    const cfg = loadConfig(true, projectRoot);
+    const cfg = await loadConfig(projectRoot);
     expect(cfg.models.orchestrator).toBeUndefined();
   });
 });

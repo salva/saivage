@@ -286,7 +286,7 @@ program
         process.env["SAIVAGE_ROOT"] = resolve(root, ".saivage");
       }
 
-      const config = loadConfig(true, root ?? undefined);
+      const config = await loadConfig(root ?? undefined);
       const router = new ModelRouter(config);
       await router.init();
       const providers = opts.provider ? [opts.provider as string] : router.listProviders();
@@ -430,7 +430,7 @@ program
     if (providerId === "github-copilot") {
       try {
         const { loadConfig } = await import("../config.js");
-        const cfg = loadConfig();
+        const cfg = await loadConfig();
         const cfgHeaders = (cfg as unknown as { providers?: Record<string, { headers?: Record<string, string> }> })
           .providers?.["github-copilot"]?.headers;
         if (cfgHeaders && Object.keys(cfgHeaders).length > 0) loginHeaders = cfgHeaders;

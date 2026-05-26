@@ -125,7 +125,7 @@ export async function bootstrap(
   process.env["PROJECT_ROOT"] = project.projectRoot;
 
   // 2. Load project-local runtime config
-  const config = loadConfig(true, project.projectRoot);
+  const config = await loadConfig(project.projectRoot);
   log.info("[v2] Config loaded");
   const routing = new ModelRoutingResolver(project.config, {
     ...config,

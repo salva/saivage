@@ -14,12 +14,12 @@ let tmpDir: string;
 let prevCwd: string;
 let runtime: McpRuntime;
 
-beforeEach(() => {
+beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "wi15-"));
-  initProjectTree(tmpDir);
+  await initProjectTree(tmpDir);
   prevCwd = process.cwd();
   process.chdir(tmpDir);
-  const cfg = loadConfig(true, tmpDir);
+  const cfg = await loadConfig(tmpDir);
   runtime = new McpRuntime(cfg);
   registerBuiltinServices(runtime, cfg.mcp, cfg.security);
 });
