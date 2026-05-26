@@ -58,15 +58,77 @@ function recordLlmCall(_spec: string, _data: Record<string, unknown>): void {
   // Metrics are logged via the log module; no separate telemetry store needed.
 }
 
-/**
- * Maps Saivage provider names -> OAuth provider IDs (for resolveApiKey).
- */
-const PROVIDER_TO_OAUTH: Record<string, string> = {
-  "openai-codex": "openai-codex",
-  "anthropic": "anthropic",
-  "github-copilot": "github-copilot",
-  "copilot": "github-copilot",
-};
+interface ProviderDescriptor<N extends string = string> {
+  readonly name: N;
+  shouldRegister(ctx: { cfg: RuntimeProviderConfigLike | undefined; hasAccounts: boolean }): Promise<boolean>;
+  create(ctx: { providerConfig: RuntimeProviderConfigLike | undefined; accountConfig: RuntimeProviderAccountLike | undefined }): ModelProvider;
+}
+
+function makePiAiDescriptor<N extends string>(
+  name: N,
+  shouldRegister: ProviderDescriptor<N>["shouldRegister"],
+): ProviderDescriptor<N> {
+  return {
+    name,
+    shouldRegister,
+    create: ({ providerConfig, accountConfig }) => {
+      const provider = new PiAiProvider(name);
+      const apiKey = accountConfig?.apiKey ?? providerConfig?.apiKey;
+      if (apiKey) provider.setApiKey(apiKey);
+      return provider;
+    },
+  };
+}
+
+const PROVIDER_DESCRIPTORS = [
+  {
+    name: "github-copilot",
+    shouldRegister: async ({ cfg, hasAccounts }) =>
+      !!cfg || hasAccounts || (await hasOAuthCredentials("github-copilot")),
+    create: ({ providerConfig, accountConfig }) => {
+      const merged = { ...(providerConfig?.headers ?? {}), ...(accountConfig?.headers ?? {}) };
+      const headers = Object.keys(merged).length > 0 ? merged : undefined;
+      const apiKey = accountConfig?.apiKey ?? providerConfig?.apiKey;
+      return new CopilotProvider(apiKey, headers);
+    },
+  },
+  makePiAiDescriptor("anthropic", async ({ cfg, hasAccounts }) =>
+    !!cfg || hasAccounts || (await hasOAuthCredentials("anthropic")) || !!process.env["ANTHROPIC_API_KEY"]),
+  makePiAiDescriptor("openai", async ({ cfg, hasAccounts }) =>
+    !!cfg || hasAccounts || !!process.env["OPENAI_API_KEY"]),
+  makePiAiDescriptor("openai-codex", async ({ cfg, hasAccounts }) =>
+    !!cfg || hasAccounts || (await hasOAuthCredentials("openai-codex")) || !!process.env["OPENAI_CODEX_API_KEY"]),
+  makePiAiDescriptor("opencode", async ({ cfg, hasAccounts }) =>
+    !!cfg || hasAccounts || !!process.env["OPENCODE_API_KEY"]),
+  makePiAiDescriptor("opencode-go", async ({ cfg, hasAccounts }) =>
+    !!cfg || hasAccounts || !!process.env["OPENCODE_API_KEY"]),
+  {
+    name: "ollama",
+    shouldRegister: async () => true,
+    create: ({ providerConfig, accountConfig }) =>
+      new OllamaProvider(
+        accountConfig?.baseUrl ?? providerConfig?.baseUrl,
+        providerConfig?.defaultContextWindow,
+      ),
+  },
+  {
+    name: "llamacpp",
+    shouldRegister: async ({ cfg, hasAccounts }) =>
+      !!cfg || hasAccounts || !!process.env["LLAMACPP_BASE_URL"],
+    create: ({ providerConfig, accountConfig }) =>
+      new LlamaCppProvider(
+        accountConfig?.baseUrl ?? providerConfig?.baseUrl ?? process.env["LLAMACPP_BASE_URL"],
+        providerConfig?.defaultContextWindow,
+      ),
+  },
+] as const satisfies readonly ProviderDescriptor[];
+
+type ProviderName = (typeof PROVIDER_DESCRIPTORS)[number]["name"];
+
+const PROVIDER_DESCRIPTORS_BY_NAME: ReadonlyMap<ProviderName, ProviderDescriptor<ProviderName>> =
+  new Map(
+    PROVIDER_DESCRIPTORS.map((d) => [d.name, d as ProviderDescriptor<ProviderName>]),
+  );
 
 export class ModelRouter {
   private providers = new Map<string, ModelProvider>();
@@ -114,24 +176,13 @@ export class ModelRouter {
     this.modelEquivalents = mergeEquivalenceIndexes(manualEquivs, discovered);
   }
 
-  private async initProviders(config: SaivageConfig): Promise<void> {
-    void config;
-
-    const knownProviders = [
-      "github-copilot",
-      "anthropic",
-      "openai",
-      "openai-codex",
-      "opencode",
-      "opencode-go",
-      "ollama",
-      "llamacpp",
-    ];
-
-    for (const providerName of knownProviders) {
-      if (!(await this.shouldRegisterProvider(providerName))) continue;
-      const provider = this.createProvider(providerName);
-      if (provider) this.providers.set(providerName, provider);
+  private async initProviders(_config: SaivageConfig): Promise<void> {
+    for (const descriptor of PROVIDER_DESCRIPTORS) {
+      const cfg = this.providerConfigs[descriptor.name];
+      const hasAccounts = Object.keys(cfg?.accounts ?? {}).length > 0;
+      if (!(await descriptor.shouldRegister({ cfg, hasAccounts }))) continue;
+      const provider = descriptor.create({ providerConfig: cfg, accountConfig: undefined });
+      this.providers.set(descriptor.name, provider);
     }
   }
 
@@ -186,7 +237,6 @@ export class ModelRouter {
     providerName: string,
     options: { authProfileKey?: string; accountRef?: string } = {},
   ): Promise<string | null> {
-    const oauthId = PROVIDER_TO_OAUTH[providerName] ?? providerName;
     const providerConfig = this.providerConfigs[providerName];
     const accountConfig = this.getRequestedAccountConfig(providerName, options);
     const mergedHeaders = {
@@ -197,21 +247,21 @@ export class ModelRouter {
 
     if (options.authProfileKey) {
       const explicitProfile = await getProfileByKey(options.authProfileKey);
-      if (explicitProfile?.provider === oauthId) {
-        const key = await getOAuthApiKey(oauthId, { profileKey: options.authProfileKey, headers });
+      if (explicitProfile?.provider === providerName) {
+        const key = await getOAuthApiKey(providerName, { profileKey: options.authProfileKey, headers });
         if (key) return key;
       }
     }
 
     if (accountConfig?.authProfile) {
-      const profiledKey = await getOAuthApiKey(oauthId, { profileKey: accountConfig.authProfile, headers });
+      const profiledKey = await getOAuthApiKey(providerName, { profileKey: accountConfig.authProfile, headers });
       if (profiledKey) return profiledKey;
     }
 
     if (accountConfig?.apiKey) return accountConfig.apiKey;
     if (providerConfig?.apiKey) return providerConfig.apiKey;
 
-    return getOAuthApiKey(oauthId, { headers });
+    return getOAuthApiKey(providerName, { headers });
   }
 
   /** Resolve a role (e.g. "coder") to a model spec string */
@@ -568,7 +618,7 @@ export class ModelRouter {
       if (parsed && !fallback.includes("/") && this.modelEquivalents.has(modelSpec)) {
         continue;
       }
-      const next = parsed && isProviderName(fallback, this.providerConfigs) ? `${fallback}/${model}` : fallback;
+      const next = parsed && isProviderName(fallback) ? `${fallback}/${model}` : fallback;
       this.appendFailoverChain(next, chain, expanded, request);
     }
   }
@@ -742,32 +792,6 @@ export class ModelRouter {
     const parsed = parseAccountRef(accountRef.includes(".") ? accountRef : `${providerName}.${accountRef}`);
     return parsed.provider === providerName ? parsed.account : undefined;
   }
-  private async shouldRegisterProvider(providerName: string): Promise<boolean> {
-    const cfg = this.providerConfigs[providerName];
-    const hasAccounts = Object.keys(cfg?.accounts ?? {}).length > 0;
-
-    switch (providerName) {
-      case "github-copilot":
-        return !!cfg || hasAccounts || (await hasOAuthCredentials("github-copilot"));
-      case "anthropic":
-        return !!cfg || hasAccounts || (await hasOAuthCredentials("anthropic")) || !!process.env["ANTHROPIC_API_KEY"];
-      case "openai":
-        return !!cfg || hasAccounts || !!process.env["OPENAI_API_KEY"];
-      case "openai-codex":
-        return !!cfg || hasAccounts || (await hasOAuthCredentials("openai-codex")) || !!process.env["OPENAI_CODEX_API_KEY"];
-      case "opencode":
-        return !!cfg || hasAccounts || !!process.env["OPENCODE_API_KEY"];
-      case "opencode-go":
-        return !!cfg || hasAccounts || !!process.env["OPENCODE_API_KEY"];
-      case "ollama":
-        return true;
-      case "llamacpp":
-        return !!cfg || hasAccounts || !!process.env["LLAMACPP_BASE_URL"];
-      default:
-        return !!cfg || hasAccounts;
-    }
-  }
-
   /** Reset sticky failover for a model */
   clearStickyFailover(modelSpec: string): void {
     const was = this.stickyFailovers.get(modelSpec);
@@ -778,52 +802,11 @@ export class ModelRouter {
   }
 
   private createProvider(providerName: string, accountName?: string): ModelProvider | undefined {
+    const descriptor = PROVIDER_DESCRIPTORS_BY_NAME.get(providerName as ProviderName);
+    if (!descriptor) return undefined;
     const accountConfig = accountName ? this.getAccountConfig(providerName, accountName) : undefined;
     const providerConfig = this.providerConfigs[providerName];
-    const apiKey = accountConfig?.apiKey ?? providerConfig?.apiKey;
-    const baseUrl = accountConfig?.baseUrl ?? providerConfig?.baseUrl;
-
-    switch (providerName) {
-      case "github-copilot": {
-        const mergedHeaders = { ...(providerConfig?.headers ?? {}), ...(accountConfig?.headers ?? {}) };
-        const override = Object.keys(mergedHeaders).length > 0 ? mergedHeaders : undefined;
-        return new CopilotProvider(apiKey, override);
-      }
-      case "anthropic": {
-        const provider = new PiAiProvider("anthropic");
-        if (apiKey) provider.setApiKey(apiKey);
-        return provider;
-      }
-      case "openai": {
-        const provider = new PiAiProvider("openai");
-        if (apiKey) provider.setApiKey(apiKey);
-        return provider;
-      }
-      case "openai-codex": {
-        const provider = new PiAiProvider("openai-codex");
-        if (apiKey) provider.setApiKey(apiKey);
-        return provider;
-      }
-      case "opencode": {
-        const provider = new PiAiProvider("opencode");
-        if (apiKey) provider.setApiKey(apiKey);
-        return provider;
-      }
-      case "opencode-go": {
-        const provider = new PiAiProvider("opencode-go");
-        if (apiKey) provider.setApiKey(apiKey);
-        return provider;
-      }
-      case "ollama":
-        return new OllamaProvider(baseUrl, providerConfig?.defaultContextWindow);
-      case "llamacpp":
-        return new LlamaCppProvider(
-          baseUrl ?? process.env["LLAMACPP_BASE_URL"],
-          providerConfig?.defaultContextWindow,
-        );
-      default:
-        return undefined;
-    }
+    return descriptor.create({ providerConfig, accountConfig });
   }
 
   private getProviderForRequest(
@@ -882,17 +865,8 @@ function tryParseModelId(modelSpec: string): { provider: string; model: string }
   return modelSpec.includes("/") ? parseModelId(modelSpec) : undefined;
 }
 
-function isProviderName(value: string, providerConfigs: Record<string, RuntimeProviderConfigLike>): boolean {
-  return Object.prototype.hasOwnProperty.call(providerConfigs, value) || [
-    "github-copilot",
-    "anthropic",
-    "openai",
-    "openai-codex",
-    "opencode",
-    "opencode-go",
-    "ollama",
-    "llamacpp",
-  ].includes(value);
+function isProviderName(value: string): boolean {
+  return PROVIDER_DESCRIPTORS_BY_NAME.has(value as ProviderName);
 }
 
 function firstModel(value: string | string[] | undefined): string | undefined {

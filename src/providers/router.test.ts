@@ -277,6 +277,19 @@ describe("ModelRouter", () => {
     expect(response.modelSpec).toBe("gateway/shared-model");
   });
 
+  it("expands built-in provider-only failover into provider/model specs", async () => {
+    const router = new ModelRouter(makeConfig({
+      failover: {
+        "github-copilot": ["openai-codex"],
+      },
+    }));
+    await router.init();
+
+    const chain = (router as unknown as { buildChain(modelSpec: string): string[] }).buildChain("github-copilot/claude-sonnet-4.6");
+
+    expect(chain).toContain("openai-codex/claude-sonnet-4.6");
+  });
+
   it("does not carry provider-only failover onto models with explicit equivalents", async () => {
     const router = new ModelRouter(makeConfig({
       modelEquivalents: {
@@ -295,6 +308,22 @@ describe("ModelRouter", () => {
       "openai-codex/gpt-5.3-codex",
     ]);
     expect(chain).not.toContain("openai-codex/claude-sonnet-4.6");
+  });
+
+  it("does not treat arbitrary providerConfigs keys as provider-only failover names", async () => {
+    const router = new ModelRouter(makeConfig({
+      providers: {
+        "not-a-real-provider": { apiKey: "x" },
+      },
+      failover: {
+        "github-copilot/claude-sonnet-4.6": ["not-a-real-provider"],
+      },
+    }));
+    await router.init();
+
+    const chain = (router as unknown as { buildChain(modelSpec: string): string[] }).buildChain("github-copilot/claude-sonnet-4.6");
+
+    expect(chain).not.toContain("not-a-real-provider/claude-sonnet-4.6");
   });
 
   it("returns metadata for the actual provider and model used", async () => {
