@@ -266,6 +266,14 @@ export const AgentStateSchema = z.object({
   current_task_id: z.string().optional(),
   channel: z.string().optional(),
   started_at: z.string(),
+  compaction: z
+    .object({
+      count: z.number().int().nonnegative().default(0),
+      summarizer_fallbacks: z.number().int().nonnegative().default(0),
+      consecutive_fallbacks: z.number().int().nonnegative().default(0),
+      oversized_atomic_fallback: z.boolean().default(false),
+    })
+    .optional(),
 });
 export type AgentState = z.infer<typeof AgentStateSchema>;
 

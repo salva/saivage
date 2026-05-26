@@ -149,6 +149,7 @@ function makeTracker() {
     agentActivity(agentId: string) {
       this.activityIds.push(agentId);
     },
+    agentCompactionUpdate() {},
     agentStarted(agentId: string) {
       this.started.push(agentId);
     },

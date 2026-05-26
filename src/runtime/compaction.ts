@@ -15,14 +15,38 @@ export interface CompactionConfig {
   thresholdPct: number;
   /** Max compactions before forced termination. Default: 3. */
   maxCompactions: number;
+  /** Max consecutive fallback truncations before forced termination. Default: 3. */
+  maxConsecutiveFallbacks: number;
   /** Model spec to use for summarization (cheap model). */
   summaryModelSpec: string;
   /** Timeout for the summarization LLM call in ms. Default: 1_200_000 (20 min). */
   summaryTimeoutMs?: number;
+  /** Called when summarization fails and the round-parser fallback is used. */
+  onFallback?: (info: {
+    error: unknown;
+    keptRounds: number;
+    oversizedAtomic: boolean;
+  }) => void;
 }
 
 export interface CompactionState {
   compactionCount: number;
+  summarizerFallbacks: number;
+  consecutiveFallbacks: number;
+  oversizedAtomicFallback: boolean;
+}
+
+export type TextRound = { kind: "text"; messages: [Message] };
+export type ToolRound = { kind: "tool"; messages: [Message, Message]; toolIds: Set<string> };
+export type DanglingHalf = { kind: "dangling"; messages: [Message] };
+export type Round = TextRound | ToolRound | DanglingHalf;
+
+export interface SelectOpts {
+  config: CompactionConfig;
+  router: ModelRouter;
+  modelSpec: string;
+  systemPrompt: string;
+  tools: ToolSchema[] | undefined;
 }
 
 const COMPACTION_PROMPT = `Summarize this conversation for continuation. You must include:
@@ -33,6 +57,8 @@ const COMPACTION_PROMPT = `Summarize this conversation for continuation. You mus
 5. Instructions to re-read authoritative state from disk (plan, tasks, reports)
 
 Be concise but do not lose critical context. This summary will replace the full conversation history.`;
+
+const SAFETY_MARGIN_TOKENS = 1024;
 
 /**
  * Check if compaction should trigger based on the running token count.
@@ -52,7 +78,84 @@ export function isMaxCompactionsReached(
   state: CompactionState,
   config: CompactionConfig,
 ): boolean {
-  return state.compactionCount >= config.maxCompactions;
+  return (
+    state.compactionCount >= config.maxCompactions ||
+    state.consecutiveFallbacks >= config.maxConsecutiveFallbacks ||
+    state.oversizedAtomicFallback === true
+  );
+}
+
+export function parseRounds(messages: Message[]): Round[] {
+  const rounds: Round[] = [];
+  let i = 0;
+  while (i < messages.length) {
+    const message = messages[i];
+    const toolUseIds = collectToolUseIds(message);
+    if (message.role === "assistant" && toolUseIds.size > 0) {
+      const next = messages[i + 1];
+      const toolResultIds = next ? collectToolResultIds(next) : new Set<string>();
+      if (
+        next?.role === "user" &&
+        toolResultIds.size > 0 &&
+        setsEqual(toolUseIds, toolResultIds)
+      ) {
+        rounds.push({ kind: "tool", messages: [message, next], toolIds: toolUseIds });
+        i += 2;
+        continue;
+      }
+      rounds.push({ kind: "dangling", messages: [message] });
+      i += 1;
+      continue;
+    }
+
+    if (message.role === "user" && collectToolResultIds(message).size > 0) {
+      rounds.push({ kind: "dangling", messages: [message] });
+      i += 1;
+      continue;
+    }
+
+    rounds.push({ kind: "text", messages: [message] });
+    i += 1;
+  }
+  return rounds;
+}
+
+export function selectKeptRounds(
+  rounds: Round[],
+  opts: SelectOpts,
+): { kept: Round[]; oversizedAtomic: boolean } {
+  const atomic = rounds.filter((round): round is TextRound | ToolRound => round.kind !== "dangling");
+  if (atomic.length === 0) return { kept: [], oversizedAtomic: false };
+
+  const targetTokens =
+    Math.floor((opts.config.thresholdPct / 100) * opts.config.contextWindow) -
+    SAFETY_MARGIN_TOKENS;
+  const kept: Array<TextRound | ToolRound> = [];
+
+  for (let i = atomic.length - 1; i >= 0; i--) {
+    const candidate = atomic[i];
+    const projected = [candidate, ...kept];
+    const projectedTokens = opts.router.countTokens(
+      opts.modelSpec,
+      flatten(projected),
+      opts.systemPrompt,
+      opts.tools,
+    );
+    if (projectedTokens <= targetTokens) {
+      kept.unshift(candidate);
+      continue;
+    }
+    if (kept.length === 0) {
+      return { kept: [candidate], oversizedAtomic: true };
+    }
+    break;
+  }
+
+  return { kept, oversizedAtomic: false };
+}
+
+export function flatten(rounds: Round[]): Message[] {
+  return rounds.flatMap((round) => round.messages);
 }
 
 /**
@@ -97,6 +200,8 @@ export async function compactConversation(
     const summary = response.content;
 
     state.compactionCount++;
+    state.consecutiveFallbacks = 0;
+    state.oversizedAtomicFallback = false;
 
     // New history: system prompt + summary as a user message
     return [
@@ -106,22 +211,57 @@ export async function compactConversation(
       },
     ];
   } catch (err) {
-    log.error(`[compaction] Summarization failed, falling back to hard truncation: ${err}`);
+    log.error(`[compaction] Summarization failed, falling back to round-parser truncation: ${err}`);
 
-    // Fallback: keep only the most recent 20% of messages
-    const keepCount = Math.max(2, Math.ceil(messages.length * 0.2));
-    const recent = messages.slice(-keepCount);
+    state.summarizerFallbacks++;
+    state.consecutiveFallbacks++;
 
-    state.compactionCount++;
+    const { kept, oversizedAtomic } = selectKeptRounds(parseRounds(messages), {
+      config,
+      router,
+      modelSpec,
+      systemPrompt,
+      tools,
+    });
+    if (oversizedAtomic) {
+      state.oversizedAtomicFallback = true;
+    }
+    config.onFallback?.({ error: err, keptRounds: kept.length, oversizedAtomic });
 
     return [
       {
         role: "user" as const,
         content: "[Context was truncated due to length. Re-read state from disk to continue.]",
       },
-      ...recent,
+      ...flatten(kept),
     ];
   }
+}
+
+function collectToolUseIds(message: Message): Set<string> {
+  const ids = new Set<string>();
+  if (message.role !== "assistant" || !Array.isArray(message.content)) return ids;
+  for (const block of message.content) {
+    if (block.type === "tool_use" && block.id) ids.add(block.id);
+  }
+  return ids;
+}
+
+function collectToolResultIds(message: Message): Set<string> {
+  const ids = new Set<string>();
+  if (message.role !== "user" || !Array.isArray(message.content)) return ids;
+  for (const block of message.content) {
+    if (block.type === "tool_result" && block.tool_use_id) ids.add(block.tool_use_id);
+  }
+  return ids;
+}
+
+function setsEqual(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const value of a) {
+    if (!b.has(value)) return false;
+  }
+  return true;
 }
 
 /** Serialize messages into a compact text format for summarization. */

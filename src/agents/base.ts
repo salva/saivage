@@ -112,6 +112,16 @@ export interface BaseAgentConfig {
   abortSignal?: { aborted: boolean };
   /** Notify the runtime that this agent is still making progress. */
   onActivity?: (agentId: string) => void;
+  /** Notify the runtime when compaction counters change. */
+  onCompactionUpdate?: (
+    agentId: string,
+    compaction: {
+      count: number;
+      summarizerFallbacks: number;
+      consecutiveFallbacks: number;
+      oversizedAtomicFallback: boolean;
+    },
+  ) => void;
   /**
    * Test hook (FR-16 / WI-14): invoked once after the Planner
    * pre-compaction memory-write window closes, with the number of
@@ -145,10 +155,16 @@ export class BaseAgent {
   protected cancelled = false;
   private dispatcher: Dispatcher;
   private hasChildSpawner = false;
-  private compactionState: CompactionState = { compactionCount: 0 };
+  private compactionState: CompactionState = {
+    compactionCount: 0,
+    summarizerFallbacks: 0,
+    consecutiveFallbacks: 0,
+    oversizedAtomicFallback: false,
+  };
   private compactionConfig: CompactionConfig;
   private abortSignal?: { aborted: boolean };
   private onActivity?: (agentId: string) => void;
+  private onCompactionUpdate?: BaseAgentConfig["onCompactionUpdate"];
   private diagnostics: ConversationEntry[] = [];
   private messageTimestamps: string[] = [];
   private messageSources: (LlmResponseSource | undefined)[] = [];
@@ -194,11 +210,13 @@ export class BaseAgent {
       contextWindow,
       thresholdPct: agentConfig?.compaction_threshold_pct ?? 80,
       maxCompactions: agentConfig?.max_compactions ?? 3,
+      maxConsecutiveFallbacks: 3,
       summaryModelSpec: ctx.modelSpec, // use same model for summarization
     };
 
     this.abortSignal = config.abortSignal;
     this.onActivity = config.onActivity;
+    this.onCompactionUpdate = config.onCompactionUpdate;
     this.onCompactionHookComplete = config.onCompactionHookComplete;
     this.inputChannels = config.inputChannels ?? [];
 
@@ -238,11 +256,12 @@ export class BaseAgent {
       // Check compaction before LLM call
       if (shouldCompact(this.runningInputTokens + this.staticInputTokens, this.compactionConfig)) {
         if (isMaxCompactionsReached(this.compactionState, this.compactionConfig)) {
+          const stopReason = this.compactionStopReason();
           log.warn(
-            `[agent:${this.role}:${this.id}] Max compactions reached — terminating`,
+            `[agent:${this.role}:${this.id}] Compaction stop reached (${stopReason}) — terminating`,
           );
           return {
-            text: "Agent terminated: max compactions exceeded",
+            text: `Agent terminated: ${stopReason}`,
             finishReason: "max_compactions",
           };
         }
@@ -544,7 +563,8 @@ export class BaseAgent {
             ? "context window exceeded"
             : "orphaned tool_result";
           if (isMaxCompactionsReached(this.compactionState, this.compactionConfig)) {
-            const failure = `Cannot repair malformed model request after ${this.compactionState.compactionCount} compactions (${reason}). Aborting this agent so the parent can handle the failure.`;
+            const stopReason = this.compactionStopReason();
+            const failure = `Cannot repair malformed model request: ${stopReason} (${reason}). Aborting this agent so the parent can handle the failure.`;
             this.addDiagnostic("model_issue", failure);
             this.pendingCall = null;
             this.pendingRoundId = null;
@@ -715,6 +735,25 @@ export class BaseAgent {
     this.onActivity?.(this.id);
   }
 
+  private recordCompactionUpdate(): void {
+    this.onCompactionUpdate?.(this.id, {
+      count: this.compactionState.compactionCount,
+      summarizerFallbacks: this.compactionState.summarizerFallbacks,
+      consecutiveFallbacks: this.compactionState.consecutiveFallbacks,
+      oversizedAtomicFallback: this.compactionState.oversizedAtomicFallback,
+    });
+  }
+
+  private compactionStopReason(): string {
+    if (this.compactionState.oversizedAtomicFallback) {
+      return "oversized atomic tool round (use stash)";
+    }
+    if (this.compactionState.consecutiveFallbacks >= this.compactionConfig.maxConsecutiveFallbacks) {
+      return "summarizer fallback exhausted";
+    }
+    return "max compactions exceeded";
+  }
+
   /** Public lifecycle status for the dashboard. */
   public getActivityStatus(): ActivityStatus {
     return {
@@ -869,7 +908,15 @@ export class BaseAgent {
       this.systemPrompt,
       this.messages,
       this.ctx.router,
-      this.compactionConfig,
+      {
+        ...this.compactionConfig,
+        onFallback: (info) => {
+          this.addDiagnostic(
+            "model_repair",
+            `Summarizer fallback (round-parser truncation). keptRounds=${info.keptRounds}${info.oversizedAtomic ? ", oversized atomic round" : ""}.`,
+          );
+        },
+      },
       this.compactionState,
       this.ctx.modelSpec,
       this.getToolSchemas(),
@@ -888,6 +935,7 @@ export class BaseAgent {
       );
     }
     this.replaceMessages(next);
+    this.recordCompactionUpdate();
     for (const ch of this.inputChannels) ch.onContextReset();
   }
 

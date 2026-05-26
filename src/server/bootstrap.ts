@@ -312,6 +312,7 @@ export function createChildSpawner(
         ctx.stageId = managerInput.stage?.id;
         agent = await ManagerAgent.create(ctx, managerInput, managerSpawner, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
+          onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
         });
         tracker.setCurrentStage(managerInput.stage?.id ?? null);
         break;
@@ -322,6 +323,7 @@ export function createChildSpawner(
         ctx.stageId = workerInput.stageId;
         agent = await WorkerAgent.createWorker<CoderAgent>(ctx, workerInput, role, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
+          onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
         });
         taskId = workerInput.task?.id;
         tracker.setCurrentStage(workerInput.stageId);
@@ -333,6 +335,7 @@ export function createChildSpawner(
         ctx.stageId = workerInput.stageId;
         agent = await WorkerAgent.createWorker<ResearcherAgent>(ctx, workerInput, role, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
+          onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
         });
         taskId = workerInput.task?.id;
         tracker.setCurrentStage(workerInput.stageId);
@@ -344,6 +347,7 @@ export function createChildSpawner(
         ctx.stageId = workerInput.stageId;
         agent = await WorkerAgent.createWorker<DataAgent>(ctx, workerInput, role, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
+          onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
         });
         taskId = workerInput.task?.id;
         tracker.setCurrentStage(workerInput.stageId);
@@ -365,6 +369,7 @@ export function createChildSpawner(
 
         const reviewer = await WorkerAgent.createWorker<ReviewerAgent>(ctx, workerInput, role, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
+          onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
         });
         agent = reviewer;
         stageReviewers.set(stageId, { agent: reviewer, ctx });
@@ -378,6 +383,7 @@ export function createChildSpawner(
         ctx.stageId = workerInput.stageId;
         agent = await WorkerAgent.createWorker<DesignerAgent>(ctx, workerInput, role, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
+          onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
         });
         taskId = workerInput.task?.id;
         tracker.setCurrentStage(workerInput.stageId);
@@ -389,6 +395,7 @@ export function createChildSpawner(
         ctx.stageId = tracker.getCurrentStage() ?? undefined;
         agent = await InspectorAgent.create(ctx, inspectorInput, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
+          onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
         });
         break;
       }
@@ -500,6 +507,7 @@ export async function runPlanner(
   const planner = await PlannerAgent.create(ctx, childSpawner, {
     abortSignal: options.abortSignal,
     onActivity: (agentId) => tracker.agentActivity(agentId),
+    onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
   });
 
   tracker.agentStarted(ctx.agentId, "planner");

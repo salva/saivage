@@ -362,6 +362,28 @@ export class RuntimeTracker {
     this.flush();
   }
 
+  /** Persist updated compaction counters for an active agent. */
+  agentCompactionUpdate(
+    agentId: string,
+    c: {
+      count: number;
+      summarizerFallbacks: number;
+      consecutiveFallbacks: number;
+      oversizedAtomicFallback: boolean;
+    },
+  ): void {
+    if (this.frozen) return;
+    const agent = this.agents.get(agentId);
+    if (!agent) return;
+    agent.compaction = {
+      count: c.count,
+      summarizer_fallbacks: c.summarizerFallbacks,
+      consecutive_fallbacks: c.consecutiveFallbacks,
+      oversized_atomic_fallback: c.oversizedAtomicFallback,
+    };
+    this.flush();
+  }
+
   /** Update the current stage ID and persist. */
   setCurrentStage(stageId: string | null): void {
     if (this.frozen) return;

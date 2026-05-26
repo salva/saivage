@@ -1112,6 +1112,7 @@ describe("Compaction", () => {
       contextWindow: 100_000,
       thresholdPct: 80,
       maxCompactions: 3,
+      maxConsecutiveFallbacks: 3,
       summaryModelSpec: "test/model",
     };
 
@@ -1125,14 +1126,31 @@ describe("Compaction", () => {
       contextWindow: 100_000,
       thresholdPct: 80,
       maxCompactions: 3,
+      maxConsecutiveFallbacks: 3,
       summaryModelSpec: "test/model",
     };
 
     expect(
-      isMaxCompactionsReached({ compactionCount: 2 }, config),
+      isMaxCompactionsReached(
+        {
+          compactionCount: 2,
+          summarizerFallbacks: 0,
+          consecutiveFallbacks: 0,
+          oversizedAtomicFallback: false,
+        },
+        config,
+      ),
     ).toBe(false);
     expect(
-      isMaxCompactionsReached({ compactionCount: 3 }, config),
+      isMaxCompactionsReached(
+        {
+          compactionCount: 3,
+          summarizerFallbacks: 0,
+          consecutiveFallbacks: 0,
+          oversizedAtomicFallback: false,
+        },
+        config,
+      ),
     ).toBe(true);
   });
 });
