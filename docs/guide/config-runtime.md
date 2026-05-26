@@ -250,6 +250,9 @@ Wall-clock and output caps for the in-process MCP tooling layer (F11).
   "maxFetchBytes": 200000,
   "maxDownloadBytes": 262144000,
   "maxFileReadBytes": 200000,
+  "maxSearchResults": 1000,
+  "maxSearchDepth": 20,
+  "maxSearchMs": 10000,
   "fetchTimeoutMs": 60000,
   "webSearchMaxBytes": 2097152,
   "webSearchMaxResults": 20,
@@ -266,6 +269,31 @@ caller requests less; it must not exceed `shellTimeoutMs - WALL_CLOCK_HEADROOM_M
 Whole-file reads above the cap return `FILE_TOO_LARGE`; callers must use the
 `offset`/`length` window (each capped by the same value) or fall back to
 `run_command` with `head`/`tail`/`grep`.
+
+`maxSearchResults`, `maxSearchDepth`, and `maxSearchMs` bound the in-process
+async `search_files` walker (G32). `maxSearchResults` is the absolute ceiling
+on returned file paths (default `1000`); per-call `max_results` may only lower
+this — values above the configured ceiling are clamped, not rejected. Negative
+or non-integer `max_results` returns `INVALID_ARGUMENT`. `maxSearchDepth` is
+the maximum recursion depth measured from the root directory (default `20`)
+and `maxSearchMs` is the per-call wall-clock budget covering the entire walk
+(default `10000`). When any cap binds the walker stops cleanly and emits
+`truncated: true` with `truncated_reason` set to `"results"`, `"depth"`, or
+`"time"`. Patterns use a segment-aware glob dialect: `*` matches within a
+single path segment, `?` matches a single character within a segment, `[…]`
+forms a character class, and `**` matches zero or more whole segments and may
+only appear as a complete segment (`foo**`, `**bar`, and `foo**bar` are
+rejected with `INVALID_PATTERN`). The success envelope is
+`{ files, truncated, truncated_reason, max_results, max_depth, max_ms,
+skipped? }`; `skipped[]` (present only when non-empty) enumerates subtrees the
+walker observed but could not enter, each entry shaped
+`{ path, code, errno? }` with `code` ∈ {`PERMISSION_DENIED`, `NOT_FOUND`}.
+Error envelopes carry a stable `code` field — one of `INVALID_ARGUMENT`,
+`INVALID_PATTERN`, `NOT_FOUND`, `NOT_A_DIRECTORY`, `PERMISSION_DENIED`,
+`IO_ERROR`, or `READ_DIRECTORY_FAILED` — alongside the human-readable
+`error` message and an optional `errno`. `READ_DIRECTORY_FAILED` is reserved
+for unrecoverable mid-walk errors (e.g. `EMFILE`/`EIO`); the walker discards
+any partial result and surfaces only the envelope.
 
 `maxFetchBytes` is the cap on **raw upstream response bytes** read by the
 `fetch_url` and `fetch_page_text` MCP tools (clamped to `[1_000, 1_000_000]`

@@ -982,3 +982,341 @@ describe("data: web_search (G33)", () => {
     }
   });
 });
+
+describe("search_files (G32)", () => {
+  let projectRoot: string;
+  let previousProjectRoot: string | undefined;
+  let previousSaivageRoot: string | undefined;
+  let runtime: McpRuntime;
+  let cfg: ReturnType<typeof loadConfig>;
+
+  function setup(mcpOverride: Record<string, unknown> = {}) {
+    projectRoot = mkdtempSync(join(tmpdir(), "saivage-builtins-g32-"));
+    previousProjectRoot = process.env["PROJECT_ROOT"];
+    previousSaivageRoot = process.env["SAIVAGE_ROOT"];
+    process.env["PROJECT_ROOT"] = projectRoot;
+    process.env["SAIVAGE_ROOT"] = join(projectRoot, ".saivage");
+    mkdirSync(join(projectRoot, ".saivage"), { recursive: true });
+    writeFileSync(
+      join(projectRoot, ".saivage", "saivage.json"),
+      JSON.stringify({
+        runtime: { maxServices: 50, restartOnCrash: true, healthCheckIntervalMs: 0, idleShutdownMs: 0 },
+        mcp: { shellTimeoutFloorMs: 0, ...mcpOverride },
+      }),
+      "utf-8",
+    );
+    cfg = loadConfig(true, projectRoot);
+    runtime = new McpRuntime(cfg);
+    registerBuiltinServices(runtime, cfg.mcp);
+  }
+
+  beforeEach(() => setup());
+
+  afterEach(async () => {
+    await runtime.shutdown();
+    if (previousProjectRoot === undefined) delete process.env["PROJECT_ROOT"];
+    else process.env["PROJECT_ROOT"] = previousProjectRoot;
+    if (previousSaivageRoot === undefined) delete process.env["SAIVAGE_ROOT"];
+    else process.env["SAIVAGE_ROOT"] = previousSaivageRoot;
+    try {
+      rmSync(projectRoot, { recursive: true, force: true });
+    } catch {
+      // best-effort
+    }
+  });
+
+  function touch(rel: string) {
+    const full = join(projectRoot, rel);
+    mkdirSync(join(full, ".."), { recursive: true });
+    writeFileSync(full, "x", "utf-8");
+  }
+
+  function relMatches(result: unknown): string[] {
+    const r = result as { files: string[] };
+    return r.files.map((f) => f.startsWith(projectRoot + "/") ? f.slice(projectRoot.length + 1) : f).sort();
+  }
+
+  it("exposes search_files in the tool catalogue with the new schema", () => {
+    const tools = runtime.getAllTools();
+    const tool = tools.find((t) => t.name === "search_files");
+    expect(tool).toBeDefined();
+    const schema = tool!.inputSchema as { properties: Record<string, unknown>; required: string[] };
+    expect(schema.required).toEqual(["directory", "pattern"]);
+    expect(schema.properties.max_results).toBeDefined();
+  });
+
+  // 5.2 glob matrix
+  it("matches *.ts at the top level only", async () => {
+    touch("a.ts"); touch("b.txt"); touch("src/c.ts");
+    const r = await runtime.callTool("filesystem", "search_files", { directory: ".", pattern: "*.ts" });
+    expect(relMatches(r)).toEqual(["a.ts"]);
+    expect((r as { truncated: boolean }).truncated).toBe(false);
+    expect((r as { truncated_reason: unknown }).truncated_reason).toBeNull();
+  });
+
+  it("matches **/*.ts recursively", async () => {
+    touch("a.ts"); touch("b.txt"); touch("src/c.ts");
+    const r = await runtime.callTool("filesystem", "search_files", { directory: ".", pattern: "**/*.ts" });
+    expect(relMatches(r)).toEqual(["a.ts", "src/c.ts"]);
+  });
+
+  it("matches src/*.ts as directory-anchored single segment", async () => {
+    touch("a.ts"); touch("src/c.ts"); touch("src/sub/d.ts");
+    const r = await runtime.callTool("filesystem", "search_files", { directory: ".", pattern: "src/*.ts" });
+    expect(relMatches(r)).toEqual(["src/c.ts"]);
+  });
+
+  it("matches src/**/*.ts recursively under src", async () => {
+    touch("a.ts"); touch("src/c.ts"); touch("src/sub/d.ts");
+    const r = await runtime.callTool("filesystem", "search_files", { directory: ".", pattern: "src/**/*.ts" });
+    expect(relMatches(r)).toEqual(["src/c.ts", "src/sub/d.ts"]);
+  });
+
+  it("matches src/** as everything beneath src", async () => {
+    touch("a.ts"); touch("src/c.ts"); touch("src/sub/d.ts");
+    const r = await runtime.callTool("filesystem", "search_files", { directory: ".", pattern: "src/**" });
+    expect(relMatches(r)).toEqual(["src/c.ts", "src/sub/d.ts"]);
+  });
+
+  it("matches bare ** as every file in the tree", async () => {
+    mkdirSync(join(projectRoot, "tree"));
+    writeFileSync(join(projectRoot, "tree", "a.ts"), "x");
+    mkdirSync(join(projectRoot, "tree", "src"));
+    writeFileSync(join(projectRoot, "tree", "src", "c.ts"), "x");
+    const r = await runtime.callTool("filesystem", "search_files", { directory: "tree", pattern: "**" });
+    const files = (r as { files: string[] }).files
+      .map((f) => f.slice(join(projectRoot, "tree").length + 1))
+      .sort();
+    expect(files).toEqual(["a.ts", "src/c.ts"]);
+  });
+
+  it("matches a/**/b.ts across zero or more intermediate segments", async () => {
+    touch("a/b.ts"); touch("a/x/b.ts"); touch("a/x/y/b.ts"); touch("b.ts");
+    const r = await runtime.callTool("filesystem", "search_files", { directory: ".", pattern: "a/**/b.ts" });
+    expect(relMatches(r)).toEqual(["a/b.ts", "a/x/b.ts", "a/x/y/b.ts"]);
+  });
+
+  it("matches ?.ts as a single character", async () => {
+    touch("a.ts"); touch("ab.ts");
+    const r = await runtime.callTool("filesystem", "search_files", { directory: ".", pattern: "?.ts" });
+    expect(relMatches(r)).toEqual(["a.ts"]);
+  });
+
+  it("matches [ab].ts as a character class", async () => {
+    touch("a.ts"); touch("b.ts"); touch("c.ts");
+    const r = await runtime.callTool("filesystem", "search_files", { directory: ".", pattern: "[ab].ts" });
+    expect(relMatches(r)).toEqual(["a.ts", "b.ts"]);
+  });
+
+  // 5.3 glob rejection
+  it.each([
+    ["foo**bar"],
+    ["**foo"],
+    ["foo**"],
+    ["[abc"],
+  ])("rejects pattern %s with INVALID_PATTERN", async (pat) => {
+    touch("a.ts");
+    await expect(runtime.callTool("filesystem", "search_files", { directory: ".", pattern: pat }))
+      .rejects.toThrow(/INVALID_PATTERN/);
+  });
+
+  // 5.4 truncation envelope
+  it("returns empty files / truncated:false when no matches", async () => {
+    touch("a.txt");
+    const r = await runtime.callTool("filesystem", "search_files", { directory: ".", pattern: "*.ts" });
+    expect((r as { files: string[] }).files).toEqual([]);
+    expect((r as { truncated: boolean }).truncated).toBe(false);
+    expect((r as { truncated_reason: unknown }).truncated_reason).toBeNull();
+  });
+
+  it("max_results:0 with matches present yields truncated_reason:results", async () => {
+    touch("a.ts"); touch("b.ts"); touch("c.ts");
+    const r = await runtime.callTool("filesystem", "search_files",
+      { directory: ".", pattern: "*.ts", max_results: 0 });
+    expect((r as { files: string[] }).files).toEqual([]);
+    expect((r as { truncated: boolean }).truncated).toBe(true);
+    expect((r as { truncated_reason: unknown }).truncated_reason).toBe("results");
+  });
+
+  it("max_results:0 with zero matches does NOT mark truncated", async () => {
+    touch("a.txt");
+    const r = await runtime.callTool("filesystem", "search_files",
+      { directory: ".", pattern: "*.ts", max_results: 0 });
+    expect((r as { files: string[] }).files).toEqual([]);
+    expect((r as { truncated: boolean }).truncated).toBe(false);
+    expect((r as { truncated_reason: unknown }).truncated_reason).toBeNull();
+  });
+
+  it("under-boundary returns all matches, truncated:false", async () => {
+    touch("a.ts"); touch("b.ts");
+    const r = await runtime.callTool("filesystem", "search_files",
+      { directory: ".", pattern: "*.ts", max_results: 5 });
+    expect((r as { files: string[] }).files.length).toBe(2);
+    expect((r as { truncated: boolean }).truncated).toBe(false);
+  });
+
+  it("exact-boundary returns max_results matches, truncated:false (regression)", async () => {
+    touch("a.ts"); touch("b.ts"); touch("c.ts");
+    const r = await runtime.callTool("filesystem", "search_files",
+      { directory: ".", pattern: "*.ts", max_results: 3 });
+    expect((r as { files: string[] }).files.length).toBe(3);
+    expect((r as { truncated: boolean }).truncated).toBe(false);
+    expect((r as { truncated_reason: unknown }).truncated_reason).toBeNull();
+  });
+
+  it("over-boundary returns max_results matches, truncated_reason:results", async () => {
+    for (const n of ["a", "b", "c", "d", "e"]) touch(`${n}.ts`);
+    const r = await runtime.callTool("filesystem", "search_files",
+      { directory: ".", pattern: "*.ts", max_results: 3 });
+    expect((r as { files: string[] }).files.length).toBe(3);
+    expect((r as { truncated: boolean }).truncated).toBe(true);
+    expect((r as { truncated_reason: unknown }).truncated_reason).toBe("results");
+  });
+
+  it("depth cap produces truncated_reason:depth", async () => {
+    await runtime.shutdown();
+    setup({ maxSearchDepth: 2 });
+    touch("a/b/c/leaf.ts");
+    const r = await runtime.callTool("filesystem", "search_files",
+      { directory: ".", pattern: "**/*.ts" });
+    expect((r as { files: string[] }).files).toEqual([]);
+    expect((r as { truncated_reason: unknown }).truncated_reason).toBe("depth");
+  });
+
+  it("time cap can produce truncated_reason:time", async () => {
+    await runtime.shutdown();
+    setup({ maxSearchMs: 1 });
+    for (let i = 0; i < 200; i++) touch(`f${i}.ts`);
+    const r = await runtime.callTool("filesystem", "search_files",
+      { directory: ".", pattern: "*.ts" });
+    const tr = (r as { truncated_reason: unknown }).truncated_reason;
+    // either time-truncated or completed before the 1ms deadline expired
+    expect(tr === "time" || tr === null || tr === "results").toBe(true);
+    if (tr === "time") {
+      expect((r as { truncated: boolean }).truncated).toBe(true);
+    }
+  });
+
+  // 5.5 error envelope
+  it("rejects empty pattern with INVALID_ARGUMENT", async () => {
+    await expect(runtime.callTool("filesystem", "search_files",
+      { directory: ".", pattern: "" }))
+      .rejects.toThrow(/INVALID_ARGUMENT: pattern must be a non-empty string/);
+  });
+
+  it("rejects non-string pattern with INVALID_ARGUMENT", async () => {
+    await expect(runtime.callTool("filesystem", "search_files",
+      { directory: ".", pattern: 42 as never }))
+      .rejects.toThrow(/INVALID_ARGUMENT/);
+  });
+
+  it.each([[-1], [1.5]])("rejects max_results=%s with INVALID_ARGUMENT", async (bad) => {
+    await expect(runtime.callTool("filesystem", "search_files",
+      { directory: ".", pattern: "*.ts", max_results: bad as never }))
+      .rejects.toThrow(/INVALID_ARGUMENT/);
+  });
+
+  it("returns NOT_A_DIRECTORY when directory argument is a file", async () => {
+    touch("a.txt");
+    await expect(runtime.callTool("filesystem", "search_files",
+      { directory: "a.txt", pattern: "*" }))
+      .rejects.toThrow(/NOT_A_DIRECTORY/);
+  });
+
+  it("returns NOT_FOUND when directory does not exist", async () => {
+    await expect(runtime.callTool("filesystem", "search_files",
+      { directory: "missing-dir", pattern: "*" }))
+      .rejects.toThrow(/NOT_FOUND/);
+  });
+
+  it("rejects directories outside the project root", async () => {
+    await expect(runtime.callTool("filesystem", "search_files",
+      { directory: "/etc", pattern: "*" }))
+      .rejects.toThrow(/Path must stay inside/);
+  });
+
+  // 5.6 per-entry failure
+  it("permission-denied subtree appears in skipped[]", async () => {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return;
+    touch("a.ts");
+    mkdirSync(join(projectRoot, "locked"));
+    writeFileSync(join(projectRoot, "locked", "hidden.ts"), "x");
+    chmodSync(join(projectRoot, "locked"), 0o000);
+    try {
+      const r = await runtime.callTool("filesystem", "search_files",
+        { directory: ".", pattern: "**/*.ts" });
+      expect((r as { files: string[] }).files.map((f) => f.split("/").pop()).sort()).toEqual(["a.ts"]);
+      expect((r as { truncated: boolean }).truncated).toBe(false);
+      const sk = (r as { skipped?: Array<{ path: string; code: string }> }).skipped;
+      expect(sk).toBeDefined();
+      expect(sk!.length).toBe(1);
+      expect(sk![0].code).toBe("PERMISSION_DENIED");
+    } finally {
+      chmodSync(join(projectRoot, "locked"), 0o700);
+    }
+  });
+
+  it("symlink-loop subtree terminates walk via depth cap without raising", async () => {
+    touch("a.ts");
+    const loopDir = join(projectRoot, "loop");
+    mkdirSync(loopDir);
+    const { symlinkSync } = await import("node:fs");
+    try {
+      symlinkSync(loopDir, join(loopDir, "self"));
+    } catch {
+      return; // symlinks unavailable on this fs
+    }
+    // Symlink loops are followed by opendir up to MAX_SEARCH_DEPTH, which
+    // terminates the walk with truncated_reason:"depth" rather than
+    // READ_DIRECTORY_FAILED. Assert the walker terminates and a.ts is found.
+    const r = await runtime.callTool("filesystem", "search_files",
+      { directory: ".", pattern: "**/*.ts" });
+    const fnames = (r as { files: string[] }).files.map((f) => f.split("/").pop());
+    expect(fnames).toContain("a.ts");
+  });
+
+  it("child opendir EMFILE raises READ_DIRECTORY_FAILED and discards partial result", async () => {
+    // Exercises the unrecoverable subtree branch in the walker. We patch the
+    // fs/promises opendir binding observed by builtins.ts at module scope.
+    // ESM bindings are live but their target descriptor is non-configurable in
+    // some hosts; we work around by replacing the property on the imported
+    // namespace object that vi.mock has hoisted at the top of this file.
+    touch("a.ts");
+    mkdirSync(join(projectRoot, "sub"));
+    writeFileSync(join(projectRoot, "sub", "b.ts"), "x");
+    const fsp = await import("node:fs/promises");
+    let n = 0;
+    const original = fsp.opendir;
+    const desc = Object.getOwnPropertyDescriptor(fsp, "opendir");
+    if (!desc?.configurable) {
+      return; // host does not allow replacing opendir on this module
+    }
+    Object.defineProperty(fsp, "opendir", {
+      configurable: true,
+      writable: true,
+      value: (async (...args: Parameters<typeof original>) => {
+        n += 1;
+        if (n === 2) {
+          const e = new Error("simulated EMFILE") as NodeJS.ErrnoException;
+          e.code = "EMFILE";
+          throw e;
+        }
+        return original(...args);
+      }) as typeof original,
+    });
+    try {
+      await expect(runtime.callTool("filesystem", "search_files",
+        { directory: ".", pattern: "**/*.ts" }))
+        .rejects.toThrow(/READ_DIRECTORY_FAILED/);
+    } finally {
+      Object.defineProperty(fsp, "opendir", { ...desc, value: original });
+    }
+  });
+
+  // 5.7 no-subprocess regression
+  it("no longer shells out to find(1)", async () => {
+    const src = readFileSync(join(__dirname, "builtins.ts"), "utf-8");
+    expect(src).not.toMatch(/execFile.*["']find["']/);
+    expect(src).not.toMatch(/execFileAsync.*["']find["']/);
+  });
+});

@@ -13,7 +13,7 @@ import { knowledgeSkillsTools, knowledgeSkillsHandler } from "./knowledgeSkills.
 import { knowledgeMemoryTools, knowledgeMemoryHandler } from "./knowledgeMemory.js";
 
 import { createWriteStream } from "node:fs";
-import { writeFile, mkdir, readdir, stat, open } from "node:fs/promises";
+import { writeFile, mkdir, readdir, stat, open, opendir } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -44,6 +44,9 @@ const OUTPUT_GROWTH_POLL_MS = 1_000;
 let MAX_FETCH_BYTES = 200_000;
 let MAX_DOWNLOAD_BYTES = 250 * 1024 * 1024;
 let MAX_FILE_READ_BYTES = 200_000;
+let MAX_SEARCH_RESULTS = 1_000;
+let MAX_SEARCH_DEPTH = 20;
+let MAX_SEARCH_MS = 10_000;
 let FETCH_TIMEOUT_MS = 60_000;
 let SHELL_TIMEOUT_FLOOR_MS = 10 * 60 * 1000; // 10 minutes
 let WEB_SEARCH_MAX_BYTES = 2 * 1024 * 1024;
@@ -85,6 +88,72 @@ function parseHttpUrl(value: string): URL {
     throw new Error("URL must use http or https");
   }
   return url;
+}
+
+function translateSegment(seg: string): string {
+  let out = "";
+  let i = 0;
+  while (i < seg.length) {
+    const c = seg[i];
+    if (c === "*") { out += "[^/]*"; i += 1; continue; }
+    if (c === "?") { out += "[^/]"; i += 1; continue; }
+    if (c === "[") {
+      const close = seg.indexOf("]", i + 1);
+      if (close === -1) throw new Error("Unterminated character class");
+      out += seg.slice(i, close + 1);
+      i = close + 1;
+      continue;
+    }
+    if (/[.+^$()|{}\\]/.test(c)) { out += "\\" + c; i += 1; continue; }
+    out += c;
+    i += 1;
+  }
+  return out;
+}
+
+function globToRegExp(pattern: string): RegExp {
+  const segments = pattern.split("/");
+  const out: string[] = ["^"];
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    const isLast = i === segments.length - 1;
+    const isFirst = i === 0;
+
+    if (seg === "**") {
+      if (isFirst && isLast) {
+        out.push(".*");
+        continue;
+      }
+      if (isFirst) {
+        out.push("(?:[^/]+/)*");
+        continue;
+      }
+      if (isLast) {
+        out.push(".*");
+        continue;
+      }
+      out.push("(?:[^/]+/)*");
+      continue;
+    }
+
+    if (seg.includes("**")) {
+      throw new Error(
+        `'**' must occupy an entire path segment (got '${seg}')`,
+      );
+    }
+
+    out.push(translateSegment(seg));
+    if (!isLast) {
+      const next = segments[i + 1];
+      if (!(next === "**" && i + 1 < segments.length - 1)) {
+        out.push("/");
+      } else {
+        out.push("/");
+      }
+    }
+  }
+  out.push("$");
+  return new RegExp(out.join(""));
 }
 
 function headersObject(headers: Headers): Record<string, string> {
@@ -444,10 +513,26 @@ const filesystemTools: ToolEntry[] = [
   },
   {
     name: "search_files",
-    description: "Search for files matching a glob pattern",
+    description:
+      "Recursively search for files matching a glob under 'directory'. " +
+      "Glob dialect: '*' matches one path segment's chars, '?' matches " +
+      "one char, '[...]' is a character class, '**' matches zero or more " +
+      "path segments. Skips '.git' and 'node_modules' by default. " +
+      "Hard ceilings come from mcp.maxSearchResults (default 1000), " +
+      "mcp.maxSearchDepth (default 20), mcp.maxSearchMs (default 10000). " +
+      "Per-call 'max_results' may only lower the ceiling.",
     inputSchema: {
       type: "object",
-      properties: { directory: { type: "string" }, pattern: { type: "string" } },
+      properties: {
+        directory: { type: "string" },
+        pattern: { type: "string" },
+        max_results: {
+          type: "number",
+          description:
+            "Optional non-negative integer cap on returned matches. " +
+            "Must be <= mcp.maxSearchResults.",
+        },
+      },
       required: ["directory", "pattern"],
     },
   },
@@ -668,22 +753,187 @@ const filesystemHandler: InProcessToolHandler = async (toolName, args) => {
     }
     case "search_files": {
       const dir = resolvePath(args.directory as string);
-      const pattern = args.pattern as string;
-      // Use find with -path for glob patterns that include directories
-      const findArgs = pattern.includes("/")
-        ? [dir, "-path", `*/${pattern}`, "-type", "f"]
-        : [dir, "-name", pattern, "-type", "f"];
-      try {
-        const { stdout } = await execFileAsync(
-          "find",
-          findArgs,
-          { maxBuffer: MAX_OUTPUT },
-        );
-        const files = stdout.trim().split("\n").filter(Boolean);
-        return { content: { files }, isError: false };
-      } catch {
-        return { content: { files: [] }, isError: false };
+      const pattern = args.pattern;
+
+      if (typeof pattern !== "string" || pattern.length === 0) {
+        return {
+          content: {
+            error: "INVALID_ARGUMENT: pattern must be a non-empty string",
+            code: "INVALID_ARGUMENT",
+            directory: args.directory,
+          },
+          isError: true,
+        };
       }
+
+      let maxResults: number;
+      try {
+        const override = parseNonNegativeInt(args.max_results, "max_results");
+        maxResults = override === undefined
+          ? MAX_SEARCH_RESULTS
+          : Math.min(override, MAX_SEARCH_RESULTS);
+      } catch (err) {
+        return {
+          content: {
+            error: `INVALID_ARGUMENT: ${(err as Error).message}`,
+            code: "INVALID_ARGUMENT",
+            directory: args.directory,
+          },
+          isError: true,
+        };
+      }
+
+      let regex: RegExp;
+      try {
+        regex = globToRegExp(pattern);
+      } catch (err) {
+        return {
+          content: {
+            error: `INVALID_PATTERN: ${(err as Error).message}`,
+            code: "INVALID_PATTERN",
+            directory: args.directory,
+            pattern,
+          },
+          isError: true,
+        };
+      }
+
+      const rootErrorEnvelope = (err: unknown, op: "stat" | "open") => {
+        const classified = classifyFsError(err, dir, op);
+        if ((classified.errno as string | undefined) === "ENOTDIR") {
+          return {
+            error: `NOT_A_DIRECTORY: ${args.directory} is not a directory`,
+            code: "NOT_A_DIRECTORY" as const,
+            directory: args.directory,
+            errno: "ENOTDIR" as const,
+          };
+        }
+        return { ...classified, directory: args.directory };
+      };
+
+      let dirStat: Awaited<ReturnType<typeof stat>>;
+      try {
+        dirStat = await stat(dir);
+      } catch (err) {
+        return { content: rootErrorEnvelope(err, "stat"), isError: true };
+      }
+      if (!dirStat.isDirectory()) {
+        return {
+          content: {
+            error: `NOT_A_DIRECTORY: ${args.directory} is not a directory`,
+            code: "NOT_A_DIRECTORY",
+            directory: args.directory,
+          },
+          isError: true,
+        };
+      }
+
+      const deadline = Date.now() + MAX_SEARCH_MS;
+      const files: string[] = [];
+      const skipped: Array<{ path: string; code: "PERMISSION_DENIED" | "NOT_FOUND" }> = [];
+      let truncatedReason: "results" | "depth" | "time" | null = null;
+      let rootError: ReturnType<typeof rootErrorEnvelope> | null = null;
+      let fatalWalkError:
+        | { error: string; code: "READ_DIRECTORY_FAILED"; errno?: string; path: string }
+        | null = null;
+
+      const visit = async (current: string, depth: number): Promise<void> => {
+        if (truncatedReason !== null || rootError !== null || fatalWalkError !== null) return;
+        if (Date.now() > deadline) { truncatedReason = "time"; return; }
+        if (depth > MAX_SEARCH_DEPTH) { truncatedReason = "depth"; return; }
+
+        let handle: Awaited<ReturnType<typeof opendir>>;
+        try {
+          handle = await opendir(current);
+        } catch (err) {
+          if (depth === 0) {
+            rootError = rootErrorEnvelope(err, "open");
+            return;
+          }
+          const classified = classifyFsError(err, current, "open");
+          if (classified.code === "PERMISSION_DENIED") {
+            skipped.push({ path: current, code: "PERMISSION_DENIED" });
+            return;
+          }
+          if (classified.code === "NOT_FOUND") {
+            skipped.push({ path: current, code: "NOT_FOUND" });
+            return;
+          }
+          fatalWalkError = {
+            error: `READ_DIRECTORY_FAILED: ${classified.error}`,
+            code: "READ_DIRECTORY_FAILED",
+            ...(classified.errno ? { errno: classified.errno } : {}),
+            path: current,
+          };
+          return;
+        }
+
+        try {
+          for await (const entry of handle) {
+            if (truncatedReason !== null || rootError !== null || fatalWalkError !== null) return;
+            if (Date.now() > deadline) { truncatedReason = "time"; return; }
+            const full = join(current, entry.name);
+            if (entry.isDirectory()) {
+              if (entry.name === ".git" || entry.name === "node_modules") continue;
+              await visit(full, depth + 1);
+              continue;
+            }
+            if (!entry.isFile()) continue;
+            const rel = relative(dir, full);
+            if (!regex.test(rel)) continue;
+            if (files.length >= maxResults) {
+              truncatedReason = "results";
+              return;
+            }
+            files.push(full);
+          }
+        } catch (err) {
+          if (depth === 0) {
+            rootError = rootErrorEnvelope(err, "open");
+            return;
+          }
+          const classified = classifyFsError(err, current, "read");
+          if (classified.code === "PERMISSION_DENIED" || classified.code === "NOT_FOUND") {
+            skipped.push({ path: current, code: classified.code });
+            return;
+          }
+          fatalWalkError = {
+            error: `READ_DIRECTORY_FAILED: ${classified.error}`,
+            code: "READ_DIRECTORY_FAILED",
+            ...(classified.errno ? { errno: classified.errno } : {}),
+            path: current,
+          };
+        }
+      };
+
+      await visit(dir, 0);
+
+      const rootErrorFinal = rootError as ReturnType<typeof rootErrorEnvelope> | null;
+      if (rootErrorFinal !== null) {
+        return { content: rootErrorFinal, isError: true };
+      }
+      const fatalWalkErrorFinal = fatalWalkError as
+        | { error: string; code: "READ_DIRECTORY_FAILED"; errno?: string; path: string }
+        | null;
+      if (fatalWalkErrorFinal !== null) {
+        return {
+          content: { ...fatalWalkErrorFinal, directory: args.directory },
+          isError: true,
+        };
+      }
+
+      return {
+        content: {
+          files,
+          truncated: truncatedReason !== null,
+          truncated_reason: truncatedReason,
+          max_results: maxResults,
+          max_depth: MAX_SEARCH_DEPTH,
+          max_ms: MAX_SEARCH_MS,
+          ...(skipped.length > 0 ? { skipped } : {}),
+        },
+        isError: false,
+      };
     }
     default:
       return { content: { error: `Unknown filesystem tool: ${toolName}` }, isError: true };
@@ -1779,6 +2029,9 @@ export function registerBuiltinServices(
   MAX_FETCH_BYTES = mcpConfig.maxFetchBytes;
   MAX_DOWNLOAD_BYTES = mcpConfig.maxDownloadBytes;
   MAX_FILE_READ_BYTES = mcpConfig.maxFileReadBytes;
+  MAX_SEARCH_RESULTS = mcpConfig.maxSearchResults;
+  MAX_SEARCH_DEPTH = mcpConfig.maxSearchDepth;
+  MAX_SEARCH_MS = mcpConfig.maxSearchMs;
   FETCH_TIMEOUT_MS = mcpConfig.fetchTimeoutMs;
   SHELL_TIMEOUT_FLOOR_MS = mcpConfig.shellTimeoutFloorMs;
   WEB_SEARCH_MAX_BYTES = mcpConfig.webSearchMaxBytes;
