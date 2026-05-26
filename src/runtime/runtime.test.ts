@@ -585,6 +585,28 @@ describe("PlanService", () => {
     expect((result.content as any).stages).toEqual([]);
   });
 
+  it("plan_done with a valid reason returns ok", async () => {
+    const result = await planService.plan_done({ reason: "objectives verified" });
+    expect(result).toEqual({ ok: true });
+  });
+
+  it("plan_done rejects an empty reason", async () => {
+    const result = await planService.plan_done({ reason: "  " });
+    expect(result).toHaveProperty("code", "VALIDATION_ERROR");
+  });
+
+  it("handleToolCall rejects an empty plan_done reason", async () => {
+    const result = await planService.handleToolCall("plan_done", { reason: "" });
+    expect(result.isError).toBe(true);
+    expect(result.content).toHaveProperty("code", "VALIDATION_ERROR");
+  });
+
+  it("handleToolCall plan_done with a valid reason returns ok and is not an error", async () => {
+    const result = await planService.handleToolCall("plan_done", { reason: "all objectives verified" });
+    expect(result.isError).toBe(false);
+    expect(result.content).toEqual({ ok: true });
+  });
+
   it("serializes mutating tool calls across async boundaries", async () => {
     await planService.plan_init([]);
     const commitGate = deferred<{ sha: string }>();

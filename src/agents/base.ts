@@ -11,6 +11,7 @@ import type {
   ContentBlock,
   ChatResponse,
   ToolSchema,
+  ToolCallResult,
 } from "../providers/types.js";
 import { ProviderError } from "../providers/error.js";
 import type {
@@ -23,7 +24,7 @@ import { ROSTER } from "./roster.js";
 import { getToolFilter } from "./roster.js";
 import { applyToolFilter } from "./tool-filters.js";
 import { Dispatcher, DISPATCH_TOOLS } from "../runtime/dispatcher.js";
-import type { ChildSpawner } from "../runtime/dispatcher.js";
+import type { ChildSpawner, DispatchResult } from "../runtime/dispatcher.js";
 import {
   shouldCompact,
   isMaxCompactionsReached,
@@ -246,7 +247,12 @@ export class BaseAgent {
    * Run the main conversation loop.
    * Subclasses should call this and interpret the result.
    */
-  async runLoop(): Promise<{ text: string; finishReason: string; source?: LlmResponseSource }> {
+  async runLoop(): Promise<{
+    text: string;
+    finishReason: string;
+    source?: LlmResponseSource;
+    terminal?: { name: string; data: unknown };
+  }> {
     while (!this.cancelled) {
       // Check for abort
       if (this.abortSignal?.aborted) {
@@ -363,8 +369,18 @@ export class BaseAgent {
       );
       this.pushMessage({ role: "user", content: resultBlocks });
 
-      if (dispatchResult.aborted) {
+      if (this.abortSignal?.aborted || dispatchResult.aborted) {
         return { text: "Aborted during tool execution", finishReason: "abort" };
+      }
+
+      const terminal = this.detectTerminalToolCall(response.toolCalls, dispatchResult);
+      if (terminal) {
+        return {
+          text: response.content,
+          finishReason: "tool_terminal",
+          source: responseSource(response),
+          terminal,
+        };
       }
     }
 
@@ -694,6 +710,13 @@ export class BaseAgent {
   }
 
   protected validateFinalResponse(_text: string): string | null {
+    return null;
+  }
+
+  protected detectTerminalToolCall(
+    _toolCalls: ToolCallResult[],
+    _dispatchResult: DispatchResult,
+  ): { name: string; data: unknown } | null {
     return null;
   }
 

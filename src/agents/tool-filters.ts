@@ -18,7 +18,7 @@ const PLAN_TOOLS = new Set<string>([
   "plan_get", "plan_get_stage", "plan_get_current_stage",
   "plan_set_stages", "plan_add_stage", "plan_remove_stage",
   "plan_set_current", "plan_complete_stage",
-  "plan_get_history", "plan_init", "plan_commit",
+  "plan_get_history", "plan_init", "plan_commit", "plan_done",
 ]);
 
 const WORKER_EXCLUDED_TOOLS = new Set<string>([

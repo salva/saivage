@@ -535,6 +535,13 @@ const planCommit: Formatter = (args, res) => ({
   resultTone: res.isError ? "error" : "ok",
 });
 
+const planDone: Formatter = (args, res) => ({
+  label: "Planner completed",
+  summary: [{ kind: "text", value: truncate(String(args.reason ?? ""), 160) }],
+  result: res.isError ? genericError(res) : [{ kind: "text", value: "recorded", tone: "ok" }],
+  resultTone: res.isError ? "error" : "ok",
+});
+
 const createNote: Formatter = (args, res) => {
   const flags: string[] = [];
   if (args.urgent) flags.push("urgent");
@@ -627,6 +634,7 @@ const FORMATTERS: Record<string, Formatter> = {
   plan_complete_stage: planCompleteStage,
   plan_init: planInit,
   plan_commit: planCommit,
+  plan_done: planDone,
   create_note: createNote,
   run_manager: dispatch("→ manager", "stage"),
   run_coder: dispatch("→ coder", "task"),

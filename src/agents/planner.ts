@@ -10,7 +10,8 @@ import type {
   AgentResult,
   Agent,
 } from "./types.js";
-import type { ChildSpawner } from "../runtime/dispatcher.js";
+import type { ToolCallResult } from "../providers/types.js";
+import type { ChildSpawner, DispatchResult } from "../runtime/dispatcher.js";
 import { NoteManager, NoteChannel } from "../runtime/notes.js";
 import { log } from "../log.js";
 import { loadContract } from "../repo-layout/contract.js";
@@ -74,7 +75,8 @@ export class PlannerAgent extends BaseAgent implements Agent {
 
     while (true) {
       try {
-        const { text, finishReason } = await this.runLoop();
+        const loopResult = await this.runLoop();
+        const { text, finishReason } = loopResult;
 
         // Always acknowledge notes on any exit path so they don't
         // get re-injected indefinitely after restarts.
@@ -88,13 +90,12 @@ export class PlannerAgent extends BaseAgent implements Agent {
           return { kind: "failure", reason: text };
         }
 
-        // Only accept completion if planner explicitly says PLAN_COMPLETE
-        // on its own line — not just as part of a sentence
-        if (/^\s*PLAN_COMPLETE\s*$/m.test(text)) {
-          return { kind: "success", data: { summary: "PLAN_COMPLETE" } };
+        if (finishReason === "tool_terminal" && loopResult.terminal?.name === "plan_done") {
+          const reason = (loopResult.terminal.data as { reason: string }).reason;
+          return { kind: "success", data: { completion: "plan_done", summary: reason } };
         }
 
-        // Planner ended turn without PLAN_COMPLETE — nudge to continue
+        // Planner ended a turn without structured completion — nudge to continue.
         nudgeCount++;
         if (nudgeCount >= MAX_NUDGES) {
           log.warn(`[planner:${this.id}] Max nudges reached (${MAX_NUDGES}), exiting for recovery`);
@@ -102,7 +103,7 @@ export class PlannerAgent extends BaseAgent implements Agent {
         }
 
         log.info(
-          `[planner:${this.id}] Ended turn without PLAN_COMPLETE — nudging (${nudgeCount}/${MAX_NUDGES})`,
+          `[planner:${this.id}] Ended turn without plan_done — nudging (${nudgeCount}/${MAX_NUDGES})`,
         );
 
         // Nudge planner to continue. The terminal assistant message is already
@@ -116,6 +117,7 @@ export class PlannerAgent extends BaseAgent implements Agent {
           `2. If there are stages in the queue, call plan_set_current() on the next one, then call run_manager() to dispatch it.\n` +
           `3. If stages have failed/escalated, create a new corrective stage with plan_add_stage(), then dispatch it.\n` +
           `4. If you need to understand a failure, call run_inspector().\n\n` +
+          `5. If all configured objectives are verified complete and no continuous-improvement instruction is active, call plan_done(reason).\n\n` +
           `DO NOT respond with text only. CALL A TOOL NOW.`,
         );
       } catch (err) {
@@ -124,6 +126,25 @@ export class PlannerAgent extends BaseAgent implements Agent {
         return { kind: "failure", reason: msg };
       }
     }
+  }
+
+  protected override detectTerminalToolCall(
+    toolCalls: ToolCallResult[],
+    dispatchResult: DispatchResult,
+  ): { name: string; data: { reason: string } } | null {
+    if (toolCalls.length !== 1) return null;
+    const tc = toolCalls[0];
+    if (tc.name !== "plan_done") return null;
+
+    const result = dispatchResult.toolResults.find((tr) => tr.toolUseId === tc.id);
+    if (!result || result.isError) return null;
+
+    const input = tc.input;
+    if (typeof input !== "object" || input === null) return null;
+    const reason = (input as { reason?: unknown }).reason;
+    if (typeof reason !== "string" || reason.trim() === "") return null;
+
+    return { name: "plan_done", data: { reason } };
   }
 }
 
@@ -161,7 +182,7 @@ async function buildPlannerMessageImpl(ctx: AgentContext): Promise<string> {
     `3. Execute stages one at a time via run_manager(stage).\n` +
     `4. Process results, adapt the plan, and continue until all objectives are met.\n` +
     `5. If all objectives are achieved but a continuous-improvement note is present, create and dispatch the next improvement/verification/hardening stage with plan_add_stage() or plan_set_stages(), not plan_init().\n` +
-    `6. Only respond with "PLAN_COMPLETE" when objectives are verified and no continuous-improvement instruction is active.`
+    `6. Call plan_done(reason) only when objectives are verified and no continuous-improvement instruction is active.`
   );
 }
 

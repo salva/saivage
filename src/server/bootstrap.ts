@@ -540,7 +540,7 @@ const RECOVERY_PROMPT =
   `3. Assess what work remains to achieve ALL project objectives.\n` +
   `4. If escalated stages exist, analyze WHY they failed and create corrective stages.\n` +
   `5. Call plan_set_current() on the next stage and dispatch it with run_manager().\n\n` +
-  `DO NOT say PLAN_COMPLETE unless ALL objectives are truly achieved with evidence from successful stages. ` +
+  `DO NOT call plan_done unless ALL objectives are truly achieved with evidence from successful stages. ` +
   `If stages have escalated or failed, the objectives are NOT complete — you must fix the issues and retry.`;
 
 const CONTINUOUS_IMPROVEMENT_PROMPT =
@@ -555,7 +555,7 @@ const CONTINUOUS_IMPROVEMENT_PROMPT =
   `5. Only create maintenance, QA, documentation, or hardening stages when they directly unblock or improve the reliability of the objective-aligned experiment loop.\n` +
   `6. Because plan.json already exists in continuous-improvement cycles, DO NOT call plan_init(). Create at least one concrete, bounded next stage with plan_add_stage() or plan_set_stages().\n` +
   `7. Dispatch the next stage with run_manager().\n\n` +
-  `Only say PLAN_COMPLETE if continuous-improvement mode has been disabled by runtime configuration or shutdown is requested.`;
+  `Only call plan_done if continuous-improvement mode has been disabled by runtime configuration or shutdown is requested.`;
 
 function buildRestartPrompt(request: PlannerRestartRequest): string {
   return (
@@ -574,7 +574,7 @@ function queuePlannerDirective(runtime: SaivageRuntime, content: string): void {
 /**
  * Run the planner in a recovery loop. When the planner exits (success or
  * max-nudges), wait the configured recovery delay then restart with a continuation prompt.
- * Only stops on explicit PLAN_COMPLETE, abort, or process shutdown.
+ * Only stops on explicit plan_done, abort, or process shutdown.
  */
 export async function runPlannerWithRecovery(
   runtime: SaivageRuntime,
@@ -626,23 +626,21 @@ export async function runPlannerWithRecovery(
         return result;
       }
 
-      // Check for genuine PLAN_COMPLETE — exact match only.
-      // In continuous-improvement mode this is not terminal: it means the
-      // current objective batch is complete and the Planner should create the
-      // next maintenance/improvement cycle from persisted state.
-      if (result.kind === "success" && hasSummary(result.data) && result.data.summary === "PLAN_COMPLETE") {
+      // In continuous-improvement mode, plan_done completes the current
+      // objective batch and then restarts the Planner for the next cycle.
+      if (result.kind === "success" && isPlanDoneCompletion(result.data)) {
         if (!runtime.config.runtime.continuousImprovement) {
-          log.info("[recovery] PLAN_COMPLETE detected — stopping recovery loop");
+          log.info(`[recovery] Planner completed via plan_done: ${result.data.summary}`);
           return result;
         }
 
         queuePlannerDirective(runtime, CONTINUOUS_IMPROVEMENT_PROMPT);
         await runtime.eventBus.publish({
           type: "plan_updated",
-          summary: "Planner completed the active plan. Continuous-improvement directive queued; restarting Planner.",
+          summary: "Planner completed the active plan via plan_done. Continuous-improvement directive queued; restarting Planner.",
           timestamp: new Date().toISOString(),
         });
-        log.info("[recovery] PLAN_COMPLETE detected; continuous-improvement mode is enabled. Restarting planner");
+        log.info("[recovery] Planner completed via plan_done; continuous-improvement mode is enabled. Restarting planner");
         continue;
       }
 
@@ -651,7 +649,7 @@ export async function runPlannerWithRecovery(
       // For success (nudge-out) or failure — always retry
       const recoveryDelayMs = runtime.config.runtime.recoveryDelayMs;
       log.info(
-        `[recovery] Planner ended without PLAN_COMPLETE (${result.kind}). ` +
+        `[recovery] Planner ended without plan_done (${result.kind}). ` +
         `Waiting ${recoveryDelayMs / 1000}s before restart...`,
       );
 
@@ -832,6 +830,14 @@ async function publishAgentResult(
   }
 }
 
-function hasSummary(value: unknown): value is { summary: string } {
-  return !!value && typeof value === "object" && typeof (value as { summary?: unknown }).summary === "string";
+interface PlanDoneCompletion {
+  completion: "plan_done";
+  summary: string;
+}
+
+function isPlanDoneCompletion(value: unknown): value is PlanDoneCompletion {
+  return !!value &&
+    typeof value === "object" &&
+    (value as { completion?: unknown }).completion === "plan_done" &&
+    typeof (value as { summary?: unknown }).summary === "string";
 }

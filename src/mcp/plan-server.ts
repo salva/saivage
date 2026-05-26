@@ -334,6 +334,14 @@ export class PlanService {
     }
   }
 
+  /** plan_done — Structured terminal signal for Planner completion. */
+  async plan_done(args: { reason: string }): Promise<{ ok: true } | PlanError> {
+    if (typeof args.reason !== "string" || args.reason.trim() === "") {
+      return planError("VALIDATION_ERROR", "plan_done requires a non-empty reason");
+    }
+    return { ok: true };
+  }
+
   // ─── MCP Tool Handler ──────────────────────────────────────────────────
 
   /**
@@ -396,6 +404,9 @@ export class PlanService {
         break;
       case "plan_commit":
         result = await this.plan_commit(args.message as string);
+        break;
+      case "plan_done":
+        result = await this.plan_done(args as { reason: string });
         break;
       default:
         result = { code: "VALIDATION_ERROR", error: `Unknown plan tool: ${toolName}` };
@@ -510,6 +521,18 @@ export class PlanService {
           type: "object",
           properties: { message: { type: "string", description: "Commit message" } },
           required: ["message"],
+        },
+      },
+      {
+        name: "plan_done",
+        description:
+          "Signal that ALL configured project objectives are verified complete with evidence from successful stages. " +
+          "Call this once at the end of the planning session; this is the only way to end a planner session successfully. " +
+          "Provide a one-paragraph reason summarising which objectives are satisfied and the evidence.",
+        inputSchema: {
+          type: "object",
+          properties: { reason: { type: "string", description: "Why the project is complete." } },
+          required: ["reason"],
         },
       },
     ];
