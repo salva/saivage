@@ -250,8 +250,8 @@ Each batch lists members, prerequisites (other batches), files touched (short li
   - [../../../web/src/api/types.ts](../../../web/src/api/types.ts) — `PlanStage`, narrowed `AgentRole` to the live worker roles, deduplicated `AgentState`/`RuntimeState` so `WsEvent` source-of-truth is unique (G41).
   - [../../../web/src/components/PlanView.vue](../../../web/src/components/PlanView.vue) — consume narrowed types (G41).
   - [../../../web/src/components/StatusPanel.vue](../../../web/src/components/StatusPanel.vue) — consume narrowed `AgentState`/`RuntimeState` (G41).
-  - [../../../web/src/components/AgentsView.vue](../../../web/src/components/AgentsView.vue) → coordinator under 300 LoC (G46).
-  - new `web/src/components/agents/` — 5 leaf components + 3 composables + `round-id.ts` + `constants.ts` + `timeline-transform.ts` (unit-tested transformer; consumes `active_agents[*].compaction` for compacted-bucket rendering).
+  - delete [../../../web/src/components/AgentsView.vue](../../../web/src/components/AgentsView.vue); new [../../../web/src/components/agents/AgentsView.vue](../../../web/src/components/agents/AgentsView.vue) is the coordinator under 300 LoC (G46).
+  - new `web/src/components/agents/` — 5 leaf components + 3 composables + `round-id.ts` + `constants.ts` + `timeline.ts` (unit-tested transformer).
   - [../../../web/package.json](../../../web/package.json) — `vue-tsc` devDep + `typecheck` script chained into Vite build (G46).
 - **Validation**: `npm run typecheck` (vue-tsc) + `npm run build:web`. Per-component flat ≤300-line cap; CSS-extraction fallback at >300 (G46 r3 contract).
 - **Principles touched**: none directly.
@@ -370,7 +370,7 @@ Files edited by more than one batch — the executing agent uses this to anticip
 - [../../../src/store/project.ts](../../../src/store/project.ts) — B7 (G26 drops the legacy seeder stub) and B11 (G08 export `SaivageConfigSchema` + replace handwritten seed). B7 first per §6.
 - [../../../src/bootstrap.ts](../../../src/bootstrap.ts) — B5 (G09 wiring of `plan_done` into the planner construction path), B14 (G50 plumbing `runtime.noteManager` into `createChildSpawner` + `runPlanner`), B15 (G48 AST-invariant test pins the final shape). Land in §6 order.
 - [../../../src/cli.ts](../../../src/cli.ts) — B14 (G50 CLI inspector `AgentContext.noteManager`) and B15 (G48 thin re-export + AST invariant). B14 first; B15 freezes the post-B14 shape.
-- [../../../web/src/components/AgentsView.vue](../../../web/src/components/AgentsView.vue) — B12 only (G41 + G46), but G46 is the decomposition pass that removes 90 % of the file; G41 lands first within B12 so the narrowed types are available to the leaf components.
+- [../../../web/src/components/AgentsView.vue](../../../web/src/components/AgentsView.vue) → [../../../web/src/components/agents/AgentsView.vue](../../../web/src/components/agents/AgentsView.vue) — B12 only (G41 + G46), but G46 is the decomposition pass that removes the old monolith; G41 lands first within B12 so the narrowed types are available to the leaf components.
 - [../../05-MCP-SERVICES.md](../../05-MCP-SERVICES.md) — B2 (G31 doc crumb). Single-batch but listed because it sits inside `SPEC/v2/` rather than `docs/`.
 
 Files unique to one batch (no conflict expected) are omitted from this index — see each batch's Files list in §5 for the full per-batch surface.

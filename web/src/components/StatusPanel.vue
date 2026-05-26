@@ -2,40 +2,11 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { AlertTriangle, CheckCircle2, Clock3, ListTree, Users } from "lucide-vue-next";
 import { apiFetch } from "../utils/api";
+import type { AgentRole, RuntimeState, Plan } from "../api/types";
 
 const emit = defineEmits<{
   navigate: [tab: string, focusId?: string];
 }>();
-
-interface AgentState {
-  agent_type: string;
-  agent_id: string;
-  status: string;
-  current_task_id?: string;
-  channel?: string;
-  started_at: string;
-}
-
-interface RuntimeState {
-  status: string;
-  current_stage_id: string | null;
-  active_agents: AgentState[];
-  started_at: string;
-  updated_at: string;
-  pid: number;
-}
-
-interface Stage {
-  id: string;
-  objective: string;
-  tags?: string[];
-}
-
-interface Plan {
-  updated_at: string;
-  current_stage_id: string | null;
-  stages: Stage[];
-}
 
 interface HistoryEntry {
   id: string;
@@ -117,8 +88,8 @@ function roleColor(role: string): string {
   }
 }
 
-const ROLE_ORDER: Record<string, number> = {
-  planner: 0, manager: 1, coder: 2, researcher: 3, data_agent: 4, reviewer: 5, inspector: 6, chat: 7,
+const ROLE_ORDER: Record<AgentRole, number> = {
+  planner: 0, manager: 1, coder: 2, researcher: 3, data_agent: 4, reviewer: 5, designer: 6, inspector: 7, chat: 8,
 };
 
 const stats = computed(() => {

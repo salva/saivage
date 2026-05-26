@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { apiFetch, apiFetchJson, ApiError } from "./utils/api";
 import { useAuthState } from "./composables/useAuthState";
+import type { ApiState } from "./api/types";
 import {
   Activity,
   BookOpen,
@@ -15,7 +16,7 @@ import {
 import ChatWindow from "./components/ChatWindow.vue";
 import StatusPanel from "./components/StatusPanel.vue";
 import PlanView from "./components/PlanView.vue";
-import AgentsView from "./components/AgentsView.vue";
+import AgentsView from "./components/agents/AgentsView.vue";
 import FilesView from "./components/FilesView.vue";
 import DebugView from "./components/DebugView.vue";
 
@@ -124,11 +125,9 @@ let titleTimer: ReturnType<typeof setInterval> | null = null;
 
 async function pollTitleStatus() {
   try {
-    const data = await apiFetchJson<{ status?: string; phase?: string; currentStage?: { id?: string } | null }>(
-      "/api/state",
-    );
-    runtimeStatus.value = (data.status ?? data.phase ?? "").toString();
-    runtimeStage.value = data.currentStage?.id ?? "";
+    const data = await apiFetchJson<ApiState>("/api/state");
+    runtimeStatus.value = data.state?.status ?? "";
+    runtimeStage.value = data.state?.current_stage_id ?? "";
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) {
       markUnauthorized();

@@ -1,26 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, type ComponentPublicInstance } from "vue";
 import { CheckCircle2, CircleDot, History, ListChecks, RefreshCw } from "lucide-vue-next";
 import { apiFetch } from "../utils/api";
+import type { Plan } from "../api/types";
 
 const props = defineProps<{ focusStageId?: string | null }>();
 const emit = defineEmits<{ "focus-consumed": [] }>();
-
-interface Stage {
-  id: string;
-  objective: string;
-  starting_points?: string[];
-  expected_outcomes?: string[];
-  acceptance_criteria?: string[];
-  references?: string[];
-  tags?: string[];
-}
-
-interface Plan {
-  updated_at: string;
-  current_stage_id: string | null;
-  stages: Stage[];
-}
 
 interface HistoryEntry {
   id: string;
@@ -130,7 +115,9 @@ const currentStage = computed(() => activeStages.value.find((stage) => stage.id 
 const stageRefs = ref<Record<string, HTMLElement | null>>({});
 
 function setStageRef(id: string) {
-  return (el: Element | null) => { stageRefs.value[id] = el as HTMLElement | null; };
+  return (el: Element | ComponentPublicInstance | null) => {
+    stageRefs.value[id] = el instanceof HTMLElement ? el : null;
+  };
 }
 
 function isHistoryStage(stageId: string): boolean {
