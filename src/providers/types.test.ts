@@ -8,10 +8,10 @@ describe("parseModelId", () => {
     expect(result.model).toBe("claude-sonnet-4-20250514");
   });
 
-  it("handles nested model IDs (openrouter)", () => {
-    const result = parseModelId("openrouter/meta-llama/llama-3.3-70b");
-    expect(result.provider).toBe("openrouter");
-    expect(result.model).toBe("meta-llama/llama-3.3-70b");
+  it("handles nested model IDs", () => {
+    const result = parseModelId("ollama/library/llama3.3:70b");
+    expect(result.provider).toBe("ollama");
+    expect(result.model).toBe("library/llama3.3:70b");
   });
 
   it("throws on missing slash", () => {

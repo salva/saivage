@@ -1,9 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { ModelRouter } from "./router.js";
 import { OpenAIProvider } from "./openai.js";
-import { OpenAICodexProvider } from "./openai-codex.js";
-import { AnthropicProvider } from "./anthropic.js";
-import { OpenRouterProvider } from "./openrouter.js";
 import { OllamaProvider } from "./ollama.js";
 import { LlamaCppProvider } from "./llamacpp.js";
 import { PiAiProvider } from "./pi-ai.js";
@@ -48,49 +45,6 @@ describe("ModelCapabilities — per-provider direct-class tables", () => {
     expect(p.modelCapabilities("gpt-4")).toEqual({ contextWindow: 128_000, tokenEncoding: "cl100k_base" });
     expect(p.modelCapabilities("gpt-3.5-turbo")).toEqual({ contextWindow: 16_385, tokenEncoding: "cl100k_base" });
     expect(p.modelCapabilities("unknown")).toBeUndefined();
-  });
-
-  it("OpenAICodexProvider table", async () => {
-    const p = new OpenAICodexProvider();
-    expect(p.modelCapabilities("gpt-5-codex")).toEqual({ contextWindow: 200_000, tokenEncoding: "o200k_base" });
-    expect(p.modelCapabilities("o4-mini")).toEqual({ contextWindow: 200_000, tokenEncoding: "o200k_base" });
-    expect(p.modelCapabilities("gpt-4o")).toEqual({ contextWindow: 128_000, tokenEncoding: "o200k_base" });
-    expect(p.modelCapabilities("gpt-4")).toEqual({ contextWindow: 128_000, tokenEncoding: "cl100k_base" });
-    expect(p.modelCapabilities("unknown")).toBeUndefined();
-  });
-
-  it("AnthropicProvider table", async () => {
-    const p = new AnthropicProvider("k");
-    expect(p.modelCapabilities("claude-3-5-sonnet-20241022")).toEqual({
-      contextWindow: 200_000,
-      tokenEncoding: "cl100k_base",
-    });
-    expect(p.modelCapabilities("claude-3.5-sonnet")).toEqual({
-      contextWindow: 200_000,
-      tokenEncoding: "cl100k_base",
-    });
-    expect(p.modelCapabilities("claude-sonnet-4-20250514")).toEqual({
-      contextWindow: 200_000,
-      tokenEncoding: "cl100k_base",
-    });
-    expect(p.modelCapabilities("claude-9-future")).toBeUndefined();
-  });
-
-  it("OpenRouterProvider table (prefix sensitive)", async () => {
-    const p = new OpenRouterProvider("k");
-    expect(p.modelCapabilities("openai/gpt-5-2025-09-01")).toEqual({
-      contextWindow: 400_000,
-      tokenEncoding: "o200k_base",
-    });
-    expect(p.modelCapabilities("anthropic/claude-3.5-sonnet-20250514")).toEqual({
-      contextWindow: 200_000,
-      tokenEncoding: "cl100k_base",
-    });
-    expect(p.modelCapabilities("anthropic/claude-9-future")).toEqual({
-      contextWindow: 200_000,
-      tokenEncoding: "cl100k_base",
-    });
-    expect(p.modelCapabilities("acme/unknown")).toBeUndefined();
   });
 
   it("OllamaProvider — defaultContextWindow injection", async () => {
