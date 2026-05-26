@@ -25,7 +25,7 @@ both at write time (validation before atomic write) and at read time
 | `ShutdownRequestSchema` | `<project>/.saivage/tmp/state/shutdown-request.json` |
 | `ShutdownSummarySchema` | `<project>/.saivage/tmp/state/shutdown-summary.json` |
 | `SkillEntrySchema` / `SkillIndexSchema` | `<skills-dir>/index.json` |
-| `ChatLogSchema` | `<project>/.saivage/tmp/chats/<sessionId>.json` |
+| `ChatLogSchema` | `<project>/.saivage/tmp/chats/<channel>/<sessionId>.json` |
 
 ## Cross-references
 

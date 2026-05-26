@@ -30,14 +30,18 @@ commands.
 
 ## Channels
 
-Three concrete channel implementations all use the same Chat agent:
+- **Web** —
+  [`src/channels/websocket.ts`](https://github.com/salva/saivage/blob/main/src/channels/websocket.ts)
+  — one Chat per connected client.
+- **Telegram** —
+  [`src/channels/telegram.ts`](https://github.com/salva/saivage/blob/main/src/channels/telegram.ts)
+  — one Chat per Telegram user, allow-listed via
+  `telegram.allowedUserIds`.
 
-- **Web** (`channels/websocket.ts`) — fastify WebSocket; one Chat per
-  connected client; messages are JSON envelopes.
-- **Telegram** (`channels/telegram.ts`) — grammy bot; one Chat per
-  Telegram user; allow-listed via `telegram.allowedUserIds`.
-- **One-shot CLI** (`channels/oneshot.ts`) — used by the `saivage inspect`
-  command; the Chat is created, asked a single question, then disposed.
+The `saivage inspect <project> <scope>` CLI command does not use a
+channel; it constructs an `InspectorAgent` directly against the runtime
+(see
+[`src/server/cli.ts`](https://github.com/salva/saivage/blob/main/src/server/cli.ts#L219-L252)).
 
 ## Notification subscription
 
@@ -55,5 +59,9 @@ queue with the Planner).
 ## Sessions
 
 Web sessions are identified by `chatSessionId` from `src/ids.ts`. Logs
-are written to `.saivage/tmp/chats/<sessionId>.json` for debugging; this
-file is informational only.
+are written to `.saivage/tmp/chats/<channel>/<sessionId>.json` for
+debugging — the per-channel directory is set in
+[`src/agents/chat.ts`](https://github.com/salva/saivage/blob/main/src/agents/chat.ts#L98-L104)
+and the `<sessionId>.json` filename in
+[`src/agents/chat.ts`](https://github.com/salva/saivage/blob/main/src/agents/chat.ts#L398-L400);
+this file is informational only.
