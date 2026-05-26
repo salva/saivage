@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ModelRoutingResolver } from "./resolver.js";
+import { ModelRoutingResolver, RoutingProfileCycleError } from "./resolver.js";
 
 describe("ModelRoutingResolver", () => {
   it("preserves legacy override and runtime fallback behavior", () => {
@@ -133,5 +133,84 @@ describe("ModelRoutingResolver", () => {
     const route = resolver.resolve("coder");
     expect(route.modelSpec).toBe("github-copilot/gpt-5.4");
     expect(route.source).toBe("routing");
+  });
+
+  it("rejects a direct profile cycle at construction time", () => {
+    expect(() => new ModelRoutingResolver(
+      {
+        routing: {
+          profiles: {
+            A: { profile: "B", preferred_models: ["x/y"] },
+            B: { profile: "A" },
+          },
+          roles: { coder: "A" },
+        },
+      },
+      {},
+    )).toThrowError(RoutingProfileCycleError);
+  });
+
+  it("rejects a profile self-loop at construction time", () => {
+    try {
+      new ModelRoutingResolver(
+        {
+          routing: {
+            profiles: { A: { profile: "A" } },
+            roles: { coder: "A" },
+          },
+        },
+        {},
+      );
+      throw new Error("expected constructor to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RoutingProfileCycleError);
+      expect((err as RoutingProfileCycleError).cycle).toEqual(["A", "A"]);
+    }
+  });
+
+  it("rejects an unused transitive profile cycle at construction time", () => {
+    try {
+      new ModelRoutingResolver(
+        {
+          routing: {
+            profiles: {
+              A: { profile: "B" },
+              B: { profile: "C" },
+              C: { profile: "B" },
+              solo: { preferred_models: ["x/y"] },
+            },
+            roles: { coder: "solo" },
+          },
+        },
+        {},
+      );
+      throw new Error("expected constructor to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RoutingProfileCycleError);
+      expect((err as RoutingProfileCycleError).cycle).toEqual(["B", "C", "B"]);
+    }
+  });
+
+  it("rejects a deep profile cycle at construction time", () => {
+    try {
+      new ModelRoutingResolver(
+        {
+          routing: {
+            profiles: {
+              A: { profile: "B" },
+              B: { profile: "C" },
+              C: { profile: "D" },
+              D: { profile: "A" },
+            },
+            roles: { coder: "A" },
+          },
+        },
+        {},
+      );
+      throw new Error("expected constructor to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(RoutingProfileCycleError);
+      expect((err as RoutingProfileCycleError).cycle).toEqual(["A", "B", "C", "D", "A"]);
+    }
   });
 });

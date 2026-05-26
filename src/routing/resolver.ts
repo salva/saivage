@@ -3,6 +3,20 @@ import { ROSTER } from "../agents/roster.js";
 import { MissingModelForRoleError } from "../config-validation.js";
 import { configPath } from "../config.js";
 
+export class RoutingProfileCycleError extends Error {
+  readonly cycle: string[];
+  readonly configPath: string;
+  constructor(cycle: string[], configPathStr: string) {
+    super(
+      `Routing profile cycle detected: ${cycle.join(" -> ")}. ` +
+        `Fix the "profile" chain in ${configPathStr}.`,
+    );
+    this.name = "RoutingProfileCycleError";
+    this.cycle = cycle;
+    this.configPath = configPathStr;
+  }
+}
+
 export const ROUTING_ROLE_TO_MODEL_KEY: Record<string, string> = {
   ...Object.fromEntries(ROSTER.map((entry) => [entry.role, entry.defaultModelKey])),
   supervisor: "supervisor",
@@ -101,6 +115,32 @@ export class ModelRoutingResolver {
       Object.entries(routing?.profiles ?? {}).map(([name, rule]) => [name, normalizeRule(rule)]),
     );
     this.defaultProfile = routing?.default_profile;
+    this.validateProfileGraph();
+  }
+
+  private validateProfileGraph(): void {
+    const done = new Set<string>();
+    for (const name of Object.keys(this.profiles)) {
+      if (done.has(name)) continue;
+      const path: string[] = [];
+      const onPath = new Set<string>();
+      let cursor: string | undefined = name;
+      while (cursor) {
+        if (onPath.has(cursor)) {
+          const start = path.indexOf(cursor);
+          throw new RoutingProfileCycleError(
+            [...path.slice(start), cursor],
+            configPath(),
+          );
+        }
+        if (done.has(cursor)) break;
+        onPath.add(cursor);
+        path.push(cursor);
+        const next: string | undefined = this.profiles[cursor]?.profile;
+        cursor = next && this.profiles[next] ? next : undefined;
+      }
+      for (const visited of path) done.add(visited);
+    }
   }
 
   resolve(role: string): ResolvedModelRoute {
@@ -171,7 +211,6 @@ export class ModelRoutingResolver {
   }
 
   private mergeRuleChain(rule: NormalizedRule): NormalizedRule {
-    const seen = new Set<string>();
     const stack: NormalizedRule[] = [];
     let current: NormalizedRule | undefined = rule;
 
@@ -179,8 +218,6 @@ export class ModelRoutingResolver {
       stack.unshift(current);
       const profile: string | undefined = current.profile;
       if (!profile) break;
-      if (seen.has(profile)) break;
-      seen.add(profile);
       current = this.profiles[profile];
     }
 
