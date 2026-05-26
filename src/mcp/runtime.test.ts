@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { McpRuntime } from "./runtime.js";
-import type { ServiceEntry } from "./registry.js";
+import type { ServiceEntry } from "./types.js";
 
 function makeEntry(name = "broken"): ServiceEntry {
   return {
@@ -13,7 +13,6 @@ function makeEntry(name = "broken"): ServiceEntry {
     transport: "stdio",
     tools: [],
     capabilities: [],
-    status: "active",
     createdAt: new Date().toISOString(),
   };
 }
@@ -23,7 +22,17 @@ describe("McpRuntime external service cooldown", () => {
     let now = 1_000;
     let connects = 0;
     const runtime = new McpRuntime(
-      { restartOnCrash: true, continuousImprovement: true, healthCheckIntervalMs: 0, idleShutdownMs: 0, maxServices: 50 },
+      {
+        runtime: { restartOnCrash: true, continuousImprovement: true, healthCheckIntervalMs: 0, idleShutdownMs: 0, maxServices: 50 },
+        mcp: {
+          shellTimeoutMs: 4 * 60 * 60 * 1000,
+          shellTimeoutFloorMs: 10 * 60 * 1000,
+          inProcessTimeoutMs: 300_000,
+          maxOutputBytes: 100 * 1024,
+          maxFetchChars: 200_000,
+          maxDownloadBytes: 250 * 1024 * 1024,
+        },
+      } as any,
       {
         now: () => now,
         crashFailureThreshold: 3,
@@ -56,5 +65,20 @@ describe("McpRuntime external service cooldown", () => {
     now += 5_001;
     await expect(runtime.startFromEntry(entry)).rejects.toThrow("startup failed");
     expect(connects).toBe(4);
+  });
+
+  it("throws a config-pointing error when a service is not registered or running", async () => {
+    const runtime = new McpRuntime({
+      runtime: { restartOnCrash: true, continuousImprovement: true, healthCheckIntervalMs: 0, idleShutdownMs: 0, maxServices: 50 },
+      mcp: {
+        shellTimeoutMs: 4 * 60 * 60 * 1000,
+        shellTimeoutFloorMs: 10 * 60 * 1000,
+        inProcessTimeoutMs: 300_000,
+        maxOutputBytes: 100 * 1024,
+        maxFetchChars: 200_000,
+        maxDownloadBytes: 250 * 1024 * 1024,
+      },
+    } as any);
+    await expect(runtime.startService("ghost")).rejects.toThrow(/config\.mcpServers/);
   });
 });

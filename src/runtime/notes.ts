@@ -7,11 +7,12 @@
  */
 
 import { join } from "node:path";
-import { existsSync, readdirSync } from "node:fs";
-import { readDoc, writeDoc, deleteDoc, ensureDir } from "../store/documents.js";
+import { readdir } from "node:fs/promises";
+import { readDoc, writeDoc, deleteDoc, ensureDir, pathExists } from "../store/documents.js";
 import { UserNoteSchema, type UserNote } from "../types.js";
 import { noteId } from "../ids.js";
 import { log } from "../log.js";
+import type { InputChannel } from "../agents/types.js";
 
 export interface CreateUserNoteInput {
   notesDir: string;
@@ -27,8 +28,8 @@ export interface NoteMutationResult {
   deleted: boolean;
 }
 
-export function createUserNote(input: CreateUserNoteInput): UserNote {
-  ensureDir(input.notesDir);
+export async function createUserNote(input: CreateUserNoteInput): Promise<UserNote> {
+  await ensureDir(input.notesDir);
   const id = noteId();
   const note: UserNote = {
     id,
@@ -39,7 +40,7 @@ export function createUserNote(input: CreateUserNoteInput): UserNote {
     permanent: input.permanent,
     urgent: input.urgent,
   };
-  writeDoc(join(input.notesDir, `${id}.json`), note, UserNoteSchema);
+  await writeDoc(join(input.notesDir, `${id}.json`), note, UserNoteSchema);
   return note;
 }
 
@@ -49,132 +50,131 @@ export function createUserNote(input: CreateUserNoteInput): UserNote {
 export class NoteManager {
   private notesDir: string;
   /**
-   * Notes that have been injected in the current cycle, pending
-   * acknowledgment. A Set so multiple `getUnacknowledgedNotes()` calls
-   * within one Planner cycle accumulate IDs instead of overwriting and
-   * losing earlier batches.
+   * IDs of notes that have been delivered to an InputChannel consumer in
+   * the current context. Cleared on `resetDelivered()` (called after
+   * compaction) so permanent notes can be re-injected into the fresh
+   * post-compaction history.
    */
-  private pendingAcknowledgment = new Set<string>();
-
-  /** Default TTL for unacknowledged volatile notes: 2 hours. */
-  static readonly DEFAULT_VOLATILE_TTL_MS = 2 * 60 * 60 * 1000;
+  private delivered = new Set<string>();
 
   constructor(notesDir: string) {
     this.notesDir = notesDir;
   }
 
   /**
-   * Get all unacknowledged notes for injection into the Planner's context.
-   */
-  getUnacknowledgedNotes(): UserNote[] {
-    const notes = this.peekUnacknowledgedNotes();
-
-    // Merge into pending set rather than overwriting, so a Planner cycle
-    // that injects notes more than once still acknowledges every batch.
-    for (const note of notes) this.pendingAcknowledgment.add(note.id);
-
-    return notes;
-  }
-
-  /**
    * Get all unacknowledged notes without marking them pending for acknowledgment.
    */
-  peekUnacknowledgedNotes(): UserNote[] {
-    return this.readAllNotes()
+  async peekUnacknowledgedNotes(): Promise<UserNote[]> {
+    const all = await this.readAllNotes();
+    return all
       .filter((note) => !note.acknowledged_at)
       .sort((a, b) => a.created_at.localeCompare(b.created_at));
   }
 
   /**
-   * Get all permanent notes (for re-injection after compaction).
+   * Drain pending deliverable notes (volatile-unacknowledged + permanent-undelivered).
+   * Each returned note is marked delivered until the next `resetDelivered()`.
    */
-  getPermanentNotes(): UserNote[] {
-    return this.readAllNotes().filter((note) => note.permanent);
+  async pullDeliverables(): Promise<UserNote[]> {
+    const all = await this.readAllNotes();
+    const candidates = all
+      .filter((note) => !this.delivered.has(note.id))
+      .filter((note) => note.permanent || !note.acknowledged_at)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+    for (const note of candidates) this.delivered.add(note.id);
+    return candidates;
   }
 
-  listNotes(): UserNote[] {
-    return this.readAllNotes().sort((a, b) => b.created_at.localeCompare(a.created_at));
+  /** Clear the delivered set so permanent notes become eligible again after compaction. */
+  resetDelivered(): void {
+    this.delivered.clear();
   }
 
-  acknowledgeNote(noteId: string): NoteMutationResult | null {
+  async listNotes(): Promise<UserNote[]> {
+    const all = await this.readAllNotes();
+    return all.sort((a, b) => b.created_at.localeCompare(a.created_at));
+  }
+
+  async acknowledgeNote(noteId: string): Promise<NoteMutationResult | null> {
     const path = join(this.notesDir, `${noteId}.json`);
-    if (!existsSync(path)) return null;
+    if (!(await pathExists(path))) return null;
 
     try {
-      const note = readDoc(path, UserNoteSchema);
-      this.pendingAcknowledgment.delete(noteId);
+      const note = await readDoc(path, UserNoteSchema);
+      this.delivered.delete(noteId);
 
       if (note.permanent) {
         const updated = note.acknowledged_at
           ? note
           : { ...note, acknowledged_at: new Date().toISOString() };
-        writeDoc(path, updated, UserNoteSchema);
+        await writeDoc(path, updated, UserNoteSchema);
         return { note: updated, deleted: false };
       }
 
-      deleteDoc(path);
+      await deleteDoc(path);
       return { note, deleted: true };
     } catch {
       return null;
     }
   }
 
-  deleteNote(noteId: string): boolean {
+  async deleteNote(noteId: string): Promise<boolean> {
     const path = join(this.notesDir, `${noteId}.json`);
-    if (!existsSync(path)) return false;
+    if (!(await pathExists(path))) return false;
 
     try {
-      deleteDoc(path);
-      this.pendingAcknowledgment.delete(noteId);
+      await deleteDoc(path);
+      this.delivered.delete(noteId);
       return true;
     } catch {
       return false;
     }
   }
 
-  clearNotes(): number {
-    const noteIds = this.listNotes().map((note) => note.id);
+  async clearNotes(): Promise<number> {
+    const notes = await this.listNotes();
+    const noteIds = notes.map((note) => note.id);
     let deleted = 0;
     for (const noteId of noteIds) {
-      if (this.deleteNote(noteId)) deleted += 1;
+      if (await this.deleteNote(noteId)) deleted += 1;
     }
     return deleted;
   }
 
   /**
-   * Acknowledge all pending notes.
+   * Acknowledge all delivered notes.
    * Called after the Planner completes a planning action.
    * Sets acknowledged_at and deletes volatile notes.
    */
-  acknowledgeNotes(): void {
-    if (this.pendingAcknowledgment.size === 0) return;
+  async acknowledgeNotes(): Promise<void> {
+    if (this.delivered.size === 0) return;
 
     const now = new Date().toISOString();
-    const ids = [...this.pendingAcknowledgment];
+    const ids = [...this.delivered];
 
     for (const noteId of ids) {
       const path = join(this.notesDir, `${noteId}.json`);
-      if (!existsSync(path)) continue;
+      if (!(await pathExists(path))) continue;
 
       try {
-        const note = readDoc(path, UserNoteSchema);
+        const note = await readDoc(path, UserNoteSchema);
         note.acknowledged_at = now;
 
         if (note.permanent) {
-          // Permanent notes: update with acknowledged_at
-          writeDoc(path, note, UserNoteSchema);
+          // Permanent notes: update with acknowledged_at; keep in `delivered`
+          // so they are not re-injected mid-context.
+          await writeDoc(path, note, UserNoteSchema);
           log.info(`[notes] Acknowledged permanent note ${noteId}`);
         } else {
-          // Volatile notes: delete after acknowledgment
-          deleteDoc(path);
+          // Volatile notes: delete after acknowledgment.
+          await deleteDoc(path);
+          this.delivered.delete(noteId);
           log.info(`[notes] Acknowledged and deleted volatile note ${noteId}`);
         }
       } catch (err) {
         log.warn(`[notes] Failed to acknowledge note ${noteId}: ${err}`);
       }
     }
-
-    this.pendingAcknowledgment.clear();
   }
 
   /**
@@ -214,21 +214,23 @@ export class NoteManager {
    * older than the TTL (default 2 hours). This prevents stale notes from
    * being re-injected indefinitely after restarts.
    */
-  cleanupStaleNotes(ttlMs: number = NoteManager.DEFAULT_VOLATILE_TTL_MS): number {
-    if (!existsSync(this.notesDir)) return 0;
-
-    const files = readdirSync(this.notesDir).filter((f) =>
-      f.endsWith(".json"),
-    );
+  async cleanupStaleNotes(ttlMs: number): Promise<number> {
+    let files: string[];
+    try {
+      files = (await readdir(this.notesDir)).filter((f) => f.endsWith(".json"));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return 0;
+      throw err;
+    }
     let cleaned = 0;
     const now = Date.now();
 
     for (const file of files) {
       try {
-        const note = readDoc(join(this.notesDir, file), UserNoteSchema);
+        const note = await readDoc(join(this.notesDir, file), UserNoteSchema);
         // Remove acknowledged volatile notes (crash recovery)
         if (note.acknowledged_at && !note.permanent) {
-          deleteDoc(join(this.notesDir, file));
+          await deleteDoc(join(this.notesDir, file));
           cleaned++;
           continue;
         }
@@ -236,7 +238,7 @@ export class NoteManager {
         if (!note.permanent && !note.acknowledged_at) {
           const age = now - new Date(note.created_at).getTime();
           if (age > ttlMs) {
-            deleteDoc(join(this.notesDir, file));
+            await deleteDoc(join(this.notesDir, file));
             log.info(`[notes] Auto-expired volatile note ${note.id} (age ${Math.round(age / 60_000)}min)`);
             cleaned++;
           }
@@ -253,17 +255,19 @@ export class NoteManager {
     return cleaned;
   }
 
-  private readAllNotes(): UserNote[] {
-    if (!existsSync(this.notesDir)) return [];
-
-    const files = readdirSync(this.notesDir).filter((f) =>
-      f.endsWith(".json"),
-    );
+  private async readAllNotes(): Promise<UserNote[]> {
+    let files: string[];
+    try {
+      files = (await readdir(this.notesDir)).filter((f) => f.endsWith(".json"));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw err;
+    }
     const notes: UserNote[] = [];
 
     for (const file of files) {
       try {
-        const note = readDoc(join(this.notesDir, file), UserNoteSchema);
+        const note = await readDoc(join(this.notesDir, file), UserNoteSchema);
         if (isPlannerSelfNote(note)) continue;
         notes.push(note);
       } catch {
@@ -277,4 +281,23 @@ export class NoteManager {
 
 function isPlannerSelfNote(note: UserNote): boolean {
   return note.channel === "planner";
+}
+
+/**
+ * InputChannel that drains unacknowledged + undelivered permanent notes
+ * from a NoteManager. Resets `delivered` on compaction so permanent notes
+ * survive context resets.
+ */
+export class NoteChannel implements InputChannel {
+  constructor(private readonly noteManager: NoteManager) {}
+
+  async drain(): Promise<{ message: string } | null> {
+    const notes = await this.noteManager.pullDeliverables();
+    if (notes.length === 0) return null;
+    return { message: this.noteManager.formatNotesForInjection(notes) };
+  }
+
+  onContextReset(): void {
+    this.noteManager.resetDelivered();
+  }
 }

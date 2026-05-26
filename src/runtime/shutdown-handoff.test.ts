@@ -62,9 +62,9 @@ function makeProjectContext(root: string): ProjectContext {
   };
 }
 
-function seedRuntimeDocs(project: ProjectContext) {
+async function seedRuntimeDocs(project: ProjectContext) {
   const now = new Date().toISOString();
-  writeDoc(project.paths.runtimeState, {
+  await writeDoc(project.paths.runtimeState, {
     status: "running",
     current_stage_id: "stage-active",
     active_agents: [
@@ -81,7 +81,7 @@ function seedRuntimeDocs(project: ProjectContext) {
     pid: 12345,
   }, RuntimeStateSchema);
 
-  writeDoc(project.paths.plan, {
+  await writeDoc(project.paths.plan, {
     updated_at: now,
     current_stage_id: "stage-active",
     stages: [
@@ -97,7 +97,7 @@ function seedRuntimeDocs(project: ProjectContext) {
     ],
   }, PlanSchema);
 
-  writeDoc(project.paths.planHistory, {
+  await writeDoc(project.paths.planHistory, {
     stages: [
       {
         id: "stage-done",
@@ -114,12 +114,12 @@ function seedRuntimeDocs(project: ProjectContext) {
 }
 
 describe("shutdown handoff", () => {
-  it("writes a shutdown summary and consumes it as Planner restart context", () => {
+  it("writes a shutdown summary and consumes it as Planner restart context", async () => {
     const project = makeProjectContext(tmpDir);
-    seedRuntimeDocs(project);
+    await seedRuntimeDocs(project);
 
-    writeShutdownRequest(project, "Application code changed during deploy", "deploy");
-    const summary = writeShutdownSummary(project);
+    await writeShutdownRequest(project, "Application code changed during deploy", "deploy");
+    const summary = await writeShutdownSummary(project);
 
     expect(summary.reason).toBe("Application code changed during deploy");
     expect(summary.requested_by).toBe("deploy");
@@ -133,40 +133,88 @@ describe("shutdown handoff", () => {
       history_stages: 1,
     });
     expect(existsSync(project.paths.shutdownRequest)).toBe(false);
+    expect(existsSync(`${project.paths.shutdownRequest}.consumed`)).toBe(true);
 
-    const persisted = readDoc(project.paths.shutdownSummary, ShutdownSummarySchema);
+    const persisted = await readDoc(project.paths.shutdownSummary, ShutdownSummarySchema);
     expect(persisted.reason).toBe("Application code changed during deploy");
 
-    const handoff = consumeShutdownHandoff(project);
+    const handoff = await consumeShutdownHandoff(project);
     expect(handoff).toContain("SYSTEM RESTART HANDOFF");
     expect(handoff).toContain("External shutdown reason: Application code changed during deploy");
     expect(handoff).toContain("Active agents at shutdown");
     expect(handoff).toContain("coder:coder-1 task=task-1");
     expect(handoff).toContain("call plan_get() and plan_get_history()");
     expect(existsSync(project.paths.shutdownSummary)).toBe(false);
+    expect(existsSync(`${project.paths.shutdownSummary}.consumed`)).toBe(true);
   });
 
-  it("falls back to a request-only Planner handoff if no summary was saved", () => {
+  it("falls back to a request-only Planner handoff if no summary was saved", async () => {
     const project = makeProjectContext(tmpDir);
 
-    writeShutdownRequest(project, "Manual service restart", "operator");
-    const handoff = consumeShutdownHandoff(project);
+    await writeShutdownRequest(project, "Manual service restart", "operator");
+    const handoff = await consumeShutdownHandoff(project);
 
     expect(handoff).toContain("before the previous process could save a full shutdown summary");
     expect(handoff).toContain("Requested by: operator");
     expect(handoff).toContain("Reason: Manual service restart");
     expect(existsSync(project.paths.shutdownRequest)).toBe(false);
+    expect(existsSync(`${project.paths.shutdownRequest}.consumed`)).toBe(true);
   });
 
-  it("does not throw when a stale summary file is malformed", () => {
+  it("does not throw when a stale summary file is malformed", async () => {
     const project = makeProjectContext(tmpDir);
 
-    writeShutdownRequest(project, "Recover after malformed summary", "test");
+    await writeShutdownRequest(project, "Recover after malformed summary", "test");
     writeFileSync(project.paths.shutdownSummary, "{ nope", "utf-8");
 
-    const handoff = consumeShutdownHandoff(project);
+    const handoff = await consumeShutdownHandoff(project);
 
     expect(handoff).toContain("Reason: Recover after malformed summary");
     expect(existsSync(project.paths.shutdownRequest)).toBe(false);
+    expect(existsSync(`${project.paths.shutdownRequest}.consumed`)).toBe(true);
+  });
+
+  it("second consume on the same project replaces the prior .consumed file", async () => {
+    const project = makeProjectContext(tmpDir);
+    await seedRuntimeDocs(project);
+
+    await writeShutdownRequest(project, "first shutdown", "operator");
+    await writeShutdownSummary(project);
+    const firstHandoff = await consumeShutdownHandoff(project);
+    expect(firstHandoff).toContain("first shutdown");
+    expect(existsSync(`${project.paths.shutdownSummary}.consumed`)).toBe(true);
+    expect(existsSync(`${project.paths.shutdownRequest}.consumed`)).toBe(true);
+
+    await writeShutdownRequest(project, "second shutdown", "operator");
+    await writeShutdownSummary(project);
+    const secondHandoff = await consumeShutdownHandoff(project);
+    expect(secondHandoff).toContain("second shutdown");
+
+    expect(existsSync(project.paths.shutdownSummary)).toBe(false);
+    expect(existsSync(project.paths.shutdownRequest)).toBe(false);
+    const persistedSummary = await readDoc(`${project.paths.shutdownSummary}.consumed`, ShutdownSummarySchema);
+    expect(persistedSummary.reason).toBe("second shutdown");
+  });
+
+  it("consume does not re-read a previously consumed file", async () => {
+    // In-scope: consumer only reads un-suffixed paths. `.consumed` files are
+    // forensic-only and must not be picked up on the next bootstrap.
+    // Out-of-scope: an un-suffixed file produced by a prior process generation
+    // that bypassed consume would still be picked up; preventing that requires
+    // a `run_id` stamp and is tracked separately (not part of F24).
+    const project = makeProjectContext(tmpDir);
+    await seedRuntimeDocs(project);
+
+    await writeShutdownRequest(project, "only run", "operator");
+    await writeShutdownSummary(project);
+    const firstHandoff = await consumeShutdownHandoff(project);
+    expect(firstHandoff).toContain("only run");
+    const consumedPath = `${project.paths.shutdownSummary}.consumed`;
+    expect(existsSync(consumedPath)).toBe(true);
+
+    const secondHandoff = await consumeShutdownHandoff(project);
+    expect(secondHandoff).toBeNull();
+    expect(existsSync(project.paths.shutdownSummary)).toBe(false);
+    expect(existsSync(consumedPath)).toBe(true);
   });
 });

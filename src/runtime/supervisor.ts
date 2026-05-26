@@ -1,23 +1,25 @@
+import { z } from "zod";
 import type { SaivageConfig } from "../config.js";
+import { configPath } from "../config.js";
+import { MissingModelForRoleError } from "../config-validation.js";
 import { getRecentLogs } from "../log.js";
 import type { ModelRouter } from "../providers/router.js";
 import type { BaseAgent } from "../agents/base.js";
 import type { AgentRole } from "../agents/types.js";
+import { parseLlmJsonAs } from "../parse-llm-json.js";
 import { log } from "../log.js";
 
-const DEFAULT_MODEL = "github-copilot/gpt-5.4";
-const DEFAULT_INTERVAL_MS = 20 * 60 * 1000;
-const DEFAULT_THRESHOLD = 3;
-const DEFAULT_LOG_LINES = 400;
-const FORCE_CANCEL_DELAY_MS = 600_000; // re-cancel after 10 minutes if agent didn't stop
-
-const ROLE_ABORT_PRIORITY: AgentRole[] = [
-  "reviewer",
-  "data_agent",
-  "coder",
-  "researcher",
-  "manager",
-];
+const ABORT_PRIORITY: Record<AgentRole, number> = {
+  reviewer: 0,
+  data_agent: 1,
+  coder: 2,
+  researcher: 3,
+  designer: 4,
+  manager: 5,
+  inspector: 6,
+  chat: 7,
+  planner: 8,
+};
 
 type SupervisorVerdict = {
   stuck: boolean;
@@ -40,6 +42,7 @@ export class RuntimeSupervisor {
   private readonly intervalMs: number;
   private readonly threshold: number;
   private readonly logLines: number;
+  private readonly forceCancelDelayMs: number;
 
   constructor(
     config: SaivageConfig,
@@ -47,14 +50,16 @@ export class RuntimeSupervisor {
     modelSpecOverride?: string,
   ) {
     this.enabled = config.supervisor.enabled;
-    this.modelSpec = modelSpecOverride ?? config.supervisor.model ?? DEFAULT_MODEL;
-    this.intervalMs = config.supervisor.intervalMs ?? DEFAULT_INTERVAL_MS;
-    this.threshold = config.supervisor.consecutiveStuckVerdicts ?? DEFAULT_THRESHOLD;
-    this.logLines = config.supervisor.logLines ?? DEFAULT_LOG_LINES;
+    this.modelSpec = modelSpecOverride ?? "";
+    this.intervalMs = config.supervisor.intervalMs;
+    this.threshold = config.supervisor.consecutiveStuckVerdicts;
+    this.logLines = config.supervisor.logLines;
+    this.forceCancelDelayMs = config.supervisor.forceCancelDelayMs;
   }
 
   start(): void {
     if (!this.enabled || this.timer) return;
+    if (!this.modelSpec) throw new MissingModelForRoleError(["supervisor"], configPath());
     log.info(
       `[supervisor] Starting runtime supervisor (interval=${this.intervalMs}ms, threshold=${this.threshold}, model=${this.modelSpec})`,
     );
@@ -110,7 +115,7 @@ export class RuntimeSupervisor {
             log.warn(`[supervisor] Agent ${target.role}:${agentId} still registered after cancel — re-cancelling`);
             stillRegistered.cancel();
           }
-        }, FORCE_CANCEL_DELAY_MS).unref();
+        }, this.forceCancelDelayMs).unref();
 
         this.consecutiveStuck = 0;
       }
@@ -143,18 +148,14 @@ export class RuntimeSupervisor {
       maxTokens: 600,
     });
 
-    return normalizeNonStuckOperationalVerdict(parseVerdict(response.content, provider), logs);
+    return parseVerdict(response.content, provider);
   }
 
   private selectAbortTarget(): { agentId: string; role: AgentRole; agent: BaseAgent } | null {
-    const entries = [...this.context.agentRegistry.entries()]
-      .map(([agentId, agent]) => ({ agentId, role: agent.role, agent }));
-
-    for (const role of ROLE_ABORT_PRIORITY) {
-      const candidate = entries.find((entry) => entry.role === role);
-      if (candidate) return candidate;
-    }
-    return null;
+    const sorted = [...this.context.agentRegistry.entries()]
+      .map(([agentId, agent]) => ({ agentId, role: agent.role, agent }))
+      .sort((a, b) => ABORT_PRIORITY[a.role] - ABORT_PRIORITY[b.role]);
+    return sorted[0] ?? null;
   }
 }
 
@@ -174,99 +175,26 @@ function parseModelSpec(modelSpec: string): { provider: string; model: string } 
 }
 
 function parseVerdict(content: string, providerName: string): SupervisorVerdict {
-  const parsed = parseJsonObject(content);
-  if (!parsed || typeof parsed !== "object") {
+  const schema = z.object({
+    stuck: z.boolean().default(false),
+    confidence: z.number().min(0).max(1).optional(),
+    reason: z.string().default("Supervisor did not provide a reason"),
+    evidence: z.array(z.string()).max(5).optional(),
+  });
+  const result = parseLlmJsonAs(content, schema);
+  if (!result.ok) {
     return {
       stuck: true,
       confidence: 0.4,
-      reason: `Supervisor model (${providerName}) returned non-JSON verdict`,
-      evidence: [content.slice(0, 300)],
+      reason: `Supervisor model (${providerName}) returned ${result.reason}`,
+      evidence: [result.detail, result.raw ?? content.slice(0, 300)].filter((s): s is string => !!s),
     };
   }
-
-  const stuckRaw = (parsed as Record<string, unknown>).stuck;
-  const stuck = stuckRaw === true; // strict: only boolean true counts
-  const confidence = typeof (parsed as Record<string, unknown>).confidence === "number"
-    ? (parsed as Record<string, number>).confidence
-    : undefined;
-  const reasonValue = (parsed as Record<string, unknown>).reason;
-  const evidenceValue = (parsed as Record<string, unknown>).evidence;
+  const parsed = result.value;
   return {
-    stuck,
-    confidence,
-    reason: typeof reasonValue === "string" ? reasonValue : "Supervisor did not provide a reason",
-    evidence: Array.isArray(evidenceValue)
-      ? evidenceValue.filter((item): item is string => typeof item === "string").slice(0, 5)
-      : undefined,
+    stuck: parsed.stuck,
+    confidence: parsed.confidence,
+    reason: parsed.reason,
+    evidence: parsed.evidence,
   };
-}
-
-function parseJsonObject(content: string): unknown {
-  const trimmed = content.trim();
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    const start = trimmed.indexOf("{");
-    const end = trimmed.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      try {
-        return JSON.parse(trimmed.slice(start, end + 1));
-      } catch {
-        return null;
-      }
-    }
-    return null;
-  }
-}
-
-function normalizeNonStuckOperationalVerdict(verdict: SupervisorVerdict, logs: string): SupervisorVerdict {
-  if (!verdict.stuck) return verdict;
-  const verdictText = [verdict.reason, ...(verdict.evidence ?? [])].join("\n");
-  const combined = `${verdictText}\n${logs}`;
-  if (looksLikeMalformedOrCrashed(verdictText)) return verdict;
-  if (looksLikeLongRunningExternalWork(verdictText)) {
-    return {
-      ...verdict,
-      stuck: false,
-      reason: `Long-running external work is not itself stuck. ${verdict.reason}`,
-    };
-  }
-  if (looksLikeProviderThrottling(verdictText)) {
-    return {
-      ...verdict,
-      stuck: false,
-      reason: `Provider throttling/rate limiting is temporary; not treating as stuck. ${verdict.reason}`,
-    };
-  }
-  if (looksLikeMalformedOrCrashed(combined)) return verdict;
-  if (looksLikeLongRunningExternalWork(combined)) {
-    return {
-      ...verdict,
-      stuck: false,
-      reason: `Long-running external work is not itself stuck. ${verdict.reason}`,
-    };
-  }
-  if (looksLikeProviderThrottling(combined)) {
-    return {
-      ...verdict,
-      stuck: false,
-      reason: `Provider throttling/rate limiting is temporary; not treating as stuck. ${verdict.reason}`,
-    };
-  }
-  return verdict;
-}
-
-function looksLikeLongRunningExternalWork(value: string): boolean {
-  if (!/\b(long[- ]?running|still running|running for|in progress|training|experiment|benchmark|backtest|build|test suite|pytest|vitest|npm test|download|fetch|browser|playwright|shell command|external process|run_command)\b/i.test(value)) {
-    return false;
-  }
-  return /\b(command|process|job|task|download|fetch|training|experiment|benchmark|backtest|build|test|browser|playwright|shell|run_command|subprocess)\b/i.test(value);
-}
-
-function looksLikeProviderThrottling(value: string): boolean {
-  return /\b(rate[- ]?limit(?:ed|ing)?|throttl(?:ed|ing)|too many requests|\b429\b|quota|temporar(?:y|ily) unavailable|capacity|overloaded)\b/i.test(value);
-}
-
-function looksLikeMalformedOrCrashed(value: string): boolean {
-  return /\b(Unterminated string|Unexpected end of JSON|malformed|No tool call found|orphaned tool|context_length_exceeded|exceeds the context window|unhandled (?:exception|rejection)|TypeError|ReferenceError|SyntaxError|crash|failed to parse)\b/i.test(value);
 }

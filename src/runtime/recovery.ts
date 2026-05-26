@@ -5,7 +5,6 @@
  */
 
 import {
-  existsSync,
   readFileSync,
   openSync,
   closeSync,
@@ -13,7 +12,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { readDoc, readDocOrNull, writeDoc, ensureDir, sweepStaleTempFiles } from "../store/documents.js";
+import { readDocOrNull, writeDoc, ensureDir, sweepStaleTempFiles, pathExists } from "../store/documents.js";
 import {
   RuntimeStateSchema,
   TaskListSchema,
@@ -44,8 +43,8 @@ export interface RecoveryResult {
  * Check if another instance is already running.
  * Returns true if another process owns the runtime state.
  */
-export function isAnotherInstanceRunning(runtimeStatePath: string): boolean {
-  const state = readDocOrNull(runtimeStatePath, RuntimeStateSchema);
+export async function isAnotherInstanceRunning(runtimeStatePath: string): Promise<boolean> {
+  const state = await readDocOrNull(runtimeStatePath, RuntimeStateSchema);
   if (!state) return false;
   if (state.status === "idle") return false;
 
@@ -81,11 +80,14 @@ export interface RuntimeLock {
  * timestamp is older than the safety horizon), the stale lock is removed
  * and the acquisition is retried once.
  */
-export function acquireRuntimeLock(saivageDir: string): RuntimeLock {
+export async function acquireRuntimeLock(saivageDir: string): Promise<RuntimeLock> {
   const stateDir = join(saivageDir, "tmp", "state");
-  ensureDir(stateDir);
+  await ensureDir(stateDir);
   const lockPath = join(stateDir, "runtime.lock");
 
+  // Lock primitive stays sync (`openSync(lockPath, 'wx')`) — it must
+  // complete before any other code touches `.saivage/` and runs in
+  // microseconds; an async file create here would invite a race.
   const tryCreate = (): boolean => {
     try {
       const fd = openSync(lockPath, "wx");
@@ -160,18 +162,18 @@ function makeReleaser(lockPath: string): RuntimeLock {
  * Run crash recovery for a project.
  * Reconstructs state from disk and resets interrupted tasks.
  */
-export function recoverFromCrash(
+export async function recoverFromCrash(
   project: ProjectContext,
   planService: PlanService,
-): RecoveryResult {
+): Promise<RecoveryResult> {
   const runtimeStatePath = project.paths.runtimeState;
 
   // Sweep stale `*.tmp` files left over from interrupted writes. Cheap and
   // keeps `.saivage/` tidy; failures here are logged but don't block boot.
   try {
     const stateDir = dirname(runtimeStatePath);
-    const removedState = sweepStaleTempFiles(stateDir);
-    const removedRoot = sweepStaleTempFiles(project.saivageDir);
+    const removedState = await sweepStaleTempFiles(stateDir);
+    const removedRoot = await sweepStaleTempFiles(project.saivageDir);
     if (removedState + removedRoot > 0) {
       log.info(`[recovery] Swept ${removedState + removedRoot} stale .tmp file(s)`);
     }
@@ -180,7 +182,7 @@ export function recoverFromCrash(
   }
 
   // Read old runtime state
-  const oldState = readDocOrNull(runtimeStatePath, RuntimeStateSchema);
+  const oldState = await readDocOrNull(runtimeStatePath, RuntimeStateSchema);
   if (!oldState || oldState.status === "idle") {
     return { recovered: false, stageId: null, needsArchival: false };
   }
@@ -199,11 +201,11 @@ export function recoverFromCrash(
   const reportsDir = join(stageDir, "reports");
 
   // Check if summary.json exists (stage reached terminal result before crash)
-  if (existsSync(summaryPath)) {
-    const summary = readDocOrNull(summaryPath, StageSummarySchema);
+  if (await pathExists(summaryPath)) {
+    const summary = await readDocOrNull(summaryPath, StageSummarySchema);
     if (summary) {
       // Check if the stage is still in the active plan (not yet archived)
-      const plan = planService.plan_get();
+      const plan = await planService.plan_get();
       if (plan && !("code" in plan)) {
         const stillActive = plan.stages.some((s) => s.id === stageId);
         if (stillActive) {
@@ -224,10 +226,10 @@ export function recoverFromCrash(
   }
 
   // Check tasks.json — reset in-progress and aborted tasks
-  if (existsSync(tasksPath)) {
+  if (await pathExists(tasksPath)) {
     let taskList: TaskList | null = null;
     try {
-      taskList = readDocOrNull(tasksPath, TaskListSchema);
+      taskList = await readDocOrNull(tasksPath, TaskListSchema);
     } catch (err) {
       log.warn(
         `[recovery] Ignoring malformed task list for stage ${stageId}: ${err instanceof Error ? err.message : String(err)}`,
@@ -244,8 +246,8 @@ export function recoverFromCrash(
           task.status === "aborted"
         ) {
           const reportPath = join(reportsDir, `${task.id}.json`);
-          if (existsSync(reportPath)) {
-            const report = readDocOrNull(reportPath, TaskReportSchema);
+          if (await pathExists(reportPath)) {
+            const report = await readDocOrNull(reportPath, TaskReportSchema);
             if (report) {
               if (
                 report.status === "completed" &&
@@ -283,7 +285,7 @@ export function recoverFromCrash(
 
       if (modified) {
         taskList.updated_at = new Date().toISOString();
-        writeDoc(tasksPath, taskList, TaskListSchema);
+        await writeDoc(tasksPath, taskList, TaskListSchema);
       }
     }
   }
@@ -294,23 +296,11 @@ export function recoverFromCrash(
 /**
  * Write the runtime state file (updated on every significant state change).
  */
-export function writeRuntimeState(
+export async function writeRuntimeState(
   path: string,
   state: RuntimeState,
-): void {
-  writeDoc(path, state, RuntimeStateSchema);
-
-  const legacyPath = legacyRuntimeStatePath(path);
-  if (legacyPath && legacyPath !== path) {
-    writeDoc(legacyPath, state, RuntimeStateSchema);
-  }
-}
-
-function legacyRuntimeStatePath(path: string): string | null {
-  if (!path.endsWith(join("tmp", "state", "runtime.json"))) return null;
-
-  const saivageDir = dirname(dirname(dirname(path)));
-  return join(saivageDir, "runtime", "runtime-state.json");
+): Promise<void> {
+  await writeDoc(path, state, RuntimeStateSchema);
 }
 
 /**
@@ -338,6 +328,8 @@ export class RuntimeTracker {
   private currentStageId: string | null = null;
   private startedAt: string;
   private frozen = false;
+  private pendingState: RuntimeState | null = null;
+  private inFlight: Promise<void> | null = null;
 
   constructor(private statePath: string) {
     this.startedAt = new Date().toISOString();
@@ -377,6 +369,11 @@ export class RuntimeTracker {
     this.flush();
   }
 
+  /** Return the currently-active stage id (null when idle). */
+  getCurrentStage(): string | null {
+    return this.currentStageId;
+  }
+
   /**
    * Stop persisting state. Used by `runtime.shutdown()` so that any
    * lingering activity callbacks from agents finishing in flight cannot
@@ -391,7 +388,13 @@ export class RuntimeTracker {
 
   private flush(): void {
     if (this.frozen) return;
-    const state: RuntimeState = {
+    this.pendingState = this.snapshot();
+    if (this.inFlight) return;
+    this.inFlight = this.drain();
+  }
+
+  private snapshot(): RuntimeState {
+    return {
       status: "running",
       current_stage_id: this.currentStageId,
       active_agents: [...this.agents.values()],
@@ -399,6 +402,25 @@ export class RuntimeTracker {
       updated_at: new Date().toISOString(),
       pid: process.pid,
     };
-    writeRuntimeState(this.statePath, state);
+  }
+
+  private async drain(): Promise<void> {
+    while (this.pendingState && !this.frozen) {
+      const next = this.pendingState;
+      this.pendingState = null;
+      try {
+        await writeRuntimeState(this.statePath, next);
+      } catch (err) {
+        log.warn(`[recovery] RuntimeTracker write failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    this.inFlight = null;
+  }
+
+  /** Wait until all queued writes have been persisted. */
+  async waitForIdle(): Promise<void> {
+    while (this.inFlight) {
+      await this.inFlight;
+    }
   }
 }

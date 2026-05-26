@@ -7,9 +7,7 @@ function makeConfig(overrides: Partial<SaivageConfig> = {}): SaivageConfig {
   return {
     models: {
       orchestrator: "anthropic/claude-sonnet-4-20250514",
-      coder: "anthropic/claude-sonnet-4-20250514",
       researcher: "openai/gpt-4o",
-      executor: "anthropic/claude-haiku-3",
       chat: "anthropic/claude-sonnet-4-20250514",
       default: "anthropic/claude-sonnet-4-20250514",
     },
@@ -169,8 +167,8 @@ describe("ModelRouter", () => {
     }));
     const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
     providers.clear();
-    providers.set("alpha", { ...makeProvider("alpha", vi.fn(async () => successfulResponse("alpha"))), maxContextTokens: () => 111 });
-    providers.set("beta", { ...makeProvider("beta", vi.fn(async () => successfulResponse("beta"))), maxContextTokens: () => 222 });
+    providers.set("alpha", { ...makeProvider("alpha", vi.fn(async () => successfulResponse("alpha"))), modelCapabilities: () => ({ contextWindow: 111, tokenEncoding: "cl100k_base" }) });
+    providers.set("beta", { ...makeProvider("beta", vi.fn(async () => successfulResponse("beta"))), modelCapabilities: () => ({ contextWindow: 222, tokenEncoding: "cl100k_base" }) });
 
     expect(router.getMaxContextTokens("shared-model")).toBe(222);
   });
@@ -443,6 +441,41 @@ describe("ModelRouter", () => {
     await expect(router.resolveApiKey("github-copilot", { accountRef: "github-copilot.main" })).resolves.toBe("account-key");
     await expect(router.resolveApiKey("github-copilot")).resolves.toBe("account-key");
   });
+
+  it("F15: resolves OAuth credentials lazily without eager startup injection", async () => {
+    const { mkdtempSync: mkTmp, mkdirSync: mkDir, writeFileSync: writeFile, rmSync: rm, chmodSync } = await import("node:fs");
+    const { tmpdir: getTmp } = await import("node:os");
+    const { join: joinPath } = await import("node:path");
+    const projectRoot = mkTmp(joinPath(getTmp(), "saivage-f15-router-"));
+    const saivageDir = joinPath(projectRoot, ".saivage");
+    mkDir(saivageDir, { recursive: true });
+    const profiles = {
+      version: 1,
+      profiles: {
+        "anthropic.main": {
+          type: "oauth",
+          provider: "anthropic",
+          access: "lazy-access-token",
+          refresh: "refresh",
+          expires: Date.now() + 60_000,
+        },
+      },
+    };
+    const fp = joinPath(saivageDir, "auth-profiles.json");
+    writeFile(fp, JSON.stringify(profiles), "utf-8");
+    try { chmodSync(fp, 0o600); } catch { /* ignore on Windows */ }
+    const prevRoot = process.env["SAIVAGE_ROOT"];
+    process.env["SAIVAGE_ROOT"] = saivageDir;
+    try {
+      const router = new ModelRouter(makeConfig());
+      // No eager injection step here; first resolveApiKey must still find the token.
+      await expect(router.resolveApiKey("anthropic")).resolves.toBe("lazy-access-token");
+    } finally {
+      if (prevRoot === undefined) delete process.env["SAIVAGE_ROOT"];
+      else process.env["SAIVAGE_ROOT"] = prevRoot;
+      rm(projectRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 function makeChatRequest(modelSpec: string): ChatRequest & { modelSpec: string } {
@@ -461,7 +494,8 @@ function makeProvider(name: string, chat: ModelProvider["chat"]): ModelProvider 
     supportsTools: () => true,
     supportsImages: () => false,
     supportsStreaming: () => false,
-    maxContextTokens: () => 200_000,
+    modelCapabilities: () => ({ contextWindow: 200_000, tokenEncoding: "cl100k_base" }),
+    countTokens: (_m, msgs) => msgs.length * 100,
     isAvailable: async () => true,
     getRateLimitStatus: () => ({ remaining: null, resetAt: null, limited: false }),
   };

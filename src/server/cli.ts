@@ -4,6 +4,8 @@
 
 import { Command } from "commander";
 
+const PLANNER_SHUTDOWN_TIMEOUT_MS = 30_000;
+
 const program = new Command();
 
 installRecoverableSocketErrorGuard();
@@ -36,36 +38,14 @@ program
   .option("-o, --objectives <objectives...>", "Project objectives")
   .action(async (projectPath: string, opts) => {
     const { resolve } = await import("node:path");
-    const { initProject } = await import("../store/project.js");
+    const { seedProject } = await import("../store/project.js");
     const path = resolve(projectPath);
 
-    const config = {
-      project_name: opts.name ?? "my-project",
-      objectives: opts.objectives ?? [],
-      provider: "openai-codex/gpt-5.3-codex",
-      routing: {
-        roles: {},
-        profiles: {},
-      },
-      notifications: {
-        channels: [] as ("telegram" | "web")[],
-        filters: {
-          min_severity: "warning" as const,
-          categories: [] as (
-            | "stage_completed"
-            | "stage_failed"
-            | "escalation"
-            | "task_failed"
-            | "inspector_complete"
-            | "plan_updated"
-          )[],
-        },
-      },
-      skills: { max_per_agent: 5 },
-    };
-
     try {
-      const ctx = initProject(path, config);
+      const ctx = await seedProject(path, {
+        name: opts.name,
+        objectives: opts.objectives,
+      });
       console.log(`Initialized project at ${ctx.saivageDir}`);
     } catch (err) {
       console.error(
@@ -130,7 +110,7 @@ program
 
     const root = projectPath
       ? resolve(projectPath)
-      : discoverProject(process.cwd());
+      : await discoverProject(process.cwd());
 
     if (!root) {
       console.error("No .saivage/ project found.");
@@ -138,9 +118,9 @@ program
       return;
     }
 
-    const project = loadProject(root);
-    const plan = readDocOrNull(project.paths.plan, PlanSchema);
-    const state = readDocOrNull(project.paths.runtimeState, RuntimeStateSchema);
+    const project = await loadProject(root);
+    const plan = await readDocOrNull(project.paths.plan, PlanSchema);
+    const state = await readDocOrNull(project.paths.runtimeState, RuntimeStateSchema);
 
     console.log(`Project: ${project.config.project_name}`);
     console.log(`Root: ${project.projectRoot}`);
@@ -178,7 +158,7 @@ program
     const { UserNoteSchema } = await import("../types.js");
 
     const root = resolve(projectPath);
-    const project = loadProject(root);
+    const project = await loadProject(root);
     const content = messageParts.join(" ");
     const id = noteId();
 
@@ -192,9 +172,9 @@ program
       urgent: opts.urgent ?? false,
     };
 
-    ensureDir(project.paths.notes);
+    await ensureDir(project.paths.notes);
     const notePath = join(project.paths.notes, `${id}.json`);
-    writeDoc(notePath, note, UserNoteSchema);
+    await writeDoc(notePath, note, UserNoteSchema);
 
     console.log(`Note created: ${id}`);
     if (opts.urgent) {
@@ -218,7 +198,7 @@ program
     const { writeShutdownRequest } = await import("../runtime/shutdown-handoff.js");
 
     try {
-      const project = loadProject(resolve(projectPath));
+      const project = await loadProject(resolve(projectPath));
       const stdinReason = opts.reasonStdin ? await readAllStdin() : "";
       const reason = String(opts.reason ?? stdinReason).trim();
       if (!reason) {
@@ -226,7 +206,7 @@ program
         process.exitCode = 1;
         return;
       }
-      writeShutdownRequest(project, reason, opts.requestedBy ?? "external");
+      await writeShutdownRequest(project, reason, opts.requestedBy ?? "external");
       console.log(`Shutdown request recorded: ${reason}`);
     } catch (err) {
       console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -268,7 +248,7 @@ program
         accountRef: runtime.routing.resolve("inspector").accountRef,
       };
 
-      const inspector = new InspectorAgent(ctx, { request });
+      const inspector = await InspectorAgent.create(ctx, { request });
       const result = await inspector.run();
 
       if (result.kind === "success") {
@@ -300,7 +280,7 @@ program
     const { ModelRouter } = await import("../providers/router.js");
 
     try {
-      const root = projectPath ? resolve(projectPath) : discoverProject(process.cwd());
+      const root = projectPath ? resolve(projectPath) : await discoverProject(process.cwd());
       if (root) {
         process.env["PROJECT_ROOT"] = root;
         process.env["SAIVAGE_ROOT"] = resolve(root, ".saivage");
@@ -370,7 +350,6 @@ program
       // are not idempotent and the second call would race the first.
       let shuttingDown = false;
       let forceCount = 0;
-      const PLANNER_SHUTDOWN_TIMEOUT_MS = 30_000;
       const shutdown = async () => {
         if (shuttingDown) {
           forceCount += 1;
@@ -427,7 +406,7 @@ program
     // Resolve project root so auth-profiles.json goes in the right .saivage/
     const root = projectPath
       ? resolve(projectPath)
-      : discoverProject(process.cwd());
+      : await discoverProject(process.cwd());
 
     if (root) {
       process.env["PROJECT_ROOT"] = root;
@@ -445,6 +424,19 @@ program
     }
 
     console.log(`Logging in with ${provider.name}...`);
+
+    let loginHeaders: Record<string, string> | undefined;
+    if (providerId === "github-copilot") {
+      try {
+        const { loadConfig } = await import("../config.js");
+        const cfg = loadConfig();
+        const cfgHeaders = (cfg as unknown as { providers?: Record<string, { headers?: Record<string, string> }> })
+          .providers?.["github-copilot"]?.headers;
+        if (cfgHeaders && Object.keys(cfgHeaders).length > 0) loginHeaders = cfgHeaders;
+      } catch {
+        // ignore config-load failures; fall back to defaults
+      }
+    }
 
     try {
       const { exec: execCallback } = await import("node:child_process");
@@ -466,7 +458,7 @@ program
           });
         },
         onProgress: (msg) => console.log(msg),
-      });
+      }, { headers: loginHeaders });
 
       const profileKey = (opts.profile as string | undefined) ?? `${providerId}-${creds.accountId ?? "default"}`;
       saveProfile(profileKey, {
@@ -503,7 +495,7 @@ program
 
     const root = projectPath
       ? resolve(projectPath)
-      : discoverProject(process.cwd());
+      : await discoverProject(process.cwd());
 
     if (root) {
       process.env["PROJECT_ROOT"] = root;
@@ -545,6 +537,47 @@ program
     const fp = join(saivageDir(), "auth-profiles.json");
     writeFileSync(fp, JSON.stringify(store, null, 2) + "\n", "utf-8");
     console.log("Restart the service to apply changes.");
+  });
+
+// --- Repo-layout: validate-stage-id ---
+program
+  .command("validate-stage-id <stage-id>")
+  .description(
+    "Resolve a stage id against the target project's .saivage/repo-layout.json contract.",
+  )
+  .option("-p, --project <project-path>", "Project root (defaults to CWD)")
+  .action(async (stageId: string, opts: { project?: string }) => {
+    const { resolve } = await import("node:path");
+    const projectRoot = resolve(opts.project ?? process.cwd());
+    const { loadContract } = await import("../repo-layout/contract.js");
+    const { validateStageId } = await import("../repo-layout/validate-stage-id.js");
+
+    const result = loadContract(projectRoot);
+    if (!result.present) {
+      console.log(
+        JSON.stringify({ status: "skipped", reason: "contract_absent", stage_id: stageId }),
+      );
+      return;
+    }
+    if (result.error) {
+      console.error(
+        JSON.stringify({ status: "error", reason: "contract_invalid", detail: result.error }),
+      );
+      process.exitCode = 2;
+      return;
+    }
+    const v = validateStageId(result.contract!, stageId);
+    const payload = {
+      status: v.topic ? "accepted" : "rejected",
+      stage_id: stageId,
+      topic: v.topic,
+      reason: v.reason,
+      matches: v.matches,
+    };
+    console.log(JSON.stringify(payload));
+    if (!v.topic) {
+      process.exitCode = 1;
+    }
   });
 
 program.parse();

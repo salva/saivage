@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import type { ServiceEntry, ToolEntry } from "./registry.js";
+import type { ServiceEntry, ToolEntry } from "./types.js";
 import { log } from "../log.js";
 
 export interface McpToolCallResult {

@@ -79,6 +79,11 @@ export interface UsageStatus {
   resetAt: Date | null;
 }
 
+export interface ModelCapabilities {
+  contextWindow: number;
+  tokenEncoding: "cl100k_base" | "o200k_base";
+}
+
 export interface ModelProvider {
   readonly name: string;
 
@@ -88,7 +93,13 @@ export interface ModelProvider {
   supportsTools(): boolean;
   supportsImages(): boolean;
   supportsStreaming(): boolean;
-  maxContextTokens(model: string): number;
+  modelCapabilities(model: string): ModelCapabilities | undefined;
+  countTokens(
+    model: string,
+    messages: Message[],
+    system?: string,
+    tools?: ToolSchema[],
+  ): number;
   listModels?(): Promise<string[]> | string[];
 
   isAvailable(): Promise<boolean>;

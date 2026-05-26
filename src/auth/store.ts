@@ -91,7 +91,7 @@ export function getProfileByKey(profileKey: string): AuthProfile | null {
  */
 export async function getOAuthApiKey(
   providerId: string,
-  options: { profileKey?: string } = {},
+  options: { profileKey?: string; headers?: Record<string, string> } = {},
 ): Promise<string | null> {
   const provider = providers.get(providerId);
   if (!provider) return null;
@@ -113,7 +113,7 @@ export async function getOAuthApiKey(
   // Refresh
   log.info(`Refreshing OAuth token for ${providerId}...`);
   try {
-    const refreshed = await provider.refreshToken(profile);
+    const refreshed = await provider.refreshToken(profile, { headers: options.headers });
     const updated: AuthProfile = {
       ...profile,
       access: refreshed.access,
@@ -144,17 +144,6 @@ export function hasOAuthProfile(profileKey: string, providerId?: string): boolea
   const profile = getProfileByKey(profileKey);
   if (!profile) return false;
   return providerId ? profile.provider === providerId : true;
-}
-
-/**
- * Map OAuth provider IDs to the Saivage provider names they authenticate.
- * openai-codex → openai (uses the same API with the access token)
- * anthropic → anthropic
- */
-export function oauthToProviderName(oauthId: string): string {
-  if (oauthId === "openai-codex") return "openai";
-  if (oauthId === "github-copilot") return "copilot";
-  return oauthId;
 }
 
 function resolveProfileEntry(

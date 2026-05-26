@@ -1,0 +1,30 @@
+# G09 - Review r5
+
+Reviewed:
+- [SPEC/v2/review-2026-05-round2/G09-planner-plan-complete-text-protocol.md](SPEC/v2/review-2026-05-round2/G09-planner-plan-complete-text-protocol.md#L1-L59)
+- [SPEC/v2/review-2026-05-round2/00-SUBSYSTEM-MAP.md](SPEC/v2/review-2026-05-round2/00-SUBSYSTEM-MAP.md#L1-L195)
+- Prior G09 r1 files: [SPEC/v2/review-2026-05-round2/G09/01-analysis-r1.md](SPEC/v2/review-2026-05-round2/G09/01-analysis-r1.md#L1-L95), [SPEC/v2/review-2026-05-round2/G09/02-design-r1.md](SPEC/v2/review-2026-05-round2/G09/02-design-r1.md#L1-L118), [SPEC/v2/review-2026-05-round2/G09/03-plan-r1.md](SPEC/v2/review-2026-05-round2/G09/03-plan-r1.md#L1-L134), [SPEC/v2/review-2026-05-round2/G09/04-review-r1.md](SPEC/v2/review-2026-05-round2/G09/04-review-r1.md#L1-L55)
+- Prior G09 r2 files: [SPEC/v2/review-2026-05-round2/G09/01-analysis-r2.md](SPEC/v2/review-2026-05-round2/G09/01-analysis-r2.md#L1-L96), [SPEC/v2/review-2026-05-round2/G09/02-design-r2.md](SPEC/v2/review-2026-05-round2/G09/02-design-r2.md#L1-L278), [SPEC/v2/review-2026-05-round2/G09/03-plan-r2.md](SPEC/v2/review-2026-05-round2/G09/03-plan-r2.md#L1-L408), [SPEC/v2/review-2026-05-round2/G09/04-review-r2.md](SPEC/v2/review-2026-05-round2/G09/04-review-r2.md#L1-L45)
+- Prior G09 r3 files: [SPEC/v2/review-2026-05-round2/G09/01-analysis-r3.md](SPEC/v2/review-2026-05-round2/G09/01-analysis-r3.md#L1-L92), [SPEC/v2/review-2026-05-round2/G09/02-design-r3.md](SPEC/v2/review-2026-05-round2/G09/02-design-r3.md#L1-L262), [SPEC/v2/review-2026-05-round2/G09/03-plan-r3.md](SPEC/v2/review-2026-05-round2/G09/03-plan-r3.md#L1-L500), [SPEC/v2/review-2026-05-round2/G09/04-review-r3.md](SPEC/v2/review-2026-05-round2/G09/04-review-r3.md#L1-L51)
+- Prior G09 r4 files: [SPEC/v2/review-2026-05-round2/G09/01-analysis-r4.md](SPEC/v2/review-2026-05-round2/G09/01-analysis-r4.md#L1-L197), [SPEC/v2/review-2026-05-round2/G09/02-design-r4.md](SPEC/v2/review-2026-05-round2/G09/02-design-r4.md#L1-L346), [SPEC/v2/review-2026-05-round2/G09/03-plan-r4.md](SPEC/v2/review-2026-05-round2/G09/03-plan-r4.md#L1-L531), [SPEC/v2/review-2026-05-round2/G09/04-review-r4.md](SPEC/v2/review-2026-05-round2/G09/04-review-r4.md#L1-L34)
+- [SPEC/v2/review-2026-05-round2/G09/01-analysis-r5.md](SPEC/v2/review-2026-05-round2/G09/01-analysis-r5.md#L1-L131)
+- [SPEC/v2/review-2026-05-round2/G09/02-design-r5.md](SPEC/v2/review-2026-05-round2/G09/02-design-r5.md#L1-L183)
+- [SPEC/v2/review-2026-05-round2/G09/03-plan-r5.md](SPEC/v2/review-2026-05-round2/G09/03-plan-r5.md#L1-L270)
+- [SPEC/v2/review-2026-05-round2/G09/04-review-r4.md](SPEC/v2/review-2026-05-round2/G09/04-review-r4.md#L1-L33)
+- [src/agents/planner.ts](src/agents/planner.ts#L31-L50)
+
+## Findings
+
+No blocking issues found.
+
+The r4 constructor objection is resolved. The live planner API has two different construction surfaces: the async factory accepts `config` as its third argument, while the class constructor accepts `initialMessage` and `eagerSkillBlock` before `config` ([src/agents/planner.ts](src/agents/planner.ts#L31-L50)). R5 now consistently specifies `await PlannerAgent.create(ctx, childSpawner, { abortSignal })` for the abort test and factory construction for the other rewritten planner tests, rather than the invalid r4 `new PlannerAgent(ctx, childSpawner, { abortSignal })` shape ([SPEC/v2/review-2026-05-round2/G09/01-analysis-r5.md](SPEC/v2/review-2026-05-round2/G09/01-analysis-r5.md#L11-L12), [SPEC/v2/review-2026-05-round2/G09/02-design-r5.md](SPEC/v2/review-2026-05-round2/G09/02-design-r5.md#L12-L49), [SPEC/v2/review-2026-05-round2/G09/03-plan-r5.md](SPEC/v2/review-2026-05-round2/G09/03-plan-r5.md#L13-L98)). That makes the mid-call abort test exercise the actual `BaseAgentConfig.abortSignal` path instead of binding the config object to `initialMessage`.
+
+The r4 stale-state regression objection is also resolved. R4 required a single planner run where a rejected batch containing `plan_done({ reason: "old" })` is followed by a valid single `plan_done({ reason: "new" })`, with the second reason winning and both `plan_done` calls reaching `mcpRuntime.callTool` ([SPEC/v2/review-2026-05-round2/G09/04-review-r4.md](SPEC/v2/review-2026-05-round2/G09/04-review-r4.md#L24-L33)). R5 replaces the two-clean-cycle test with exactly that single-run sequence, asserts `{ completion: "plan_done", summary: "new" }`, checks that the router made two turns, and checks `planDoneCallCount === 2` ([SPEC/v2/review-2026-05-round2/G09/02-design-r5.md](SPEC/v2/review-2026-05-round2/G09/02-design-r5.md#L81-L135), [SPEC/v2/review-2026-05-round2/G09/03-plan-r5.md](SPEC/v2/review-2026-05-round2/G09/03-plan-r5.md#L114-L150), [SPEC/v2/review-2026-05-round2/G09/03-plan-r5.md](SPEC/v2/review-2026-05-round2/G09/03-plan-r5.md#L244-L247)). This covers both single-call exclusivity and current-call reason selection after a rejected prior attempt.
+
+The approved-equivalent r4 production architecture remains unchanged: stateless `plan_done`, no `AgentContext.planService`, typed terminal hook, post-dispatch abort precedence, no legacy regex fallback, and zero production `PLAN_COMPLETE` matches are retained ([SPEC/v2/review-2026-05-round2/G09/04-review-r4.md](SPEC/v2/review-2026-05-round2/G09/04-review-r4.md#L24-L28), [SPEC/v2/review-2026-05-round2/G09/02-design-r5.md](SPEC/v2/review-2026-05-round2/G09/02-design-r5.md#L20-L29)). That is consistent with the project rules: architecture-first, no backward compatibility shim, and no extra state cell.
+
+## Notes
+
+I did not run the proposed validation suite because this is a design/plan review rather than an implementation review. The validation contract in r5 is still the right execution gate: typecheck, lint, focused planner/runtime tests, full vitest, build, and the production grep for the legacy token ([SPEC/v2/review-2026-05-round2/G09/03-plan-r5.md](SPEC/v2/review-2026-05-round2/G09/03-plan-r5.md#L229-L250)).
+
+VERDICT: APPROVED

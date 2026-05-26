@@ -1,0 +1,34 @@
+# G32 - Review r3
+
+**Reviewer**: GPT-5.5 (Copilot)
+
+**Inputs reviewed**: [SPEC/v2/review-2026-05-round2/G32/01-analysis-r3.md](01-analysis-r3.md#L1), [SPEC/v2/review-2026-05-round2/G32/02-design-r3.md](02-design-r3.md#L1), [SPEC/v2/review-2026-05-round2/G32/03-plan-r3.md](03-plan-r3.md#L1), [SPEC/v2/review-2026-05-round2/G32/04-review-r2.md](04-review-r2.md#L1), [src/mcp/builtins.ts](../../../../src/mcp/builtins.ts#L1), [src/mcp/builtins.test.ts](../../../../src/mcp/builtins.test.ts#L1), [src/mcp/runtime.ts](../../../../src/mcp/runtime.ts#L168-L192)
+
+## Summary
+
+Round 3 addresses the two round-2 semantic blockers in the design. Root `opendir` and root iterator failures now route through `rootErrorEnvelope`, return before the success envelope, and therefore cannot surface `files`, `truncated`, or `skipped` as partial-success fields at [SPEC/v2/review-2026-05-round2/G32/02-design-r3.md](02-design-r3.md#L227-L244), [SPEC/v2/review-2026-05-round2/G32/02-design-r3.md](02-design-r3.md#L280-L285), [SPEC/v2/review-2026-05-round2/G32/02-design-r3.md](02-design-r3.md#L331-L332), and [SPEC/v2/review-2026-05-round2/G32/02-design-r3.md](02-design-r3.md#L351-L369). Empty pattern is also correctly modeled as handler-boundary `INVALID_ARGUMENT`, while non-empty malformed glob syntax remains `INVALID_PATTERN`, at [SPEC/v2/review-2026-05-round2/G32/02-design-r3.md](02-design-r3.md#L181-L185), [SPEC/v2/review-2026-05-round2/G32/02-design-r3.md](02-design-r3.md#L128-L139), and [SPEC/v2/review-2026-05-round2/G32/02-design-r3.md](02-design-r3.md#L419-L420).
+
+I cannot approve r3 yet because the plan's empty-pattern verification gate is still keyed to the old `globToRegExp` guard text. That gate can pass when the exact dead guard round 3 intends to remove is still present, and it can fail when the round-3 handler snippet is implemented correctly.
+
+## Required Changes
+
+### 1. Fix the empty-pattern guard-removal grep so it proves the handler is the single source of truth
+
+The design explicitly identifies the old helper guard as `throw new Error("pattern must be non-empty")` and says the replacement `globToRegExp` opens directly with the segment split at [SPEC/v2/review-2026-05-round2/G32/02-design-r3.md](02-design-r3.md#L62-L78). The actual round-3 handler message is different: `INVALID_ARGUMENT: pattern must be a non-empty string` at [SPEC/v2/review-2026-05-round2/G32/02-design-r3.md](02-design-r3.md#L181-L185).
+
+The plan nevertheless tells implementers to grep [src/mcp/builtins.ts](../../../../src/mcp/builtins.ts#L1) for `pattern must be non-empty` and expect one hit, then labels that hit as the handler-level rejection, at [SPEC/v2/review-2026-05-round2/G32/03-plan-r3.md](03-plan-r3.md#L68-L74). The exit criteria repeat the same check at [SPEC/v2/review-2026-05-round2/G32/03-plan-r3.md](03-plan-r3.md#L278-L281). With the handler copied from the design and the obsolete helper guard removed, that literal grep returns zero hits. Worse, with the obsolete helper guard retained and the handler copied from the design, it returns exactly one hit at the wrong location, so the gate accepts the regression it is meant to prevent.
+
+Required fix: make the verification two-part and source-aware. For example, assert exactly one handler-level `INVALID_ARGUMENT: pattern must be a non-empty string` occurrence, and separately assert that `globToRegExp` contains no `pattern.length === 0` branch and no `pattern must be non-empty` throw. A scoped check around the helper body is better than a whole-file string count because the blocker is about where the empty-pattern rejection lives, not just how many times a phrase appears.
+
+## Verified Fixes From Round 2
+
+- The root `opendir` blocker is addressed at the contract level. The r2 review required root `EACCES` / `EPERM`, root `ENOENT` / `ENOTDIR`, and unexpected root `opendir` errors to hard-fail rather than populate `skipped` at [SPEC/v2/review-2026-05-round2/G32/04-review-r2.md](04-review-r2.md#L19-L21). Round 3 adds `rootErrorEnvelope`, branches on `depth === 0`, returns root errors before the success envelope, and adds root `opendir` regression tests at [SPEC/v2/review-2026-05-round2/G32/02-design-r3.md](02-design-r3.md#L227-L244), [SPEC/v2/review-2026-05-round2/G32/02-design-r3.md](02-design-r3.md#L280-L285), [SPEC/v2/review-2026-05-round2/G32/02-design-r3.md](02-design-r3.md#L351-L369), and [SPEC/v2/review-2026-05-round2/G32/03-plan-r3.md](03-plan-r3.md#L222-L241).
+- The empty-pattern error-code contract is fixed in the design and test list. The r2 review required one code for empty pattern at [SPEC/v2/review-2026-05-round2/G32/04-review-r2.md](04-review-r2.md#L25-L27). Round 3 removes empty pattern from the `INVALID_PATTERN` glob matrix, puts it in the `INVALID_ARGUMENT` table, and moves the test to the error-envelope section at [SPEC/v2/review-2026-05-round2/G32/02-design-r3.md](02-design-r3.md#L137-L155), [SPEC/v2/review-2026-05-round2/G32/02-design-r3.md](02-design-r3.md#L496-L500), and [SPEC/v2/review-2026-05-round2/G32/03-plan-r3.md](03-plan-r3.md#L152-L181). The remaining problem is the plan verification command above, not the semantic contract.
+- No regression found in the previously approved G32 surfaces. The max-results truncation matrix is still carried forward at [SPEC/v2/review-2026-05-round2/G32/02-design-r3.md](02-design-r3.md#L55-L58) and the test gate still requires exact-boundary `truncated: false` at [SPEC/v2/review-2026-05-round2/G32/02-design-r3.md](02-design-r3.md#L511). The `**` translator remains segment-aware at [SPEC/v2/review-2026-05-round2/G32/02-design-r3.md](02-design-r3.md#L86-L107) and [SPEC/v2/review-2026-05-round2/G32/02-design-r3.md](02-design-r3.md#L141-L155). Child traversal still uses structured per-entry classification at [SPEC/v2/review-2026-05-round2/G32/02-design-r3.md](02-design-r3.md#L289-L300), [SPEC/v2/review-2026-05-round2/G32/02-design-r3.md](02-design-r3.md#L335-L342), and [SPEC/v2/review-2026-05-round2/G32/02-design-r3.md](02-design-r3.md#L457-L465). G31 remains a hard prerequisite with `parseNonNegativeInt` and `classifyFsError` reused rather than redeclared at [SPEC/v2/review-2026-05-round2/G32/03-plan-r3.md](03-plan-r3.md#L65-L78).
+
+## Notes
+
+- The live checkout remains pre-G30/G31 for this finding: [src/mcp/builtins.ts](../../../../src/mcp/builtins.ts#L15-L35) still imports sync fs helpers and `execFile`, and [src/mcp/builtins.ts](../../../../src/mcp/builtins.ts#L310-L320) still shells out to `find`. That is consistent with the plan's prerequisite sequencing rather than a new r3 regression.
+- [src/mcp/runtime.ts](../../../../src/mcp/runtime.ts#L188-L192) wraps `isError` content into the thrown error message, so the planned tests can still assert that hard failures do not include `files`, `truncated`, or `skipped` by parsing or matching the serialized envelope.
+
+VERDICT: CHANGES_REQUESTED

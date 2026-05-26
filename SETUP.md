@@ -250,6 +250,10 @@ node dist/cli.js login openai-codex
 
 Auth tokens are stored in `~/.saivage/auth-profiles.json` inside the container. These persist across restarts.
 
+### 5e. Project knowledge (skills and memory)
+
+Skill records (procedural conventions) and memory records (durable facts) live under `<project>/.saivage/{skills,memory}/{project,stages,sessions}/` and are authored exclusively via MCP tools (`create_skill`, `create_memory`, lifecycle ops). Built-in skills shipped with Saivage are walked from `saivage/skills/builtin/` and need no per-project setup. See [SPEC/v2/skills-memory/](SPEC/v2/skills-memory/) for the functional analysis, design, and implementation plan.
+
 ## Step 6: Point the Service at Your Project
 
 Edit the systemd service to serve your target project:

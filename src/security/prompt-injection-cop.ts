@@ -1,6 +1,10 @@
+import { z } from "zod";
 import type { ModelRouter } from "../providers/router.js";
 import { parseModelId } from "../providers/types.js";
 import type { SaivageConfig } from "../config.js";
+import { configPath } from "../config.js";
+import { MissingModelForRoleError } from "../config-validation.js";
+import { parseLlmJsonAs } from "../parse-llm-json.js";
 import { log } from "../log.js";
 
 export interface PromptInjectionScanRequest {
@@ -15,38 +19,13 @@ export interface PromptInjectionScanResult {
   verdict: "allow" | "block";
   reason: string;
   confidence: number;
-  scanner: "heuristic" | "llm" | "disabled" | "skipped";
+  scanner: "llm" | "disabled" | "skipped";
   model?: string;
 }
 
 export interface PromptInjectionCop {
   scan(request: PromptInjectionScanRequest): Promise<PromptInjectionScanResult>;
 }
-
-const DEFAULT_SCAN_MODEL = "github-copilot/gpt-5.4";
-const DEFAULT_MAX_SCAN_CHARS = 100_000;
-
-const BLOCK_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
-  { pattern: /ignore\s+(all\s+)?(previous|prior|above|system|developer)\s+instructions/i, reason: "asks the agent to ignore governing instructions" },
-  { pattern: /disregard\s+(all\s+)?(previous|prior|above|system|developer)\s+instructions/i, reason: "asks the agent to disregard governing instructions" },
-  { pattern: /override\s+(the\s+)?(system|developer|saivage|agent)\s+(prompt|instructions|rules)/i, reason: "tries to override Saivage instructions" },
-  { pattern: /you\s+are\s+now\s+(saivage|the\s+manager|the\s+planner|the\s+coder|the\s+reviewer|an?\s+agent)/i, reason: "tries to redefine the agent role" },
-  { pattern: /(?:run|call|use)\s+(?:the\s+)?(?:shell|terminal|mcp|tool|git|filesystem)\s+(?:tool|command|server)?/i, reason: "tries to direct Saivage tool use" },
-  { pattern: /(?:read|print|exfiltrate|send|upload)\s+(?:secrets?|tokens?|api[_ -]?keys?|environment\s+variables|\.env)/i, reason: "tries to extract secrets" },
-  { pattern: /(?:delete|overwrite|modify)\s+(?:files?|the\s+repository|source\s+code|\.saivage|git\s+history)/i, reason: "tries to modify project state" },
-  { pattern: /prompt\s+injection\s*:\s*(?:ignore|disregard|override|you\s+are)/i, reason: "labels itself as a prompt injection" },
-];
-
-const SUSPICIOUS_PATTERNS = [
-  /system\s+prompt/i,
-  /developer\s+message/i,
-  /tool\s+call/i,
-  /function\s+call/i,
-  /saivage/i,
-  /agent/i,
-  /instructions/i,
-  /secrets?/i,
-];
 
 export function createPromptInjectionCop(
   config: SaivageConfig,
@@ -55,9 +34,10 @@ export function createPromptInjectionCop(
 ): PromptInjectionCop {
   const security = config.security;
   if (!security.injectionScanner) return disabledCop();
+  if (!modelSpecOverride) throw new MissingModelForRoleError(["security"], configPath());
   return new DefaultPromptInjectionCop(router, {
-    modelSpec: modelSpecOverride ?? security.injectionModel ?? DEFAULT_SCAN_MODEL,
-    maxScanChars: security.maxScanLengthBytes ?? DEFAULT_MAX_SCAN_CHARS,
+    modelSpec: modelSpecOverride,
+    maxScanChars: security.maxScanLengthBytes,
   });
 }
 
@@ -75,7 +55,7 @@ export function disabledCop(): PromptInjectionCop {
   };
 }
 
-class DefaultPromptInjectionCop implements PromptInjectionCop {
+export class DefaultPromptInjectionCop implements PromptInjectionCop {
   constructor(
     private router: ModelRouter,
     private options: { modelSpec: string; maxScanChars: number },
@@ -83,15 +63,15 @@ class DefaultPromptInjectionCop implements PromptInjectionCop {
 
   async scan(request: PromptInjectionScanRequest): Promise<PromptInjectionScanResult> {
     const content = request.content.slice(0, this.options.maxScanChars);
-    const heuristic = scanHeuristically(content);
-    if (!heuristic.allowed) return { ...heuristic, scanner: "heuristic" };
-
-    if (!shouldAskModel(content)) {
-      return heuristic;
-    }
-
     const llmResult = await this.scanWithModel({ ...request, content });
-    return llmResult ?? heuristic;
+    if (llmResult) return llmResult;
+    return {
+      allowed: true,
+      verdict: "allow",
+      reason: "llm unavailable; allowing",
+      confidence: 0,
+      scanner: "llm",
+    };
   }
 
   private async scanWithModel(request: PromptInjectionScanRequest): Promise<PromptInjectionScanResult | null> {
@@ -153,44 +133,12 @@ function tryParseModelId(modelSpec: string): { provider: string; model: string }
   return modelSpec.includes("/") ? parseModelId(modelSpec) : undefined;
 }
 
-export function scanHeuristically(content: string): PromptInjectionScanResult {
-  for (const { pattern, reason } of BLOCK_PATTERNS) {
-    if (pattern.test(content)) {
-      return {
-        allowed: false,
-        verdict: "block",
-        reason,
-        confidence: 0.95,
-        scanner: "heuristic",
-      };
-    }
-  }
-
-  return {
-    allowed: true,
-    verdict: "allow",
-    reason: "no clear attempt to control Saivage was detected",
-    confidence: 0.65,
-    scanner: "heuristic",
-  };
-}
-
-function shouldAskModel(content: string): boolean {
-  return SUSPICIOUS_PATTERNS.some((pattern) => pattern.test(content));
-}
-
 function parseModelVerdict(content: string): { verdict: "allow" | "block"; confidence: number; reason: string } | null {
-  const match = content.match(/\{[\s\S]*\}/);
-  if (!match) return null;
-  try {
-    const parsed = JSON.parse(match[0]) as { verdict?: unknown; confidence?: unknown; reason?: unknown };
-    const verdict = parsed.verdict === "block" ? "block" : "allow";
-    const confidence = typeof parsed.confidence === "number"
-      ? Math.max(0, Math.min(1, parsed.confidence))
-      : 0.5;
-    const reason = typeof parsed.reason === "string" ? parsed.reason.slice(0, 300) : "model returned no reason";
-    return { verdict, confidence, reason };
-  } catch {
-    return null;
-  }
+  const schema = z.object({
+    verdict: z.enum(["allow", "block"]).default("allow"),
+    confidence: z.number().min(0).max(1).default(0.5),
+    reason: z.string().max(300).default("model returned no reason"),
+  });
+  const result = parseLlmJsonAs(content, schema);
+  return result.ok ? result.value : null;
 }

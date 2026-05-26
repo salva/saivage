@@ -5,53 +5,29 @@ Timestamps are ISO 8601 strings. IDs are opaque strings (nanoid or UUID).
 
 ---
 
-## 1. Runtime Config
+## 1. Runtime Config (`SaivageConfig`)
 
-**Path:** `<project>/.saivage/saivage.json`
+**Path:** `<saivageDir>/saivage.json` (see [`docs/guide/config-runtime.md`](../../docs/guide/config-runtime.md) for the precise resolution rules).
 
-Runtime/provider settings stored inside the project. Loaded by `src/config.ts`.
+**Canonical source.** The runtime config schema is defined in
+[`src/config.ts`](../../src/config.ts) as the Zod `configSchema` and exported
+as the TypeScript type `SaivageConfig`. The schema — including every
+top-level block (`models`, `providers`, `failover`, `modelEquivalents`,
+`server`, `agent`, `runtime`, `security`, `supervisor`, `telegram`, `mcp`,
+`notifications`, `oauth`, `mcpServers`) — is authoritative. This SPEC does
+not mirror it; the Zod source plus the operator guide are the contract.
 
-```typescript
-interface RuntimeConfig {
-  models: {
-    orchestrator: string;            // default: "anthropic/claude-sonnet-4-20250514"
-    coder: string;
-    researcher: string;
-    executor: string;
-    chat: string;
-    default: string;
-  };
-  providers: {
-    [name: string]: {                // e.g. "anthropic", "openai", "ollama"
-      apiKey?: string;               // API key (or use env var / OAuth)
-      baseUrl?: string;              // custom endpoint
-    };
-  };
-  failover: {
-    [provider: string]: string[];    // fallback chain, e.g. "anthropic": ["openai"]
-  };
-  modelEquivalents: {
-    [modelSpec: string]: string[];   // bidirectional equivalent model specs, e.g. "github-copilot/gpt-5.4": ["openai-codex/gpt-5.4"]
-  };
-  server: {
-    port: number;                    // default: 8080
-    host: string;                    // default: "0.0.0.0"
-  };
-  agent: {
-    maxConcurrentAgents: number;     // default: 3 (not yet enforced)
-  };
-  runtime: {
-    maxServices: number;             // default: 50
-    restartOnCrash: boolean;         // default: true
-    healthCheckIntervalMs: number;   // default: 30000
-    idleShutdownMs: number;          // default: 300000
-  };
-  telegram: {
-    botToken: string;
-    allowedUserIds: number[];
-  };
-}
-```
+**Operator prose.** [`docs/guide/config-runtime.md`](../../docs/guide/config-runtime.md)
+walks every top-level block, documents defaults, and describes environment
+variable interpolation and reloading.
+
+**Cross-cutting policy tickets.** Specific schema rules and defaults are
+owned by these review findings:
+
+- [F02 — agent roster drift](review-2026-05/F02-agent-roster-drift.md): final list of `models.*` role keys.
+- [F04 — hardcoded default models](review-2026-05/F04-hardcoded-default-models.md): which `models.*`, `security.injectionModel`, and `supervisor.model` are required vs optional.
+- [F11 — magic constants → config](review-2026-05/F11-magic-constants-not-in-config.md): the `mcp.*` block and the `runtime.notes`, `runtime.recoveryDelayMs`, `supervisor.forceCancelDelayMs` keys.
+- [F33 — config-default drift](review-2026-05/F33-config-default-drift.md): the `seedProject` writer and removal of duplicate default literals.
 
 ---
 
@@ -160,7 +136,7 @@ interface TaskList {
 interface Task {
   id: string;
   type: "code" | "research" | "test" | "document";
-  assigned_to: "coder" | "researcher";
+  assigned_to: "coder" | "researcher" | "data_agent" | "reviewer";
   description: string;               // detailed work description
   checklist: ChecklistItem[];
   dependencies: string[];            // task IDs that must complete first
@@ -184,13 +160,13 @@ interface ChecklistItem {
 
 **Path:** `<project>/.saivage/stages/<stage-id>/reports/<task-id>.json`
 
-Written by Coder or Researcher after executing a task.
+Written by Coder, Researcher, Data Agent, or Reviewer after executing a task.
 
 ```typescript
 interface TaskReport {
   task_id: string;
   stage_id: string;
-  agent: "coder" | "researcher";
+  agent: "coder" | "researcher" | "data_agent" | "reviewer";
   status: "completed" | "failed";
   summary: string;                   // what was done
   checklist_results: ChecklistResult[];
@@ -309,25 +285,45 @@ interface InspectionRequest {
 
 ---
 
-## 10. Skill Index
+## 10. Skills & Memory
 
-**Path:** `<project>/.saivage/skills/index.json`
+**On-disk layout under `<project>/.saivage/`** (design §B.4):
 
-```typescript
-interface SkillIndex {
-  skills: SkillEntry[];
-}
-
-interface SkillEntry {
-  name: string;
-  file: string;                      // relative path to .md file
-  description: string;
-  triggers: string[];                // e.g. "keyword:pandas", "tool:web_search", "path:*.py", "tag:data", "agent:coder"
-  target_agents?: string[];          // agent types this skill applies to (omit = all agents)
-  created_at: string;
-  updated_at: string;
-}
 ```
+.saivage/
+├── skills/
+│   ├── project/{index.json, audit.jsonl, records/<uuid>.json, records/<uuid>.md}
+│   ├── stages/<stage_id>/{index.json, audit.jsonl, records/}
+│   └── sessions/<channel_id>/{index.json, audit.jsonl, records/}
+├── memory/
+│   ├── project/{index.json, audit.jsonl, records/<uuid>.json}
+│   ├── stages/<stage_id>/{index.json, audit.jsonl, records/}
+│   └── sessions/<channel_id>/{index.json, audit.jsonl, records/}
+```
+
+Built-in skills ship at `saivage/skills/builtin/<topic>/SKILL.md` (YAML frontmatter, no `index.json`) and live **outside** `<project>/.saivage/`. They are bundled into `dist/skills/builtin/` by `tsup`.
+
+`.saivage/{skills,memory}/sessions/` is gitignored; `project/` and `stages/` subtrees are committed. Each scope subtree is self-contained — its own `index.json` (a derivable summary projection of `records/*.json`), its own append-only `audit.jsonl`, and its own `records/` directory.
+
+**Schemas.** The canonical Zod schemas live in the design document — see [SPEC/v2/skills-memory/01-DESIGN.md](skills-memory/01-DESIGN.md) §B.1 for `SkillRecord`, `MemoryRecord`, and `AuditEntry`. Summary of the shared `RecordBase` fields:
+
+- `id` (UUID) — unique within `(kind, scope, scope_ref)`.
+- `kind` — `"skill"` | `"memory"`.
+- `scope` — `"project"` | `"stage"` | `"session"`; `scope_ref` is required for stage/session and matches the path under §B.4.
+- `status` — `"active"` | `"superseded"` | `"archived"` | `"expired"` (tombstone for `deleted`).
+- `created_at` / `updated_at` — ISO 8601 datetimes.
+- `author_agent` — `{ role, agent_id }` of the creator.
+- `source` — optional `{ stage_id?, task_id? }` provenance.
+- `expires_at` / `ttl_ms` — optional decay metadata (project scope only; stage/session use scope hooks instead).
+- `supersedes` / `superseded_by` — UUID pair forming the supersession chain.
+- `relates_to` — symmetric free-form references (bounded at 16).
+- `survive_compaction` — boolean; `true` ⇒ record participates in post-compaction reinjection (design §E.1).
+
+`SkillRecord` adds `{ origin: "builtin"|"project", name, description, triggers[], target_agents[], body_path }`. `MemoryRecord` adds `{ topic: {domain, subject, aspect?}, keys[], target_agents[], body, source_ref? }`. See design §B.1 for the exact refinements.
+
+`AuditEntry` is one JSON line per write attempt (including rejections) in the scope's `audit.jsonl`: `{ ts, record_id, op, outcome, error_code?, author_agent, reason, prev_status?, next_status?, content_hash_before?, content_hash_after? }`. Operations: `create | update | supersede | archive | unarchive | delete | expire`.
+
+**Lifecycle states.** `active` → `superseded` (via `supersede_*`), `archived` (reversible via `unarchive_*`), `expired` (sweeper), `deleted` (tombstone). Stage terminal transitions archive their stage-scoped records via a directory walk; chat-channel close archives session-scoped records the same way. Supersession may widen scope (`stage → project`) but never narrow it; see design §B.2 / §B.5.
 
 ---
 
@@ -348,7 +344,7 @@ interface RuntimeState {
 }
 
 interface AgentState {
-  agent_type: "planner" | "manager" | "coder" | "researcher" | "inspector" | "chat";
+  agent_type: "planner" | "manager" | "coder" | "researcher" | "data_agent" | "reviewer" | "inspector" | "chat";
   agent_id: string;                  // unique instance ID
   status: "running" | "suspended" | "idle";
   current_task_id?: string;          // for coder/researcher

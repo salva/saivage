@@ -4,13 +4,12 @@
  * Atomic writes, schema validation, history append.
  */
 
-import { join } from "node:path";
-import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import {
-  readDoc,
   readDocOrNull,
   writeDoc,
   ensureDir,
+  pathExists,
 } from "../store/documents.js";
 import {
   PlanSchema,
@@ -23,6 +22,7 @@ import {
   type CompletedStage,
   type Escalation,
 } from "../types.js";
+import { archiveStage } from "../knowledge/lifecycle.js";
 import { log } from "../log.js";
 
 /** Error codes returned by the Plan MCP service. */
@@ -49,7 +49,12 @@ function planError(code: PlanErrorCode, message: string): PlanError {
 export class PlanService {
   private planPath: string;
   private historyPath: string;
-  private mutationQueue: Promise<unknown> = Promise.resolve();
+  private projectRoot: string;
+  private opQueue: Promise<unknown> = Promise.resolve();
+
+  /** In-memory cache, hydrated by init(). */
+  private plan: Plan | null = null;
+  private history: PlanHistory = { stages: [] };
 
   /** Git commit callback — called by plan_commit. */
   private gitCommitFn:
@@ -62,7 +67,14 @@ export class PlanService {
   constructor(projectSaivageDir: string) {
     this.planPath = join(projectSaivageDir, "plan.json");
     this.historyPath = join(projectSaivageDir, "plan-history.json");
-    ensureDir(projectSaivageDir);
+    this.projectRoot = join(projectSaivageDir, "..");
+  }
+
+  /** Hydrate the in-memory cache from disk. Must be called once before use. */
+  async init(): Promise<void> {
+    await ensureDir(dirname(this.planPath));
+    this.plan = await readDocOrNull(this.planPath, PlanSchema);
+    this.history = (await readDocOrNull(this.historyPath, PlanHistorySchema)) ?? { stages: [] };
   }
 
   /** Set the callback used for git commits. */
@@ -75,46 +87,36 @@ export class PlanService {
   // ─── Tools ──────────────────────────────────────────────────────────────
 
   /** plan_get — Read the current plan. */
-  plan_get(): Plan | PlanError {
-    const plan = readDocOrNull(this.planPath, PlanSchema);
-    if (!plan) return planError("PLAN_NOT_FOUND", "plan.json does not exist. Call plan_init first.");
-    return plan;
+  async plan_get(): Promise<Plan | PlanError> {
+    if (!this.plan) return planError("PLAN_NOT_FOUND", "plan.json does not exist. Call plan_init first.");
+    return structuredClone(this.plan);
   }
 
   /** plan_get_stage — Get a single stage by ID (from active plan or history). */
-  plan_get_stage(stageId: string): (Stage & { source: "active" | "history" }) | (CompletedStage & { source: "history" }) | PlanError {
-    // Check active plan first
-    const plan = readDocOrNull(this.planPath, PlanSchema);
-    if (plan) {
-      const stage = plan.stages.find((s) => s.id === stageId);
-      if (stage) return { ...stage, source: "active" as const };
+  async plan_get_stage(stageId: string): Promise<(Stage & { source: "active" | "history" }) | (CompletedStage & { source: "history" }) | PlanError> {
+    if (this.plan) {
+      const stage = this.plan.stages.find((s) => s.id === stageId);
+      if (stage) return { ...structuredClone(stage), source: "active" as const };
     }
-
-    // Check history
-    const history = readDocOrNull(this.historyPath, PlanHistorySchema);
-    if (history) {
-      const completed = history.stages.find((s) => s.id === stageId);
-      if (completed) return { ...completed, source: "history" as const };
-    }
-
+    const completed = this.history.stages.find((s) => s.id === stageId);
+    if (completed) return { ...structuredClone(completed), source: "history" as const };
     return planError("STAGE_NOT_FOUND", `Stage '${stageId}' not found in active plan or history`);
   }
 
   /** plan_get_current_stage — Get the stage currently being executed. */
-  plan_get_current_stage(): Stage | null | PlanError {
-    const plan = readDocOrNull(this.planPath, PlanSchema);
-    if (!plan) return planError("PLAN_NOT_FOUND", "plan.json does not exist.");
-    if (!plan.current_stage_id) return null;
-    return plan.stages.find((s) => s.id === plan.current_stage_id) ?? null;
+  async plan_get_current_stage(): Promise<Stage | null | PlanError> {
+    if (!this.plan) return planError("PLAN_NOT_FOUND", "plan.json does not exist.");
+    if (!this.plan.current_stage_id) return null;
+    const found = this.plan.stages.find((s) => s.id === this.plan!.current_stage_id);
+    return found ? structuredClone(found) : null;
   }
 
   /** plan_set_stages — Replace the plan's stage list. */
-  plan_set_stages(
+  async plan_set_stages(
     stages: Stage[],
     currentStageId: string | null,
-  ): Plan | PlanError {
+  ): Promise<Plan | PlanError> {
     try {
-      // Validate each stage
       for (const s of stages) {
         StageSchema.parse(s);
       }
@@ -123,24 +125,24 @@ export class PlanService {
         return planError("STAGE_NOT_FOUND", `current_stage_id '${currentStageId}' not found in provided stages`);
       }
 
-      const plan: Plan = {
+      const nextPlan: Plan = {
         updated_at: new Date().toISOString(),
         current_stage_id: currentStageId,
         stages,
       };
-      writeDoc(this.planPath, plan, PlanSchema);
-      return plan;
+      await writeDoc(this.planPath, nextPlan, PlanSchema);
+      this.plan = nextPlan;
+      return structuredClone(nextPlan);
     } catch (err) {
       return planError("VALIDATION_ERROR", err instanceof Error ? err.message : String(err));
     }
   }
 
   /** plan_add_stage — Append a new stage. */
-  plan_add_stage(stage: Stage): Plan | PlanError {
-    const plan = readDocOrNull(this.planPath, PlanSchema);
-    if (!plan) return planError("PLAN_NOT_FOUND", "plan.json does not exist.");
+  async plan_add_stage(stage: Stage): Promise<Plan | PlanError> {
+    if (!this.plan) return planError("PLAN_NOT_FOUND", "plan.json does not exist.");
 
-    if (plan.stages.some((s) => s.id === stage.id)) {
+    if (this.plan.stages.some((s) => s.id === stage.id)) {
       return planError("STAGE_EXISTS", `Stage '${stage.id}' already exists`);
     }
 
@@ -150,62 +152,65 @@ export class PlanService {
       return planError("VALIDATION_ERROR", err instanceof Error ? err.message : String(err));
     }
 
-    plan.stages.push(stage);
-    plan.updated_at = new Date().toISOString();
-    writeDoc(this.planPath, plan, PlanSchema);
-    return plan;
+    const nextPlan = structuredClone(this.plan);
+    nextPlan.stages.push(stage);
+    nextPlan.updated_at = new Date().toISOString();
+    await writeDoc(this.planPath, nextPlan, PlanSchema);
+    this.plan = nextPlan;
+    return structuredClone(nextPlan);
   }
 
   /** plan_remove_stage — Remove a stage from the active plan. */
-  plan_remove_stage(stageId: string): Plan | PlanError {
-    const plan = readDocOrNull(this.planPath, PlanSchema);
-    if (!plan) return planError("PLAN_NOT_FOUND", "plan.json does not exist.");
+  async plan_remove_stage(stageId: string): Promise<Plan | PlanError> {
+    if (!this.plan) return planError("PLAN_NOT_FOUND", "plan.json does not exist.");
 
-    const idx = plan.stages.findIndex((s) => s.id === stageId);
+    const idx = this.plan.stages.findIndex((s) => s.id === stageId);
     if (idx === -1) return planError("STAGE_NOT_FOUND", `Stage '${stageId}' not found`);
 
-    plan.stages.splice(idx, 1);
-    if (plan.current_stage_id === stageId) {
-      plan.current_stage_id = null;
+    const nextPlan = structuredClone(this.plan);
+    nextPlan.stages.splice(idx, 1);
+    if (nextPlan.current_stage_id === stageId) {
+      nextPlan.current_stage_id = null;
     }
-    plan.updated_at = new Date().toISOString();
-    writeDoc(this.planPath, plan, PlanSchema);
-    return plan;
+    nextPlan.updated_at = new Date().toISOString();
+    await writeDoc(this.planPath, nextPlan, PlanSchema);
+    this.plan = nextPlan;
+    return structuredClone(nextPlan);
   }
 
   /** plan_set_current — Set which stage is currently being executed. */
-  plan_set_current(stageId: string | null): Plan | PlanError {
-    const plan = readDocOrNull(this.planPath, PlanSchema);
-    if (!plan) return planError("PLAN_NOT_FOUND", "plan.json does not exist.");
+  async plan_set_current(stageId: string | null): Promise<Plan | PlanError> {
+    if (!this.plan) return planError("PLAN_NOT_FOUND", "plan.json does not exist.");
 
-    if (stageId !== null && !plan.stages.some((s) => s.id === stageId)) {
+    if (stageId !== null && !this.plan.stages.some((s) => s.id === stageId)) {
       return planError("STAGE_NOT_FOUND", `Stage '${stageId}' not found`);
     }
 
-    plan.current_stage_id = stageId;
-    plan.updated_at = new Date().toISOString();
-    writeDoc(this.planPath, plan, PlanSchema);
-    return plan;
+    const nextPlan = structuredClone(this.plan);
+    nextPlan.current_stage_id = stageId;
+    nextPlan.updated_at = new Date().toISOString();
+    await writeDoc(this.planPath, nextPlan, PlanSchema);
+    this.plan = nextPlan;
+    return structuredClone(nextPlan);
   }
 
   /** plan_complete_stage — Move a stage from active plan to history. */
-  plan_complete_stage(args: {
+  async plan_complete_stage(args: {
     stage_id: string;
     result: "completed" | "failed" | "escalated" | "aborted";
     summary: string;
     actual_outcomes: string[];
     escalation?: Escalation;
     abort_reason?: string;
-  }): { completed_stage: CompletedStage; plan: Plan } | PlanError {
-    const plan = readDocOrNull(this.planPath, PlanSchema);
-    if (!plan) return planError("PLAN_NOT_FOUND", "plan.json does not exist.");
+  }): Promise<{ completed_stage: CompletedStage; plan: Plan } | PlanError> {
+    if (!this.plan) return planError("PLAN_NOT_FOUND", "plan.json does not exist.");
 
-    const stageIdx = plan.stages.findIndex((s) => s.id === args.stage_id);
+    const stageIdx = this.plan.stages.findIndex((s) => s.id === args.stage_id);
     if (stageIdx === -1) {
       return planError("STAGE_NOT_FOUND", `Stage '${args.stage_id}' not found in active plan`);
     }
 
-    const stage = plan.stages[stageIdx];
+    const stage = this.plan.stages[stageIdx];
     const now = new Date().toISOString();
 
     const completedStage: CompletedStage = {
@@ -213,7 +218,7 @@ export class PlanService {
       objective: stage.objective,
       expected_outcomes: stage.expected_outcomes,
       actual_outcomes: args.actual_outcomes,
-      started_at: now, // ideally tracked by runtime, but we don't have it
+      started_at: now,
       completed_at: now,
       result: args.result,
       summary: args.summary,
@@ -221,48 +226,52 @@ export class PlanService {
       abort_reason: args.abort_reason,
     };
 
-    // Validate the completed stage
     try {
       CompletedStageSchema.parse(completedStage);
     } catch (err) {
       return planError("VALIDATION_ERROR", err instanceof Error ? err.message : String(err));
     }
 
-    // Remove from active plan
-    plan.stages.splice(stageIdx, 1);
-    if (plan.current_stage_id === args.stage_id) {
-      plan.current_stage_id = null;
+    const nextPlan = structuredClone(this.plan);
+    nextPlan.stages.splice(stageIdx, 1);
+    if (nextPlan.current_stage_id === args.stage_id) {
+      nextPlan.current_stage_id = null;
     }
-    plan.updated_at = now;
+    nextPlan.updated_at = now;
 
-    // Write to history
-    let history = readDocOrNull(this.historyPath, PlanHistorySchema);
-    if (!history) {
-      history = { stages: [] };
+    const nextHistory = structuredClone(this.history);
+    nextHistory.stages.push(completedStage);
+
+    // Disk writes first. If either rejects the cache stays at the prior
+    // value and the error propagates. A failure of the second write
+    // leaves disk with an updated plan.json but stale plan-history.json;
+    // this residual cross-document gap is out of scope for F34.
+    await writeDoc(this.planPath, nextPlan, PlanSchema);
+    await writeDoc(this.historyPath, nextHistory, PlanHistorySchema);
+    this.plan = nextPlan;
+    this.history = nextHistory;
+
+    // FR-9 / WI-11: archive stage-scoped skills + memory at stage close.
+    try {
+      await archiveStage(this.projectRoot, stage.id);
+    } catch (err) {
+      log.warn(`[plan-server] archiveStage failed for ${stage.id}: ${String(err)}`);
     }
-    history.stages.push(completedStage);
 
-    // Atomic writes (plan first, then history)
-    writeDoc(this.planPath, plan, PlanSchema);
-    writeDoc(this.historyPath, history, PlanHistorySchema);
-
-    return { completed_stage: completedStage, plan };
+    return { completed_stage: structuredClone(completedStage), plan: structuredClone(nextPlan) };
   }
 
   /** plan_get_history — Read the plan history. */
-  plan_get_history(lastN?: number): PlanHistory | PlanError {
-    const history = readDocOrNull(this.historyPath, PlanHistorySchema);
-    if (!history) return { stages: [] };
-
+  async plan_get_history(lastN?: number): Promise<PlanHistory | PlanError> {
     if (lastN !== undefined && lastN > 0) {
-      return { stages: history.stages.slice(-lastN) };
+      return { stages: structuredClone(this.history.stages.slice(-lastN)) };
     }
-    return history;
+    return structuredClone(this.history);
   }
 
   /** plan_init — Initialize an empty plan. */
-  plan_init(stages?: Stage[]): Plan | PlanError {
-    if (existsSync(this.planPath)) {
+  async plan_init(stages?: Stage[]): Promise<Plan | PlanError> {
+    if (this.plan !== null) {
       return planError("STAGE_EXISTS", "plan.json already exists. Use plan_set_stages to overwrite.");
     }
 
@@ -282,8 +291,9 @@ export class PlanService {
       current_stage_id: null,
       stages: parsedStages,
     };
-    writeDoc(this.planPath, plan, PlanSchema);
-    return plan;
+    await writeDoc(this.planPath, plan, PlanSchema);
+    this.plan = plan;
+    return structuredClone(plan);
   }
 
   /** plan_commit — Commit plan files to git. */
@@ -295,9 +305,9 @@ export class PlanService {
     }
 
     try {
-      const files = [this.planPath, this.historyPath].filter((f) =>
-        existsSync(f),
-      );
+      const candidates = [this.planPath, this.historyPath];
+      const files: string[] = [];
+      for (const f of candidates) if (await pathExists(f)) files.push(f);
       if (files.length === 0) {
         return planError("PLAN_NOT_FOUND", "No plan files to commit");
       }
@@ -334,15 +344,12 @@ export class PlanService {
     toolName: string,
     args: Record<string, unknown>,
   ): Promise<{ content: unknown; isError: boolean }> {
-    if (isMutatingPlanTool(toolName)) {
-      return this.serializeMutation(() => this.handleToolCallInner(toolName, args));
-    }
-    return this.handleToolCallInner(toolName, args);
+    return this.serializeOp(() => this.handleToolCallInner(toolName, args));
   }
 
-  private async serializeMutation<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.mutationQueue.catch(() => undefined).then(fn);
-    this.mutationQueue = run.catch(() => undefined);
+  private async serializeOp<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.opQueue.catch(() => undefined).then(fn);
+    this.opQueue = run.catch(() => undefined);
     return run;
   }
 
@@ -355,37 +362,37 @@ export class PlanService {
 
     switch (toolName) {
       case "plan_get":
-        result = this.plan_get();
+        result = await this.plan_get();
         break;
       case "plan_get_stage":
-        result = this.plan_get_stage(args.stage_id as string);
+        result = await this.plan_get_stage(args.stage_id as string);
         break;
       case "plan_get_current_stage":
-        result = this.plan_get_current_stage();
+        result = await this.plan_get_current_stage();
         break;
       case "plan_set_stages":
-        result = this.plan_set_stages(
+        result = await this.plan_set_stages(
           args.stages as Stage[],
           args.current_stage_id as string | null,
         );
         break;
       case "plan_add_stage":
-        result = this.plan_add_stage(args.stage as Stage);
+        result = await this.plan_add_stage(args.stage as Stage);
         break;
       case "plan_remove_stage":
-        result = this.plan_remove_stage(args.stage_id as string);
+        result = await this.plan_remove_stage(args.stage_id as string);
         break;
       case "plan_set_current":
-        result = this.plan_set_current(args.stage_id as string | null);
+        result = await this.plan_set_current(args.stage_id as string | null);
         break;
       case "plan_complete_stage":
-        result = this.plan_complete_stage(args as Parameters<typeof this.plan_complete_stage>[0]);
+        result = await this.plan_complete_stage(args as Parameters<typeof this.plan_complete_stage>[0]);
         break;
       case "plan_get_history":
-        result = this.plan_get_history(args.last_n as number | undefined);
+        result = await this.plan_get_history(args.last_n as number | undefined);
         break;
       case "plan_init":
-        result = this.plan_init(args.stages as Stage[] | undefined);
+        result = await this.plan_init(args.stages as Stage[] | undefined);
         break;
       case "plan_commit":
         result = await this.plan_commit(args.message as string);
@@ -507,14 +514,4 @@ export class PlanService {
       },
     ];
   }
-}
-
-function isMutatingPlanTool(toolName: string): boolean {
-  return toolName === "plan_set_stages" ||
-    toolName === "plan_add_stage" ||
-    toolName === "plan_remove_stage" ||
-    toolName === "plan_set_current" ||
-    toolName === "plan_complete_stage" ||
-    toolName === "plan_init" ||
-    toolName === "plan_commit";
 }

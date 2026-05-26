@@ -5,7 +5,6 @@ describe("ModelRoutingResolver", () => {
   it("preserves legacy override and runtime fallback behavior", () => {
     const resolver = new ModelRoutingResolver(
       {
-        provider: "github-copilot/gpt-5.4",
         model_overrides: {
           planner: "github-copilot/claude-sonnet-4.6",
         },
@@ -31,7 +30,6 @@ describe("ModelRoutingResolver", () => {
   it("resolves a routing profile with preferred model and account", () => {
     const resolver = new ModelRoutingResolver(
       {
-        provider: "github-copilot/gpt-5.4",
         routing: {
           profiles: {
             safe_coding: {
@@ -74,7 +72,6 @@ describe("ModelRoutingResolver", () => {
   it("supports direct account and auth-profile pinning", () => {
     const resolver = new ModelRoutingResolver(
       {
-        provider: "github-copilot/gpt-5.4",
         routing: {
           roles: {
             chat: {
@@ -119,5 +116,22 @@ describe("ModelRoutingResolver", () => {
       modelSpec: "github-copilot/claude-sonnet-4.6",
       source: "runtime-default",
     });
+  });
+
+  it("classifies allowed_models-only routing rules as routing-derived (F04 r3)", () => {
+    const resolver = new ModelRoutingResolver(
+      {
+        routing: {
+          roles: {
+            coder: { allowed_models: ["github-copilot/gpt-5.4"] },
+          },
+        },
+      },
+      {},
+    );
+
+    const route = resolver.resolve("coder");
+    expect(route.modelSpec).toBe("github-copilot/gpt-5.4");
+    expect(route.source).toBe("routing");
   });
 });

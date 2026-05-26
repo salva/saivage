@@ -16,16 +16,8 @@ import type { ProjectContext } from "../store/project.js";
 import type { ModelRouter } from "../providers/router.js";
 import type { McpRuntime } from "../mcp/runtime.js";
 
-/** Agent roles in the hierarchy. */
-export type AgentRole =
-  | "planner"
-  | "manager"
-  | "coder"
-  | "researcher"
-  | "data_agent"
-  | "reviewer"
-  | "inspector"
-  | "chat";
+import type { AgentRole } from "./roster.js";
+export type { AgentRole };
 
 /** Result of an agent's execution. */
 export type AgentResult =
@@ -46,7 +38,7 @@ export interface AgentContext {
   agentId: string;
   /** Role of this agent. */
   role: AgentRole;
-  /** Model spec to use (e.g. "openai-codex/gpt-5.3-codex"). */
+  /** Model spec to use (e.g. "provider/model"). */
   modelSpec: string;
   /** Optional exact auth profile to use for the selected provider. */
   authProfileKey?: string;
@@ -54,6 +46,12 @@ export interface AgentContext {
   accountRef?: string;
   /** Runtime-supplied startup directives for the current agent instance. */
   startupDirectives?: string[];
+  /** Active stage id for stage-scoped agents (manager, worker, inspector). */
+  stageId?: string;
+  /** Chat channel id for chat-scoped agents (web | telegram | …). */
+  channelId?: string;
+  /** Chat session id (per-channel monotonic id) for chat-scoped agents. */
+  sessionId?: string;
 }
 
 /** Inputs for each agent type. */
@@ -90,4 +88,12 @@ export interface Agent {
    * Cancel the agent (used during abort).
    */
   cancel(): void;
+}
+
+/** Input channel for BaseAgent — pushes pending messages and reacts to context resets. */
+export interface InputChannel {
+  /** Return a single user-role message to inject before the next LLM turn, or null if nothing is pending. */
+  drain(): Promise<{ message: string } | null>;
+  /** Called by BaseAgent immediately after any successful compaction (after replaceMessages). */
+  onContextReset(): void;
 }

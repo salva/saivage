@@ -105,7 +105,8 @@ This means the Manager maintains its full conversation context throughout the st
 - Processes task reports returned as tool results.
 - On task failure: decides whether to retry, create a remediation task, adjust remaining tasks, or escalate to Planner. **Escalation terminates the Manager.** On escalation, the Manager updates `tasks.json` — completed tasks stay `completed`, the failing task stays `failed`, and remaining undispatched tasks stay `pending`.
 - On stage completion: writes the stage summary (aggregating Coder/Researcher reports) and notifies the Planner. **Then terminates.**
-- Schedules **skill generation** after a tool or pattern is established that will be reused.
+- **Authors skills directly** via the `create_skill` / `update_skill` / `supersede_skill` MCP tools when a tool or pattern is established that will be reused. The Manager writes the skill record itself; it does **not** dispatch a Coder to do this. See [SPEC/v2/skills-memory/01-DESIGN.md](skills-memory/01-DESIGN.md) §C.1 and §F (skill authorship is restricted to Manager and Inspector).
+- May also call `create_memory` (and the memory lifecycle tools) directly to record durable project-scope facts; see §D / §F of the design for the permissions matrix.
 
 **Trigger events:**
 - New stage assigned by Planner → Manager spawned
@@ -157,7 +158,68 @@ This means the Manager maintains its full conversation context throughout the st
 - Self-assesses and flags failures.
 - **Commits** its changes via the MCP git tool. By convention, commits files under `research/` and its task report.
 
-### 2.5 Inspector
+### 2.5 Data Agent
+
+**Purpose:** Acquire, validate, and document external datasets needed by stages.
+
+**Lifecycle:** One-shot worker dispatched by the Manager via `run_data_agent(task)`.
+
+**Inputs:**
+- Task description (data source criteria, target location, validation requirements)
+- Relevant skills (auto-loaded)
+
+**Outputs:**
+- **Data artifacts** under project-appropriate locations (`data/`, `research/data-sources/`, etc.)
+- **Provenance notes** describing source, retrieval method, license, and validation evidence
+- **Task Report** (`stages/<stage-id>/reports/<task-id>.json`): same schema as Coder
+
+**Behaviors:**
+- Searches for real data sources, downloads or queries them, validates the result.
+- Leakage-aware and reproducible by default; records provenance for every artifact.
+- May write small helper scripts strictly required to validate a download; does not write project source code.
+- **Commits** its changes via the MCP git tool.
+
+### 2.6 Reviewer
+
+**Purpose:** Independent quality gate for stage work before the Manager produces a `StageSummary`.
+
+**Lifecycle:** Stage-scoped — persists for the duration of one stage. The Manager may dispatch it multiple times (initial review, post-correction review, final re-review); later calls continue the same review session.
+
+**Inputs:**
+- Stage description, objectives, acceptance criteria
+- Worker `TaskReport`s and work products (code, tests, docs, data artifacts)
+- Relevant skills (auto-loaded)
+
+**Outputs:**
+- **Review findings and reports** under `.saivage/stages/`, `reviews/`, or `reports/`
+- **Task Report** with `status`, `checklist_results`, `issues_found`, and `summary`
+
+**Behaviors:**
+- Inspects worker outputs against acceptance criteria; flags gaps before the Manager closes the stage.
+- Does not redo worker work; may run tiny verification commands.
+- Does not modify implementation, research, or data artifacts.
+- **Commits** review findings via the MCP git tool.
+
+### 2.7 Designer
+
+**Purpose:** Produce product, UX, interface, information-architecture, and system-design artifacts that make ambiguous implementation work concrete before coding starts.
+
+**Lifecycle:** Designer is **one-shot**, dispatched by the Manager via `run_designer(task)`. It executes the design task, returns a `TaskReport`, and terminates.
+
+**Inputs:**
+- A design `Task` with description, checklist, dependencies, and stage context.
+
+**Outputs:**
+- **Task Reports** (`stages/<stage-id>/reports/<task-id>.json`).
+- Design artifacts written under `research/design/`, `docs/`, or the stage artifact directory named by the task.
+
+**Behaviors:**
+- Produces concrete, implementation-ready design briefs, flows, state inventories, accessibility notes, and architecture/design decisions; does **not** produce production source code.
+- Inspects existing product, UI, docs, and code to fit the existing design system and constraints.
+- Self-assesses every checklist item.
+- **Commits** design artifacts via the MCP git tool when files are created or modified.
+
+### 2.8 Inspector
 
 **Purpose:** Deep analysis of project state on demand.
 
@@ -192,7 +254,7 @@ This means the Manager maintains its full conversation context throughout the st
 - Planner calls `run_inspector(request)` tool → Inspector spawned
 - Chat calls `run_inspector(request)` tool → Inspector spawned
 
-### 2.6 Chat
+### 2.9 Chat
 
 **Purpose:** User-facing interface for queries, status updates, and steering.
 
@@ -449,49 +511,43 @@ For **model throttling and transient errors** (rate limits, network timeouts, te
 
 ---
 
-## 5. Skill System
+## 5. Skill & Memory System
 
-### 5.1 Generation
+The skill and memory subsystems share one document-store substrate, one Zod base, one audit-trail format, and one permission engine. They diverge on default surfacing mode (skills are eager-injected; memories are on-demand lookup) and on authoring ergonomics (skills use `triggers` + `target_agents`; memories use `topic` + `keys`). See [SPEC/v2/skills-memory/](skills-memory/) for the full functional analysis ([00-FUNCTIONAL-ANALYSIS.md](skills-memory/00-FUNCTIONAL-ANALYSIS.md)), design ([01-DESIGN.md](skills-memory/01-DESIGN.md)), and implementation plan ([02-IMPLEMENTATION-PLAN.md](skills-memory/02-IMPLEMENTATION-PLAN.md)).
 
-The Manager schedules skill generation when:
-- A new tool or pattern is established that will be reused across future tasks.
-- A coder completes a task involving a workflow that should be documented for reuse.
+### 5.1 Authoring
 
-### 5.2 Index & Auto-Loading
+Skills and memories are authored exclusively through MCP tools (`create_skill`, `create_memory`, etc.). The runtime `fsGuard` rejects direct filesystem writes under `.saivage/{skills,memory}/` from any role, closing the FA §1.6.4 escape hatch.
 
-**All agents** can have skills loaded — not just workers. Skills provide any agent with project-specific knowledge relevant to its current task.
+Built-in skills ship with Saivage at `saivage/skills/builtin/<topic>/SKILL.md` (YAML frontmatter, walked by the loader). Project skills are authored at runtime by the Manager or Inspector via `create_skill`. Memories are authored by Planner, Manager, Coder, Researcher, or Inspector; Coder/Researcher are restricted to `scope == "stage"` writes (design §F).
 
-- `skills/index.json` maps skill names to:
-  - `triggers`: list of matching rules (see below)
-  - `target_agents`: list of agent types this skill applies to (e.g., `["coder", "manager"]`). If omitted, the skill applies to all agents.
-  - `file`: path to the skill file
-  - `description`: human-readable summary
-  - `created_at` / `updated_at`: timestamps
+Full permissions matrix: [SPEC/v2/skills-memory/01-DESIGN.md](skills-memory/01-DESIGN.md) §F.
 
-- **Trigger types** (each skill declares one or more):
-  - `keyword:<word>` — case-insensitive substring match in the task/stage description
-  - `tool:<name>` — exact match (case-sensitive) against tool names in the task description or agent tool list
-  - `path:<glob>` — glob match (minimatch-style) against files in the task scope or project
-  - `tag:<label>` — exact match against `task.tags` or `stage.tags`
-  - `agent:<type>` — exact match against the current agent type (e.g., `agent:planner`)
+### 5.2 Eager Injection & On-Demand Lookup
 
-- When an agent is invoked, the runtime evaluates all triggers against the agent's metadata (task description, tool list, file paths, tags, agent type). Skills whose triggers match **and** whose `target_agents` includes the current agent type (or is omitted) are loaded into the agent's context.
+When an agent is constructed, the knowledge loader (`src/knowledge/loader.ts`) walks built-in skills + project / stage / session records, filters by `target_agents` and trigger match, ranks them, and prepends a single `--- SAIVAGE KNOWLEDGE ---` block to the agent's system prompt.
 
-- **Loading format**: Each loaded skill is prepended to the agent's context as a system message section:
-  ```
-  ---
-  SKILL: <skill-name>
-  <full markdown content>
-  ---
-  ```
+Supported trigger types (skills only): `keyword:<word>`, `tag:<label>`, `agent:<role>`. The `tool:` and `path:` triggers were dropped (no call site populated them; see design §D.4). Triggerless skills are still findable via `search_skills` and `read_skill` by id (FR-8).
 
-- **Loading budget**: Maximum N skills per agent invocation (configurable, default 5). If more match, rank by: number of triggers matched (descending), then `updated_at` (most recent first). Truncate.
+A two-tier budget governs the eager block (design §D.2): records with `survive_compaction: true` are **always** injected as one-line summaries (no token cap); other eager records share a default 2048-token budget; overflow records have their ids echoed in the block header so the agent can retrieve them on demand.
+
+Memories are surfaced via `get_memory` / `search_memories` / `list_memories` — eager injection only applies when `target_agents` is non-empty.
+
+### 5.3 Lifecycle
+
+Records transition through `active` → `superseded` | `archived` | `expired` (and `deleted` writes a tombstone). All transitions are audit-logged. Stage-scoped records are archived when the stage terminates; session-scoped records are archived when the chat channel closes. Full state machine: design §B.2.
+
+### 5.4 Compaction Integration
+
+After `compactConversation` returns, `BaseAgent` reinjects every `active`, `scope == "project"`, `survive_compaction == true` record before `replaceMessages` (design §E.1). Compaction itself remains a pure history-to-summary function with no MCP / no store access — the survivor reinjection lives in the agent, not in `compaction.ts`.
+
+Before compaction triggers on a Planner agent, `BaseAgent` injects a one-message nudge asking the Planner to call `create_memory` for any durable facts worth keeping; the call goes through the normal MCP loop (no synthesized tool). Capped at 5 turns. Non-Planner agents skip the nudge (design §E.2).
 
 ---
 
 ## 6. External Systems (Carried from v1)
 
-- **LLM Providers**: Router with model config, failover, timeout settings — same as v1. **Model precedence**: `ProjectConfig.model_overrides[role]` > `RuntimeConfig.providers[name].models[role]` > most capable model available.
+- **LLM Providers**: Router with model config, failover, timeout settings — same as v1. **Model precedence**: `ProjectConfig.model_overrides[role]` > `SaivageConfig.providers[name].models[role]` > most capable model available.
 - **MCP Providers**: Tool generation and runtime — same as v1.
 - **Web Interface**: Maintained from v1.
 - **Telegram Bot**: Maintained from v1 + push notification support with user-configurable filters.

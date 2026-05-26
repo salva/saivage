@@ -1,15 +1,20 @@
 import type { SaivageConfig } from "../config.js";
+import { configPath } from "../config.js";
+import { MissingModelForRoleError } from "../config-validation.js";
 import type {
   ChatRequest,
   ChatResponse,
   ModelProvider,
   UsageStatus,
+  Message,
+  ToolSchema,
 } from "./types.js";
 import { parseModelId } from "./types.js";
 import { PiAiProvider } from "./pi-ai.js";
 import { CopilotProvider } from "./copilot.js";
 import { OllamaProvider } from "./ollama.js";
 import { LlamaCppProvider } from "./llamacpp.js";
+import { ProviderError, classifyProviderError } from "./error.js";
 import { getOAuthApiKey, getProfileByKey, hasOAuthCredentials } from "../auth/index.js";
 import { log } from "../log.js";
 import type { RuntimeProviderAccountLike, RuntimeProviderConfigLike } from "../routing/resolver.js";
@@ -52,15 +57,6 @@ interface UsageSnapshot {
 function recordLlmCall(_spec: string, _data: Record<string, unknown>): void {
   // Metrics are logged via the log module; no separate telemetry store needed.
 }
-
-/**
- * Maps OAuth provider IDs -> pi-ai provider names.
- * Also used to decide which pi-ai provider to register for each OAuth credential.
- */
-const OAUTH_TO_PI: Record<string, string> = {
-  "openai-codex": "openai-codex",
-  "anthropic": "anthropic",
-};
 
 /**
  * Maps Saivage provider names -> OAuth provider IDs (for resolveApiKey).
@@ -176,32 +172,36 @@ export class ModelRouter {
     options: { authProfileKey?: string; accountRef?: string } = {},
   ): Promise<string | null> {
     const oauthId = PROVIDER_TO_OAUTH[providerName] ?? providerName;
+    const providerConfig = this.providerConfigs[providerName];
+    const accountConfig = this.getRequestedAccountConfig(providerName, options);
+    const mergedHeaders = {
+      ...(providerConfig?.headers ?? {}),
+      ...(accountConfig?.headers ?? {}),
+    };
+    const headers = Object.keys(mergedHeaders).length > 0 ? mergedHeaders : undefined;
 
     if (options.authProfileKey) {
       const explicitProfile = getProfileByKey(options.authProfileKey);
       if (explicitProfile?.provider === oauthId) {
-        const key = await getOAuthApiKey(oauthId, { profileKey: options.authProfileKey });
+        const key = await getOAuthApiKey(oauthId, { profileKey: options.authProfileKey, headers });
         if (key) return key;
       }
     }
 
-    const accountConfig = this.getRequestedAccountConfig(providerName, options);
     if (accountConfig?.authProfile) {
-      const profiledKey = await getOAuthApiKey(oauthId, { profileKey: accountConfig.authProfile });
+      const profiledKey = await getOAuthApiKey(oauthId, { profileKey: accountConfig.authProfile, headers });
       if (profiledKey) return profiledKey;
     }
 
     if (accountConfig?.apiKey) return accountConfig.apiKey;
-
-    const providerConfig = this.providerConfigs[providerName];
     if (providerConfig?.apiKey) return providerConfig.apiKey;
 
-    return getOAuthApiKey(oauthId);
+    return getOAuthApiKey(oauthId, { headers });
   }
 
   /** Resolve a role (e.g. "coder") to a model spec string */
   resolveModelForRole(role: string): string {
-    return firstModel(this.modelAssignments[role]) ?? firstModel(this.modelAssignments["default"]) ?? "anthropic/claude-sonnet-4-20250514";
+    return firstModel(this.modelAssignments[role]) ?? firstModel(this.modelAssignments["default"]) ?? (() => { throw new MissingModelForRoleError([role], configPath()); })();
   }
 
   /** Get provider instance by name */
@@ -244,17 +244,55 @@ export class ModelRouter {
   /** Get context window size (tokens) for a model spec or provider-independent model id. */
   getMaxContextTokens(modelSpec: string): number {
     const parsed = tryParseModelId(modelSpec);
+    let providerName: string;
+    let model: string;
+    let candidateAccount: string | undefined;
+    if (parsed) {
+      providerName = parsed.provider;
+      model = parsed.model;
+    } else {
+      const candidate = this.buildCandidateChain(modelSpec)[0];
+      if (!candidate) {
+        throw new Error(`router: cannot resolve modelSpec "${modelSpec}"`);
+      }
+      const parts = parseModelId(candidate.spec);
+      providerName = parts.provider;
+      model = parts.model;
+      candidateAccount = candidate.accountRef;
+    }
+    const provider = this.getProviderForRequest(
+      providerName,
+      candidateAccount ? { accountRef: candidateAccount } : undefined,
+    );
+    const caps = provider?.modelCapabilities(model);
+    if (!caps) {
+      throw new Error(
+        `router: no context window for "${modelSpec}" (provider ${providerName}) — ` +
+        `add an entry to MODEL_CAPABILITIES in src/providers/${providerName}.ts or set ` +
+        `providers.${providerName}.defaultContextWindow in the runtime config.`,
+      );
+    }
+    return caps.contextWindow;
+  }
+
+  /** F07 — accurate token count for a model spec. */
+  countTokens(
+    modelSpec: string,
+    messages: Message[],
+    system?: string,
+    tools?: ToolSchema[],
+  ): number {
+    const parsed = tryParseModelId(modelSpec);
     if (!parsed) {
       const candidate = this.buildCandidateChain(modelSpec)[0];
-      if (!candidate) return 200_000;
+      if (!candidate) return 0;
       const { provider: providerName, model } = parseModelId(candidate.spec);
       const provider = this.getProviderForRequest(providerName, { accountRef: candidate.accountRef });
-      return provider?.maxContextTokens(model) ?? 200_000;
+      return provider?.countTokens(model, messages, system, tools) ?? 0;
     }
-
     const { provider: providerName, model } = parsed;
     const provider = this.getProviderForRequest(providerName);
-    return provider?.maxContextTokens(model) ?? 200_000;
+    return provider?.countTokens(model, messages, system, tools) ?? 0;
   }
 
   /**
@@ -355,9 +393,14 @@ export class ModelRouter {
 
     const summary = `All providers failed for ${describeRequestedModel(request.modelSpec)}`;
     if (lastError) {
-      throw new Error(`${summary}: ${lastError.message}`, { cause: lastError });
+      const kind = lastError instanceof ProviderError ? lastError.kind : "transient";
+      throw new ProviderError({
+        kind,
+        message: `${summary}: ${lastError.message}`,
+        cause: lastError,
+      });
     }
-    throw new Error(summary);
+    throw new ProviderError({ kind: "transient", message: summary });
   }
 
   // ── Provider call ─────────────────────────────────────────────────────
@@ -404,16 +447,19 @@ export class ModelRouter {
         },
       };
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      const errMsg = error.message;
+      const errorRaw = err instanceof Error ? err : new Error(String(err));
+      const errMsg = errorRaw.message;
       recordLlmCall(spec, { error: true, timeout: errMsg.includes("timed out") });
       log.warn(`[router] ${spec} failed: ${errMsg}`);
 
-      const nonRetryable =
-        errMsg.includes("exceeds the context window") ||
-        errMsg.includes("context_length_exceeded");
+      const classified = errorRaw instanceof ProviderError
+        ? errorRaw
+        : classifyProviderError(errorRaw, provider.name);
 
-      return { ok: false, error, nonRetryable };
+      const nonRetryable =
+        classified.kind === "non_retryable" || classified.kind === "context_overflow";
+
+      return { ok: false, error: classified, nonRetryable };
     }
   }
 
@@ -724,8 +770,11 @@ export class ModelRouter {
     const baseUrl = accountConfig?.baseUrl ?? providerConfig?.baseUrl;
 
     switch (providerName) {
-      case "github-copilot":
-        return new CopilotProvider(apiKey);
+      case "github-copilot": {
+        const mergedHeaders = { ...(providerConfig?.headers ?? {}), ...(accountConfig?.headers ?? {}) };
+        const override = Object.keys(mergedHeaders).length > 0 ? mergedHeaders : undefined;
+        return new CopilotProvider(apiKey, override);
+      }
       case "anthropic": {
         const provider = new PiAiProvider("anthropic");
         if (apiKey) provider.setApiKey(apiKey);
@@ -752,9 +801,12 @@ export class ModelRouter {
         return provider;
       }
       case "ollama":
-        return new OllamaProvider(baseUrl);
+        return new OllamaProvider(baseUrl, providerConfig?.defaultContextWindow);
       case "llamacpp":
-        return new LlamaCppProvider(baseUrl ?? process.env["LLAMACPP_BASE_URL"]);
+        return new LlamaCppProvider(
+          baseUrl ?? process.env["LLAMACPP_BASE_URL"],
+          providerConfig?.defaultContextWindow,
+        );
       default:
         return undefined;
     }

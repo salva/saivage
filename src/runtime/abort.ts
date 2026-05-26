@@ -6,7 +6,7 @@
  */
 
 import { join } from "node:path";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { readDoc } from "../store/documents.js";
 import { UserNoteSchema, type UserNote } from "../types.js";
 import { log } from "../log.js";
@@ -39,13 +39,17 @@ export function triggerAbort(
  * Scan the notes directory for urgent unacknowledged notes.
  * Returns the first urgent note found, or null.
  */
-export function scanForUrgentNotes(notesDir: string): UserNote | null {
-  if (!existsSync(notesDir)) return null;
-
-  const files = readdirSync(notesDir).filter((f) => f.endsWith(".json"));
+export async function scanForUrgentNotes(notesDir: string): Promise<UserNote | null> {
+  let files: string[];
+  try {
+    files = (await readdir(notesDir)).filter((f) => f.endsWith(".json"));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
   for (const file of files) {
     try {
-      const note = readDoc(join(notesDir, file), UserNoteSchema);
+      const note = await readDoc(join(notesDir, file), UserNoteSchema);
       if (note.urgent && !note.acknowledged_at) {
         return note;
       }

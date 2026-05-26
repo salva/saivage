@@ -7,9 +7,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
 import { generatePKCE } from "./pkce.js";
+import { loadConfig } from "../config.js";
 import type { OAuthCredentials, OAuthLoginCallbacks, OAuthProviderDef } from "./types.js";
 
-const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize";
 const TOKEN_URL = "https://auth.openai.com/oauth/token";
 const CALLBACK_PORT = 1455;
@@ -58,12 +58,13 @@ async function exchangeCode(
   code: string,
   verifier: string,
 ): Promise<OAuthCredentials> {
+  const clientId = loadConfig().oauth.openaiCodex.clientId;
   const response = await fetch(TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "authorization_code",
-      client_id: CLIENT_ID,
+      client_id: clientId,
       code,
       code_verifier: verifier,
       redirect_uri: REDIRECT_URI,
@@ -88,13 +89,14 @@ async function exchangeCode(
 }
 
 async function refreshAccessToken(refreshToken: string): Promise<OAuthCredentials> {
+  const clientId = loadConfig().oauth.openaiCodex.clientId;
   const response = await fetch(TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: refreshToken,
-      client_id: CLIENT_ID,
+      client_id: clientId,
     }),
   });
 
@@ -171,12 +173,13 @@ function startCallbackServer(
 export async function loginOpenAICodex(
   callbacks: OAuthLoginCallbacks,
 ): Promise<OAuthCredentials> {
+  const clientId = loadConfig().oauth.openaiCodex.clientId;
   const { verifier, challenge } = await generatePKCE();
   const state = createState();
 
   const url = new URL(AUTHORIZE_URL);
   url.searchParams.set("response_type", "code");
-  url.searchParams.set("client_id", CLIENT_ID);
+  url.searchParams.set("client_id", clientId);
   url.searchParams.set("redirect_uri", REDIRECT_URI);
   url.searchParams.set("scope", SCOPE);
   url.searchParams.set("code_challenge", challenge);
@@ -245,10 +248,10 @@ export async function refreshOpenAICodexToken(
 export const openaiCodexOAuthProvider: OAuthProviderDef = {
   id: "openai-codex",
   name: "ChatGPT Plus/Pro (Codex)",
-  async login(callbacks) {
+  async login(callbacks, _options) {
     return loginOpenAICodex(callbacks);
   },
-  async refreshToken(credentials) {
+  async refreshToken(credentials, _options) {
     return refreshOpenAICodexToken(credentials.refresh);
   },
   getApiKey(credentials) {

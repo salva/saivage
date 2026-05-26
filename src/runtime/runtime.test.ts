@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 
 import { PlanService } from "../mcp/plan-server.js";
 import { NoteService } from "../mcp/notes-server.js";
-import { NoteManager } from "./notes.js";
+import { NoteManager, NoteChannel } from "./notes.js";
 import { Dispatcher } from "./dispatcher.js";
 import { writeDoc, readDoc, ensureDir } from "../store/documents.js";
 import {
@@ -132,7 +132,7 @@ describe("RuntimeSupervisor", () => {
     const agentRegistry = new Map<string, any>([
       ["coder-1", { role: "coder", cancel }],
     ]);
-    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry });
+    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry }, "github-copilot/gpt-5.4");
 
     await supervisor.checkOnce();
     await supervisor.checkOnce();
@@ -161,7 +161,7 @@ describe("RuntimeSupervisor", () => {
       ["manager-1", { role: "manager", cancel: managerCancel }],
       ["coder-1", { role: "coder", cancel: coderCancel }],
     ]);
-    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry });
+    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry }, "github-copilot/gpt-5.4");
 
     await supervisor.checkOnce();
     await supervisor.checkOnce();
@@ -185,7 +185,7 @@ describe("RuntimeSupervisor", () => {
     const agentRegistry = new Map<string, any>([
       ["coder-1", { role: "coder", cancel }],
     ]);
-    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry });
+    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry }, "github-copilot/gpt-5.4");
 
     await supervisor.checkOnce();
     await supervisor.checkOnce();
@@ -195,15 +195,15 @@ describe("RuntimeSupervisor", () => {
     expect(cancel).not.toHaveBeenCalled();
   });
 
-  it("does not cancel agents when the only reported problem is provider throttling", async () => {
+  it("does not cancel agents when the LLM verdict is stuck=false for provider throttling", async () => {
     log.warn("Provider \"github-copilot\" rate-limited, trying next");
     const router = {
       chat: vi.fn(async () => ({
         content: JSON.stringify({
-          stuck: true,
-          confidence: 0.95,
-          reason: "GitHub Copilot is returning 429 rate limit responses",
-          evidence: ["provider throttling"],
+          stuck: false,
+          confidence: 0.9,
+          reason: "Only clear issue is provider throttling; Saivage should wait and retry",
+          evidence: ["429 rate limit"],
         }),
         toolCalls: [],
         finishReason: "end_turn",
@@ -214,7 +214,7 @@ describe("RuntimeSupervisor", () => {
     const agentRegistry = new Map<string, any>([
       ["coder-1", { role: "coder", cancel }],
     ]);
-    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry });
+    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry }, "github-copilot/gpt-5.4");
 
     await supervisor.checkOnce();
     await supervisor.checkOnce();
@@ -223,15 +223,15 @@ describe("RuntimeSupervisor", () => {
     expect(cancel).not.toHaveBeenCalled();
   });
 
-  it("does not cancel agents when the only reported problem is long-running external work", async () => {
+  it("does not cancel agents when the LLM verdict is stuck=false for long-running external work", async () => {
     log.info("shell run_command external process still running for training experiment");
     const router = {
       chat: vi.fn(async () => ({
         content: JSON.stringify({
-          stuck: true,
+          stuck: false,
           confidence: 0.9,
-          reason: "A long-running shell command is still running for a training job",
-          evidence: ["external process in progress", "benchmark command still running"],
+          reason: "Only clear issue is a long-running training job; long-running work is not itself stuck",
+          evidence: ["external process in progress"],
         }),
         toolCalls: [],
         finishReason: "end_turn",
@@ -242,13 +242,71 @@ describe("RuntimeSupervisor", () => {
     const agentRegistry = new Map<string, any>([
       ["coder-1", { role: "coder", cancel }],
     ]);
-    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry });
+    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry }, "github-copilot/gpt-5.4");
 
     await supervisor.checkOnce();
     await supervisor.checkOnce();
     await supervisor.checkOnce();
 
     expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it("aborts roles in the order reviewer -> data_agent -> coder -> researcher -> designer -> manager -> inspector -> chat -> planner", async () => {
+    const order = ["reviewer", "data_agent", "coder", "researcher", "designer", "manager", "inspector", "chat", "planner"] as const;
+    const cancels = Object.fromEntries(order.map((r) => [r, vi.fn()]));
+    const agentRegistry = new Map<string, any>(
+      order.map((role) => [`${role}-1`, { role, cancel: cancels[role] }]),
+    );
+    const router = {
+      chat: vi.fn(async () => ({
+        content: JSON.stringify({ stuck: true, confidence: 0.95, reason: "persistent retry loop", evidence: [] }),
+        toolCalls: [],
+        finishReason: "end_turn",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      })),
+    };
+    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry }, "github-copilot/gpt-5.4");
+
+    for (const role of order) {
+      cancels[role].mockClear();
+      await supervisor.checkOnce();
+      await supervisor.checkOnce();
+      await supervisor.checkOnce();
+      expect(cancels[role]).toHaveBeenCalledTimes(1);
+      agentRegistry.delete(`${role}-1`);
+    }
+  });
+
+  it("does not starve planner when chat is the highest-priority live entry", async () => {
+    const planner = { role: "planner", cancel: vi.fn() };
+    const agentRegistry = new Map<string, any>();
+    const chat = {
+      role: "chat",
+      cancel: vi.fn(() => { agentRegistry.delete("chat-1"); }),
+    };
+    agentRegistry.set("chat-1", chat);
+    agentRegistry.set("planner-1", planner);
+
+    const router = {
+      chat: vi.fn(async () => ({
+        content: JSON.stringify({ stuck: true, confidence: 0.95, reason: "...", evidence: [] }),
+        toolCalls: [],
+        finishReason: "end_turn",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      })),
+    };
+    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry }, "github-copilot/gpt-5.4");
+
+    await supervisor.checkOnce();
+    await supervisor.checkOnce();
+    await supervisor.checkOnce();
+    expect(chat.cancel).toHaveBeenCalledTimes(1);
+    expect(planner.cancel).not.toHaveBeenCalled();
+
+    await supervisor.checkOnce();
+    await supervisor.checkOnce();
+    await supervisor.checkOnce();
+    expect(planner.cancel).toHaveBeenCalledTimes(1);
   });
 });
 function makeSupervisorConfig(overrides: Partial<SaivageConfig["supervisor"]> = {}): SaivageConfig {
@@ -291,14 +349,15 @@ describe("PlanService", () => {
   let planService: PlanService;
   let saivageDir: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     saivageDir = join(tmpDir, ".saivage");
-    ensureDir(saivageDir);
+    await ensureDir(saivageDir);
     planService = new PlanService(saivageDir);
+    await planService.init();
   });
 
-  it("plan_init creates a new plan", () => {
-    const result = planService.plan_init([
+  it("plan_init creates a new plan", async () => {
+    const result = await planService.plan_init([
       {
         id: "stg-1",
         objective: "Setup project",
@@ -313,14 +372,14 @@ describe("PlanService", () => {
     expect((result as any).stages).toHaveLength(1);
   });
 
-  it("plan_init rejects if plan already exists", () => {
-    planService.plan_init([]);
-    const result = planService.plan_init([]);
+  it("plan_init rejects if plan already exists", async () => {
+    await planService.plan_init([]);
+    const result = await planService.plan_init([]);
     expect(result).toHaveProperty("code", "STAGE_EXISTS");
   });
 
-  it("plan_get returns the plan", () => {
-    planService.plan_init([
+  it("plan_get returns the plan", async () => {
+    await planService.plan_init([
       {
         id: "stg-1",
         objective: "Test",
@@ -331,18 +390,18 @@ describe("PlanService", () => {
         tags: [],
       },
     ]);
-    const plan = planService.plan_get();
+    const plan = await planService.plan_get();
     expect(plan).not.toHaveProperty("code");
     expect((plan as any).stages).toHaveLength(1);
   });
 
-  it("plan_get returns error when not initialized", () => {
-    const result = planService.plan_get();
+  it("plan_get returns error when not initialized", async () => {
+    const result = await planService.plan_get();
     expect(result).toHaveProperty("code", "PLAN_NOT_FOUND");
   });
 
-  it("plan_set_current sets current stage", () => {
-    planService.plan_init([
+  it("plan_set_current sets current stage", async () => {
+    await planService.plan_init([
       {
         id: "stg-1",
         objective: "Test",
@@ -353,20 +412,20 @@ describe("PlanService", () => {
         tags: [],
       },
     ]);
-    const result = planService.plan_set_current("stg-1");
+    const result = await planService.plan_set_current("stg-1");
     expect(result).not.toHaveProperty("code");
     expect((result as any).current_stage_id).toBe("stg-1");
   });
 
-  it("plan_set_current rejects missing stage", () => {
-    planService.plan_init([]);
-    const result = planService.plan_set_current("stg-999");
+  it("plan_set_current rejects missing stage", async () => {
+    await planService.plan_init([]);
+    const result = await planService.plan_set_current("stg-999");
     expect(result).toHaveProperty("code", "STAGE_NOT_FOUND");
   });
 
-  it("plan_add_stage appends a stage", () => {
-    planService.plan_init([]);
-    const result = planService.plan_add_stage({
+  it("plan_add_stage appends a stage", async () => {
+    await planService.plan_init([]);
+    const result = await planService.plan_add_stage({
       id: "stg-new",
       objective: "New stage",
       starting_points: [],
@@ -379,8 +438,8 @@ describe("PlanService", () => {
     expect((result as any).stages).toHaveLength(1);
   });
 
-  it("plan_add_stage rejects duplicate ID", () => {
-    planService.plan_init([
+  it("plan_add_stage rejects duplicate ID", async () => {
+    await planService.plan_init([
       {
         id: "stg-1",
         objective: "Test",
@@ -391,7 +450,7 @@ describe("PlanService", () => {
         tags: [],
       },
     ]);
-    const result = planService.plan_add_stage({
+    const result = await planService.plan_add_stage({
       id: "stg-1",
       objective: "Dupe",
       starting_points: [],
@@ -403,8 +462,8 @@ describe("PlanService", () => {
     expect(result).toHaveProperty("code", "STAGE_EXISTS");
   });
 
-  it("plan_remove_stage removes a stage", () => {
-    planService.plan_init([
+  it("plan_remove_stage removes a stage", async () => {
+    await planService.plan_init([
       {
         id: "stg-1",
         objective: "Test",
@@ -415,13 +474,13 @@ describe("PlanService", () => {
         tags: [],
       },
     ]);
-    const result = planService.plan_remove_stage("stg-1");
+    const result = await planService.plan_remove_stage("stg-1");
     expect(result).not.toHaveProperty("code");
     expect((result as any).stages).toHaveLength(0);
   });
 
-  it("plan_complete_stage moves to history", () => {
-    planService.plan_init([
+  it("plan_complete_stage moves to history", async () => {
+    await planService.plan_init([
       {
         id: "stg-1",
         objective: "Test",
@@ -432,9 +491,9 @@ describe("PlanService", () => {
         tags: [],
       },
     ]);
-    planService.plan_set_current("stg-1");
+    await planService.plan_set_current("stg-1");
 
-    const result = planService.plan_complete_stage({
+    const result = await planService.plan_complete_stage({
       stage_id: "stg-1",
       result: "completed",
       summary: "All done",
@@ -448,13 +507,13 @@ describe("PlanService", () => {
     expect(res.plan.current_stage_id).toBeNull();
 
     // Verify history
-    const history = planService.plan_get_history();
+    const history = await planService.plan_get_history();
     expect((history as any).stages).toHaveLength(1);
   });
 
-  it("plan_set_stages replaces all stages", () => {
-    planService.plan_init([]);
-    const result = planService.plan_set_stages(
+  it("plan_set_stages replaces all stages", async () => {
+    await planService.plan_init([]);
+    const result = await planService.plan_set_stages(
       [
         {
           id: "stg-a",
@@ -482,8 +541,8 @@ describe("PlanService", () => {
     expect((result as any).current_stage_id).toBe("stg-a");
   });
 
-  it("plan_get_stage finds from active and history", () => {
-    planService.plan_init([
+  it("plan_get_stage finds from active and history", async () => {
+    await planService.plan_init([
       {
         id: "stg-1",
         objective: "Active",
@@ -495,30 +554,30 @@ describe("PlanService", () => {
       },
     ]);
 
-    const active = planService.plan_get_stage("stg-1");
+    const active = await planService.plan_get_stage("stg-1");
     expect((active as any).source).toBe("active");
 
     // Move to history
-    planService.plan_complete_stage({
+    await planService.plan_complete_stage({
       stage_id: "stg-1",
       result: "completed",
       summary: "Done",
       actual_outcomes: ["x"],
     });
 
-    const fromHistory = planService.plan_get_stage("stg-1");
+    const fromHistory = await planService.plan_get_stage("stg-1");
     expect((fromHistory as any).source).toBe("history");
   });
 
   it("handleToolCall routes correctly", async () => {
-    planService.plan_init([]);
+    await planService.plan_init([]);
     const result = await planService.handleToolCall("plan_get", {});
     expect(result.isError).toBe(false);
     expect((result.content as any).stages).toEqual([]);
   });
 
   it("serializes mutating tool calls across async boundaries", async () => {
-    planService.plan_init([]);
+    await planService.plan_init([]);
     const commitGate = deferred<{ sha: string }>();
     planService.setGitCommit(async () => commitGate.promise);
 
@@ -547,7 +606,74 @@ describe("PlanService", () => {
     const addResult = await add;
 
     expect(addResult.isError).toBe(false);
-    expect((planService.plan_get() as any).stages.map((s: any) => s.id)).toEqual(["stg-after-commit"]);
+    expect((await planService.plan_get() as any).stages.map((s: any) => s.id)).toEqual(["stg-after-commit"]);
+  });
+
+  // ─── F34: in-memory cache ──────────────────────────────────────────────
+
+  it("F34: read-after-write — plan_set_stages then plan_get returns the new plan", async () => {
+    await planService.plan_init();
+    const stages = [
+      {
+        id: "stg-a",
+        objective: "do a",
+        starting_points: ["x"],
+        expected_outcomes: ["y"],
+        acceptance_criteria: ["z"],
+        references: [],
+        tags: [],
+      },
+    ];
+    await planService.plan_set_stages(stages, "stg-a");
+    const out = (await planService.plan_get()) as any;
+    expect(out.current_stage_id).toBe("stg-a");
+    expect(out.stages.map((s: any) => s.id)).toEqual(["stg-a"]);
+  });
+
+  it("F34: plan_get returns a clone — mutating it does not affect cache", async () => {
+    await planService.plan_init([
+      {
+        id: "stg-a",
+        objective: "do a",
+        starting_points: ["x"],
+        expected_outcomes: ["y"],
+        acceptance_criteria: ["z"],
+        references: [],
+        tags: [],
+      },
+    ]);
+    const first = (await planService.plan_get()) as any;
+    first.stages.push({ id: "stg-injected" });
+    first.current_stage_id = "stg-injected";
+    const second = (await planService.plan_get()) as any;
+    expect(second.stages.map((s: any) => s.id)).toEqual(["stg-a"]);
+    expect(second.current_stage_id).toBe(null);
+  });
+
+  it("F34: concurrent reads/writes through handleToolCall are serialised in submission order", async () => {
+    await planService.plan_init();
+    const stage = {
+      id: "stg-1",
+      objective: "do",
+      starting_points: ["a"],
+      expected_outcomes: ["b"],
+      acceptance_criteria: ["c"],
+      references: [],
+      tags: [],
+    };
+    const add = planService.handleToolCall("plan_add_stage", { stage });
+    const get = planService.handleToolCall("plan_get", {});
+    const [addRes, getRes] = await Promise.all([add, get]);
+    expect(addRes.isError).toBe(false);
+    expect(getRes.isError).toBe(false);
+    expect((getRes.content as any).stages.map((s: any) => s.id)).toEqual(["stg-1"]);
+  });
+
+  it("F34: plan_init rejects when cache is already populated (no disk check)", async () => {
+    const first = await planService.plan_init();
+    expect((first as any).code).toBeUndefined();
+    const second = await planService.plan_init();
+    expect((second as any).code).toBe("STAGE_EXISTS");
   });
 });
 
@@ -557,18 +683,18 @@ describe("NoteManager", () => {
   let notesDir: string;
   let noteManager: NoteManager;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     notesDir = join(tmpDir, "notes");
-    ensureDir(notesDir);
+    await ensureDir(notesDir);
     noteManager = new NoteManager(notesDir);
   });
 
-  function writeNote(note: UserNote) {
-    writeDoc(join(notesDir, `${note.id}.json`), note, UserNoteSchema);
+  async function writeNote(note: UserNote) {
+    await writeDoc(join(notesDir, `${note.id}.json`), note, UserNoteSchema);
   }
 
-  it("getUnacknowledgedNotes returns unacknowledged notes", () => {
-    writeNote({
+  it("pullDeliverables returns unacknowledged + permanent notes once until reset", async () => {
+    await writeNote({
       id: "note-1",
       channel: "test",
       session_id: "s1",
@@ -577,7 +703,7 @@ describe("NoteManager", () => {
       permanent: false,
       urgent: false,
     });
-    writeNote({
+    await writeNote({
       id: "note-2",
       channel: "test",
       session_id: "s1",
@@ -588,13 +714,13 @@ describe("NoteManager", () => {
       acknowledged_at: new Date().toISOString(),
     });
 
-    const notes = noteManager.getUnacknowledgedNotes();
+    const notes = await noteManager.pullDeliverables();
     expect(notes).toHaveLength(1);
     expect(notes[0].id).toBe("note-1");
   });
 
-  it("does not inject Planner-authored self notes", () => {
-    writeNote({
+  it("does not inject Planner-authored self notes", async () => {
+    await writeNote({
       id: "note-planner-self",
       channel: "planner",
       session_id: "s1",
@@ -604,12 +730,11 @@ describe("NoteManager", () => {
       urgent: true,
     });
 
-    expect(noteManager.getUnacknowledgedNotes()).toHaveLength(0);
-    expect(noteManager.getPermanentNotes()).toHaveLength(0);
+    expect(await noteManager.pullDeliverables()).toHaveLength(0);
   });
 
-  it("acknowledgeNotes sets acknowledged_at and deletes volatile", () => {
-    writeNote({
+  it("acknowledgeNotes sets acknowledged_at and deletes volatile", async () => {
+    await writeNote({
       id: "note-1",
       channel: "test",
       session_id: "s1",
@@ -618,7 +743,7 @@ describe("NoteManager", () => {
       permanent: false,
       urgent: false,
     });
-    writeNote({
+    await writeNote({
       id: "note-2",
       channel: "test",
       session_id: "s1",
@@ -628,22 +753,22 @@ describe("NoteManager", () => {
       urgent: false,
     });
 
-    noteManager.getUnacknowledgedNotes(); // sets pending
-    noteManager.acknowledgeNotes();
+    await noteManager.pullDeliverables(); // marks delivered
+    await noteManager.acknowledgeNotes();
 
     // Volatile note should be deleted
     expect(existsSync(join(notesDir, "note-1.json"))).toBe(false);
 
     // Permanent note should still exist with acknowledged_at
-    const remaining = readDoc(
+    const remaining = await readDoc(
       join(notesDir, "note-2.json"),
       UserNoteSchema,
     );
     expect(remaining.acknowledged_at).toBeDefined();
   });
 
-  it("getPermanentNotes returns only permanent notes", () => {
-    writeNote({
+  it("pullDeliverables marks each note delivered until resetDelivered", async () => {
+    await writeNote({
       id: "note-1",
       channel: "test",
       session_id: "s1",
@@ -652,7 +777,7 @@ describe("NoteManager", () => {
       permanent: false,
       urgent: false,
     });
-    writeNote({
+    await writeNote({
       id: "note-2",
       channel: "test",
       session_id: "s1",
@@ -662,9 +787,13 @@ describe("NoteManager", () => {
       urgent: false,
     });
 
-    const notes = noteManager.getPermanentNotes();
-    expect(notes).toHaveLength(1);
-    expect(notes[0].id).toBe("note-2");
+    expect(await noteManager.pullDeliverables()).toHaveLength(2);
+    expect(await noteManager.pullDeliverables()).toHaveLength(0);
+
+    noteManager.resetDelivered();
+    const after = await noteManager.pullDeliverables();
+    // volatile + permanent both eligible again
+    expect(after).toHaveLength(2);
   });
 
   it("formatNotesForInjection formats correctly", () => {
@@ -714,8 +843,8 @@ describe("NoteManager", () => {
     expect(formatted).toContain("newer and more specific user notes as overriding older, broader notes");
   });
 
-  it("cleanupStaleNotes removes acknowledged volatile notes", () => {
-    writeNote({
+  it("cleanupStaleNotes removes acknowledged volatile notes", async () => {
+    await writeNote({
       id: "note-stale",
       channel: "test",
       session_id: "s1",
@@ -726,13 +855,13 @@ describe("NoteManager", () => {
       acknowledged_at: new Date().toISOString(),
     });
 
-    const cleaned = noteManager.cleanupStaleNotes();
+    const cleaned = await noteManager.cleanupStaleNotes(2 * 60 * 60 * 1000);
     expect(cleaned).toBe(1);
     expect(existsSync(join(notesDir, "note-stale.json"))).toBe(false);
   });
 
-  it("listNotes returns newest notes first", () => {
-    writeNote({
+  it("listNotes returns newest notes first", async () => {
+    await writeNote({
       id: "note-old",
       channel: "test",
       session_id: "s1",
@@ -741,7 +870,7 @@ describe("NoteManager", () => {
       permanent: false,
       urgent: false,
     });
-    writeNote({
+    await writeNote({
       id: "note-new",
       channel: "test",
       session_id: "s1",
@@ -751,12 +880,12 @@ describe("NoteManager", () => {
       urgent: true,
     });
 
-    const notes = noteManager.listNotes();
+    const notes = await noteManager.listNotes();
     expect(notes.map((note) => note.id)).toEqual(["note-new", "note-old"]);
   });
 
-  it("acknowledgeNote keeps permanent notes and dismisses volatile notes", () => {
-    writeNote({
+  it("acknowledgeNote keeps permanent notes and dismisses volatile notes", async () => {
+    await writeNote({
       id: "note-volatile",
       channel: "test",
       session_id: "s1",
@@ -765,7 +894,7 @@ describe("NoteManager", () => {
       permanent: false,
       urgent: false,
     });
-    writeNote({
+    await writeNote({
       id: "note-permanent",
       channel: "test",
       session_id: "s1",
@@ -775,8 +904,8 @@ describe("NoteManager", () => {
       urgent: false,
     });
 
-    const volatileResult = noteManager.acknowledgeNote("note-volatile");
-    const permanentResult = noteManager.acknowledgeNote("note-permanent");
+    const volatileResult = await noteManager.acknowledgeNote("note-volatile");
+    const permanentResult = await noteManager.acknowledgeNote("note-permanent");
 
     expect(volatileResult?.deleted).toBe(true);
     expect(existsSync(join(notesDir, "note-volatile.json"))).toBe(false);
@@ -784,8 +913,8 @@ describe("NoteManager", () => {
     expect(permanentResult?.note.acknowledged_at).toBeDefined();
   });
 
-  it("deleteNote and clearNotes remove notes from disk", () => {
-    writeNote({
+  it("deleteNote and clearNotes remove notes from disk", async () => {
+    await writeNote({
       id: "note-delete",
       channel: "test",
       session_id: "s1",
@@ -794,7 +923,7 @@ describe("NoteManager", () => {
       permanent: false,
       urgent: false,
     });
-    writeNote({
+    await writeNote({
       id: "note-clear",
       channel: "test",
       session_id: "s1",
@@ -804,14 +933,14 @@ describe("NoteManager", () => {
       urgent: false,
     });
 
-    expect(noteManager.deleteNote("note-delete")).toBe(true);
+    expect(await noteManager.deleteNote("note-delete")).toBe(true);
     expect(existsSync(join(notesDir, "note-delete.json"))).toBe(false);
-    expect(noteManager.clearNotes()).toBe(1);
-    expect(noteManager.listNotes()).toHaveLength(0);
+    expect(await noteManager.clearNotes()).toBe(1);
+    expect(await noteManager.listNotes()).toHaveLength(0);
   });
 
-  it("peekUnacknowledgedNotes does not mark notes for acknowledgment", () => {
-    writeNote({
+  it("peekUnacknowledgedNotes does not mark notes for acknowledgment", async () => {
+    await writeNote({
       id: "note-1",
       channel: "test",
       session_id: "s1",
@@ -821,11 +950,122 @@ describe("NoteManager", () => {
       urgent: false,
     });
 
-    const notes = noteManager.peekUnacknowledgedNotes();
-    noteManager.acknowledgeNotes();
+    const notes = await noteManager.peekUnacknowledgedNotes();
+    await noteManager.acknowledgeNotes();
 
     expect(notes).toHaveLength(1);
     expect(existsSync(join(notesDir, "note-1.json"))).toBe(true);
+  });
+});
+
+describe("NoteChannel", () => {
+  let notesDir: string;
+  let noteManager: NoteManager;
+  let channel: NoteChannel;
+
+  beforeEach(async () => {
+    notesDir = join(tmpDir, "notes");
+    await ensureDir(notesDir);
+    noteManager = new NoteManager(notesDir);
+    channel = new NoteChannel(noteManager);
+  });
+
+  async function writeNote(note: UserNote) {
+    await writeDoc(join(notesDir, `${note.id}.json`), note, UserNoteSchema);
+  }
+
+  it("drain returns formatted message containing eligible notes and marks them delivered", async () => {
+    await writeNote({
+      id: "v1",
+      channel: "test",
+      session_id: "s",
+      content: "volatile-content",
+      created_at: "2024-01-01T00:00:00Z",
+      permanent: false,
+      urgent: false,
+    });
+    const first = await channel.drain();
+    expect(first).not.toBeNull();
+    expect(first!.message).toContain("volatile-content");
+  });
+
+  it("drain returns null on second call with no new volatile notes", async () => {
+    await writeNote({
+      id: "v1",
+      channel: "test",
+      session_id: "s",
+      content: "x",
+      created_at: "2024-01-01T00:00:00Z",
+      permanent: false,
+      urgent: false,
+    });
+    expect(await channel.drain()).not.toBeNull();
+    expect(await channel.drain()).toBeNull();
+  });
+
+  it("drain returns permanent note once, null on second call within same context", async () => {
+    await writeNote({
+      id: "p1",
+      channel: "test",
+      session_id: "s",
+      content: "perm",
+      created_at: "2024-01-01T00:00:00Z",
+      permanent: true,
+      urgent: false,
+    });
+    expect(await channel.drain()).not.toBeNull();
+    expect(await channel.drain()).toBeNull();
+  });
+
+  it("after acknowledgeNotes without onContextReset, drain still returns null for the same permanent note", async () => {
+    await writeNote({
+      id: "p1",
+      channel: "test",
+      session_id: "s",
+      content: "perm",
+      created_at: "2024-01-01T00:00:00Z",
+      permanent: true,
+      urgent: false,
+    });
+    await channel.drain();
+    await noteManager.acknowledgeNotes();
+    expect(await channel.drain()).toBeNull();
+  });
+
+  it("after acknowledgeNotes and onContextReset, drain returns the permanent note again", async () => {
+    await writeNote({
+      id: "p1",
+      channel: "test",
+      session_id: "s",
+      content: "perm",
+      created_at: "2024-01-01T00:00:00Z",
+      permanent: true,
+      urgent: false,
+    });
+    await channel.drain();
+    await noteManager.acknowledgeNotes();
+    channel.onContextReset();
+    const again = await channel.drain();
+    expect(again).not.toBeNull();
+    expect(again!.message).toContain("perm");
+  });
+
+  it("drain returns a volatile note delivered but not acknowledged only once (no duplicate injection)", async () => {
+    await writeNote({
+      id: "v1",
+      channel: "test",
+      session_id: "s",
+      content: "vol",
+      created_at: "2024-01-01T00:00:00Z",
+      permanent: false,
+      urgent: false,
+    });
+    expect(await channel.drain()).not.toBeNull();
+    expect(await channel.drain()).toBeNull();
+    // even after a fake onContextReset, the volatile note (still on disk, unacknowledged)
+    // should be eligible again — this is correct: a fresh post-compaction context.
+    channel.onContextReset();
+    expect(await channel.drain()).not.toBeNull();
   });
 });
 
@@ -845,56 +1085,13 @@ describe("NoteService", () => {
     expect(result.isError).toBe(false);
     const content = result.content as Record<string, unknown>;
     expect(content.urgent).toBe(true);
-    expect(content.planner_pointer_pending).toBe(true);
+    expect(content).not.toHaveProperty("planner_pointer_pending");
     expect(content).not.toHaveProperty("planner_wakeup_requested");
 
-    const note = readDoc(join(notesDir, `${content.id}.json`), UserNoteSchema);
+    const note = await readDoc(join(notesDir, `${content.id}.json`), UserNoteSchema);
     expect(note.content).toBe("please re-evaluate soon");
     expect(note.urgent).toBe(true);
     expect(note.permanent).toBe(true);
-  });
-});
-
-describe("Dispatcher pending note pointers", () => {
-  it("attaches pending note metadata to Planner tool results", async () => {
-    const project = makeProjectContext(tmpDir);
-    ensureDir(project.paths.notes);
-    writeDoc(
-      join(project.paths.notes, "note-1.json"),
-      {
-        id: "note-1",
-        channel: "telegram",
-        session_id: "telegram-1",
-        content: "consider a slower refresh experiment",
-        created_at: new Date().toISOString(),
-        permanent: false,
-        urgent: true,
-      },
-      UserNoteSchema,
-    );
-
-    const dispatcher = new Dispatcher({
-      getAllTools: () => [{ name: "noop", description: "Noop", inputSchema: {}, service: "test" }],
-      callTool: async () => ({ ok: true }),
-    } as any);
-
-    const result = await dispatcher.processToolCalls(
-      [{ id: "tool-1", name: "noop", input: {} }],
-      {
-        project,
-        router: {} as any,
-        mcpRuntime: {} as any,
-        agentId: "planner-1",
-        role: "planner",
-        modelSpec: "test/model",
-      },
-    );
-
-    const content = JSON.parse(result.toolResults[0].content);
-    expect(content.ok).toBe(true);
-    expect(content.__saivage_pending_user_notes.count).toBe(1);
-    expect(content.__saivage_pending_user_notes.urgent_count).toBe(1);
-    expect(content.__saivage_pending_user_notes.notes[0].id).toBe("note-1");
   });
 });
 
@@ -909,18 +1106,9 @@ describe("Compaction", () => {
       summaryModelSpec: "test/model",
     };
 
-    // Small messages — should not trigger
-    const smallMsgs = [
-      { role: "user" as const, content: "hello" },
-    ];
-    expect(shouldCompact(smallMsgs, config)).toBe(false);
-
-    // Large messages — should trigger (>80k tokens = >320k chars)
-    const largeContent = "x".repeat(400_000);
-    const largeMsgs = [
-      { role: "user" as const, content: largeContent },
-    ];
-    expect(shouldCompact(largeMsgs, config)).toBe(true);
+    expect(shouldCompact(0, config)).toBe(false);
+    expect(shouldCompact(50_000, config)).toBe(false);
+    expect(shouldCompact(90_000, config)).toBe(true);
   });
 
   it("isMaxCompactionsReached respects limit", () => {
@@ -955,11 +1143,11 @@ describe("Abort", () => {
     expect(signal.reason).toBe("User requested stop");
   });
 
-  it("scanForUrgentNotes finds urgent unacknowledged notes", () => {
+  it("scanForUrgentNotes finds urgent unacknowledged notes", async () => {
     const notesDir = join(tmpDir, "notes");
-    ensureDir(notesDir);
+    await ensureDir(notesDir);
 
-    writeDoc(
+    await writeDoc(
       join(notesDir, "note-1.json"),
       {
         id: "note-1",
@@ -973,16 +1161,16 @@ describe("Abort", () => {
       UserNoteSchema,
     );
 
-    const note = scanForUrgentNotes(notesDir);
+    const note = await scanForUrgentNotes(notesDir);
     expect(note).not.toBeNull();
     expect(note!.urgent).toBe(true);
   });
 
-  it("scanForUrgentNotes ignores acknowledged urgent notes", () => {
+  it("scanForUrgentNotes ignores acknowledged urgent notes", async () => {
     const notesDir = join(tmpDir, "notes");
-    ensureDir(notesDir);
+    await ensureDir(notesDir);
 
-    writeDoc(
+    await writeDoc(
       join(notesDir, "note-1.json"),
       {
         id: "note-1",
@@ -997,7 +1185,7 @@ describe("Abort", () => {
       UserNoteSchema,
     );
 
-    expect(scanForUrgentNotes(notesDir)).toBeNull();
+    expect(await scanForUrgentNotes(notesDir)).toBeNull();
   });
 });
 
@@ -1023,40 +1211,23 @@ describe("Crash Recovery", () => {
     }
   });
 
-  it("writeRuntimeState mirrors the compatibility runtime-state path", () => {
-    const statePath = join(tmpDir, ".saivage", "tmp", "state", "runtime.json");
-    const legacyPath = join(tmpDir, ".saivage", "runtime", "runtime-state.json");
-    const state: RuntimeState = {
-      status: "running",
-      current_stage_id: "stg-1",
-      active_agents: [],
-      started_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      pid: process.pid,
-    };
-
-    writeRuntimeState(statePath, state);
-
-    expect(existsSync(statePath)).toBe(true);
-    expect(existsSync(legacyPath)).toBe(true);
-    expect(readDoc(legacyPath, RuntimeStateSchema).current_stage_id).toBe("stg-1");
-  });
-
-  it("RuntimeTracker can clear stale current stage after manager exit", () => {
+  it("RuntimeTracker can clear stale current stage after manager exit", async () => {
     const statePath = join(tmpDir, "runtime.json");
     const tracker = new RuntimeTracker(statePath);
 
     tracker.setCurrentStage("stg-1");
-    expect(readDoc(statePath, RuntimeStateSchema).current_stage_id).toBe("stg-1");
+    await tracker.waitForIdle();
+    expect((await readDoc(statePath, RuntimeStateSchema)).current_stage_id).toBe("stg-1");
 
     tracker.setCurrentStage(null);
+    await tracker.waitForIdle();
 
-    expect(readDoc(statePath, RuntimeStateSchema).current_stage_id).toBeNull();
+    expect((await readDoc(statePath, RuntimeStateSchema)).current_stage_id).toBeNull();
   });
 
-  it("isAnotherInstanceRunning returns false for stale PID", () => {
+  it("isAnotherInstanceRunning returns false for stale PID", async () => {
     const statePath = join(tmpDir, "runtime.json");
-    writeDoc(
+    await writeDoc(
       statePath,
       {
         status: "running",
@@ -1069,12 +1240,12 @@ describe("Crash Recovery", () => {
       RuntimeStateSchema,
     );
 
-    expect(isAnotherInstanceRunning(statePath)).toBe(false);
+    expect(await isAnotherInstanceRunning(statePath)).toBe(false);
   });
 
-  it("isAnotherInstanceRunning returns false for idle state", () => {
+  it("isAnotherInstanceRunning returns false for idle state", async () => {
     const statePath = join(tmpDir, "runtime.json");
-    writeDoc(
+    await writeDoc(
       statePath,
       {
         status: "idle",
@@ -1087,17 +1258,18 @@ describe("Crash Recovery", () => {
       RuntimeStateSchema,
     );
 
-    expect(isAnotherInstanceRunning(statePath)).toBe(false);
+    expect(await isAnotherInstanceRunning(statePath)).toBe(false);
   });
 
-  it("recoverFromCrash resets in-progress tasks", () => {
+  it("recoverFromCrash resets in-progress tasks", async () => {
     const project = makeProjectContext(tmpDir);
-    ensureDir(project.paths.stages);
-    ensureDir(join(project.paths.tmp, "state"));
+    await ensureDir(project.paths.stages);
+    await ensureDir(join(project.paths.tmp, "state"));
 
     const saivageDir = project.saivageDir;
     const planService = new PlanService(saivageDir);
-    planService.plan_init([
+    await planService.init();
+    await planService.plan_init([
       {
         id: "stg-1",
         objective: "Test",
@@ -1108,10 +1280,10 @@ describe("Crash Recovery", () => {
         tags: [],
       },
     ]);
-    planService.plan_set_current("stg-1");
+    await planService.plan_set_current("stg-1");
 
     // Write stale runtime state
-    writeRuntimeState(project.paths.runtimeState, {
+    await writeRuntimeState(project.paths.runtimeState, {
       status: "running",
       current_stage_id: "stg-1",
       active_agents: [],
@@ -1122,8 +1294,8 @@ describe("Crash Recovery", () => {
 
     // Write tasks with one in-progress and one aborted
     const stageDir = join(project.paths.stages, "stg-1");
-    ensureDir(stageDir);
-    writeDoc(
+    await ensureDir(stageDir);
+    await writeDoc(
       join(stageDir, "tasks.json"),
       {
         stage_id: "stg-1",
@@ -1170,24 +1342,25 @@ describe("Crash Recovery", () => {
       TaskListSchema,
     );
 
-    const result = recoverFromCrash(project, planService);
+    const result = await recoverFromCrash(project, planService);
     expect(result.recovered).toBe(true);
     expect(result.stageId).toBe("stg-1");
 
     // Verify tasks were reset
-    const tasks = readDoc(join(stageDir, "tasks.json"), TaskListSchema);
+    const tasks = await readDoc(join(stageDir, "tasks.json"), TaskListSchema);
     expect(tasks.tasks[0].status).toBe("pending"); // was in-progress
     expect(tasks.tasks[1].status).toBe("pending"); // was aborted
     expect(tasks.tasks[2].status).toBe("completed"); // unchanged
   });
 
-  it("recoverFromCrash ignores malformed task lists", () => {
+  it("recoverFromCrash ignores malformed task lists", async () => {
     const project = makeProjectContext(tmpDir);
-    ensureDir(project.paths.stages);
-    ensureDir(join(project.paths.tmp, "state"));
+    await ensureDir(project.paths.stages);
+    await ensureDir(join(project.paths.tmp, "state"));
 
     const planService = new PlanService(project.saivageDir);
-    planService.plan_init([
+    await planService.init();
+    await planService.plan_init([
       {
         id: "stg-1",
         objective: "Test stage",
@@ -1198,9 +1371,9 @@ describe("Crash Recovery", () => {
         tags: [],
       },
     ]);
-    planService.plan_set_current("stg-1");
+    await planService.plan_set_current("stg-1");
 
-    writeRuntimeState(project.paths.runtimeState, {
+    await writeRuntimeState(project.paths.runtimeState, {
       status: "running",
       current_stage_id: "stg-1",
       active_agents: [],
@@ -1210,26 +1383,27 @@ describe("Crash Recovery", () => {
     });
 
     const stageDir = join(project.paths.stages, "stg-1");
-    ensureDir(stageDir);
+    await ensureDir(stageDir);
     writeFileSync(
       join(stageDir, "tasks.json"),
       JSON.stringify([{ id: "legacy-array-task", status: "planned" }], null, 2),
       "utf-8",
     );
 
-    const result = recoverFromCrash(project, planService);
+    const result = await recoverFromCrash(project, planService);
     expect(result.recovered).toBe(true);
     expect(result.stageId).toBe("stg-1");
   });
 
-  it("recoverFromCrash detects unarchived summary", () => {
+  it("recoverFromCrash detects unarchived summary", async () => {
     const project = makeProjectContext(tmpDir);
-    ensureDir(project.paths.stages);
-    ensureDir(join(project.paths.tmp, "state"));
+    await ensureDir(project.paths.stages);
+    await ensureDir(join(project.paths.tmp, "state"));
 
     const saivageDir = project.saivageDir;
     const planService = new PlanService(saivageDir);
-    planService.plan_init([
+    await planService.init();
+    await planService.plan_init([
       {
         id: "stg-1",
         objective: "Test",
@@ -1240,10 +1414,10 @@ describe("Crash Recovery", () => {
         tags: [],
       },
     ]);
-    planService.plan_set_current("stg-1");
+    await planService.plan_set_current("stg-1");
 
     // Write runtime state
-    writeRuntimeState(project.paths.runtimeState, {
+    await writeRuntimeState(project.paths.runtimeState, {
       status: "running",
       current_stage_id: "stg-1",
       active_agents: [],
@@ -1254,8 +1428,8 @@ describe("Crash Recovery", () => {
 
     // Write a summary.json (stage finished but wasn't archived)
     const stageDir = join(project.paths.stages, "stg-1");
-    ensureDir(stageDir);
-    writeDoc(
+    await ensureDir(stageDir);
+    await writeDoc(
       join(stageDir, "summary.json"),
       {
         stage_id: "stg-1",
@@ -1274,7 +1448,7 @@ describe("Crash Recovery", () => {
       StageSummarySchema,
     );
 
-    const result = recoverFromCrash(project, planService);
+    const result = await recoverFromCrash(project, planService);
     expect(result.recovered).toBe(true);
     expect(result.needsArchival).toBe(true);
     expect(result.summary).toBeDefined();

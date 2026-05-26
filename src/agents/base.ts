@@ -12,11 +12,14 @@ import type {
   ChatResponse,
   ToolSchema,
 } from "../providers/types.js";
+import { ProviderError } from "../providers/error.js";
 import type {
   AgentContext,
   AgentResult,
   AgentRole,
+  InputChannel,
 } from "./types.js";
+import { ROSTER } from "./roster.js";
 import { Dispatcher, DISPATCH_TOOLS } from "../runtime/dispatcher.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
 import {
@@ -26,11 +29,9 @@ import {
   type CompactionConfig,
   type CompactionState,
 } from "../runtime/compaction.js";
-import {
-  resolveSkills,
-  formatSkillsForPrompt,
-  type SkillMatchContext,
-} from "../skills/loader.js";
+import { buildSurvivorBlock } from "../knowledge/eagerLoader.js";
+import type { KnowledgeAgentRole } from "../knowledge/types.js";
+import type { SkillMatchContext } from "../knowledge/loader.js";
 import { checkConvention } from "./conventions.js";
 import { stashResult, readStash, cleanStash } from "../runtime/stash.js";
 import type { RuntimeToolEntry } from "../mcp/runtime.js";
@@ -82,14 +83,6 @@ export interface LlmResponseSource {
 
 const MAX_DIAGNOSTIC_ENTRIES = 30;
 
-const VISIBLE_EXECUTION_STYLE_PROMPT = `## Visible Execution Style
-
-- In any response that includes one or more tool calls, begin the SAME response with a short explanation of what you are about to do.
-- Keep that explanation concise and concrete: say what you are checking/changing, why it matters, and what outcome you expect.
-- Do NOT wait for a separate text-only turn. Combine the explanation and the tool calls in one response.
-- If several tool calls belong to one batch, summarize the batch once instead of narrating each call.
-- Keep these explanations brief so they improve trace readability without creating extra churn.`;
-
 function describeToolUseBlocks(blocks: ContentBlock[]): string {
   const names = blocks.map((block) => block.name ?? "unknown");
   const counts = new Map<string, number>();
@@ -105,8 +98,10 @@ function describeToolUseBlocks(blocks: ContentBlock[]): string {
 export interface BaseAgentConfig {
   /** System prompt (from prompts/<role>.md). */
   systemPrompt: string;
-  /** Skill matching context. */
+  /** Skill matching context (kept for documentation; eager block is pre-built by factories). */
   skillContext?: SkillMatchContext;
+  /** Pre-built §D.6 eager knowledge block to append to the system prompt. */
+  eagerSkillBlock?: string;
   /** Child spawner for agent dispatch tools. */
   childSpawner?: ChildSpawner;
   /** Additional context message injected at the start. */
@@ -115,6 +110,17 @@ export interface BaseAgentConfig {
   abortSignal?: { aborted: boolean };
   /** Notify the runtime that this agent is still making progress. */
   onActivity?: (agentId: string) => void;
+  /**
+   * Test hook (FR-16 / WI-14): invoked once after the Planner
+   * pre-compaction memory-write window closes, with the number of
+   * `create_memory` (or related) tool calls observed during the window.
+   */
+  onCompactionHookComplete?: (writeCount: number) => void;
+  /**
+   * Input channels that may inject `{role:"user"}` messages immediately
+   * before each `router.chat` call, and that observe context resets.
+   */
+  inputChannels?: InputChannel[];
 }
 
 /**
@@ -122,6 +128,10 @@ export interface BaseAgentConfig {
  * Implements the conversation loop with LLM calls, tool execution,
  * compaction and stash.
  */
+const LLM_BACKOFF_BASE_SECONDS = 30;
+const LLM_BACKOFF_MULT = 1.5;
+const LLM_BACKOFF_MAX_SECONDS = 20 * 60; // 20 minutes
+
 export class BaseAgent {
   private static readonly MAX_INVALID_FINAL_RESPONSES = 3;
   readonly id: string;
@@ -149,6 +159,10 @@ export class BaseAgent {
   private messageRoundIds: (string | null)[] = [];
   private lastActivityAt: string = new Date().toISOString();
   private pendingCall: NonNullable<ActivityStatus["pending_call"]> | null = null;
+  private onCompactionHookComplete?: (writeCount: number) => void;
+  private readonly inputChannels: InputChannel[];
+  private runningInputTokens = 0;
+  private staticInputTokens = 0;
   readonly startedAt = new Date().toISOString();
 
   constructor(ctx: AgentContext, config: BaseAgentConfig) {
@@ -156,19 +170,10 @@ export class BaseAgent {
     this.role = ctx.role;
     this.ctx = ctx;
 
-    // Build system prompt with skills
-    const skills = config.skillContext
-      ? resolveSkills(
-          config.skillContext,
-          ctx.project.paths.skills,
-          ctx.project.config.skills.max_per_agent,
-        )
-      : [];
-
-    const skillBlock = formatSkillsForPrompt(skills);
+    // FR-1 / FR-15 §D.6: factories pre-build the eager block (async I/O) and pass it here.
+    const skillBlock = config.eagerSkillBlock ?? "";
     this.systemPrompt = [
       config.systemPrompt,
-      VISIBLE_EXECUTION_STYLE_PROMPT,
       skillBlock,
     ].filter(Boolean).join("\n\n");
 
@@ -192,6 +197,16 @@ export class BaseAgent {
 
     this.abortSignal = config.abortSignal;
     this.onActivity = config.onActivity;
+    this.onCompactionHookComplete = config.onCompactionHookComplete;
+    this.inputChannels = config.inputChannels ?? [];
+
+    // F07 — precompute static input (system prompt + tools) once.
+    this.staticInputTokens = this.ctx.router.countTokens(
+      this.ctx.modelSpec,
+      [],
+      this.systemPrompt,
+      this.getToolSchemas(),
+    );
 
     // Set initial message
     if (config.initialMessage) {
@@ -219,7 +234,7 @@ export class BaseAgent {
       }
 
       // Check compaction before LLM call
-      if (shouldCompact(this.messages, this.compactionConfig)) {
+      if (shouldCompact(this.runningInputTokens + this.staticInputTokens, this.compactionConfig)) {
         if (isMaxCompactionsReached(this.compactionState, this.compactionConfig)) {
           log.warn(
             `[agent:${this.role}:${this.id}] Max compactions reached — terminating`,
@@ -230,14 +245,10 @@ export class BaseAgent {
           };
         }
 
-        this.replaceMessages(await compactConversation(
-          this.systemPrompt,
-          this.messages,
-          this.ctx.router,
-          this.compactionConfig,
-          this.compactionState,
-        ));
+        await this.compactWithReinjection();
       }
+
+      await this.drainChannels();
 
       // Make LLM call
       let response: ChatResponse;
@@ -475,9 +486,6 @@ export class BaseAgent {
     this.recordActivity();
 
     const tools = this.getToolSchemas();
-    const BASE_DELAY_S = 30;
-    const BACKOFF_MULT = 1.5;
-    const MAX_DELAY_S = 20 * 60; // 20 minutes
 
     log.info(
       `[agent:${this.role}:${this.id}] Calling LLM with ${tools.length} tools, ${this.messages.length} messages`,
@@ -489,7 +497,7 @@ export class BaseAgent {
       if (this.cancelled || this.abortSignal?.aborted) {
         this.pendingCall = null;
         this.pendingRoundId = null;
-        throw new Error("Agent cancelled");
+        throw new ProviderError({ kind: "non_retryable", message: "Agent cancelled" });
       }
 
       try {
@@ -510,13 +518,27 @@ export class BaseAgent {
           );
         }
         this.pendingCall = null;
+        // F07 — monotonically-tightening calibration: only trust the provider count
+        // when it exceeds our estimate by >10%, never loosen the trigger.
+        const reported = response.usage?.inputTokens;
+        const estimated = this.runningInputTokens + this.staticInputTokens;
+        if (typeof reported === "number" && reported > estimated * 1.1) {
+          this.runningInputTokens = Math.max(0, reported - this.staticInputTokens);
+        }
         return response;
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const pe = err instanceof ProviderError
+          ? err
+          : new ProviderError({
+              kind: "transient",
+              message: err instanceof Error ? err.message : String(err),
+              cause: err,
+            });
+        const msg = pe.message;
 
-        // Context overflow → compact and retry immediately (no backoff)
-        if (isContextOverflowError(msg) || isOrphanedToolResultError(msg)) {
-          const reason = isContextOverflowError(msg)
+        // Context overflow / orphaned tool result → compact and retry immediately (no backoff)
+        if (pe.kind === "context_overflow" || pe.kind === "orphaned_tool_result") {
+          const reason = pe.kind === "context_overflow"
             ? "context window exceeded"
             : "orphaned tool_result";
           if (isMaxCompactionsReached(this.compactionState, this.compactionConfig)) {
@@ -524,7 +546,7 @@ export class BaseAgent {
             this.addDiagnostic("model_issue", failure);
             this.pendingCall = null;
             this.pendingRoundId = null;
-            throw new Error(failure);
+            throw new ProviderError({ kind: "non_retryable", message: failure, cause: pe });
           }
           this.addDiagnostic(
             "model_repair",
@@ -533,25 +555,20 @@ export class BaseAgent {
           log.warn(
             `[agent:${this.role}:${this.id}] ${reason} — compacting and retrying`,
           );
-          this.replaceMessages(await compactConversation(
-            this.systemPrompt,
-            this.messages,
-            this.ctx.router,
-            this.compactionConfig,
-            this.compactionState,
-          ));
+          await this.compactWithReinjection();
+          await this.drainChannels();
           this.pendingRoundId = myRoundId;
           continue;
         }
 
-        // Non-retryable errors (invalid tool calls, etc.) — propagate immediately
-        if (isNonRetryableError(msg)) {
+        // Non-retryable errors — propagate immediately
+        if (pe.kind === "non_retryable") {
           this.pendingCall = null;
           this.pendingRoundId = null;
-          throw err;
+          throw pe;
         }
 
-        const throttled = isThrottlingError(msg);
+        const throttled = pe.kind === "throttling";
 
         // Only count non-throttling errors toward the retry cap
         if (!throttled) {
@@ -561,14 +578,19 @@ export class BaseAgent {
             this.addDiagnostic("model_issue", failure);
             this.pendingCall = null;
             this.pendingRoundId = null;
-            throw new Error(failure);
+            throw new ProviderError({ kind: "transient", message: failure, cause: pe });
           }
         }
 
-        // Transient errors → exponential backoff
+        // Transient errors → exponential backoff (clamped by retryAfterMs when present)
+        const expSec = Math.min(
+          LLM_BACKOFF_BASE_SECONDS * Math.pow(LLM_BACKOFF_MULT, attempt),
+          LLM_BACKOFF_MAX_SECONDS,
+        );
+        const retryAfterSec = pe.retryAfterMs ? pe.retryAfterMs / 1000 : 0;
         const delaySec = Math.min(
-          BASE_DELAY_S * Math.pow(BACKOFF_MULT, attempt),
-          MAX_DELAY_S,
+          Math.max(expSec, retryAfterSec),
+          LLM_BACKOFF_MAX_SECONDS,
         );
         const label = throttled ? "throttled" : "failed";
         log.warn(
@@ -670,15 +692,18 @@ export class BaseAgent {
 
   /**
    * Stash large tool results to disk and return a reference instead.
-   * Threshold: 5% of context window (in characters).
+   * Threshold: 5% of context window (in tokens).
    */
   private maybeStash(content: string, toolUseId: string): string {
-    const threshold = this.compactionConfig.contextWindow * 4 * 0.05; // 5% of context in chars
-    if (content.length <= threshold) return content;
+    const tokenBudget = Math.floor(this.compactionConfig.contextWindow * 0.05);
+    const tokens = this.ctx.router.countTokens(this.ctx.modelSpec, [
+      { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseId, content }] },
+    ]);
+    if (tokens <= tokenBudget) return content;
 
     const path = stashResult(content, `tool_${toolUseId}`);
     return (
-      `[Result stashed to disk — too large for context window (${content.length} chars)]\n` +
+      `[Result stashed to disk — too large for context window (${tokens} tokens)]\n` +
       `Use read_stash(path="${path}") to read portions of this result.`
     );
   }
@@ -726,6 +751,7 @@ export class BaseAgent {
 
   protected pushMessage(message: Message, timestamp = new Date().toISOString(), source?: LlmResponseSource): void {
     this.messages.push(message);
+    this.runningInputTokens += this.ctx.router.countTokens(this.ctx.modelSpec, [message]);
     this.messageTimestamps.push(timestamp);
     this.messageSources.push(source);
     if (message.role === "assistant") {
@@ -742,6 +768,7 @@ export class BaseAgent {
 
   protected replaceMessages(messages: Message[], timestamp = new Date().toISOString()): void {
     this.messages = messages;
+    this.runningInputTokens = this.ctx.router.countTokens(this.ctx.modelSpec, messages);
     this.messageTimestamps = messages.map(() => timestamp);
     this.messageSources = messages.map(() => undefined);
     const compactionRound = `r-compacted-${++this.compactionCounter}`;
@@ -749,6 +776,125 @@ export class BaseAgent {
     this.currentRoundId = null;
     this.pendingRoundId = null;
     this.recordActivity();
+  }
+
+  /**
+   * FR-16 / WI-14 — §E.2 Planner pre-compaction memory-write window.
+   * Injects the nudge and lets the model run up to 5 tool-call turns so
+   * survivable knowledge gets persisted before the summary is built.
+   * Only invoked when role === "planner".
+   */
+  private async runPlannerCompactionHook(): Promise<void> {
+    const MAX_TURNS = 5;
+    const NUDGE =
+      "PRE-COMPACTION MEMORY HOOK: Conversation context is about to be compacted. " +
+      "You have up to 5 tool-call turns to call create_memory / create_skill " +
+      "for anything important that must survive compaction. " +
+      "Reply with a final text answer (no tool calls) to skip.";
+    this.pushMessage({ role: "user", content: NUDGE });
+
+    let writeCount = 0;
+    for (let turn = 0; turn < MAX_TURNS; turn++) {
+      if (this.cancelled || this.abortSignal?.aborted) break;
+      let response: ChatResponse;
+      try {
+        response = await this.callLLM();
+      } catch (err) {
+        log.warn(
+          `[agent:${this.role}:${this.id}] pre-compaction hook callLLM failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        break;
+      }
+      if (response.toolCalls.length === 0) {
+        const content: string | ContentBlock[] = response.reasoning
+          ? [
+              { type: "thinking", thinking: response.reasoning, thinking_signature: "reasoning_content" },
+              ...(response.content ? [{ type: "text", text: response.content } as ContentBlock] : []),
+            ]
+          : response.content;
+        this.pushMessage({ role: "assistant", content }, undefined, responseSource(response));
+        break;
+      }
+      const blocks: ContentBlock[] = [];
+      if (response.reasoning) {
+        blocks.push({ type: "thinking", thinking: response.reasoning, thinking_signature: "reasoning_content" });
+      }
+      if (response.content) blocks.push({ type: "text", text: response.content });
+      for (const tc of response.toolCalls) {
+        blocks.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input });
+        if (tc.name === "create_memory" || tc.name === "create_skill") writeCount += 1;
+      }
+      this.pushMessage({ role: "assistant", content: blocks }, undefined, responseSource(response));
+      const dispatchResult = await this.dispatcher.processToolCalls(
+        response.toolCalls,
+        this.ctx,
+        this.abortSignal,
+      );
+      const resultBlocks: ContentBlock[] = dispatchResult.toolResults.map((r) => ({
+        type: "tool_result" as const,
+        tool_use_id: r.toolUseId,
+        content: r.content,
+        is_error: r.isError,
+      }));
+      this.pushMessage({ role: "user", content: resultBlocks });
+      if (dispatchResult.aborted) break;
+    }
+    try {
+      this.onCompactionHookComplete?.(writeCount);
+    } catch (err) {
+      log.warn(
+        `[agent:${this.role}:${this.id}] onCompactionHookComplete threw: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * FR-15 / WI-14 — Compact the conversation and append the §E.1 survivor
+   * reinjection block (if the knowledge loader is enabled). Used by both
+   * the pre-LLM-call compaction path and the model-repair compaction path.
+   */
+  private async compactWithReinjection(): Promise<void> {
+    if (this.role === "planner") {
+      try {
+        await this.runPlannerCompactionHook();
+      } catch (err) {
+        log.warn(
+          `[agent:${this.role}:${this.id}] pre-compaction hook failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    const summarized = await compactConversation(
+      this.systemPrompt,
+      this.messages,
+      this.ctx.router,
+      this.compactionConfig,
+      this.compactionState,
+      this.ctx.modelSpec,
+      this.getToolSchemas(),
+    );
+    let next: Message[] = summarized;
+    try {
+      const block = await buildSurvivorBlock(
+        this.ctx.project.projectRoot,
+        this.role as KnowledgeAgentRole,
+        this.compactionState.compactionCount,
+      );
+      if (block) next = [...summarized, { role: "user", content: block }];
+    } catch (err) {
+      log.warn(
+        `[agent:${this.role}:${this.id}] survivor reinjection failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    this.replaceMessages(next);
+    for (const ch of this.inputChannels) ch.onContextReset();
+  }
+
+  /** Push pending channel messages into this.messages. Call immediately before any router.chat. */
+  private async drainChannels(): Promise<void> {
+    for (const ch of this.inputChannels) {
+      const drained = await ch.drain();
+      if (drained) this.pushMessage({ role: "user", content: drained.message });
+    }
   }
 
   private async sleepWithCancellation(ms: number): Promise<void> {
@@ -759,7 +905,7 @@ export class BaseAgent {
     if (this.cancelled || this.abortSignal?.aborted) {
       this.pendingCall = null;
       this.pendingRoundId = null;
-      throw new Error("Agent cancelled");
+      throw new ProviderError({ kind: "non_retryable", message: "Agent cancelled" });
     }
   }
 }
@@ -768,28 +914,10 @@ function truncateDiagnostic(value: string, max = 700): string {
   return value.length <= max ? value : `${value.slice(0, max)}…`;
 }
 
-// ─── Error Classification (regex-based, provider-agnostic) ──────────────
-
-const CONTEXT_OVERFLOW_RE = /context.{0,20}(window|length)|exceeds?.{0,20}(context|token|limit)|max.{0,10}tokens?.{0,10}exceed|too many tokens/i;
-const ORPHANED_TOOL_RE = /no tool.{0,20}(call|use).{0,20}found|orphaned tool|tool_use_id.{0,20}not found|unexpected tool.{0,5}result/i;
-const NON_RETRYABLE_RE = /consecutive invalid tool calls|agent cancelled/i;
-const THROTTLING_RE = /rate[- ]?limit|throttl|too many requests|\b429\b|quota.{0,20}(exhaust|exceed)|capacity|overloaded|temporarily unavailable|resource.{0,10}exhaust|server.{0,10}busy/i;
-
-function isContextOverflowError(msg: string): boolean {
-  return CONTEXT_OVERFLOW_RE.test(msg);
-}
-
-function isOrphanedToolResultError(msg: string): boolean {
-  return ORPHANED_TOOL_RE.test(msg);
-}
-
-function isNonRetryableError(msg: string): boolean {
-  return NON_RETRYABLE_RE.test(msg);
-}
-
-function isThrottlingError(msg: string): boolean {
-  return THROTTLING_RE.test(msg);
-}
+// ─── Error Classification ───────────────────────────────────────────────
+// All provider-error classification lives in providers/error.ts. The
+// agent layer consumes the ProviderError discriminant instead of running
+// regex over English error strings.
 
 function responseSource(response: ChatResponse): LlmResponseSource | undefined {
   if (!response.modelSpec && !response.provider && !response.model) return undefined;
@@ -853,112 +981,94 @@ const RUN_INSPECTOR_SCHEMA: ToolSchema = {
   },
 };
 
-const RUN_CODER_SCHEMA: ToolSchema = {
-  name: "run_coder",
-  description:
-    "Dispatch a coding task to a Coder worker agent. Returns a TaskReport.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      task: {
-        type: "object",
-        description: "The task to execute",
-        properties: {
-          id: { type: "string" },
-          objective: { type: "string" },
-          files: { type: "array", items: { type: "string" } },
-          instructions: { type: "string" },
-          acceptance_criteria: { type: "array", items: { type: "string" } },
-        },
-        required: ["id", "objective", "files", "instructions", "acceptance_criteria"],
-      },
-      stageId: { type: "string", description: "Parent stage ID" },
-    },
-    required: ["task", "stageId"],
-  },
-};
+const RUN_CODER_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
+  "run_coder",
+  "Dispatch a coding task to a Coder worker agent. Returns a TaskReport.",
+  "The task to execute",
+);
 
-const RUN_RESEARCHER_SCHEMA: ToolSchema = {
-  name: "run_researcher",
-  description:
-    "Dispatch a research task to a Researcher worker agent. Returns a TaskReport.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      task: {
-        type: "object",
-        description: "The research task",
-        properties: {
-          id: { type: "string" },
-          objective: { type: "string" },
-          files: { type: "array", items: { type: "string" } },
-          instructions: { type: "string" },
-          acceptance_criteria: { type: "array", items: { type: "string" } },
-        },
-        required: ["id", "objective", "files", "instructions", "acceptance_criteria"],
-      },
-      stageId: { type: "string", description: "Parent stage ID" },
-    },
-    required: ["task", "stageId"],
-  },
-};
+const RUN_RESEARCHER_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
+  "run_researcher",
+  "Dispatch a research task to a Researcher worker agent. Returns a TaskReport.",
+  "The research task",
+);
 
-const RUN_DATA_AGENT_SCHEMA: ToolSchema = {
-  name: "run_data_agent",
-  description:
-    "Dispatch a data acquisition task to a Data Agent. Use for finding, downloading, validating, and documenting external datasets or API data. Returns a TaskReport.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      task: {
-        type: "object",
-        description: "The data acquisition task",
-        properties: {
-          id: { type: "string" },
-          objective: { type: "string" },
-          files: { type: "array", items: { type: "string" } },
-          instructions: { type: "string" },
-          acceptance_criteria: { type: "array", items: { type: "string" } },
-        },
-        required: ["id", "objective", "files", "instructions", "acceptance_criteria"],
-      },
-      stageId: { type: "string", description: "Parent stage ID" },
-    },
-    required: ["task", "stageId"],
-  },
-};
+const RUN_DATA_AGENT_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
+  "run_data_agent",
+  "Dispatch a data acquisition task to a Data Agent. Use for finding, downloading, validating, and documenting external datasets or API data. Returns a TaskReport.",
+  "The data acquisition task",
+);
 
-const RUN_REVIEWER_SCHEMA: ToolSchema = {
-  name: "run_reviewer",
-  description:
-    "Dispatch a review task to a Reviewer worker agent after stage work is done. Use to validate stage objectives, acceptance criteria, work products, data/statistical quality, and issues before writing StageSummary. Returns a TaskReport.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      task: {
-        type: "object",
-        description: "The review task",
-        properties: {
-          id: { type: "string" },
-          objective: { type: "string" },
-          files: { type: "array", items: { type: "string" } },
-          instructions: { type: "string" },
-          acceptance_criteria: { type: "array", items: { type: "string" } },
+const RUN_REVIEWER_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
+  "run_reviewer",
+  "Dispatch a review task to a Reviewer worker agent after stage work is done. Use to validate stage objectives, acceptance criteria, work products, data/statistical quality, and issues before writing StageSummary. Returns a TaskReport.",
+  "The review task",
+);
+
+const RUN_DESIGNER_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
+  "run_designer",
+  "Dispatch a design task to a Designer worker agent. Use for product, UX, interface, information-architecture, or system-design work that should be settled before coding starts. Returns a TaskReport.",
+  "The design task",
+);
+
+function makeWorkerDispatchSchema(
+  name: string,
+  description: string,
+  taskDescription: string,
+): ToolSchema {
+  return {
+    name,
+    description,
+    inputSchema: {
+      type: "object",
+      properties: {
+        task: {
+          type: "object",
+          description: taskDescription,
+          properties: {
+            id: { type: "string" },
+            objective: { type: "string" },
+            files: { type: "array", items: { type: "string" } },
+            instructions: { type: "string" },
+            acceptance_criteria: { type: "array", items: { type: "string" } },
+          },
+          required: ["id", "objective", "files", "instructions", "acceptance_criteria"],
         },
-        required: ["id", "objective", "files", "instructions", "acceptance_criteria"],
+        stageId: { type: "string", description: "Parent stage ID" },
       },
-      stageId: { type: "string", description: "Parent stage ID" },
+      required: ["task", "stageId"],
     },
-    required: ["task", "stageId"],
-  },
-};
+  };
+}
 
 /** Role → dispatch tools mapping. Only expose tools each role should use. */
-const ROLE_DISPATCH_TOOLS: Record<string, ToolSchema[]> = {
-  planner: [RUN_MANAGER_SCHEMA, RUN_INSPECTOR_SCHEMA],
-  manager: [RUN_CODER_SCHEMA, RUN_RESEARCHER_SCHEMA, RUN_DATA_AGENT_SCHEMA, RUN_REVIEWER_SCHEMA],
-  chat: [RUN_INSPECTOR_SCHEMA],
+/** Tool schema indexed by dispatch tool name (derived from roster). */
+const DISPATCH_SCHEMA_BY_TOOL: Record<string, ToolSchema> = {
+  run_manager: RUN_MANAGER_SCHEMA,
+  run_inspector: RUN_INSPECTOR_SCHEMA,
+  run_coder: RUN_CODER_SCHEMA,
+  run_researcher: RUN_RESEARCHER_SCHEMA,
+  run_data_agent: RUN_DATA_AGENT_SCHEMA,
+  run_reviewer: RUN_REVIEWER_SCHEMA,
+  run_designer: RUN_DESIGNER_SCHEMA,
 };
+
+/** Role → dispatch tools mapping, derived from `ROSTER[*].dispatchableBy`. */
+const ROLE_DISPATCH_TOOLS: Partial<Record<AgentRole, ToolSchema[]>> = (() => {
+  const map: Partial<Record<AgentRole, ToolSchema[]>> = {};
+  for (const entry of ROSTER) {
+    if (!entry.dispatchTool) continue;
+    const schema = DISPATCH_SCHEMA_BY_TOOL[entry.dispatchTool];
+    if (!schema) {
+      throw new Error(`Missing dispatch schema for tool ${entry.dispatchTool}`);
+    }
+    for (const parent of entry.dispatchableBy) {
+      const key = parent as AgentRole;
+      (map[key] ??= []).push(schema);
+    }
+  }
+  return map;
+})();
 
 function getDispatchToolsForRole(role: AgentRole): ToolSchema[] {
   return ROLE_DISPATCH_TOOLS[role] ?? [];
@@ -974,8 +1084,10 @@ const READ_ONLY_TOOLS = new Set([
 
 /** Tools that only the planner (and manager for delegation) should use. */
 const PLAN_TOOLS = new Set([
-  "read_plan", "update_plan", "complete_stage", "escalate",
-  "read_note", "list_notes", "acknowledge_note",
+  "plan_get", "plan_get_stage", "plan_get_current_stage",
+  "plan_set_stages", "plan_add_stage", "plan_remove_stage",
+  "plan_set_current", "plan_complete_stage",
+  "plan_get_history", "plan_init", "plan_commit",
 ]);
 
 /** Tools workers (coder/researcher/data_agent) do NOT need. */
@@ -990,11 +1102,10 @@ const WORKER_EXCLUDED_TOOLS = new Set([
  * Roles without an entry get all available tools (no filtering).
  */
 const ROLE_TOOL_FILTER: Partial<Record<AgentRole, (toolName: string, service: string) => boolean>> = {
-  // Planner: plan tools + read-only filesystem + notes + skills — no shell, no write_file
+  // Planner: plan tools + read-only filesystem + skills — no shell, no write_file
   planner: (name, _service) =>
     PLAN_TOOLS.has(name) || READ_ONLY_TOOLS.has(name) ||
-    name === "read_stash" ||
-    name === "write_note" || name === "list_notes" || name === "acknowledge_note" || name === "read_note",
+    name === "read_stash",
 
   // Inspector: read-only tools only
   inspector: (name, _service) =>

@@ -5,31 +5,15 @@
 
 import { z } from "zod";
 import { projectRoutingSchema } from "./routing/resolver.js";
+import { ALL_ROLES, WORKER_ROLES } from "./agents/roster.js";
 
 // ─── 1. Project Config ──────────────────────────────────────────────────────
 
 export const ProjectConfigSchema = z.object({
   project_name: z.string(),
   objectives: z.array(z.string()),
-  provider: z.string().optional(),
   model_overrides: z.record(z.string(), z.string()).optional(),
   routing: projectRoutingSchema.optional(),
-  notifications: z.object({
-    channels: z.array(z.enum(["telegram", "web"])),
-    filters: z.object({
-      min_severity: z.enum(["info", "warning", "error"]),
-      categories: z.array(
-        z.enum([
-          "stage_completed",
-          "stage_failed",
-          "escalation",
-          "task_failed",
-          "inspector_complete",
-          "plan_updated",
-        ]),
-      ),
-    }),
-  }),
   skills: z.object({
     max_per_agent: z.number().default(5),
   }),
@@ -95,6 +79,12 @@ export const PlanHistorySchema = z.object({
 });
 export type PlanHistory = z.infer<typeof PlanHistorySchema>;
 
+/** Persisted Telegram chat-id subscriptions (notification destinations). */
+export const TelegramSubscriptionsSchema = z.object({
+  chatIds: z.array(z.number()).default([]),
+});
+export type TelegramSubscriptions = z.infer<typeof TelegramSubscriptionsSchema>;
+
 // ─── 5. Tasks ───────────────────────────────────────────────────────────────
 
 export const ChecklistItemSchema = z.object({
@@ -105,8 +95,8 @@ export type ChecklistItem = z.infer<typeof ChecklistItemSchema>;
 
 export const TaskSchema = z.object({
   id: z.string(),
-  type: z.enum(["code", "research", "data", "review", "test", "document"]),
-  assigned_to: z.enum(["coder", "researcher", "data_agent", "reviewer"]),
+  type: z.enum(["code", "research", "data", "review", "test", "document", "design"]),
+  assigned_to: z.enum(WORKER_ROLES),
   description: z.string(),
   checklist: z.array(ChecklistItemSchema),
   dependencies: z.array(z.string()),
@@ -146,18 +136,18 @@ export type TestResult = z.infer<typeof TestResultSchema>;
 export const IssueSchema = z.object({
   severity: z.enum(["info", "warning", "error"]),
   description: z.string(),
-  file: z.string().optional(),
-  line: z.number().optional(),
-  error_output: z.string().optional(),
-  root_cause: z.string().optional(),
-  suggestion: z.string().optional(),
+  file: z.string().nullable().optional(),
+  line: z.number().nullable().optional(),
+  error_output: z.string().nullable().optional(),
+  root_cause: z.string().nullable().optional(),
+  suggestion: z.string().nullable().optional(),
 });
 export type Issue = z.infer<typeof IssueSchema>;
 
 export const TaskReportSchema = z.object({
   task_id: z.string(),
   stage_id: z.string(),
-  agent: z.enum(["coder", "researcher", "data_agent", "reviewer"]),
+  agent: z.enum(WORKER_ROLES),
   status: z.enum(["completed", "failed"]),
   summary: z.string(),
   checklist_results: z.array(ChecklistResultSchema),
@@ -245,37 +235,10 @@ export const InspectionReportSchema = z.object({
 });
 export type InspectionReport = z.infer<typeof InspectionReportSchema>;
 
-// ─── 10. Skill Index ────────────────────────────────────────────────────────
-
-export const SkillEntrySchema = z.object({
-  name: z.string(),
-  file: z.string(),
-  description: z.string(),
-  triggers: z.array(z.string()),
-  target_agents: z.array(z.string()).optional(),
-  created_at: z.string(),
-  updated_at: z.string(),
-});
-export type SkillEntry = z.infer<typeof SkillEntrySchema>;
-
-export const SkillIndexSchema = z.object({
-  skills: z.array(SkillEntrySchema),
-});
-export type SkillIndex = z.infer<typeof SkillIndexSchema>;
-
 // ─── 11. Runtime State ──────────────────────────────────────────────────────
 
 export const AgentStateSchema = z.object({
-  agent_type: z.enum([
-    "planner",
-    "manager",
-    "coder",
-    "researcher",
-    "data_agent",
-    "reviewer",
-    "inspector",
-    "chat",
-  ]),
+  agent_type: z.enum(ALL_ROLES),
   agent_id: z.string(),
   status: z.enum(["running", "suspended", "idle"]),
   current_task_id: z.string().optional(),

@@ -59,83 +59,83 @@ describe("Document Store", () => {
     count: z.number(),
   });
 
-  it("writes and reads a document atomically", () => {
+  it("writes and reads a document atomically", async () => {
     const path = join(tmpDir, "test.json");
     const data = { name: "hello", count: 42 };
 
-    writeDoc(path, data, TestSchema);
-    const result = readDoc(path, TestSchema);
+    await writeDoc(path, data, TestSchema);
+    const result = await readDoc(path, TestSchema);
 
     expect(result).toEqual(data);
   });
 
-  it("creates parent directories on write", () => {
+  it("creates parent directories on write", async () => {
     const path = join(tmpDir, "a", "b", "c", "doc.json");
-    writeDoc(path, { name: "deep", count: 1 }, TestSchema);
+    await writeDoc(path, { name: "deep", count: 1 }, TestSchema);
     expect(existsSync(path)).toBe(true);
   });
 
-  it("rejects invalid data on write", () => {
+  it("rejects invalid data on write", async () => {
     const path = join(tmpDir, "bad.json");
-    expect(() => {
-      writeDoc(path, { name: 123 } as unknown, TestSchema);
-    }).toThrow();
+    await expect(
+      writeDoc(path, { name: 123 } as unknown, TestSchema),
+    ).rejects.toThrow();
     expect(existsSync(path)).toBe(false);
   });
 
-  it("rejects invalid data on read", () => {
+  it("rejects invalid data on read", async () => {
     const path = join(tmpDir, "bad.json");
     writeFileSync(path, '{"name": 123}', "utf-8");
-    expect(() => readDoc(path, TestSchema)).toThrow();
+    await expect(readDoc(path, TestSchema)).rejects.toThrow();
   });
 
-  it("no .tmp file left after successful write", () => {
+  it("no .tmp file left after successful write", async () => {
     const path = join(tmpDir, "clean.json");
-    writeDoc(path, { name: "ok", count: 0 }, TestSchema);
+    await writeDoc(path, { name: "ok", count: 0 }, TestSchema);
     expect(existsSync(path + ".tmp")).toBe(false);
   });
 
-  it("readDocOrNull returns null for missing file", () => {
-    const result = readDocOrNull(join(tmpDir, "nope.json"), TestSchema);
+  it("readDocOrNull returns null for missing file", async () => {
+    const result = await readDocOrNull(join(tmpDir, "nope.json"), TestSchema);
     expect(result).toBeNull();
   });
 
-  it("readDocOrNull returns data for existing file", () => {
+  it("readDocOrNull returns data for existing file", async () => {
     const path = join(tmpDir, "exists.json");
-    writeDoc(path, { name: "hi", count: 1 }, TestSchema);
-    const result = readDocOrNull(path, TestSchema);
+    await writeDoc(path, { name: "hi", count: 1 }, TestSchema);
+    const result = await readDocOrNull(path, TestSchema);
     expect(result).toEqual({ name: "hi", count: 1 });
   });
 
-  it("deleteDoc removes file", () => {
+  it("deleteDoc removes file", async () => {
     const path = join(tmpDir, "del.json");
-    writeDoc(path, { name: "bye", count: 0 }, TestSchema);
-    expect(deleteDoc(path)).toBe(true);
+    await writeDoc(path, { name: "bye", count: 0 }, TestSchema);
+    expect(await deleteDoc(path)).toBe(true);
     expect(existsSync(path)).toBe(false);
   });
 
-  it("deleteDoc returns false for missing file", () => {
-    expect(deleteDoc(join(tmpDir, "nope.json"))).toBe(false);
+  it("deleteDoc returns false for missing file", async () => {
+    expect(await deleteDoc(join(tmpDir, "nope.json"))).toBe(false);
   });
 
-  it("listDir returns filenames", () => {
-    writeDoc(join(tmpDir, "a.json"), { name: "a", count: 1 }, TestSchema);
-    writeDoc(join(tmpDir, "b.json"), { name: "b", count: 2 }, TestSchema);
-    const entries = listDir(tmpDir);
+  it("listDir returns filenames", async () => {
+    await writeDoc(join(tmpDir, "a.json"), { name: "a", count: 1 }, TestSchema);
+    await writeDoc(join(tmpDir, "b.json"), { name: "b", count: 2 }, TestSchema);
+    const entries = await listDir(tmpDir);
     expect(entries.sort()).toEqual(["a.json", "b.json"]);
   });
 
-  it("listDir returns empty for missing directory", () => {
-    expect(listDir(join(tmpDir, "nope"))).toEqual([]);
+  it("listDir returns empty for missing directory", async () => {
+    expect(await listDir(join(tmpDir, "nope"))).toEqual([]);
   });
 });
 
 // ─── Append tests ────────────────────────────────────────────────────────────
 
 describe("appendDoc", () => {
-  it("appends to existing array field", () => {
+  it("appends to existing array field", async () => {
     const path = join(tmpDir, "history.json");
-    writeDoc(
+    await writeDoc(
       path,
       { stages: [{ id: "stg-1" }] },
       z.object({ stages: z.array(z.object({ id: z.string() })) }),
@@ -143,21 +143,21 @@ describe("appendDoc", () => {
     const schema = z.object({
       stages: z.array(z.object({ id: z.string() })),
     });
-    appendDoc(path, "stages", { id: "stg-2" }, schema);
+    await appendDoc(path, "stages", { id: "stg-2" }, schema);
 
-    const result = readDoc(path, schema);
+    const result = await readDoc(path, schema);
     expect(result.stages).toHaveLength(2);
     expect(result.stages[1]).toEqual({ id: "stg-2" });
   });
 
-  it("creates file with default doc if missing", () => {
+  it("creates file with default doc if missing", async () => {
     const path = join(tmpDir, "new.json");
     const schema = z.object({
       stages: z.array(z.object({ id: z.string() })),
     });
-    appendDoc(path, "stages", { id: "stg-1" }, schema, {} as never);
+    await appendDoc(path, "stages", { id: "stg-1" }, schema, {} as never);
 
-    const result = readDoc(path, schema);
+    const result = await readDoc(path, schema);
     expect(result.stages).toEqual([{ id: "stg-1" }]);
   });
 });
@@ -370,7 +370,7 @@ describe("Type schemas", () => {
 // ─── Round-trip tests with Document Store + Schemas ──────────────────────────
 
 describe("Document Store + Schema round-trip", () => {
-  it("writes and reads a Plan", () => {
+  it("writes and reads a Plan", async () => {
     const path = join(tmpDir, "plan.json");
     const plan = {
       updated_at: new Date().toISOString(),
@@ -388,12 +388,12 @@ describe("Document Store + Schema round-trip", () => {
       ],
     };
 
-    writeDoc(path, plan, PlanSchema);
-    const result = readDoc(path, PlanSchema);
+    await writeDoc(path, plan, PlanSchema);
+    const result = await readDoc(path, PlanSchema);
     expect(result).toEqual(plan);
   });
 
-  it("appends to PlanHistory", () => {
+  it("appends to PlanHistory", async () => {
     const path = join(tmpDir, "plan-history.json");
     const entry = {
       id: "stg-1",
@@ -406,7 +406,7 @@ describe("Document Store + Schema round-trip", () => {
       summary: "All done",
     };
 
-    appendDoc(
+    await appendDoc(
       path,
       "stages",
       entry,
@@ -414,7 +414,7 @@ describe("Document Store + Schema round-trip", () => {
       {} as never,
     );
 
-    const result = readDoc(path, PlanHistorySchema);
+    const result = await readDoc(path, PlanHistorySchema);
     expect(result.stages).toHaveLength(1);
     expect(result.stages[0].id).toBe("stg-1");
   });

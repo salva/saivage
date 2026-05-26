@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { BaseProvider } from "./base.js";
+import { classifyProviderError } from "./error.js";
 import type {
   ChatRequest,
   ChatResponse,
@@ -7,7 +8,16 @@ import type {
   ToolSchema,
   Message,
   ContentBlock,
+  ModelCapabilities,
 } from "./types.js";
+
+export const OPENAI_MODEL_CAPABILITIES: Array<[RegExp, ModelCapabilities]> = [
+  [/^gpt-5/, { contextWindow: 400_000, tokenEncoding: "o200k_base" }],
+  [/^o[134]/, { contextWindow: 200_000, tokenEncoding: "o200k_base" }],
+  [/^gpt-4o/, { contextWindow: 128_000, tokenEncoding: "o200k_base" }],
+  [/^gpt-4/, { contextWindow: 128_000, tokenEncoding: "cl100k_base" }],
+  [/^gpt-3\.5/, { contextWindow: 16_385, tokenEncoding: "cl100k_base" }],
+];
 
 export class OpenAIProvider extends BaseProvider {
   readonly name: string = "openai";
@@ -35,20 +45,25 @@ export class OpenAIProvider extends BaseProvider {
     const messages = this.convertMessages(request);
     const tools = request.tools?.map((t) => this.convertTool(t));
 
-    const response = await this.client.chat.completions.create({
-      model: request.model,
-      messages,
-      max_tokens: request.maxTokens ?? 8192,
-      ...(tools && tools.length > 0 ? { tools } : {}),
-      ...(request.temperature != null
-        ? { temperature: request.temperature }
-        : {}),
-      ...(request.stopSequences
-        ? { stop: request.stopSequences }
-        : {}),
-    },
-    request.signal ? { signal: request.signal } : undefined,
-    );
+    let response;
+    try {
+      response = await this.client.chat.completions.create({
+        model: request.model,
+        messages,
+        max_tokens: request.maxTokens ?? 8192,
+        ...(tools && tools.length > 0 ? { tools } : {}),
+        ...(request.temperature != null
+          ? { temperature: request.temperature }
+          : {}),
+        ...(request.stopSequences
+          ? { stop: request.stopSequences }
+          : {}),
+      },
+      request.signal ? { signal: request.signal } : undefined,
+      );
+    } catch (err) {
+      throw classifyProviderError(err, this.name);
+    }
 
     const choice = response.choices[0];
     if (!choice) throw new Error("No choices returned from OpenAI");
@@ -145,11 +160,9 @@ export class OpenAIProvider extends BaseProvider {
     };
   }
 
-  maxContextTokens(model: string): number {
-    if (model.includes("gpt-4o")) return 128_000;
-    if (model.includes("gpt-4")) return 128_000;
-    if (model.includes("gpt-3.5")) return 16_385;
-    return 128_000;
+  modelCapabilities(model: string): ModelCapabilities | undefined {
+    for (const [pattern, caps] of OPENAI_MODEL_CAPABILITIES) if (pattern.test(model)) return caps;
+    return undefined;
   }
 
   async isAvailable(): Promise<boolean> {

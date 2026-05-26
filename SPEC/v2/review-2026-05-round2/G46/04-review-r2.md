@@ -1,0 +1,24 @@
+# G46 - Review (r2)
+
+## Findings
+
+1. The stated 300-line SFC cap is not actually enforced by the plan.
+
+   Round 2 improves the size analysis and sets a hard cap of 300 lines per SFC in [SPEC/v2/review-2026-05-round2/G46/02-design-r2.md#L257](SPEC/v2/review-2026-05-round2/G46/02-design-r2.md#L257), with ToolCallRow.vue budgeted at 265 / 300 in [SPEC/v2/review-2026-05-round2/G46/02-design-r2.md#L246](SPEC/v2/review-2026-05-round2/G46/02-design-r2.md#L246). But the implementation step accepts any file over 300 and up to 330 lines in [SPEC/v2/review-2026-05-round2/G46/03-plan-r2.md#L116-L118](SPEC/v2/review-2026-05-round2/G46/03-plan-r2.md#L116-L118), and the validation criterion only requires Vue files to report 330 lines or less in [SPEC/v2/review-2026-05-round2/G46/03-plan-r2.md#L165](SPEC/v2/review-2026-05-round2/G46/03-plan-r2.md#L165). That contradicts the requested per-component budget of 300 lines or less. If the cap is 300, the fallback should trigger at over 300 lines, and ToolCallRow.vue should explicitly move its scoped style to ToolCallRow.css when it exceeds that cap.
+
+2. The strict round-id parser is not fully wired into compacted-bucket classification.
+
+   The new parser itself is strict: it replaces Number.parseInt with parseDecimalAll, rejects non-digits and overflow, and returns unknown for invalid recognized prefixes in [SPEC/v2/review-2026-05-round2/G46/02-design-r2.md#L11-L72](SPEC/v2/review-2026-05-round2/G46/02-design-r2.md#L11-L72). The plan also pins malformed cases including r1x, r1e3, r0x10, r-msg:3junk, leading signs, and overflow in [SPEC/v2/review-2026-05-round2/G46/03-plan-r2.md#L54-L68](SPEC/v2/review-2026-05-round2/G46/03-plan-r2.md#L54-L68). However, r2 says the timeline transformer keeps the r1 wiring in [SPEC/v2/review-2026-05-round2/G46/02-design-r2.md#L75](SPEC/v2/review-2026-05-round2/G46/02-design-r2.md#L75), and r1 only replaces pending-round inference plus sort-key parsing in [SPEC/v2/review-2026-05-round2/G46/03-plan-r1.md#L69-L83](SPEC/v2/review-2026-05-round2/G46/03-plan-r1.md#L69-L83). The live transformer still classifies compacted clusters with a prefix check in [web/src/components/AgentsView.vue#L435](web/src/components/AgentsView.vue#L435). Unless the port changes that branch too, malformed IDs such as r-compacted-3x or r-compacted-0x10 can still become compacted timeline items even though parseRoundId rejects them. Use parseRoundId(id).kind for compacted/pre classification as well, and add a timeline test that invalid compacted IDs do not produce compacted items.
+
+## Checks That Pass
+
+- The parser design now rejects the requested malformed forms: r1x, r-msg:3junk, leading signs, whitespace, exponent notation, hex-like tails, and overflow are covered by the scanner and the round-id test matrix in [SPEC/v2/review-2026-05-round2/G46/02-design-r2.md#L17-L24](SPEC/v2/review-2026-05-round2/G46/02-design-r2.md#L17-L24) and [SPEC/v2/review-2026-05-round2/G46/03-plan-r2.md#L54-L68](SPEC/v2/review-2026-05-round2/G46/03-plan-r2.md#L54-L68).
+- The threadBody ownership boundary is now explicit: AgentConversationPane.vue owns the DOM ref and exposes getThreadBodyEl with defineExpose, useAgentConversation exposes bindThreadBody, and the coordinator wires paneRef through a watch in [SPEC/v2/review-2026-05-round2/G46/02-design-r2.md#L77-L195](SPEC/v2/review-2026-05-round2/G46/02-design-r2.md#L77-L195) and [SPEC/v2/review-2026-05-round2/G46/03-plan-r2.md#L73-L104](SPEC/v2/review-2026-05-round2/G46/03-plan-r2.md#L73-L104).
+- Validation is corrected to use the root npm test runner. The live web package has no test script in [web/package.json#L6-L9](web/package.json#L6-L9), the root package owns vitest run in [package.json#L17](package.json#L17), and r2 widens vitest.config.ts to include web/src/**/*.test.ts in [SPEC/v2/review-2026-05-round2/G46/03-plan-r2.md#L126-L147](SPEC/v2/review-2026-05-round2/G46/03-plan-r2.md#L126-L147).
+- The new principles are largely preserved: the r2 checklist keeps no regex for the agents parser, no new web-local test runner, deletion of messageIndex:blockIndex fallback, no shims, and no backward compatibility work in [SPEC/v2/review-2026-05-round2/G46/02-design-r2.md#L271-L280](SPEC/v2/review-2026-05-round2/G46/02-design-r2.md#L271-L280). The remaining changes above are alignment fixes, not a rejection of the architecture.
+
+## Required Revision
+
+Align the SFC measurement rule with the stated 300-line cap, making the ToolCallRow.vue CSS fallback trigger when that file exceeds 300 lines. Also route compacted/pre timeline classification through parseRoundId so malformed compacted IDs are not accepted by the old startsWith branch.
+
+VERDICT: CHANGES_REQUESTED

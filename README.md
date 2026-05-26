@@ -54,6 +54,12 @@ agents:
 The runtime includes a dispatcher, supervisor, abort/recovery, compaction, and
 MCP service integration. All durable state lives on disk under `.saivage/`.
 
+Project knowledge — both procedural (skills) and factual (memories) — lives under
+`.saivage/{skills,memory}/{project,stages,sessions}/` and is authored exclusively via
+MCP tools (`create_skill`, `create_memory`, lifecycle ops). See
+[SPEC/v2/skills-memory/](SPEC/v2/skills-memory/) for the functional analysis, design,
+and implementation plan.
+
 ## Saivage v3
 
 The next major version is developed at

@@ -8,22 +8,33 @@ The schema lives in [`src/config.ts`](https://github.com/salva/saivage/blob/main
 
 ## Location
 
-The file is found by `configPath()`:
+The runtime config path is `<saivageDir>/saivage.json`, where `<saivageDir>`
+is computed by `saivageDir()` ([`src/config.ts`](https://github.com/salva/saivage/blob/main/src/config.ts)):
 
-1. If `SAIVAGE_ROOT` is set, the config is `${SAIVAGE_ROOT}/saivage.json`.
-2. Else, walk up from the launch directory for a `.saivage/config.json`
-   marker; the runtime config sits in the same `.saivage/saivage.json`.
-3. Otherwise: `${HOME}/.saivage/saivage.json`.
+1. If the `SAIVAGE_ROOT` environment variable is set (and no explicit project
+   root is passed by the caller), `<saivageDir>` is `${SAIVAGE_ROOT}`
+   directly; the runtime config is therefore `${SAIVAGE_ROOT}/saivage.json`.
+2. Otherwise, `<saivageDir>` is `<projectRoot>/.saivage`, where
+   `projectRoot` is resolved by `resolveProjectRoot()` in this precedence:
+   1. `PROJECT_ROOT` env var, if set.
+   2. `dirname(SAIVAGE_ROOT)` env var, if set.
+   3. Walk up from `process.cwd()` looking for a `.saivage/config.json`
+      marker.
+   4. Fall back to `process.cwd()` itself.
+
+There is **no `${HOME}/.saivage/saivage.json` fallback** — the daemon never
+picks the home directory on its own.
 
 ::: tip
-For a multi-project deployment the runtime config naturally lives in
-`~/.saivage/saivage.json` and is shared. If you want per-project runtime
-isolation, set `SAIVAGE_ROOT` per service.
+For a multi-project deployment, set `SAIVAGE_ROOT` per service to whatever
+shared path you want; the daemon will read `${SAIVAGE_ROOT}/saivage.json`
+from there. For per-project isolation, leave `SAIVAGE_ROOT` unset and let
+each project carry its own `.saivage/saivage.json`.
 :::
 
 ## Default content
 
-`writeDefaultConfig()` writes this on first run (truncated):
+`seedProject()` writes this on `saivage init` (truncated):
 
 ```json
 {
@@ -160,37 +171,48 @@ parallelism cap inside a single Manager is enforced separately by the runtime.
   "restartOnCrash": true,
   "continuousImprovement": true,
   "healthCheckIntervalMs": 30000,
-  "idleShutdownMs": 300000
+  "idleShutdownMs": 300000,
+  "recoveryDelayMs": 60000,
+  "notes": { "volatileTtlMs": 7200000 }
 }
 ```
+
+`recoveryDelayMs` is the cooldown before the runtime retries a crashed
+service (F11). `notes.volatileTtlMs` is the lifetime of volatile user notes
+before they are auto-expired (2h default).
 
 ### `security`
 
 ```json
 "security": {
   "injectionScanner": true,
-  "injectionModel": "github-copilot/gpt-5.4",
   "maxScanLengthBytes": 100000
 }
 ```
 
-Drives the [Prompt-Injection Cop](/internals/security).
+Drives the [Prompt-Injection Cop](/internals/security). `injectionModel` is
+required when the scanner is enabled; the daemon refuses to boot otherwise.
+See [F04](../../SPEC/v2/review-2026-05/F04-hardcoded-default-models.md).
 
 ### `supervisor`
 
 ```json
 "supervisor": {
   "enabled": true,
-  "model":   "github-copilot/gpt-5.4",
   "intervalMs": 1200000,
   "consecutiveStuckVerdicts": 3,
-  "logLines": 400
+  "logLines": 400,
+  "forceCancelDelayMs": 600000
 }
 ```
 
 The supervisor runs in the background, periodically inspecting recent logs
 and asking an LLM whether the system is making progress. After
-`consecutiveStuckVerdicts` consecutive *stuck* verdicts it triggers an abort.
+`consecutiveStuckVerdicts` consecutive *stuck* verdicts it triggers an
+abort, and waits `forceCancelDelayMs` before force-cancelling an
+unresponsive run. `model` is required when the supervisor is enabled; the
+daemon refuses to boot otherwise. See
+[F04](../../SPEC/v2/review-2026-05/F04-hardcoded-default-models.md).
 
 ### `telegram`
 
@@ -214,6 +236,39 @@ and asking an LLM whether the system is making progress. After
 
 Same shape as the project-level field; the runtime config is the fallback
 default.
+
+### `mcp`
+
+Wall-clock and output caps for the in-process MCP tooling layer (F11).
+
+```json
+"mcp": {
+  "shellTimeoutMs": 14400000,
+  "shellTimeoutFloorMs": 600000,
+  "inProcessTimeoutMs": 300000,
+  "maxOutputBytes": 102400,
+  "maxFetchChars": 200000,
+  "maxDownloadBytes": 262144000
+}
+```
+
+`shellTimeoutMs` is the hard upper bound for a single shell tool call.
+`shellTimeoutFloorMs` is the minimum effective timeout enforced even when the
+caller requests less; it must not exceed `shellTimeoutMs - WALL_CLOCK_HEADROOM_MS`
+(the runtime rejects misconfiguration at boot).
+
+### `oauth`
+
+Client ids for the built-in OAuth flows. Defaults to the public client ids
+shipped with Saivage; override only if you have provisioned your own apps.
+
+```json
+"oauth": {
+  "anthropic":     { "clientId": "..." },
+  "openaiCodex":   { "clientId": "..." },
+  "githubCopilot": { "clientId": "..." }
+}
+```
 
 ### `mcpServers`
 

@@ -17,6 +17,9 @@ const STORAGE_KEY = "saivage.apiToken";
 
 let cachedToken: string | null | undefined;
 
+// Lazy import via top-level — Vue is loaded by the SPA anyway.
+import { useAuthState } from "../composables/useAuthState";
+
 function readFromQuery(): string | null {
   if (typeof window === "undefined") return null;
   const params = new URLSearchParams(window.location.search);
@@ -66,6 +69,7 @@ export function setApiToken(token: string | null): void {
   } catch {
     // ignore — value remains cached in memory
   }
+  useAuthState().requestRetry();
 }
 
 /**

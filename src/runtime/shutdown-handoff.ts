@@ -13,31 +13,31 @@ import {
   type ShutdownSummary,
 } from "../types.js";
 import type { ProjectContext } from "../store/project.js";
-import { deleteDoc, readDocOrNull, writeDoc } from "../store/documents.js";
+import { readDocOrNull, renameDoc, writeDoc } from "../store/documents.js";
 import { log } from "../log.js";
 import type { z, ZodTypeAny } from "zod";
 
 const DEFAULT_SHUTDOWN_REASON = "Graceful shutdown requested without an external reason.";
 
-export function writeShutdownRequest(
+export async function writeShutdownRequest(
   project: ProjectContext,
   reason: string,
   requestedBy = "external",
-): void {
-  writeDoc(project.paths.shutdownRequest, {
+): Promise<void> {
+  await writeDoc(project.paths.shutdownRequest, {
     reason,
     requested_by: requestedBy,
     requested_at: new Date().toISOString(),
   }, ShutdownRequestSchema);
 }
 
-export function writeShutdownSummary(project: ProjectContext): ShutdownSummary {
+export async function writeShutdownSummary(project: ProjectContext): Promise<ShutdownSummary> {
   const shutdownStartedAtMs = Date.now();
   const shutdownStartedAt = new Date(shutdownStartedAtMs).toISOString();
-  const request = readOptionalDoc(project.paths.shutdownRequest, ShutdownRequestSchema, "shutdown request");
-  const runtimeState = readOptionalDoc(project.paths.runtimeState, RuntimeStateSchema, "runtime state");
-  const plan = readOptionalDoc(project.paths.plan, PlanSchema, "plan");
-  const history = readOptionalDoc(project.paths.planHistory, PlanHistorySchema, "plan history");
+  const request = await readOptionalDoc(project.paths.shutdownRequest, ShutdownRequestSchema, "shutdown request");
+  const runtimeState = await readOptionalDoc(project.paths.runtimeState, RuntimeStateSchema, "runtime state");
+  const plan = await readOptionalDoc(project.paths.plan, PlanSchema, "plan");
+  const history = await readOptionalDoc(project.paths.planHistory, PlanHistorySchema, "plan history");
   const reason = request?.reason ?? DEFAULT_SHUTDOWN_REASON;
   const requestedAt = request?.requested_at ?? null;
   const runtimeStartedAtMs = runtimeState?.started_at ? Date.parse(runtimeState.started_at) : NaN;
@@ -70,22 +70,22 @@ export function writeShutdownSummary(project: ProjectContext): ShutdownSummary {
     } : null,
   };
 
-  writeDoc(project.paths.shutdownSummary, summary, ShutdownSummarySchema);
-  if (request) deleteDoc(project.paths.shutdownRequest);
+  await writeDoc(project.paths.shutdownSummary, summary, ShutdownSummarySchema);
+  if (request) await markConsumed(project.paths.shutdownRequest);
   log.info(`[shutdown] Saved shutdown summary: ${reason}`);
   return summary;
 }
 
-export function consumeShutdownHandoff(project: ProjectContext): string | null {
-  const summary = readOptionalDoc(project.paths.shutdownSummary, ShutdownSummarySchema, "shutdown summary");
+export async function consumeShutdownHandoff(project: ProjectContext): Promise<string | null> {
+  const summary = await readOptionalDoc(project.paths.shutdownSummary, ShutdownSummarySchema, "shutdown summary");
   if (summary) {
-    deleteDoc(project.paths.shutdownSummary);
+    await markConsumed(project.paths.shutdownSummary);
     return formatShutdownSummaryForPlanner(summary);
   }
 
-  const request = readOptionalDoc(project.paths.shutdownRequest, ShutdownRequestSchema, "shutdown request");
+  const request = await readOptionalDoc(project.paths.shutdownRequest, ShutdownRequestSchema, "shutdown request");
   if (!request) return null;
-  deleteDoc(project.paths.shutdownRequest);
+  await markConsumed(project.paths.shutdownRequest);
   return (
     `SYSTEM RESTART HANDOFF: A shutdown/restart was requested before the previous process could save a full shutdown summary.\n\n` +
     `Requested at: ${request.requested_at}\n` +
@@ -95,13 +95,13 @@ export function consumeShutdownHandoff(project: ProjectContext): string | null {
   );
 }
 
-function readOptionalDoc<S extends ZodTypeAny>(
+async function readOptionalDoc<S extends ZodTypeAny>(
   path: string,
   schema: S,
   label: string,
-): z.output<S> | null {
+): Promise<z.output<S> | null> {
   try {
-    return readDocOrNull(path, schema);
+    return await readDocOrNull(path, schema);
   } catch (err) {
     log.warn(`[shutdown] Ignoring unreadable ${label}: ${err instanceof Error ? err.message : String(err)}`);
     return null;
@@ -144,4 +144,8 @@ function formatDuration(ms: number): string {
   if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
   const hours = Math.floor(minutes / 60);
   return `${hours}h ${minutes % 60}m`;
+}
+
+async function markConsumed(path: string): Promise<void> {
+  await renameDoc(path, `${path}.consumed`);
 }

@@ -4,7 +4,7 @@
  */
 
 import { join } from "node:path";
-import type { ToolEntry } from "./registry.js";
+import type { ToolEntry } from "./types.js";
 import { createUserNote } from "../runtime/notes.js";
 
 export class NoteService {
@@ -23,7 +23,7 @@ export class NoteService {
       return { content: { error: "content is required" }, isError: true };
     }
 
-    const note = createUserNote({
+    const note = await createUserNote({
       notesDir: this.notesDir,
       channel: typeof args.channel === "string" ? args.channel : "chat",
       sessionId: typeof args.session_id === "string" ? args.session_id : "tool-create-note",
@@ -38,7 +38,6 @@ export class NoteService {
         urgent: note.urgent,
         permanent: note.permanent,
         path: join(this.notesDir, `${note.id}.json`),
-        planner_pointer_pending: true,
       },
       isError: false,
     };

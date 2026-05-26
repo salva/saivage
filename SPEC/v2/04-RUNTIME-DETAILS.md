@@ -100,7 +100,7 @@ The runtime never crashes on bad tool calls — it always returns an error resul
 
 ### 2.3 Provider Failover
 
-If a provider becomes persistently unavailable (5+ consecutive retryable errors within 2 minutes), and a `failover` provider is configured in RuntimeConfig, the runtime switches to the failover provider for the remainder of the current agent's conversation. The switch is logged. On next agent invocation, the primary provider is tried first again.
+If a provider becomes persistently unavailable (5+ consecutive retryable errors within 2 minutes), and a `failover` provider is configured in SaivageConfig, the runtime switches to the failover provider for the remainder of the current agent's conversation. The switch is logged. On next agent invocation, the primary provider is tried first again.
 
 ---
 
@@ -123,6 +123,10 @@ Default `threshold_pct`: 80%. Configurable per agent role in ProjectConfig (see 
 2. Send a **compaction request** to the LLM (using the same model): "Summarize this conversation for continuation. Include: your role, current objective, key decisions made, outstanding work, and references to disk state you should re-read."
 3. Replace the full message history with: `[system_prompt, compaction_summary_message]`.
 4. Continue the conversation loop from this compressed state.
+
+**Survivor reinjection** (design §E.1). After `compactConversation` returns and **before** `replaceMessages` is called, `BaseAgent` queries the knowledge loader for every `active` record with `scope == "project"` AND `survive_compaction == true` (both skills and memories), and appends a single user-role `--- SURVIVING KNOWLEDGE ---` block to the new message list. Records that exceed the survivor hard ceiling (4096 tokens post-summarization) are quarantined but their ids are listed in the block header (`oversized_survivors: [...]`) so the agent can still reach them via `read_skill` / `get_memory`. Stage- and session-scoped records do **not** survive. `compaction.ts` itself is intentionally **unchanged** — it remains a pure history-to-summary function with no MCP / no store access; the integration lives in `BaseAgent`.
+
+**Planner pre-compaction memory nudge** (design §E.2). When `shouldCompact(state)` returns true AND the agent's role is `planner`, `BaseAgent` injects ONE pre-compaction user-role message asking the Planner to call `create_memory(scope="project", survive_compaction=true)` for any durable lessons before the conversation history is discarded. The Planner's writes then go through the **normal MCP loop** — there is no synthesized `compaction_persist_memory` tool. The nudge loop is capped at 5 turns; compaction proceeds either way. Non-Planner agents skip the nudge.
 
 ### 3.3 State Reconstruction After Compaction
 

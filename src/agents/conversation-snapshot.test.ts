@@ -80,6 +80,7 @@ function makeContext(router: unknown): AgentContext {
     } as unknown as AgentContext["mcpRuntime"],
     agentId: "snap-1",
     role: "reviewer",
+    stageId: "stage-snap-1",
     modelSpec: "test/model",
   };
 }
@@ -88,6 +89,7 @@ function stubRouter(chat: (req: ChatRequest) => Promise<ChatResponse>) {
   return {
     chat,
     getMaxContextTokens: () => 100_000,
+    countTokens: () => 0,
     resetModelHealth: () => undefined,
   };
 }

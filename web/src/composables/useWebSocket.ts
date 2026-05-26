@@ -1,12 +1,13 @@
 import { ref, onMounted, onUnmounted } from "vue";
 import { withTokenQuery } from "../utils/api";
+import { useAuthState } from "./useAuthState";
 
 export interface WsEvent {
   type: string;
   [key: string]: unknown;
 }
 
-export type WsStatus = "connecting" | "open" | "closed" | "unauthorized";
+export type WsStatus = "connecting" | "open" | "closed";
 
 const INITIAL_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
@@ -16,9 +17,12 @@ const BACKOFF_FACTOR = 1.7;
  * WebSocket composable with:
  *   - bearer-token auth via ?token= (browser WS API can't set headers)
  *   - exponential backoff with jitter on reconnect
- *   - a dedicated `unauthorized` status when the server closes with an
- *     auth-policy code (1008 / 4401) so the UI can stop the loop and
- *     prompt for a token instead of pretending we're "offline".
+ *
+ * Auth state lives in {@link useAuthState}: when the server closes with an
+ * auth-policy code (1008 / 4401 / 4403) the composable calls
+ * `markUnauthorized()` instead of looping; recovery is driven externally
+ * by `setApiToken`, which calls `requestRetry()` to fan out to every
+ * registered handler.
  *
  * The `connected` ref is kept for backwards compatibility; new code
  * should read `status` for finer-grained UX states.
@@ -31,6 +35,11 @@ export function useWebSocket(url?: string) {
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let nextBackoffMs = INITIAL_BACKOFF_MS;
   let stopped = false;
+
+  const auth = useAuthState();
+  const unsubscribeRetry = auth.onRetry(() => {
+    reconnect();
+  });
 
   function getUrl(): string {
     const base = url
@@ -66,8 +75,9 @@ export function useWebSocket(url?: string) {
       // side both indicate an auth failure. Don't loop forever; stop and
       // surface the state so the operator can fix the token.
       if (event.code === 1008 || event.code === 4401 || event.code === 4403) {
-        status.value = "unauthorized";
+        status.value = "closed";
         stopped = true;
+        auth.markUnauthorized();
         return;
       }
       status.value = "closed";
@@ -108,6 +118,7 @@ export function useWebSocket(url?: string) {
     ws = null;
     connected.value = false;
     status.value = "closed";
+    unsubscribeRetry();
   }
 
   function reconnect() {

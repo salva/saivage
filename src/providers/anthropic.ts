@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { BaseProvider } from "./base.js";
+import { classifyProviderError } from "./error.js";
 import type {
   ChatRequest,
   ChatResponse,
@@ -7,7 +8,13 @@ import type {
   ToolSchema,
   Message,
   ContentBlock,
+  ModelCapabilities,
 } from "./types.js";
+
+const MODEL_CAPABILITIES: Array<[RegExp, ModelCapabilities]> = [
+  [/^claude-(?:3|3-5|3\.5)-/, { contextWindow: 200_000, tokenEncoding: "cl100k_base" }],
+  [/^claude-(?:sonnet|opus|haiku)-4/, { contextWindow: 200_000, tokenEncoding: "cl100k_base" }],
+];
 
 export class AnthropicProvider extends BaseProvider {
   readonly name = "anthropic";
@@ -28,21 +35,26 @@ export class AnthropicProvider extends BaseProvider {
     const messages = this.convertMessages(request.messages);
     const tools = request.tools?.map((t) => this.convertTool(t));
 
-    const response = await this.client.messages.create({
-      model: request.model,
-      max_tokens: request.maxTokens ?? 8192,
-      system: request.system,
-      messages,
-      ...(tools && tools.length > 0 ? { tools } : {}),
-      ...(request.temperature != null
-        ? { temperature: request.temperature }
-        : {}),
-      ...(request.stopSequences
-        ? { stop_sequences: request.stopSequences }
-        : {}),
-    },
-    request.signal ? { signal: request.signal } : undefined,
-    );
+    let response;
+    try {
+      response = await this.client.messages.create({
+        model: request.model,
+        max_tokens: request.maxTokens ?? 8192,
+        system: request.system,
+        messages,
+        ...(tools && tools.length > 0 ? { tools } : {}),
+        ...(request.temperature != null
+          ? { temperature: request.temperature }
+          : {}),
+        ...(request.stopSequences
+          ? { stop_sequences: request.stopSequences }
+          : {}),
+      },
+      request.signal ? { signal: request.signal } : undefined,
+      );
+    } catch (err) {
+      throw classifyProviderError(err, this.name);
+    }
 
     let content = "";
     const toolCalls: ToolCallResult[] = [];
@@ -106,11 +118,9 @@ export class AnthropicProvider extends BaseProvider {
     };
   }
 
-  maxContextTokens(model: string): number {
-    if (model.includes("haiku")) return 200_000;
-    if (model.includes("sonnet")) return 200_000;
-    if (model.includes("opus")) return 200_000;
-    return 200_000;
+  modelCapabilities(model: string): ModelCapabilities | undefined {
+    for (const [pattern, caps] of MODEL_CAPABILITIES) if (pattern.test(model)) return caps;
+    return undefined;
   }
 
   async isAvailable(): Promise<boolean> {

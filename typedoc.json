@@ -14,7 +14,7 @@
     "src/providers/types.ts",
     "src/providers/router.ts",
     "src/mcp/runtime.ts",
-    "src/mcp/registry.ts",
+    "src/mcp/types.ts",
     "src/mcp/plan-server.ts",
     "src/events/bus.ts",
     "src/channels/types.ts",

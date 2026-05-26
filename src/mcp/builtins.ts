@@ -8,7 +8,10 @@
  */
 
 import type { McpRuntime, InProcessToolHandler } from "./runtime.js";
-import type { ToolEntry } from "./registry.js";
+import type { ToolEntry } from "./types.js";
+import { knowledgeSkillsTools, knowledgeSkillsHandler } from "./knowledgeSkills.js";
+import { knowledgeMemoryTools, knowledgeMemoryHandler } from "./knowledgeMemory.js";
+
 import {
   closeSync,
   createWriteStream,
@@ -30,15 +33,15 @@ import type { PromptInjectionCop, PromptInjectionScanResult } from "../security/
 import { disabledCop } from "../security/prompt-injection-cop.js";
 
 const execFileAsync = promisify(execFile);
-const MAX_OUTPUT = 100 * 1024; // 100 KB
+/** Headroom between the inner wall-clock cap and the outer McpRuntime
+ *  race so the inner kill timer always wins and emits a structured result. */
+export const WALL_CLOCK_HEADROOM_MS = 30_000;
+let MAX_OUTPUT = 100 * 1024; // 100 KB
 const PROCESS_KILL_GRACE_MS = 2_000;
 const OUTPUT_GROWTH_POLL_MS = 1_000;
-/** Hard wall-clock cap applied when the agent omits timeout_ms.
- *  Must be shorter than McpRuntime.SHELL_TIMEOUT_MS so the process is
- *  cleanly terminated before the outer promise-race fires. */
-const MAX_WALL_CLOCK_MS = 4 * 60 * 60 * 1000 - 30_000; // 3 h 59 m 30 s
-const MAX_FETCH_CHARS = 200_000;
-const MAX_DOWNLOAD_BYTES = 250 * 1024 * 1024;
+let MAX_FETCH_CHARS = 200_000;
+let MAX_DOWNLOAD_BYTES = 250 * 1024 * 1024;
+let SHELL_TIMEOUT_FLOOR_MS = 10 * 60 * 1000; // 10 minutes
 const MAX_SCAN_DECODE_BYTES = 1_000_000;
 
 function projectRoot(): string {
@@ -275,6 +278,23 @@ const filesystemHandler: InProcessToolHandler = async (toolName, args) => {
     }
     case "write_file": {
       const fp = resolvePath(args.path as string);
+      // FR-17 / WI-15 — read-only knowledge store: write_file must never
+      // create or mutate records under .saivage/skills/ or .saivage/memory/.
+      // Knowledge changes must go through create_skill / create_memory.
+      const saivageDir = join(projectRoot(), ".saivage");
+      const blockedRoots = [join(saivageDir, "skills"), join(saivageDir, "memory")];
+      for (const blocked of blockedRoots) {
+        if (fp === blocked || fp.startsWith(blocked + "/")) {
+          return {
+            content: {
+              error:
+                `BLOCKED_PATH: write_file cannot write to ${fp}. ` +
+                `Use create_skill / create_memory MCP tools to mutate knowledge records.`,
+            },
+            isError: true,
+          };
+        }
+      }
       mkdirSync(dirname(fp), { recursive: true });
       writeFileSync(fp, args.content as string, "utf-8");
       return { content: { written: true, path: fp }, isError: false };
@@ -352,30 +372,6 @@ const shellTools: ToolEntry[] = [
   },
 ];
 
-const shellHandler: InProcessToolHandler = async (toolName, args) => {
-  if (toolName !== "run_command") {
-    return { content: { error: `Unknown shell tool: ${toolName}` }, isError: true };
-  }
-
-  const command = args.command as string;
-  const cwd = args.cwd ? resolvePath(args.cwd as string) : projectRoot();
-  const timeout = clampTimeout(parseOptionalTimeoutMs(args, ["timeout_ms", "timeout"], "timeout_ms"));
-  const inactivityTimeout = clampTimeout(parseOptionalTimeoutMs(
-    args,
-    ["inactivity_timeout_ms", "idle_timeout_ms"],
-    "inactivity_timeout_ms",
-  ));
-  const outputPaths = resolveCommandLogPaths(args);
-
-  // Always enforce a hard wall-clock cap so the process group is
-  // properly killed even when the agent omits timeout_ms.
-  const effectiveTimeout = timeout ?? MAX_WALL_CLOCK_MS;
-  const result = await runShellCommand(command, cwd, effectiveTimeout, inactivityTimeout, outputPaths);
-  return { content: result, isError: false };
-};
-
-const DEFAULT_MIN_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
-
 function parseOptionalTimeoutMs(
   args: Record<string, unknown>,
   keys: string[],
@@ -393,20 +389,12 @@ function parseOptionalTimeoutMs(
 /**
  * Enforce a minimum timeout floor. Values below the floor are raised so
  * autonomous agents cannot prematurely kill long-running jobs. The floor is
- * configurable via SAIVAGE_SHELL_TIMEOUT_FLOOR_MS (set to 0 to disable, e.g.
+ * configured via config.mcp.shellTimeoutFloorMs (set to 0 to disable, e.g.
  * for tests that need to exercise short timeouts deterministically).
  */
 function clampTimeout(ms: number | undefined): number | undefined {
   if (ms === undefined) return undefined;
-  return Math.max(ms, shellTimeoutFloorMs());
-}
-
-function shellTimeoutFloorMs(): number {
-  const raw = process.env["SAIVAGE_SHELL_TIMEOUT_FLOOR_MS"];
-  if (raw === undefined) return DEFAULT_MIN_TIMEOUT_MS;
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_MIN_TIMEOUT_MS;
-  return Math.floor(parsed);
+  return Math.max(ms, SHELL_TIMEOUT_FLOOR_MS);
 }
 
 /**
@@ -1048,73 +1036,6 @@ const gitHandler: InProcessToolHandler = async (toolName, args) => {
   }
 };
 
-// ─── Skills ─────────────────────────────────────────────────────────────────
-
-const skillsTools: ToolEntry[] = [
-  { name: "list_skills", description: "List all available skills", inputSchema: { type: "object", properties: {} } },
-  { name: "read_skill", description: "Read a skill's content", inputSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
-  { name: "create_skill", description: "Create a new skill", inputSchema: { type: "object", properties: { name: { type: "string" }, description: { type: "string" }, content: { type: "string" } }, required: ["name", "description", "content"] } },
-  { name: "update_skill", description: "Update an existing skill", inputSchema: { type: "object", properties: { name: { type: "string" }, content: { type: "string" }, reason: { type: "string" } }, required: ["name", "content", "reason"] } },
-];
-
-const skillsHandler: InProcessToolHandler = async (toolName, args) => {
-  const skillsDir = join(
-    process.env["SAIVAGE_ROOT"] ?? join(projectRoot(), ".saivage"),
-    "skills",
-  );
-
-  switch (toolName) {
-    case "list_skills": {
-      const indexPath = join(skillsDir, "index.json");
-      if (!existsSync(indexPath)) return { content: { skills: [] }, isError: false };
-      const index = JSON.parse(readFileSync(indexPath, "utf-8"));
-      return { content: index, isError: false };
-    }
-    case "read_skill": {
-      const name = args.name as string;
-      const skillPath = resolveSkillPath(skillsDir, name);
-      if (!existsSync(skillPath)) {
-        return { content: { error: `Skill "${name}" not found` }, isError: true };
-      }
-      return { content: { name, content: readFileSync(skillPath, "utf-8") }, isError: false };
-    }
-    case "create_skill": {
-      const name = args.name as string;
-      const description = args.description as string;
-      const content = args.content as string;
-      mkdirSync(skillsDir, { recursive: true });
-      writeFileSync(resolveSkillPath(skillsDir, name), content, "utf-8");
-      const indexPath = join(skillsDir, "index.json");
-      const index = existsSync(indexPath)
-        ? JSON.parse(readFileSync(indexPath, "utf-8"))
-        : { skills: [] };
-      const now = new Date().toISOString();
-      index.skills.push({
-        name,
-        file: `${name}.md`,
-        description,
-        triggers: [],
-        created_at: now,
-        updated_at: now,
-      });
-      writeFileSync(indexPath, JSON.stringify(index, null, 2), "utf-8");
-      return { content: { created: true, name }, isError: false };
-    }
-    case "update_skill": {
-      const name = args.name as string;
-      const content = args.content as string;
-      const skillPath = resolveSkillPath(skillsDir, name);
-      if (!existsSync(skillPath)) {
-        return { content: { error: `Skill "${name}" not found` }, isError: true };
-      }
-      writeFileSync(skillPath, content, "utf-8");
-      return { content: { updated: true, name }, isError: false };
-    }
-    default:
-      return { content: { error: `Unknown skills tool: ${toolName}` }, isError: true };
-  }
-};
-
 // ─── Stubs (not yet implemented) ────────────────────────────────────────────
 
 function stubHandler(serviceName: string): InProcessToolHandler {
@@ -1127,13 +1048,6 @@ function stubHandler(serviceName: string): InProcessToolHandler {
 const webTools: ToolEntry[] = [
   { name: "fetch_url", description: "Fetch raw URL content", inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
   { name: "fetch_page_content", description: "Fetch and extract page text", inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
-];
-
-const memoryTools: ToolEntry[] = [
-  { name: "store_memory", description: "Store a key-value memory", inputSchema: { type: "object", properties: { key: { type: "string" }, value: { type: "string" } }, required: ["key", "value"] } },
-  { name: "recall_memory", description: "Recall a memory by key", inputSchema: { type: "object", properties: { key: { type: "string" } }, required: ["key"] } },
-  { name: "list_memories", description: "List stored memories", inputSchema: { type: "object", properties: {} } },
-  { name: "delete_memory", description: "Delete a memory by key", inputSchema: { type: "object", properties: { key: { type: "string" } }, required: ["key"] } },
 ];
 
 const indexTools: ToolEntry[] = [
@@ -1154,19 +1068,53 @@ const lockTools: ToolEntry[] = [
  * Register all built-in services as in-process handlers on the MCP runtime.
  * No subprocess spawning — all operations run directly in the Node.js process.
  */
-export function registerBuiltinServices(mcpRuntime: McpRuntime, options: BuiltinServicesOptions = {}): void {
+export function registerBuiltinServices(
+  mcpRuntime: McpRuntime,
+  mcpConfig: import("../config.js").SaivageConfig["mcp"],
+  options: BuiltinServicesOptions = {},
+): void {
   const promptInjectionCop = options.promptInjectionCop ?? disabledCop();
+  MAX_OUTPUT = mcpConfig.maxOutputBytes;
+  MAX_FETCH_CHARS = mcpConfig.maxFetchChars;
+  MAX_DOWNLOAD_BYTES = mcpConfig.maxDownloadBytes;
+  SHELL_TIMEOUT_FLOOR_MS = mcpConfig.shellTimeoutFloorMs;
+  const innerCapMs = mcpConfig.shellTimeoutMs - WALL_CLOCK_HEADROOM_MS;
+
+  const shellHandler: InProcessToolHandler = async (toolName, args) => {
+    if (toolName !== "run_command") {
+      return { content: { error: `Unknown shell tool: ${toolName}` }, isError: true };
+    }
+
+    const command = args.command as string;
+    const cwd = args.cwd ? resolvePath(args.cwd as string) : projectRoot();
+    const timeout = clampTimeout(parseOptionalTimeoutMs(args, ["timeout_ms", "timeout"], "timeout_ms"));
+    const inactivityTimeout = clampTimeout(parseOptionalTimeoutMs(
+      args,
+      ["inactivity_timeout_ms", "idle_timeout_ms"],
+      "inactivity_timeout_ms",
+    ));
+    const outputPaths = resolveCommandLogPaths(args);
+
+    // Always enforce a hard wall-clock cap so the process group is
+    // properly killed even when the agent omits timeout_ms. The cap is
+    // derived from mcpConfig.shellTimeoutMs minus WALL_CLOCK_HEADROOM_MS
+    // and also clamps caller-supplied timeout_ms.
+    const effectiveTimeout = Math.min(timeout ?? innerCapMs, innerCapMs);
+    const result = await runShellCommand(command, cwd, effectiveTimeout, inactivityTimeout, outputPaths);
+    return { content: result, isError: false };
+  };
+
   mcpRuntime.registerInProcess("filesystem", filesystemTools, filesystemHandler);
   mcpRuntime.registerInProcess("shell", shellTools, shellHandler);
   mcpRuntime.registerInProcess("data", dataTools, createDataHandler(promptInjectionCop));
   mcpRuntime.registerInProcess("git", gitTools, gitHandler);
-  mcpRuntime.registerInProcess("skills", skillsTools, skillsHandler);
+  mcpRuntime.registerInProcess("skills", knowledgeSkillsTools, knowledgeSkillsHandler);
+  mcpRuntime.registerInProcess("memory", knowledgeMemoryTools, knowledgeMemoryHandler);
 
   // Stubs — services that need external dependencies not yet integrated
   mcpRuntime.registerInProcess("web", webTools, stubHandler("web"), { available: false });
-  mcpRuntime.registerInProcess("memory", memoryTools, stubHandler("memory"), { available: false });
   mcpRuntime.registerInProcess("index", indexTools, stubHandler("index"), { available: false });
   mcpRuntime.registerInProcess("lock", lockTools, stubHandler("lock"), { available: false });
 
-  log.info("[builtins] 9 built-in services registered (5 active, 4 stubs)");
+  log.info("[builtins] 7 built-in services registered (6 active, 3 stubs)");
 }

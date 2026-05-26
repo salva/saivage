@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { BaseProvider } from "./base.js";
+import { classifyProviderError } from "./error.js";
 import type {
   ChatRequest,
   ChatResponse,
@@ -8,9 +9,11 @@ import type {
   ToolSchema,
   Message,
   ContentBlock,
+  ModelCapabilities,
 } from "./types.js";
 import { getGitHubCopilotBaseUrl } from "../auth/github-copilot.js";
 import { responsesFunctionCallItemId } from "./responses-ids.js";
+import { resolveCopilotHeaders } from "./copilot-client-headers.js";
 
 type ResponsesInputItem =
   | { role: "user"; content: Array<{ type: "input_text"; text: string }> }
@@ -30,14 +33,6 @@ interface CopilotModelMetadata {
   };
 }
 
-const COPILOT_HEADERS: Record<string, string> = {
-  "User-Agent": "GitHubCopilotChat/0.35.0",
-  "Editor-Version": "vscode/1.107.0",
-  "Editor-Plugin-Version": "copilot-chat/0.35.0",
-  "Copilot-Integration-Id": "vscode-chat",
-  "Openai-Intent": "conversation-edits",
-};
-
 const RESPONSES_API_AGENT_INPUT_TYPES = new Set([
   "file_search_call",
   "computer_call",
@@ -56,21 +51,8 @@ const RESPONSES_API_AGENT_INPUT_TYPES = new Set([
   "reasoning",
 ]);
 
-/**
- * Models that use the Anthropic Messages API via Copilot.
- * All others default to the OpenAI Chat Completions API.
- */
-const ANTHROPIC_API_MODELS = new Set([
-  "claude-haiku-4.5",
-  "claude-opus-4.5",
-  "claude-opus-4.6",
-  "claude-sonnet-4",
-  "claude-sonnet-4.5",
-  "claude-sonnet-4.6",
-]);
-
 function isAnthropicModel(model: string): boolean {
-  return ANTHROPIC_API_MODELS.has(model) || model.startsWith("claude-");
+  return model.startsWith("claude-");
 }
 
 function isAgentCall(body: unknown): boolean {
@@ -90,7 +72,7 @@ function isAgentCall(body: unknown): boolean {
   return false;
 }
 
-function createCopilotFetch(apiKey: string): typeof fetch {
+function createCopilotFetch(apiKey: string, headers: Record<string, string>): typeof fetch {
   return (async (input: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1] = {}) => {
     let parsedBody: unknown;
     try {
@@ -99,15 +81,15 @@ function createCopilotFetch(apiKey: string): typeof fetch {
       parsedBody = undefined;
     }
 
-    const headers = new Headers(init.headers);
-    for (const [key, value] of Object.entries(COPILOT_HEADERS)) {
-      headers.set(key, value);
+    const merged = new Headers(init.headers);
+    for (const [key, value] of Object.entries(headers)) {
+      merged.set(key, value);
     }
-    headers.set("Authorization", `Bearer ${apiKey}`);
-    headers.set("X-Initiator", isAgentCall(parsedBody) ? "agent" : "user");
-    headers.delete("x-api-key");
+    merged.set("Authorization", `Bearer ${apiKey}`);
+    merged.set("X-Initiator", isAgentCall(parsedBody) ? "agent" : "user");
+    merged.delete("x-api-key");
 
-    return fetch(input, { ...init, headers });
+    return fetch(input, { ...init, headers: merged });
   }) as typeof fetch;
 }
 
@@ -125,29 +107,40 @@ export class CopilotProvider extends BaseProvider {
   private openaiClient?: OpenAI;
   private anthropicClient?: Anthropic;
   private modelsCache: { expiresAt: number; models: CopilotModelMetadata[] } | null = null;
+  private headers: Record<string, string> = resolveCopilotHeaders();
 
-  constructor(apiKey?: string) {
+  constructor(apiKey?: string, headerOverride?: Record<string, string>) {
     super();
+    this.headers = resolveCopilotHeaders(headerOverride);
     if (apiKey) this.setApiKey(apiKey);
+  }
+
+  setHeaderOverrides(override?: Record<string, string>): void {
+    this.headers = resolveCopilotHeaders(override);
+    if (this.apiKey) this.rebuildClients();
   }
 
   setApiKey(apiKey: string): void {
     this.apiKey = apiKey;
     this.baseUrl = getGitHubCopilotBaseUrl(apiKey);
     this.modelsCache = null;
+    this.rebuildClients();
+  }
 
+  private rebuildClients(): void {
+    if (!this.apiKey) return;
     this.openaiClient = new OpenAI({
-      apiKey,
+      apiKey: this.apiKey,
       baseURL: this.baseUrl,
-      defaultHeaders: COPILOT_HEADERS,
-      fetch: createCopilotFetch(apiKey),
+      defaultHeaders: this.headers,
+      fetch: createCopilotFetch(this.apiKey, this.headers),
     } as unknown as ConstructorParameters<typeof OpenAI>[0]);
 
     this.anthropicClient = new Anthropic({
-      apiKey,
+      apiKey: this.apiKey,
       baseURL: this.baseUrl,
-      defaultHeaders: COPILOT_HEADERS,
-      fetch: createCopilotFetch(apiKey),
+      defaultHeaders: this.headers,
+      fetch: createCopilotFetch(this.apiKey, this.headers),
     } as unknown as ConstructorParameters<typeof Anthropic>[0]);
   }
 
@@ -192,7 +185,7 @@ export class CopilotProvider extends BaseProvider {
 
     const response = await fetch(`${this.baseUrl}/models`, {
       headers: {
-        ...COPILOT_HEADERS,
+        ...this.headers,
         Authorization: `Bearer ${this.apiKey}`,
         "X-Initiator": "agent",
       },
@@ -216,16 +209,22 @@ export class CopilotProvider extends BaseProvider {
       parameters: tool.inputSchema,
     }));
 
-    const response = await this.openaiClient.responses.create({
-      model: request.model,
-      instructions: request.system || undefined,
-      input,
-      max_output_tokens: request.maxTokens ?? 8192,
-      ...(tools && tools.length > 0 ? { tools } : {}),
-      ...(request.temperature != null ? { temperature: request.temperature } : {}),
-    } as OpenAI.Responses.ResponseCreateParamsNonStreaming,
-    request.signal ? { signal: request.signal } : undefined,
-    );
+    const response = await (async () => {
+      try {
+        return await this.openaiClient!.responses.create({
+          model: request.model,
+          instructions: request.system || undefined,
+          input,
+          max_output_tokens: request.maxTokens ?? 8192,
+          ...(tools && tools.length > 0 ? { tools } : {}),
+          ...(request.temperature != null ? { temperature: request.temperature } : {}),
+        } as OpenAI.Responses.ResponseCreateParamsNonStreaming,
+        request.signal ? { signal: request.signal } : undefined,
+        );
+      } catch (err) {
+        throw classifyProviderError(err, this.name);
+      }
+    })();
 
     let content = response.output_text ?? "";
     const toolCalls: ToolCallResult[] = [];
@@ -269,16 +268,22 @@ export class CopilotProvider extends BaseProvider {
     const tools = request.tools?.map((t) => this.convertToolOpenAI(t));
 
     const tokenLimitKey = request.model.startsWith("gpt-5") ? "max_completion_tokens" : "max_tokens";
-    const response = await this.openaiClient.chat.completions.create({
-      model: request.model,
-      messages,
-      [tokenLimitKey]: request.maxTokens ?? 8192,
-      ...(tools && tools.length > 0 ? { tools } : {}),
-      ...(request.temperature != null ? { temperature: request.temperature } : {}),
-      ...(request.stopSequences ? { stop: request.stopSequences } : {}),
-    } as OpenAI.ChatCompletionCreateParamsNonStreaming,
-    request.signal ? { signal: request.signal } : undefined,
-    );
+    const response = await (async () => {
+      try {
+        return await this.openaiClient!.chat.completions.create({
+          model: request.model,
+          messages,
+          [tokenLimitKey]: request.maxTokens ?? 8192,
+          ...(tools && tools.length > 0 ? { tools } : {}),
+          ...(request.temperature != null ? { temperature: request.temperature } : {}),
+          ...(request.stopSequences ? { stop: request.stopSequences } : {}),
+        } as OpenAI.ChatCompletionCreateParamsNonStreaming,
+        request.signal ? { signal: request.signal } : undefined,
+        );
+      } catch (err) {
+        throw classifyProviderError(err, this.name);
+      }
+    })();
 
     const choice = response.choices[0];
     if (!choice) throw new Error("No choices returned");
@@ -410,17 +415,23 @@ export class CopilotProvider extends BaseProvider {
     const messages = this.convertMessagesAnthropic(request.messages);
     const tools = request.tools?.map((t) => this.convertToolAnthropic(t));
 
-    const response = await this.anthropicClient.messages.create({
-      model: request.model,
-      max_tokens: request.maxTokens ?? 8192,
-      system: request.system,
-      messages,
-      ...(tools && tools.length > 0 ? { tools } : {}),
-      ...(request.temperature != null ? { temperature: request.temperature } : {}),
-      ...(request.stopSequences ? { stop_sequences: request.stopSequences } : {}),
-    },
-    request.signal ? { signal: request.signal } : undefined,
-    );
+    const response = await (async () => {
+      try {
+        return await this.anthropicClient!.messages.create({
+          model: request.model,
+          max_tokens: request.maxTokens ?? 8192,
+          system: request.system,
+          messages,
+          ...(tools && tools.length > 0 ? { tools } : {}),
+          ...(request.temperature != null ? { temperature: request.temperature } : {}),
+          ...(request.stopSequences ? { stop_sequences: request.stopSequences } : {}),
+        },
+        request.signal ? { signal: request.signal } : undefined,
+        );
+      } catch (err) {
+        throw classifyProviderError(err, this.name);
+      }
+    })();
 
     let content = "";
     const toolCalls: ToolCallResult[] = [];
@@ -470,16 +481,13 @@ export class CopilotProvider extends BaseProvider {
     };
   }
 
-  maxContextTokens(model: string): number {
+  modelCapabilities(model: string): ModelCapabilities | undefined {
     const metadata = this.getCachedModelMetadata(model);
     const contextWindow = metadata?.capabilities?.limits?.max_context_window_tokens;
-    if (contextWindow) return contextWindow;
-
-    if (model.includes("claude")) return 200_000;
-    if (model.includes("gpt-5")) return 400_000;
-    if (model.includes("gpt-4")) return 128_000;
-    if (model.includes("gemini")) return 1_000_000;
-    return 128_000;
+    if (!contextWindow) return undefined;
+    const tokenEncoding: "cl100k_base" | "o200k_base" =
+      /^(gpt-5|o1|o3|o4)/.test(model) ? "o200k_base" : "cl100k_base";
+    return { contextWindow, tokenEncoding };
   }
 
   async listModels(): Promise<string[]> {

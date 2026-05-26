@@ -10,6 +10,8 @@ import { TelegramChannel } from "../channels/telegram.js";
 import { ChatAgent } from "../agents/chat.js";
 import { agentId } from "../ids.js";
 import { log } from "../log.js";
+import { readDocOrNull, writeDoc } from "../store/documents.js";
+import { TelegramSubscriptionsSchema, type TelegramSubscriptions } from "../types.js";
 import type { SaivageRuntime } from "./bootstrap.js";
 
 /**
@@ -43,16 +45,16 @@ export async function startTelegramBot(
     };
   }
 
-  function getOrCreateSession(chatId: number): {
+  async function getOrCreateSession(chatId: number): Promise<{
     channel: TelegramChannel;
     sessionId: string;
-  } {
+  }> {
     const existing = sessions.get(chatId);
     if (existing) return existing;
 
     const sessionId = telegramSessionId(chatId);
 
-    const sendFn = async (text: string, parseMode?: "HTML") => {
+    const sendFn = async (text: string, parseMode?: "MarkdownV2") => {
       try {
         await bot.api.sendMessage(chatId, text, {
           parse_mode: parseMode,
@@ -72,6 +74,8 @@ export async function startTelegramBot(
       mcpRuntime: runtime.mcpRuntime,
       agentId: agentId(),
       role: "chat" as const,
+      channelId: "telegram",
+      sessionId,
       ...resolveChatRoute(),
     };
 
@@ -84,7 +88,7 @@ export async function startTelegramBot(
         }
       : undefined;
 
-    const chatAgent = new ChatAgent(
+    const chatAgent = await ChatAgent.create(
       ctx,
       { channel: "telegram", sessionId },
       channel,
@@ -93,11 +97,19 @@ export async function startTelegramBot(
       runtime.plannerControl,
     );
 
+    runtime.agentRegistry.set(ctx.agentId, chatAgent);
+
     // Run the chat agent in background
-    chatAgent.run().catch((err) => {
-      log.error(`[telegram] Chat agent error for chat ${chatId}: ${err}`);
-      sessions.delete(chatId);
-    });
+    void (async () => {
+      try {
+        await chatAgent.run();
+      } catch (err) {
+        log.error(`[telegram] Chat agent error for chat ${chatId}: ${err}`);
+      } finally {
+        runtime.agentRegistry.delete(ctx.agentId);
+        sessions.delete(chatId);
+      }
+    })();
 
     const session = { channel, sessionId };
     sessions.set(chatId, session);
@@ -107,7 +119,17 @@ export async function startTelegramBot(
   }
 
   // Handle incoming messages
-  bot.on("message:text", (ctx) => {
+  const subsPath = runtime.project.paths.telegramSubscriptions;
+
+  async function readSubs(): Promise<TelegramSubscriptions> {
+    return (await readDocOrNull(subsPath, TelegramSubscriptionsSchema)) ?? { chatIds: [] };
+  }
+
+  async function writeSubs(next: TelegramSubscriptions): Promise<void> {
+    await writeDoc(subsPath, next, TelegramSubscriptionsSchema);
+  }
+
+  bot.on("message:text", async (ctx) => {
     const chatId = ctx.chat.id;
     const userId = ctx.from?.id;
 
@@ -117,11 +139,41 @@ export async function startTelegramBot(
       return;
     }
 
-    const text = ctx.message.text;
-    const session = getOrCreateSession(chatId);
+    const text = ctx.message.text.trim();
 
-    // Push the message into the channel for the ChatAgent to process
-    session.channel.pushMessage(text);
+    if (text === "/subscribe" || text.startsWith("/subscribe ")) {
+      const subs = await readSubs();
+      if (!subs.chatIds.includes(chatId)) {
+        await writeSubs({ chatIds: [...subs.chatIds, chatId] });
+        await getOrCreateSession(chatId);
+        await bot.api.sendMessage(chatId, "Subscribed to project notifications.");
+        log.info(`[telegram] Chat ${chatId} subscribed`);
+      } else {
+        await bot.api.sendMessage(chatId, "Already subscribed.");
+      }
+      return;
+    }
+
+    if (text === "/unsubscribe" || text.startsWith("/unsubscribe ")) {
+      const subs = await readSubs();
+      if (subs.chatIds.includes(chatId)) {
+        await writeSubs({ chatIds: subs.chatIds.filter((c) => c !== chatId) });
+        const existing = sessions.get(chatId);
+        if (existing) {
+          existing.channel.close();
+          sessions.delete(chatId);
+        }
+        await bot.api.sendMessage(chatId, "Unsubscribed from project notifications.");
+        log.info(`[telegram] Chat ${chatId} unsubscribed`);
+      } else {
+        await bot.api.sendMessage(chatId, "Not subscribed.");
+      }
+      return;
+    }
+
+    // Reactive session — ephemeral, not persisted.
+    const session = await getOrCreateSession(chatId);
+    session.channel.pushMessage(ctx.message.text);
   });
 
   // Error handling
@@ -129,12 +181,14 @@ export async function startTelegramBot(
     log.error(`[telegram] Bot error: ${err.message}`);
   });
 
-  if (allowedUserIds.size > 0) {
-    for (const userId of allowedUserIds) getOrCreateSession(userId);
-    log.info(`[telegram] Pre-subscribed ${allowedUserIds.size} allowed user(s) for project notifications`);
-  } else {
-    log.warn("[telegram] No allowedUserIds configured; project notifications begin only after a chat sends a message");
+  if (allowedUserIds.size === 0) {
+    log.warn("[telegram] No allowedUserIds configured; only previously subscribed chats can interact");
   }
+
+  // Boot: hydrate persisted subscriptions (notification destinations).
+  const persisted = await readSubs();
+  for (const chatId of persisted.chatIds) await getOrCreateSession(chatId);
+  log.info(`[telegram] Restored ${persisted.chatIds.length} persisted subscription(s)`);
 
   // Start long polling
   log.info("[telegram] Starting Telegram bot (long polling)...");

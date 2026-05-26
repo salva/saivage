@@ -1,0 +1,18 @@
+# G35 - Review r2
+
+**Reviewer**: GPT-5.5
+**Round reviewed**: [SPEC/v2/review-2026-05-round2/G35/01-analysis-r2.md](SPEC/v2/review-2026-05-round2/G35/01-analysis-r2.md#L1), [SPEC/v2/review-2026-05-round2/G35/02-design-r2.md](SPEC/v2/review-2026-05-round2/G35/02-design-r2.md#L1), [SPEC/v2/review-2026-05-round2/G35/03-plan-r2.md](SPEC/v2/review-2026-05-round2/G35/03-plan-r2.md#L1)
+
+## Blocking findings
+
+None.
+
+## Notes
+
+- Round 2 closes the round-1 `PASSWORD_PROMPT` blocker. The design now defines the predicate as two ordered layers: discrete credential lexemes first, then a config-pointer suffix exemption [SPEC/v2/review-2026-05-round2/G35/02-design-r2.md](SPEC/v2/review-2026-05-round2/G35/02-design-r2.md#L15-L16). The suffix list includes all required exemptions, including `_PROMPT` and `_TEMPLATE` alongside `_URL`, `_URI`, `_ENDPOINT`, `_PATH`, `_DIR`, and `_FILE` [SPEC/v2/review-2026-05-round2/G35/02-design-r2.md](SPEC/v2/review-2026-05-round2/G35/02-design-r2.md#L67-L74).
+- Round 2 also closes the provider-prefix blocker. The design explicitly removes `SECRET_ENV_FORCE_PATTERNS`, states that there is no provider-prefix bypass, and classifies provider config pointers such as `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `GITHUB_API_BASE_URL`, and `GITHUB_API_BASE_URL_TEMPLATE` as non-secret [SPEC/v2/review-2026-05-round2/G35/02-design-r2.md](SPEC/v2/review-2026-05-round2/G35/02-design-r2.md#L25). The plan reinforces this with a no-force-layer scope statement and validation checks [SPEC/v2/review-2026-05-round2/G35/03-plan-r2.md](SPEC/v2/review-2026-05-round2/G35/03-plan-r2.md#L15), [SPEC/v2/review-2026-05-round2/G35/03-plan-r2.md](SPEC/v2/review-2026-05-round2/G35/03-plan-r2.md#L68-L82).
+- The required false-positive rows are now pinned in the corpus: `MY_SECRETARY`, `RESET_PASSWORD_URL`, `PASSWORD_PROMPT`, `GITHUB_API_BASE_URL`, `GITHUB_API_BASE_URL_TEMPLATE`, `OPENAI_BASE_URL`, and `ANTHROPIC_BASE_URL` [SPEC/v2/review-2026-05-round2/G35/02-design-r2.md](SPEC/v2/review-2026-05-round2/G35/02-design-r2.md#L163-L182). The required false-negative rows are also pinned: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GITHUB_TOKEN`, `SLACK_TOKEN`, and `AWS_ACCESS_KEY_ID` [SPEC/v2/review-2026-05-round2/G35/02-design-r2.md](SPEC/v2/review-2026-05-round2/G35/02-design-r2.md#L207-L213).
+- The corpus shape is deterministic enough for implementation. The design says both corpora are flat `ReadonlyArray<string>` lists with one env-var name per row and no inline commentary [SPEC/v2/review-2026-05-round2/G35/02-design-r2.md](SPEC/v2/review-2026-05-round2/G35/02-design-r2.md#L143-L145), and the plan requires copying them verbatim with typed arrays, no extra entries, no reordering, and no inline comments [SPEC/v2/review-2026-05-round2/G35/03-plan-r2.md](SPEC/v2/review-2026-05-round2/G35/03-plan-r2.md#L44-L46).
+- The live code still contains the old broad `SECRET_ENV_PATTERNS` scrubber and `filterShellEnv` call site [src/mcp/builtins.ts](src/mcp/builtins.ts#L401-L451), so this approval is for the round-2 analysis/design/plan rather than an applied implementation. The proposed call-site rewrite is correctly scoped to deleting that local pattern array and delegating to `isSecretEnvName` from the security module [SPEC/v2/review-2026-05-round2/G35/03-plan-r2.md](SPEC/v2/review-2026-05-round2/G35/03-plan-r2.md#L21-L39), with a reasonable insertion point next to the existing blocked-path rules in [src/security/secrets.ts](src/security/secrets.ts#L68-L80).
+
+VERDICT: APPROVED

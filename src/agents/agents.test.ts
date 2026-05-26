@@ -3,17 +3,16 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { resolveSkills, formatSkillsForPrompt } from "../skills/loader.js";
 import { checkConvention, getConvention } from "./conventions.js";
-import { writeDoc, ensureDir } from "../store/documents.js";
-import { SkillIndexSchema } from "../types.js";
+import { ensureDir } from "../store/documents.js";
 import { ReviewerAgent } from "./reviewer.js";
 import { ChatAgent } from "./chat.js";
 import { CoderAgent } from "./coder.js";
+import { DesignerAgent } from "./designer.js";
 import { ManagerAgent } from "./manager.js";
 import { EventBus } from "../events/bus.js";
 import type { ChatChannel } from "../channels/types.js";
@@ -28,151 +27,6 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
-});
-
-// ─── Skill Loader ────────────────────────────────────────────────────────────
-
-describe("Skill Loader", () => {
-  it("resolves skills matching keywords", () => {
-    const skillsDir = join(tmpDir, "skills");
-    ensureDir(skillsDir);
-
-    // Write a skill file
-    writeFileSync(join(skillsDir, "testing.md"), "# Testing Best Practices\nAlways test edge cases.", "utf-8");
-
-    // Write index.json
-    writeDoc(
-      join(skillsDir, "index.json"),
-      {
-        skills: [
-          {
-            name: "testing",
-            file: "testing.md",
-            description: "Testing best practices",
-            triggers: ["keyword:test", "keyword:jest", "tag:testing"],
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          },
-          {
-            name: "deployment",
-            file: "deploy.md",
-            description: "Deployment guide",
-            triggers: ["keyword:deploy", "tag:ops"],
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          },
-        ],
-      },
-      SkillIndexSchema,
-    );
-
-    // Write deploy.md too
-    writeFileSync(join(skillsDir, "deploy.md"), "# Deploy Guide\nUse CI/CD.", "utf-8");
-
-    const result = resolveSkills(
-      {
-        agentRole: "coder",
-        description: "Write unit tests for the auth module",
-        tags: ["testing"],
-      },
-      skillsDir,
-      5,
-    );
-
-    expect(result.length).toBeGreaterThanOrEqual(1);
-    expect(result[0].entry.name).toBe("testing");
-    expect(result[0].matchScore).toBeGreaterThan(0);
-  });
-
-  it("filters by target_agents", () => {
-    const skillsDir = join(tmpDir, "skills");
-    ensureDir(skillsDir);
-
-    writeFileSync(join(skillsDir, "coder-only.md"), "# Coder Only", "utf-8");
-
-    writeDoc(
-      join(skillsDir, "index.json"),
-      {
-        skills: [
-          {
-            name: "coder-only",
-            file: "coder-only.md",
-            description: "Only for coders",
-            triggers: ["keyword:code"],
-            target_agents: ["coder"],
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          },
-        ],
-      },
-      SkillIndexSchema,
-    );
-
-    // Should match for coder
-    const coderResult = resolveSkills(
-      { agentRole: "coder", description: "Write code" },
-      skillsDir,
-    );
-    expect(coderResult).toHaveLength(1);
-
-    // Should NOT match for researcher
-    const researcherResult = resolveSkills(
-      { agentRole: "researcher", description: "Write code" },
-      skillsDir,
-    );
-    expect(researcherResult).toHaveLength(0);
-  });
-
-  it("respects max skill budget", () => {
-    const skillsDir = join(tmpDir, "skills");
-    ensureDir(skillsDir);
-
-    const skills = Array.from({ length: 10 }, (_, i) => ({
-      name: `skill-${i}`,
-      file: `skill-${i}.md`,
-      description: `Skill ${i}`,
-      triggers: ["keyword:test"],
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    }));
-
-    for (const s of skills) {
-      writeFileSync(join(skillsDir, s.file), `# ${s.name}`, "utf-8");
-    }
-
-    writeDoc(join(skillsDir, "index.json"), { skills }, SkillIndexSchema);
-
-    const result = resolveSkills(
-      { agentRole: "coder", description: "test something" },
-      skillsDir,
-      3,
-    );
-    expect(result).toHaveLength(3);
-  });
-
-  it("formatSkillsForPrompt formats correctly", () => {
-    const formatted = formatSkillsForPrompt([
-      {
-        entry: {
-          name: "testing",
-          file: "testing.md",
-          description: "Test",
-          triggers: [],
-          created_at: "",
-          updated_at: "",
-        },
-        content: "# Testing\nTest things.",
-        matchScore: 1,
-      },
-    ]);
-
-    expect(formatted).toContain("--- SKILL: testing ---");
-    expect(formatted).toContain("# Testing");
-  });
-
-  it("formatSkillsForPrompt returns empty string for no skills", () => {
-    expect(formatSkillsForPrompt([])).toBe("");
-  });
 });
 
 // ─── Conventions ─────────────────────────────────────────────────────────────
@@ -240,6 +94,7 @@ describe("ReviewerAgent", () => {
     const calls: ChatRequest[] = [];
     const router = {
       getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         calls.push(request);
         const reviewNumber = Math.ceil(calls.length / 2);
@@ -289,6 +144,84 @@ describe("ReviewerAgent", () => {
     expect(secondMessages).toContain("Follow-up Review 2");
     expect(secondMessages).toContain("Recheck blocker after corrective task t2");
   });
+
+  it("does not duplicate the final assistant message in this.messages after review()", async () => {
+    // Regression for F14 (reviewer half, owned by F09): runLoop() pushes the
+    // terminal assistant message; the old reviewer.run() also pushed it,
+    // resulting in two identical assistant entries in the conversation.
+    const calls: ChatRequest[] = [];
+    const router = {
+      getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
+      chat: async (request: ChatRequest): Promise<ChatResponse> => {
+        calls.push(request);
+        // Calls 1 and 3 are first turns of each review (need a tool call to
+        // satisfy validateFinalResponse on the no-tool turn that follows).
+        if (calls.length === 1) {
+          return {
+            content: "Inspecting evidence.",
+            toolCalls: [{ id: "tool-1", name: "test_tool", input: {} }],
+            finishReason: "tool_use",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        if (calls.length === 2) {
+          return {
+            content: "REVIEW DONE",
+            toolCalls: [],
+            finishReason: "end_turn",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        if (calls.length === 3) {
+          return {
+            content: "Re-inspecting.",
+            toolCalls: [{ id: "tool-2", name: "test_tool", input: {} }],
+            finishReason: "tool_use",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        return {
+          content: "REVIEW DONE 2",
+          toolCalls: [],
+          finishReason: "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+
+    const ctx = makeReviewerContext(tmpDir, router, {
+      getAllTools: () => [
+        { name: "test_tool", description: "test", inputSchema: {}, service: "test" },
+      ],
+      callTool: async () => ({ ok: true }),
+    });
+    const firstInput = makeReviewInput("review-1", "Initial review");
+    const agent = new ReviewerAgent(ctx, firstInput);
+
+    await agent.review(firstInput);
+    await agent.review(makeReviewInput("review-2", "Recheck"));
+
+    const assistantTextEquals = (
+      m: { role: string; content: unknown },
+      target: string,
+    ): boolean => {
+      if (m.role !== "assistant") return false;
+      if (typeof m.content === "string") return m.content === target;
+      if (Array.isArray(m.content)) {
+        const textBlocks = (m.content as any[])
+          .filter((b: any) => b?.type === "text")
+          .map((b: any) => b.text ?? "");
+        return textBlocks.join("") === target;
+      }
+      return false;
+    };
+
+    // Messages snapshotted on call 3 = state after review 1 finished.
+    const msgs = calls[2].messages as any[];
+    const count = msgs.filter((m) => assistantTextEquals(m, "REVIEW DONE")).length;
+    expect(count).toBe(1);
+  });
 });
 
 describe("ChatAgent", () => {
@@ -298,6 +231,7 @@ describe("ChatAgent", () => {
     const routerCalls: ChatRequest[] = [];
     const router = {
       getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         routerCalls.push(request);
         if (routerCalls.length === 1) {
@@ -345,6 +279,7 @@ describe("ChatAgent", () => {
     const routerCalls: ChatRequest[] = [];
     const router = {
       getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         routerCalls.push(request);
         if (routerCalls.length === 1) await firstResponse.promise;
@@ -398,6 +333,7 @@ describe("Execution guards", () => {
     const calls: ChatRequest[] = [];
     const router = {
       getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         calls.push(request);
         if (calls.length === 1) {
@@ -455,6 +391,7 @@ describe("Execution guards", () => {
     const calls: ChatRequest[] = [];
     const router = {
       getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         calls.push(request);
         if (calls.length === 1) {
@@ -535,6 +472,100 @@ describe("Execution guards", () => {
   });
 });
 
+describe("DesignerAgent", () => {
+  it("runs a design task and returns a Designer TaskReport", async () => {
+    const router = {
+      getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
+      chat: async (): Promise<ChatResponse> => ({
+        content: JSON.stringify({
+          task_id: "design-1",
+          stage_id: "stage-1",
+          status: "completed",
+          summary: "Produced a dashboard design brief.",
+        }),
+        toolCalls: [{ id: "t1", name: "test_tool", input: {} }],
+        finishReason: "tool_use",
+        usage: { inputTokens: 1, outputTokens: 1 },
+      }),
+    };
+
+    // Second call: end_turn with the final TaskReport.
+    let callCount = 0;
+    const router2 = {
+      getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
+      chat: async (): Promise<ChatResponse> => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            content: "Inspecting context first.",
+            toolCalls: [{ id: "t1", name: "test_tool", input: {} }],
+            finishReason: "tool_use",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        return {
+          content: JSON.stringify({
+            task_id: "design-1",
+            stage_id: "stage-1",
+            agent: "designer",
+            status: "completed",
+            summary: "Produced a dashboard design brief.",
+            checklist_results: [],
+            files_modified: [],
+            files_created: [],
+            tests_added: [],
+            tests_run: [],
+            commits: [],
+            issues_found: [],
+            started_at: new Date().toISOString(),
+            completed_at: new Date().toISOString(),
+            duration_ms: 1,
+          }),
+          toolCalls: [],
+          finishReason: "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+    void router;
+
+    const input: WorkerInput = {
+      stageId: "stage-1",
+      task: {
+        id: "design-1",
+        type: "design",
+        assigned_to: "designer",
+        description: "Design the dashboard layout",
+        checklist: [{ description: "states enumerated", required: true }],
+        dependencies: [],
+        status: "pending",
+        tags: [],
+        attempt: 1,
+        max_attempts: 3,
+      },
+    };
+
+    const agent = new DesignerAgent(
+      makeReviewerContext(tmpDir, router2, {
+        getAllTools: () => [
+          { name: "test_tool", description: "test", inputSchema: {}, service: "test" },
+        ],
+        callTool: async () => ({ ok: true }),
+      }),
+      input,
+    );
+
+    const result = await agent.run();
+    expect(result.kind).toBe("success");
+    if (result.kind === "success") {
+      const data = result.data as { agent: string };
+      expect(data.agent).toBe("designer");
+    }
+  });
+});
+
 function makeReviewerContext(root: string, router: unknown, mcpRuntimeOverride?: Partial<AgentContext["mcpRuntime"]>): AgentContext {
   const saivageDir = join(root, ".saivage");
   ensureDir(saivageDir);
@@ -575,6 +606,7 @@ function makeReviewerContext(root: string, router: unknown, mcpRuntimeOverride?:
     } as AgentContext["mcpRuntime"],
     agentId: "reviewer-1",
     role: "reviewer",
+    stageId: "stage-1",
     modelSpec: "test/model",
   };
 }
@@ -585,6 +617,9 @@ function makeChatContext(root: string, router: unknown): AgentContext {
     ...ctx,
     agentId: "chat-1",
     role: "chat",
+    stageId: undefined,
+    channelId: "web",
+    sessionId: "session-test-1",
   };
 }
 
