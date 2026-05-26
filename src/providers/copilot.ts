@@ -289,11 +289,13 @@ export class CopilotProvider extends BaseProvider {
     if (!choice) throw new Error("No choices returned");
 
     const content = choice.message.content ?? "";
-    const toolCalls: ToolCallResult[] = (choice.message.tool_calls ?? []).map((tc) => ({
-      id: tc.id,
-      name: tc.function.name,
-      input: JSON.parse(tc.function.arguments),
-    }));
+    const toolCalls: ToolCallResult[] = (choice.message.tool_calls ?? [])
+      .filter((tc) => tc.type === "function")
+      .map((tc) => ({
+        id: tc.id,
+        name: tc.function.name,
+        input: JSON.parse(tc.function.arguments),
+      }));
 
     let finishReason: ChatResponse["finishReason"] = "end_turn";
     if (choice.finish_reason === "tool_calls") finishReason = "tool_use";
