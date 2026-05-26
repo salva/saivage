@@ -5,7 +5,7 @@ describe("src/runtime is sync-fs-free", () => {
   it("has no node:fs sync primitives or disallowed named imports", async () => {
     const violations = await scanForSyncFs({
       roots: ["src/runtime"],
-      skipPathContains: [".test.ts", ".d.ts", "recovery.ts"],
+      skipPathContains: [".test.ts", ".d.ts", "recovery.ts", "runtime-lock.ts"],
     });
     expect(violations).toEqual([]);
   });

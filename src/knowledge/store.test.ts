@@ -7,18 +7,12 @@ import { z } from "zod";
 import { MemoryRecordSchema, SkillRecordSchema, type MemoryRecord } from "./types.js";
 import {
   KnowledgeStoreError,
-  acquireRecordLock,
-  acquireScopeLock,
-  acquireTwoRecordLocks,
   appendAuditEntry,
-  appendJsonlAtomic,
   assertNoSecrets,
   assertReason,
   assertScopePathCoherence,
   rebuildIndex,
   readAuditLines,
-  recordLockKey,
-  scopeLockKey,
   unlinkRecordIfExists,
   writeRecordAtomic,
 } from "./store.js";
@@ -70,47 +64,6 @@ const IndexSummarySchema = z.object({
   updated_at: z.string(),
 });
 const IndexFileSchema = z.object({ entries: z.array(IndexSummarySchema) });
-
-describe("recordLockKey / scopeLockKey", () => {
-  it("produces expected shapes", () => {
-    expect(recordLockKey({ kind: "memory", scope: "project", id: "x" })).toBe("memory:project:_:x");
-    expect(recordLockKey({ kind: "skill", scope: "stage", scope_ref: "s1", id: "y" })).toBe(
-      "skill:stage:s1:y",
-    );
-    expect(scopeLockKey("memory", "session", "chan1")).toBe("memory:session:chan1");
-  });
-});
-
-describe("locks serialize concurrent acquisitions", () => {
-  it("acquireRecordLock chains in arrival order", async () => {
-    const trace: number[] = [];
-    const r1 = await acquireRecordLock("k1");
-    const p2 = (async () => {
-      const r2 = await acquireRecordLock("k1");
-      trace.push(2);
-      r2();
-    })();
-    trace.push(1);
-    r1();
-    await p2;
-    expect(trace).toEqual([1, 2]);
-  });
-
-  it("acquireTwoRecordLocks uses lex order to avoid deadlock", async () => {
-    const releaseAB = await acquireTwoRecordLocks("a", "b");
-    const releaseBA = acquireTwoRecordLocks("b", "a"); // would deadlock w/o lex order
-    setTimeout(() => releaseAB(), 10);
-    const release2 = await releaseBA;
-    await release2();
-  });
-
-  it("acquireScopeLock is independent of recordLocks", async () => {
-    const rs = await acquireScopeLock("k");
-    const rr = await acquireRecordLock("k");
-    rr();
-    rs();
-  });
-});
 
 describe("assertReason", () => {
   it("accepts non-empty string", () => {

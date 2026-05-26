@@ -2,14 +2,14 @@
  * Saivage — Knowledge MCP integration tests (M5 / WI-18).
  *
  * Exercises tool round-trips through the real `McpRuntime.callTool(...)`
- * entry path. Asserts §C.3 error taxonomy (15 codes) and §F permission
+ * entry path. Asserts §C.3 error taxonomy (16 codes) and §F permission
  * matrix at the runtime boundary, not the handler boundary.
  *
  * Tests that don't add value beyond the in-place M2 unit suites
  * (`knowledgeSkills.test.ts`, `knowledgeMemory.test.ts`,
  * `permissions.test.ts`) are intentionally NOT re-asserted here —
  * the integration suite focuses on (a) all 16 tools via the runtime,
- * (b) the 15 error codes, (c) deleted legacy stub behavior.
+ * (b) the 16 error codes, (c) deleted legacy stub behavior.
  */
 
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -22,6 +22,7 @@ import { knowledgeSkillsTools, knowledgeSkillsHandler } from "../mcp/knowledgeSk
 import { knowledgeMemoryTools, knowledgeMemoryHandler } from "../mcp/knowledgeMemory.js";
 import type { ToolCallContext } from "../mcp/toolContext.js";
 import { initProjectTree } from "../store/project.js";
+import { acquireRuntimeLock, type RuntimeLock } from "../runtime/recovery.js";
 import type { KnowledgeAgentRole } from "./types.js";
 
 // ─── Test runtime + fixtures ──────────────────────────────────────────────
@@ -97,12 +98,16 @@ async function callExpectingError(
 
 let projectRoot: string;
 let rt: McpRuntime;
+let runtimeLock: RuntimeLock | null;
 
 beforeEach(async () => {
   projectRoot = await makeProject();
+  runtimeLock = await acquireRuntimeLock(join(projectRoot, ".saivage"));
   rt = makeRuntime();
 });
 afterEach(() => {
+  runtimeLock?.release();
+  runtimeLock = null;
   rmSync(projectRoot, { recursive: true, force: true });
 });
 
@@ -243,9 +248,9 @@ describe("MCP integration — all 16 tools round-trip through runtime", () => {
   });
 });
 
-// ─── 15 error codes — design §C.3 taxonomy (FR-31; non-blocking 2 fix) ────
+// ─── 16 error codes — design §C.3 taxonomy (FR-31; non-blocking 2 fix) ────
 
-describe("MCP integration — §C.3 error taxonomy (15 codes)", () => {
+describe("MCP integration — §C.3 error taxonomy (16 codes)", () => {
   it("UNAUTHORIZED_ROLE — denied via runtime", async () => {
     const code = await callExpectingError(rt, "skills", "create_skill", {
       name: "x", description: "d", body: "b", scope: "project", reason: "r",
@@ -272,6 +277,15 @@ describe("MCP integration — §C.3 error taxonomy (15 codes)", () => {
       name: "x", description: "d", body: "b", scope: "project", reason: "   ",
     }, ctxFor("manager", projectRoot));
     expect(code).toBe("EMPTY_REASON");
+  });
+
+  it("NO_RUNTIME_LOCK — writer called without runtime ownership", async () => {
+    runtimeLock?.release();
+    runtimeLock = null;
+    const code = await callExpectingError(rt, "memory", "create_memory", {
+      topic: { domain: "d", subject: "s" }, body: "b", scope: "project", reason: "r",
+    }, ctxFor("manager", projectRoot));
+    expect(code).toBe("NO_RUNTIME_LOCK");
   });
 
   it("INVALID_SCOPE_REF — scope=stage without scope_ref", async () => {

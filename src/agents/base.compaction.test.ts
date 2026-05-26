@@ -14,7 +14,7 @@ import { initProjectTree } from "../store/project.js";
 import { createSkill } from "../knowledge/lifecycle.js";
 import { readDoc } from "../store/documents.js";
 import { RuntimeStateSchema } from "../types.js";
-import { RuntimeTracker } from "../runtime/recovery.js";
+import { RuntimeTracker, acquireRuntimeLock, type RuntimeLock } from "../runtime/recovery.js";
 
 class TestAgent extends BaseAgent {
   public getMessages(): Message[] {
@@ -44,11 +44,15 @@ class TestAgent extends BaseAgent {
 }
 
 let tmpDir: string;
+let runtimeLock: RuntimeLock | null;
 beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "wi14-"));
   await initProjectTree(tmpDir);
+  runtimeLock = await acquireRuntimeLock(join(tmpDir, ".saivage"));
 });
 afterEach(() => {
+  runtimeLock?.release();
+  runtimeLock = null;
   rmSync(tmpDir, { recursive: true, force: true });
 });
 

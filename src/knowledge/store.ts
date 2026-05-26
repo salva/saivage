@@ -3,7 +3,10 @@
  *
  * Source of truth: SPEC/v2/skills-memory/01-DESIGN.md §C.3.
  * Implements writeRecordAtomic, appendJsonlAtomic, rebuildIndex,
- * per-record + per-scope mutexes, and the two-key supersede lock.
+ * secret/path guards, and atomic record/index writes. Single-writer per
+ * project is enforced by `runtime.lock`; in-process serialisation of
+ * collision-sensitive scope mutations and supersedes is owned privately by
+ * `src/knowledge/lifecycle.ts`. The store layer is lock-free at its public surface.
  *
  * NOTE: This file contains only the store primitives. The MCP tool
  * facade (`create_skill`, `supersede_memory`, …) is implemented in
@@ -44,6 +47,7 @@ export type KnowledgeErrorCode =
   | "SECRET_DETECTED"
   | "BLOCKED_PATH"
   | "BODY_PATH_BROKEN"
+  | "NO_RUNTIME_LOCK"
   | "OVERSIZED_SURVIVOR"
   | "MALFORMED_AUDIT_LINE"
   | "INDEX_REBUILD_FAILED";
@@ -62,68 +66,6 @@ export class KnowledgeStoreError extends Error {
 /** Audit-line hard cap per design §C.3 (PIPE_BUF safety margin). */
 const AUDIT_LINE_MAX_BYTES = 2048;
 const AUDIT_TRUNCATE_SUFFIX = "…[truncated]";
-
-/** Module-scoped per-key mutex chains. */
-const recordLocks = new Map<string, Promise<void>>();
-const scopeLocks = new Map<string, Promise<void>>();
-
-/** Lock key shape: `<kind>:<scope>:<scope_ref|_>:<id>`. */
-export function recordLockKey(record: {
-  kind: KnowledgeRecord["kind"];
-  scope: KnowledgeRecord["scope"];
-  scope_ref?: string;
-  id: string;
-}): string {
-  return `${record.kind}:${record.scope}:${record.scope_ref ?? "_"}:${record.id}`;
-}
-
-/** Lock key shape for a scope tree (used by rebuildIndex). */
-export function scopeLockKey(kind: KnowledgeRecord["kind"], scope: KnowledgeRecord["scope"], scopeRef?: string): string {
-  return `${kind}:${scope}:${scopeRef ?? "_"}`;
-}
-
-/** Acquire a single named lock; returns the release function. */
-async function acquire(map: Map<string, Promise<void>>, key: string): Promise<() => void> {
-  const prev = map.get(key) ?? Promise.resolve();
-  let release!: () => void;
-  const next = new Promise<void>((res) => {
-    release = res;
-  });
-  map.set(key, prev.then(() => next));
-  await prev;
-  return () => {
-    release();
-    // GC entry when nothing is waiting on it (best-effort).
-    if (map.get(key) === next) map.delete(key);
-  };
-}
-
-/** Acquire two locks in deterministic lex order to avoid deadlock. */
-export async function acquireTwoRecordLocks(a: string, b: string): Promise<() => Promise<void>> {
-  const [first, second] = a < b ? [a, b] : [b, a];
-  const release1 = await acquire(recordLocks, first);
-  let release2: () => void;
-  try {
-    release2 = await acquire(recordLocks, second);
-  } catch (err) {
-    release1();
-    throw err;
-  }
-  return async () => {
-    release2();
-    release1();
-  };
-}
-
-/** Public helper for tests — single-key record lock. */
-export async function acquireRecordLock(key: string): Promise<() => void> {
-  return acquire(recordLocks, key);
-}
-
-/** Public helper for tests — per-scope index lock. */
-export async function acquireScopeLock(key: string): Promise<() => void> {
-  return acquire(scopeLocks, key);
-}
 
 async function ensureDir(p: string): Promise<void> {
   await mkdir(p, { recursive: true });
@@ -208,8 +150,8 @@ export function assertNotBlockedPath(path: string | undefined | null, field = "b
  * via writeDoc). Validates against `schema` first; rejects `INVALID_SCOPE_REF`
  * and `SECRET_DETECTED` before any byte hits disk.
  *
- * Caller is responsible for acquiring the per-record mutex (use
- * `acquireRecordLock(recordLockKey(record))`).
+ * Single-writer is enforced by the lifecycle layer (`assertRuntimeLockHeld`
+ * plus in-process queues); this primitive performs only tmp+fsync+rename writes.
  *
  * `secretsScanFields` — extra free-text fields to scan beyond those
  * naturally present in the record. The record-level body/topic/keys
@@ -376,7 +318,7 @@ export interface IndexSummary {
 /**
  * Walk `<scopeDir>/records/*.json`, validate each record against `schema`,
  * project to an IndexSummary, and write `<scopeDir>/index.json` via
- * writeDoc. Idempotent; caller holds the per-scope lock.
+ * writeDoc. Idempotent; serialised per scope by the lifecycle layer.
  *
  * Throws `INDEX_REBUILD_FAILED` if the write step itself fails (callers
  * may catch + log; next loader will retry).

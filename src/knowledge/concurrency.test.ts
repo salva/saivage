@@ -1,12 +1,11 @@
 /**
  * Saivage — concurrency tests (M5 / WI-19).
  *
- * Covers FR-29, FR-31g, §C.1 / §G.5 locking guarantees:
+ * Covers FR-29, FR-31g, §C.1 / §G.5 lifecycle serialisation guarantees:
  *  • parallel `createMemory` distinct ids in same scope → both indexed
  *  • parallel `updateMemory` same id → arrival-order final body wins
- *  • per-record locks serialize writes to the same id
- *  • per-scope locks serialize index rebuilds
- *  • `acquireTwoRecordLocks` is deadlock-free (lex order regardless of input)
+ *  • private per-scope lifecycle queues serialize uniqueness checks
+ *  • private supersede queues serialize same-old-id supersedes
  *  • loader repair: when `OLD.superseded_by` is missing, next read still
  *    walks the chain (covered by `lifecycle.getMemory` chain logic)
  */
@@ -17,87 +16,102 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { initProjectTree } from "../store/project.js";
-import { createMemory, updateMemory, supersedeMemory, getMemory } from "./lifecycle.js";
-import { acquireRecordLock, acquireScopeLock, acquireTwoRecordLocks, recordLockKey, scopeLockKey } from "./store.js";
+import { acquireRuntimeLock, type RuntimeLock } from "../runtime/recovery.js";
+import {
+  createSkill,
+  createMemory,
+  updateMemory,
+  supersedeSkill,
+  supersedeMemory,
+  getMemory,
+} from "./lifecycle.js";
 import type { AuthorAgent } from "./lifecycle.js";
 
 const AUTHOR: AuthorAgent = { role: "manager", agent_id: "agent-conc" };
 
 let projectRoot: string;
 let saivage: string;
+let runtimeLock: RuntimeLock | null;
 
 beforeEach(async () => {
   projectRoot = mkdtempSync(join(tmpdir(), "saivage-conc-"));
   await initProjectTree(projectRoot);
   saivage = join(projectRoot, ".saivage");
+  runtimeLock = await acquireRuntimeLock(saivage);
 });
-afterEach(() => rmSync(projectRoot, { recursive: true, force: true }));
-
-// ─── Lock-primitive tests ─────────────────────────────────────────────────
-
-describe("store locks — primitives", () => {
-  it("recordLockKey is stable for {kind, scope, scope_ref, id}", () => {
-    const k = recordLockKey({ kind: "memory", scope: "project", id: "abc" });
-    expect(k).toBe("memory:project:_:abc");
-    const k2 = recordLockKey({ kind: "skill", scope: "stage", scope_ref: "stg-1", id: "xyz" });
-    expect(k2).toBe("skill:stage:stg-1:xyz");
-  });
-
-  it("scopeLockKey is stable", () => {
-    expect(scopeLockKey("memory", "project")).toBe("memory:project:_");
-    expect(scopeLockKey("skill", "stage", "stg-1")).toBe("skill:stage:stg-1");
-  });
-
-  it("acquireRecordLock serializes same-key holders", async () => {
-    const order: number[] = [];
-    const tick = async (n: number) => {
-      const release = await acquireRecordLock("memory:project:_:k1");
-      order.push(n);
-      await new Promise((r) => setTimeout(r, 5));
-      release();
-    };
-    await Promise.all([tick(1), tick(2), tick(3)]);
-    // Arrivals serialize FIFO: 1, 2, 3 (each pushes before the next can acquire).
-    expect(order).toEqual([1, 2, 3]);
-  });
-
-  it("acquireScopeLock is independent of record-lock keyspace", async () => {
-    const rrel = await acquireRecordLock("memory:project:_:k1");
-    // A scope lock with the "same" key string still proceeds because the
-    // maps are separate.
-    const srel = await acquireScopeLock("memory:project:_:k1");
-    rrel();
-    srel();
-  });
-
-  it("acquireTwoRecordLocks acquires in lex order regardless of argument order", async () => {
-    // Forward order
-    const rel1 = await acquireTwoRecordLocks("a", "b");
-    await rel1();
-    // Reversed — must not deadlock
-    const rel2 = await acquireTwoRecordLocks("b", "a");
-    await rel2();
-  });
-
-  it("acquireTwoRecordLocks blocks if one of the keys is already held", async () => {
-    const holder = await acquireRecordLock("z-key");
-    let acquired = false;
-    const p = acquireTwoRecordLocks("a-key", "z-key").then(async (rel) => {
-      acquired = true;
-      await rel();
-    });
-    // Yield: lock should NOT be acquired yet because "z-key" is held.
-    await new Promise((r) => setTimeout(r, 20));
-    expect(acquired).toBe(false);
-    holder();
-    await p;
-    expect(acquired).toBe(true);
-  });
+afterEach(() => {
+  runtimeLock?.release();
+  runtimeLock = null;
+  rmSync(projectRoot, { recursive: true, force: true });
 });
 
 // ─── Parallel lifecycle writes ────────────────────────────────────────────
 
 describe("parallel lifecycle writes — same scope", () => {
+  it("parallel createSkill with duplicate names → exactly one wins", async () => {
+    const calls = await Promise.allSettled([
+      createSkill(
+        saivage,
+        { name: "dup", description: "d", body: "body-a", scope: "project", reason: "race-a" },
+        AUTHOR,
+      ),
+      createSkill(
+        saivage,
+        { name: "dup", description: "d", body: "body-b", scope: "project", reason: "race-b" },
+        AUTHOR,
+      ),
+    ]);
+    const winners = calls.filter((r): r is PromiseFulfilledResult<{ id: string; status: "active" }> => r.status === "fulfilled");
+    const losers = calls.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(winners).toHaveLength(1);
+    expect(losers).toHaveLength(1);
+    expect((losers[0].reason as { code?: string }).code).toBe("NAME_COLLISION");
+
+    const idx = JSON.parse(
+      readFileSync(join(saivage, "skills", "project", "index.json"), "utf-8"),
+    ) as { entries: Array<{ id: string; status: string }> };
+    expect(idx.entries.filter((e) => e.status === "active")).toHaveLength(1);
+    expect(idx.entries[0].id).toBe(winners[0].value.id);
+  });
+
+  it("parallel createMemory with duplicate topics → exactly one wins", async () => {
+    const calls = await Promise.allSettled([
+      createMemory(
+        saivage,
+        { topic: { domain: "dup", subject: "topic" }, body: "body-a", scope: "project", reason: "race-a" },
+        AUTHOR,
+      ),
+      createMemory(
+        saivage,
+        { topic: { domain: "dup", subject: "topic" }, body: "body-b", scope: "project", reason: "race-b" },
+        AUTHOR,
+      ),
+    ]);
+    const winners = calls.filter((r): r is PromiseFulfilledResult<{ id: string; status: "active" }> => r.status === "fulfilled");
+    const losers = calls.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(winners).toHaveLength(1);
+    expect(losers).toHaveLength(1);
+    expect((losers[0].reason as { code?: string }).code).toBe("TOPIC_COLLISION");
+  });
+
+  it("a rejected holder does not poison the scope lifecycle queue", async () => {
+    await expect(
+      createSkill(
+        saivage,
+        { name: "bad", description: "d", body: ".env", scope: "project", reason: "blocked" },
+        AUTHOR,
+      ),
+    ).rejects.toMatchObject({ code: "BLOCKED_PATH" });
+
+    await expect(
+      createSkill(
+        saivage,
+        { name: "good", description: "d", body: "safe body", scope: "project", reason: "ok" },
+        AUTHOR,
+      ),
+    ).resolves.toMatchObject({ status: "active" });
+  });
+
   it("parallel createMemory with distinct topics → both end up in the index", async () => {
     const N = 8;
     const promises = Array.from({ length: N }, (_, i) =>
@@ -149,7 +163,8 @@ describe("parallel lifecycle writes — same scope", () => {
     // interleaved/corrupted write).
     const final = await getMemory(saivage, { id: mem.id });
     expect(final).not.toBeNull();
-    expect(bodies).toContain(final!.body);
+    if (!final) throw new Error("expected memory to exist after parallel updates");
+    expect(bodies).toContain(final.body);
   });
 });
 
@@ -178,6 +193,44 @@ describe("supersedeMemory — two-key atomicity & chain repair", () => {
     const walked = await getMemory(saivage, { id: v1.id });
     expect(walked?.id).toBe(r.new_id);
     expect(walked?.body).toBe("v2");
+  });
+
+  it("parallel supersedeSkill of the SAME old id → exactly one wins", async () => {
+    const old = await createSkill(
+      saivage,
+      { name: "old-skill", description: "d", body: "v1", scope: "project", reason: "init" },
+      AUTHOR,
+    );
+
+    const calls = await Promise.allSettled(
+      ["a", "b"].map((tag) =>
+        supersedeSkill(
+          saivage,
+          {
+            old_id: old.id,
+            new_record: {
+              name: `new-skill-${tag}`,
+              description: "d",
+              body: `v2-${tag}`,
+              scope: "project",
+              reason: `new-${tag}`,
+            },
+            reason: `supersede-${tag}`,
+          },
+          AUTHOR,
+        ),
+      ),
+    );
+    const winners = calls.filter((r): r is PromiseFulfilledResult<{ new_id: string; old_id: string }> => r.status === "fulfilled");
+    const losers = calls.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    expect(winners).toHaveLength(1);
+    expect(losers).toHaveLength(1);
+    expect((losers[0].reason as { code?: string }).code).toBe("INVALID_SUPERSEDE_TARGET");
+
+    const oldRecord = JSON.parse(
+      readFileSync(join(saivage, "skills", "project", "records", `${old.id}.json`), "utf-8"),
+    ) as { superseded_by?: string };
+    expect(oldRecord.superseded_by).toBe(winners[0].value.new_id);
   });
 
   it("parallel supersede of the SAME old id → exactly one wins, other fails INVALID_SUPERSEDE_TARGET", async () => {

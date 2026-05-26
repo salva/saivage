@@ -4,15 +4,8 @@
  * from disk, reset in-progress and aborted tasks to pending.
  */
 
-import {
-  readFileSync,
-  openSync,
-  closeSync,
-  writeFileSync,
-  unlinkSync,
-} from "node:fs";
 import { dirname, join } from "node:path";
-import { readDocOrNull, writeDoc, ensureDir, sweepStaleTempFiles, pathExists } from "../store/documents.js";
+import { readDocOrNull, writeDoc, sweepStaleTempFiles, pathExists } from "../store/documents.js";
 import {
   RuntimeStateSchema,
   TaskListSchema,
@@ -21,12 +14,19 @@ import {
   type RuntimeState,
   type AgentState,
   type TaskList,
-  type TaskReport,
   type StageSummary,
 } from "../types.js";
 import { log } from "../log.js";
 import type { PlanService } from "../mcp/plan-server.js";
 import type { ProjectContext } from "../store/project.js";
+
+export {
+  acquireRuntimeLock,
+  assertRuntimeLockHeld,
+  readRuntimeLockOwner,
+  type RuntimeLock,
+  type RuntimeLockOwner,
+} from "./runtime-lock.js";
 
 export interface RecoveryResult {
   /** Whether recovery was needed. */
@@ -65,97 +65,6 @@ export async function isAnotherInstanceRunning(runtimeStatePath: string): Promis
   } catch {
     return false; // Process is dead → stale state
   }
-}
-
-export interface RuntimeLock {
-  /** Release the lock (delete the lockfile). Idempotent. */
-  release: () => void;
-}
-
-/**
- * Acquire an exclusive runtime lock for this project. Uses an
- * `O_CREAT|O_EXCL` file create so two concurrent bootstraps cannot both
- * succeed even if their `isAnotherInstanceRunning` checks both returned
- * false. If the lock file exists but its PID is dead (or its recorded boot
- * timestamp is older than the safety horizon), the stale lock is removed
- * and the acquisition is retried once.
- */
-export async function acquireRuntimeLock(saivageDir: string): Promise<RuntimeLock> {
-  const stateDir = join(saivageDir, "tmp", "state");
-  await ensureDir(stateDir);
-  const lockPath = join(stateDir, "runtime.lock");
-
-  // Lock primitive stays sync (`openSync(lockPath, 'wx')`) — it must
-  // complete before any other code touches `.saivage/` and runs in
-  // microseconds; an async file create here would invite a race.
-  const tryCreate = (): boolean => {
-    try {
-      const fd = openSync(lockPath, "wx");
-      try {
-        const payload = JSON.stringify({ pid: process.pid, started_at: new Date().toISOString() }) + "\n";
-        writeFileSync(fd, payload, "utf-8");
-      } finally {
-        closeSync(fd);
-      }
-      return true;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "EEXIST") return false;
-      throw err;
-    }
-  };
-
-  if (tryCreate()) return makeReleaser(lockPath);
-
-  // Lock exists. Decide whether it's stale.
-  let stale = false;
-  try {
-    const raw = readFileSync(lockPath, "utf-8");
-    const parsed = JSON.parse(raw) as { pid?: number; started_at?: string };
-    const pid = typeof parsed.pid === "number" ? parsed.pid : null;
-    const startedMs = parsed.started_at ? Date.parse(parsed.started_at) : NaN;
-
-    if (!pid) {
-      stale = true;
-    } else {
-      try {
-        process.kill(pid, 0);
-        // Process exists; check the age horizon.
-        if (Number.isFinite(startedMs)) {
-          const ageDays = (Date.now() - startedMs) / (24 * 60 * 60 * 1000);
-          if (ageDays > 14) stale = true;
-        }
-      } catch {
-        stale = true; // PID dead → lock is stale.
-      }
-    }
-  } catch {
-    // Unreadable lock file — treat as stale rather than refusing forever.
-    stale = true;
-  }
-
-  if (stale) {
-    try { unlinkSync(lockPath); } catch { /* ignore */ }
-    if (tryCreate()) {
-      log.info("[recovery] Removed stale runtime.lock and re-acquired");
-      return makeReleaser(lockPath);
-    }
-  }
-
-  throw new Error(
-    "Another Saivage instance is already running (runtime.lock held). " +
-      "Stop it first or delete the stale lock under .saivage/tmp/state/.",
-  );
-}
-
-function makeReleaser(lockPath: string): RuntimeLock {
-  let released = false;
-  return {
-    release: () => {
-      if (released) return;
-      released = true;
-      try { unlinkSync(lockPath); } catch { /* ignore */ }
-    },
-  };
 }
 
 /**

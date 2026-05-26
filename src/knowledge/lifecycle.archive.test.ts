@@ -9,6 +9,7 @@ import {
   archiveSession,
 } from "./lifecycle.js";
 import { initProjectTree } from "../store/project.js";
+import { acquireRuntimeLock, type RuntimeLock } from "../runtime/recovery.js";
 import type { AuthorAgent } from "./lifecycle.js";
 
 const AUTHOR: AuthorAgent = { role: "coder", agent_id: "agent-test" };
@@ -16,13 +17,31 @@ const AUTHOR: AuthorAgent = { role: "coder", agent_id: "agent-test" };
 describe("archiveStage / archiveSession (WI-11)", () => {
   let projectRoot: string;
   let saivage: string;
+  let runtimeLock: RuntimeLock | null;
 
   beforeEach(async () => {
     projectRoot = mkdtempSync(join(tmpdir(), "wi11-"));
     await initProjectTree(projectRoot);
     saivage = join(projectRoot, ".saivage");
+    runtimeLock = await acquireRuntimeLock(saivage);
   });
-  afterEach(() => rmSync(projectRoot, { recursive: true, force: true }));
+  afterEach(() => {
+    runtimeLock?.release();
+    runtimeLock = null;
+    rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  it("archiveStage requires the runtime lock", async () => {
+    runtimeLock?.release();
+    runtimeLock = null;
+    await expect(archiveStage(projectRoot, "stage-1")).rejects.toMatchObject({ code: "NO_RUNTIME_LOCK" });
+  });
+
+  it("archiveSession requires the runtime lock", async () => {
+    runtimeLock?.release();
+    runtimeLock = null;
+    await expect(archiveSession(projectRoot, "chan-1")).rejects.toMatchObject({ code: "NO_RUNTIME_LOCK" });
+  });
 
   it("moves active stage-scoped skill+memory into archive/ and updates status", async () => {
     const skill = await createSkill(

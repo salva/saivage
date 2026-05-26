@@ -1,8 +1,8 @@
 # Saivage v2 — Skill + Memory: Design
 
-Status: DRAFT (Phase B, round 3)
+Status: DRAFT (Phase B, B10/G38 runtime-lock refresh)
 Author: Claude Opus 4.7 (writer)
-Date: 2026-05-23
+Date: 2026-05-26
 
 ---
 
@@ -270,12 +270,14 @@ Notes:
   message to Planner (§H.1); Planner decides whether to call
   `create_memory` (closes spot-check FAIL `chat/create-S`).
 - All write tools require non-empty `reason` (`EMPTY_REASON` on violation).
-- All writes route through `writeRecordAtomic` and append one
-  `AuditEntry` via `appendJsonlAtomic` (§C.3, FR-28/FR-29).
+- All lifecycle public write tools assert the project runtime lock, route
+  through `writeRecordAtomic`, and append one `AuditEntry` via
+  `appendJsonlAtomic` (§C.3, FR-28/FR-29).
 - `older_than_days` on `list_memories` serves Inspector enumeration (FR-19).
-- The 16 tools share one store/permission engine
-  (`src/knowledge/store.ts` + `src/knowledge/permissions.ts`); per-kind
-  handlers are 5–10-line adapters — no duplicated lifecycle logic.
+- The 16 tools share one lifecycle/store/permission engine
+  (`src/knowledge/lifecycle.ts` + `src/knowledge/store.ts` +
+  `src/knowledge/permissions.ts`); per-kind handlers are 5–10-line
+  adapters — no duplicated lifecycle logic.
 
 ### C.2 Existing tools — fate
 
@@ -293,16 +295,18 @@ Notes:
 
 ### C.3 Knowledge-store primitives, error taxonomy, and secrets
 
-The MCP tool surface is a thin facade over `src/knowledge/store.ts`. Three
-primitives, all implemented in Phase C:
+The MCP tool surface is a thin facade over `src/knowledge/lifecycle.ts`,
+which owns lifecycle sequencing and calls lock-free public primitives in
+`src/knowledge/store.ts`. Store exposes three public primitives, all
+implemented in Phase C:
 
 - **`writeRecordAtomic(dir, id, schema, data)`** — wraps `writeDoc`
   (`src/store/documents.ts`: tmp + `fsync` + rename + parent `fsync`,
   POSIX-atomic per record). Adds: pre-write `(scope, scope_ref)` vs `dir`
   coherence (mismatch → `INVALID_SCOPE_REF`); pre-write secret scan
-  (match → `SECRET_DETECTED` + `rejected` audit). No mtime/CAS check —
-  serialization is provided by the per-record mutex below, not by a
-  stat-before-rename window (TOCTOU-prone, removed in round 3).
+  (match → `SECRET_DETECTED` + `rejected` audit). No mtime/CAS check and
+  no public lock acquisition — lifecycle asserts the runtime lock and
+  queues only the collision-sensitive races described below.
 - **`appendJsonlAtomic(path, line)`** — POSIX `O_APPEND|O_CREAT`, single
   `writeSync` + `fsyncSync` + close. POSIX guarantees concurrent
   `O_APPEND` writes shorter than `PIPE_BUF` (4096 B on Linux) are atomic.
@@ -315,42 +319,55 @@ primitives, all implemented in Phase C:
   on load when the parsed index disagrees with records dir (cheap O(N)
   hash compare).
 
-**Transaction order (every write):** (1) Validate (Zod + secrets + scope
-coherence); (2) `writeRecordAtomic` record JSON (and skill body `.md`);
-(3) `appendJsonlAtomic` one `AuditEntry` `outcome="ok"`;
-(4) `rebuildIndex` (or incremental; rebuild is safe fallback). Step-2
-fail → nothing written, audit `outcome="rejected"`. Step-3 fail
-post-step-2 → warn; next loader detects missing line and re-emits
-(records are source of truth). Step-4 fail → next loader rebuilds.
+**Transaction order (every lifecycle write):** (1) assert the current
+process owns `.saivage/tmp/state/runtime.lock`; (2) validate (Zod +
+secrets + scope coherence); (3) `writeRecordAtomic` record JSON (and skill
+body `.md`); (4) `appendJsonlAtomic` one `AuditEntry` `outcome="ok"`;
+(5) `rebuildIndex` (or incremental; rebuild is safe fallback). Validation
+fail → no record write, audit `outcome="rejected"` when the failure is an
+audited write rejection. Step-3 fail → nothing written, audit
+`outcome="rejected"`. Step-4 fail post-step-3 → warn; next loader detects
+missing line and re-emits (records are source of truth). Step-5 fail →
+next loader rebuilds.
 
-**Concurrency model (FR-29) — single-writer invariant.** Saivage runs
-as one Node process per project; child agents are in-process `Agent`
-instances spawned via `Dispatcher.childSpawner`
+**Concurrency model (FR-29) — runtime-lock single writer.** Saivage owns
+exactly one writer runtime per project by acquiring
+`.saivage/tmp/state/runtime.lock` during runtime startup/recovery. The lock
+file records the owning PID and start timestamp; lifecycle public writers
+call `assertRuntimeLockHeld` before touching knowledge state and return
+`NO_RUNTIME_LOCK` if this process is not the owner. Child agents remain
+in-process `Agent` instances spawned via `Dispatcher.childSpawner`
 (`src/runtime/dispatcher.ts:64-74,239`, registered in
-`src/agents/base.ts:177-178`), never forked OS processes. Every
-knowledge-store mutation flows through an MCP tool call
-(`src/mcp/runtime.ts`), executed inside the same event loop. There is
-therefore exactly one writer process per `.saivage/` tree, and the only
-concurrency we must serialize is overlapping async tool invocations
-within that process.
+`src/agents/base.ts:177-178`), and every knowledge mutation still flows
+through MCP (`src/mcp/runtime.ts`).
 
-`src/knowledge/store.ts` owns a module-scoped
-`Map<string, Promise<void>>` keyed by record id
-(`<kind>:<scope>:<scope_ref|_>:<id>`). Every `writeRecordAtomic` call
-(`create_*`, `update_*`, `archive_*`, `delete_*`, sweeper expiry) chains
-its work onto the existing promise for that key and replaces the map
-entry, releasing it in `finally`. Under this lock, the operation runs
-Validate → write record JSON → append audit → rebuild-index serially;
-two overlapping `update_memory` calls for the same id therefore execute
-in arrival order with no overwrite, no `STALE_WRITE`, and no retry
-loop. `create_*` keys on the freshly minted UUID, so collision is
-statistically impossible and the lock is essentially uncontended.
+`src/knowledge/store.ts` does **not** expose lock primitives. It provides
+atomic record writes, append-only audit writes, index rebuilds, and
+validation helpers. The lifecycle layer owns the only in-process queues,
+kept private to `src/knowledge/lifecycle.ts`:
+
+- a scope lifecycle queue keyed by kind + scope + `scope_ref` for
+  collision-sensitive `create_*` uniqueness checks and stage/session scope
+  archival;
+- a supersede queue keyed by the OLD record id for same-old-id
+  `supersede_*` races.
+
+The scope queue makes two parallel `create_skill` / `create_memory` calls
+against the same scope observe a single active-name/topic winner and a
+deterministic `NAME_COLLISION` / `TOPIC_COLLISION` loser. It also keeps
+scope archival from interleaving with same-scope creation while records
+are moved into the `archive/` subtree. Ordinary single-record
+`update_*`, `archive_*`, and `delete_*` are runtime-owned lifecycle writes
+using atomic file replacement; no public per-record FIFO mutex is part of
+the contract.
 
 **`supersede_*` two-record atomicity.** Supersession mutates the OLD
 record (`superseded_by = new.id`, `status = "superseded"`) and writes
-the NEW record. Both writes happen under a **two-key lock** acquired in
-deterministic order (lexicographic by lock-key) to prevent deadlock
-with another supersede pair. Sequence inside the lock:
+the NEW record. Same-old-id supersedes run inside lifecycle's private
+OLD-id queue; the OLD record is re-read inside the queue, so exactly one
+parallel supersede of an active OLD record can win. Later contenders see
+`status != "active"` and fail with `INVALID_SUPERSEDE_TARGET`. Sequence
+inside the queue:
 (1) re-read OLD, refuse if its `status != "active"`
     (`INVALID_SUPERSEDE_TARGET`);
 (2) `writeRecordAtomic` NEW record JSON (and skill body `.md`);
@@ -366,12 +383,12 @@ entry). Either OLD-then-NEW or NEW-then-OLD partial states are
 recoverable: loader rule is "if NEW.supersedes points to OLD but
 OLD.superseded_by is unset, patch OLD on next mutating access".
 
-**Cross-process concurrency is an explicit non-goal** (see §K).
-Running two `saivage` instances against the same `.saivage/` is
-unsupported; the per-record in-memory mutex obviously does not protect
-against that case. A future need for multi-process safety would add
-advisory `flock(2)` on the per-scope `audit.jsonl` as a coarse gate;
-out of scope for Phase B.
+**Cross-process concurrency is rejected at the runtime boundary** (see
+§K). Running two writer runtimes against the same `.saivage/` is blocked by
+`runtime.lock`; direct calls into lifecycle writers without that lock fail
+with `NO_RUNTIME_LOCK`. Direct use of lower-level store primitives outside
+the lifecycle/runtime path is internal misuse, not a supported concurrency
+contract.
 
 **Error taxonomy (every MCP tool returns one of):**
 
@@ -381,6 +398,7 @@ out of scope for Phase B.
 | `UNAUTHORIZED_SCOPE`       | Worker writes with `scope != "stage"`                | yes               |
 | `NOT_FOUND`                | `id` does not resolve                                | no                |
 | `EMPTY_REASON`             | `reason` missing or whitespace-only                  | no                |
+| `NO_RUNTIME_LOCK`          | lifecycle writer called by a process that does not own `.saivage/tmp/state/runtime.lock` | no |
 | `INVALID_SCOPE_REF`        | `scope_ref` missing for stage|session, or path mismatch | yes            |
 | `INVALID_SUPERSEDE_TARGET` | `supersede_*` target not `active` (re-read under lock) | yes             |
 | `TOPIC_COLLISION`          | `create_memory` topic already active in scope        | yes               |
@@ -718,13 +736,14 @@ inherently time-bound ("CI quota resets at end of month").
 and transitions to `expired` in-place (audit-logged). No cron, no
 on-write sweep. Cheapest impl; sufficient at hundreds of records.
 
-**Concurrency.** Expiry transition uses `writeRecordAtomic`, which
-takes the same per-record mutex as authoring (§C.3). The sweeper
-record-update therefore serializes against any concurrent
-`update_*`/`supersede_*`; if an author has already mutated the record
-between load-time check and lock acquisition, the sweeper re-reads
-under the lock and skips when `status != "active"` (no audit, no error).
-Never an undetected lost update.
+**Concurrency.** Expiry transition is a lifecycle write (§C.3), so it
+first asserts that the current process owns `.saivage/tmp/state/runtime.lock`.
+It does not acquire any public store mutex. Before writing, the sweeper
+re-reads the record and skips when `status != "active"` (no audit, no
+error). Same-old-id supersede races are protected by lifecycle's private
+OLD-id queue; scope create/archive collisions are protected by the private
+scope lifecycle queue. No per-record store lock is part of the sweeper
+contract.
 
 ### G.3 Stale-evidence flow
 
@@ -804,14 +823,22 @@ Bulleted; Phase C turns these into a plan.
 - **Unit — schema (FR-2,3,17,18):** Zod parse rejection table; status
   transitions; supersession-cycle rejection; scope/scope_ref refinement;
   §B.5 allowed-pairs as parametrized table; TTL/expiry calculator.
-- **Unit — store (FR-28, FR-29):** `writeRecordAtomic` happy path +
-  per-record mutex serialization (two overlapping `update_memory` on same
-  id execute in arrival order; both succeed; final state == second write);
-  `appendJsonlAtomic` survives partial last line and enforces the 2048 B
-  entry cap; `rebuildIndex` reconstructs from records dir; transaction
-  order under step-2/3/4 failures; `supersede_*` two-key lock rollback on
-  step-3 failure (NEW record unlinked, OLD untouched); loader repair when
-  NEW.supersedes points to OLD without matching `superseded_by`.
+- **Unit — store (FR-28):** `writeRecordAtomic` happy path and scope-path
+  validation; `appendJsonlAtomic` survives partial last line and enforces
+  the 2048 B entry cap; `rebuildIndex` reconstructs from records dir;
+  store exports no public lock primitives (`acquireRecordLock`,
+  `scopeLockKey`, etc. are not a contract).
+- **Unit / integration — runtime lock + lifecycle queues (FR-29):**
+  public lifecycle writers reject `NO_RUNTIME_LOCK` when this process does
+  not own `.saivage/tmp/state/runtime.lock`; parallel duplicate
+  `create_skill` / `create_memory` in the same scope produce exactly one
+  winner and one collision; a rejected queue holder does not poison the
+  scope lifecycle queue; stage/session scope archive requires the runtime
+  lock and serializes with same-scope create; same-old-id `supersede_*`
+  races produce exactly one winner and `INVALID_SUPERSEDE_TARGET` losers;
+  supersede rollback on step-3 failure unlinks NEW and leaves OLD untouched;
+  loader repair handles NEW.supersedes pointing to OLD without matching
+  `superseded_by`.
 - **Unit — secrets (FR-27, FR-31f):** every heuristic in
   `src/security/secrets.ts` with synthetic fixtures (no real secrets);
   write-time `SECRET_DETECTED` + `rejected` audit (reason never echoes the
@@ -833,10 +860,11 @@ Bulleted; Phase C turns these into a plan.
   `UNAUTHORIZED_ROLE` for every denied cell (FR-31e(i)); deleted
   `memory.*` / `index.*` stubs return `unavailable` (FR-31e(ii)).
 - **Integration — concurrency (FR-29, FR-31g):** two parallel
-  `create_memory` don't corrupt `index.json` (per-record locks +
-  rebuild); two parallel `update_memory` on the same id serialize cleanly
-  (no lost update); sweeper expiry races author update → sweeper observes
-  the post-update record under the lock and skips silently.
+  `create_memory` calls don't corrupt `index.json` (scope queue + rebuild);
+  two parallel `update_memory` calls on the same id leave one complete
+  arrival body on disk (atomic replace, no torn JSON); sweeper expiry
+  races a supersede/update by re-reading before write and skipping silently
+  when the record is no longer active.
 - **Agent-level — eager injection (FR-10,12):** seeded records per role
   produce expected prompt block; stage record not injected next stage
   (FR-9); `omitted: […]` when budget exceeded.
@@ -965,15 +993,18 @@ compiles and tests pass (minus the §I deleted-asserts).
   pre-compaction nudge from `BaseAgent`.
 - **NoteManager fold-in:** rejected per OOS-10 (different trust
   boundary, different invariants).
-- **Cross-process concurrency on the same `.saivage/` (C.3):** explicit
-  non-goal. Saivage is one Node process per project (in-process child
-  agents via `Dispatcher.childSpawner`); the per-record async mutex is
-  the entire concurrency story. Running two `saivage` CLIs against the
-  same project is unsupported and may corrupt indexes/audits — documented
-  here so it is not assumed in Phase C.
-- **File-level locking (`flock(2)` / lockfiles) in C.3:** rejected;
-  redundant under the single-writer invariant. Reserved as the migration
-  path if Saivage ever grows multi-process workers.
+- **Public store-level mutex API (C.3):** rejected. `store.ts` exposes
+  atomic file/index/audit primitives only; `acquireRecordLock`,
+  `scopeLockKey`, and related lock helpers are not part of the public
+  contract.
+- **Multiple writer runtimes on the same `.saivage/` (C.3):** rejected at
+  startup and at write time. Project single-writer ownership is enforced by
+  `.saivage/tmp/state/runtime.lock`; lifecycle public writers assert that
+  this process owns the lock and return `NO_RUNTIME_LOCK` otherwise.
+- **File-level locking (`flock(2)` / per-record lockfiles) in C.3:**
+  rejected for Phase B/G38. Runtime ownership plus private lifecycle
+  queues cover the current one-process architecture; OS-level expansion
+  would be a future multi-process-worker design, not a store primitive.
 
 ---
 
@@ -1009,7 +1040,7 @@ compiles and tests pass (minus the §I deleted-asserts).
 | FR-26 | I (unit + integration without MCP) | Loader/store unit-testable in isolation. |
 | FR-27 | C.3                              | Shared secret scanner; write refusal + audit; read-time redaction; blocked source paths. |
 | FR-28 | C.3, J.3 step 2                  | `writeRecordAtomic` (tmp+fsync+rename) + `appendJsonlAtomic` (POSIX O_APPEND). |
-| FR-29 | C.3, I, K                        | Single-writer invariant + per-record async mutex; `supersede_*` two-key lock with rollback; cross-process explicit non-goal. |
+| FR-29 | C.3, I, K                        | `.saivage/tmp/state/runtime.lock` project single-writer; lifecycle public writers assert lock ownership; private scope lifecycle queue for create/archive collisions; private OLD-id supersede queue with rollback; no public store lock primitives. |
 | FR-30 | C.1, B.2                         | `archive_*` reversible, `delete_*` terminal. |
 | FR-31a | I, J.3 step 8                   | Built-in load test for src + dist. |
 | FR-31b | C.1, I                          | Unmatchable-record prevention test. |
@@ -1034,8 +1065,9 @@ Co/Re stage-only `create_memory`; Chat & Inspector skill-write removed).
 (2) Triggerless skill / FR-8 → B.1 (`triggers` optional), C.1, D.1
 (score 0, search-only). (3) Scope semantics + gitignore → B.1, B.4
 (path layout), H.3 (path-based), J.2. (4) Audit/concurrency primitives
-→ C.3 (`src/knowledge/store.ts`: `writeRecordAtomic` +
-`appendJsonlAtomic` + `rebuildIndex` + 14-row error taxonomy).
+→ C.3 (`src/knowledge/lifecycle.ts` runtime-lock assertion/private queues
++ `src/knowledge/store.ts`: `writeRecordAtomic` + `appendJsonlAtomic` +
+`rebuildIndex` + 16-row error taxonomy).
 (5) Compaction write hook → E.1 (reinject in `BaseAgent`), E.2
 (pre-compaction nudge + normal MCP loop, Planner-only, 5-turn cap).
 (6) Budget vs survivor → D.2 (uncapped survivor sub-budget summary-form
@@ -1047,9 +1079,9 @@ paths, write refusal + audit-no-echo, read-time `[REDACTED]`).
 (`origin` field), D.1. (2) Supersession "scope ≥" → B.5 allowed-pairs.
 (3) Keyword normalization → D.3 (NFC + lowercase + strip-punct +
 collapse-ws; `body_snippet` in index). (4) Why 16 tools → C.1, K
-(shared engine under thin tool facades). (5) Error modes → C.3 14-row
-taxonomy. (6) Sweeper vs concurrency → G.2 (`writeRecordAtomic` +
-`STALE_WRITE` skip). (7) Chat parser → H.1
+(shared engine under thin tool facades). (5) Error modes → C.3 16-row
+taxonomy. (6) Sweeper vs concurrency → G.2 (runtime-lock assertion,
+re-read-before-expire, no public store mutex). (7) Chat parser → H.1
 (`src/chat/slashCommands.ts`; MCP-only). (8) Runtime flag → J.3 (local
 sequencing; flag dies step 6). (9) Deletion test list → J.1 + I name
 `src/agents/agents.test.ts` and `src/mcp/builtins.test.ts`.
@@ -1079,14 +1111,25 @@ all collapse into one concurrency model. Code inspection
 (`src/runtime/dispatcher.ts:64-74,239`, `src/agents/base.ts:177-178`,
 `src/mcp/runtime.ts`) confirms one Node process per project with
 in-process child agents and all mutations via MCP tools. §C.3 now
-states the single-writer invariant, replaces stat-before-rename with a
-module-scoped per-record async mutex in `src/knowledge/store.ts`,
-defines `supersede_*` under a deterministic two-key lock with step-3
-rollback (unlink NEW, leave OLD), caps audit entries at 2048 B to honor
-POSIX `O_APPEND` atomicity, and removes every `STALE_WRITE` reference
-(taxonomy row → `INVALID_SUPERSEDE_TARGET`; §G.2, §I, §L FR-29 all
-updated). Supersede atomicity now has a defined mechanism, failure
-mode, and loader-repair rule.
+states the single-writer invariant, replaces stat-before-rename with
+runtime ownership, caps audit entries at 2048 B to honor POSIX
+`O_APPEND` atomicity, and removes every stale CAS expectation (taxonomy
+row → `INVALID_SUPERSEDE_TARGET`; §G.2, §I, §L FR-29 all updated).
+Supersede atomicity now has a defined mechanism, failure mode, and
+loader-repair rule.
+
+### B10/G38 runtime-lock lifecycle refresh (2026-05-26)
+
+G38 moves concurrency ownership out of the public store surface. Project
+single-writer is enforced by `.saivage/tmp/state/runtime.lock`, held by
+the runtime process; lifecycle public writers assert that lock and surface
+`NO_RUNTIME_LOCK` when called from a non-owner process. `store.ts` no
+longer exports lock primitives or names such as `acquireRecordLock` /
+`scopeLockKey`; it provides atomic write, audit, index, and validation
+helpers only. Collision-sensitive lifecycle races are serialized by
+private in-process queues in `src/knowledge/lifecycle.ts`: a scope queue
+for same-scope create/archive and an OLD-id queue for same-old-id
+supersedes.
 
 **New non-blocking (3 ACCEPT-FIX):** (NB1) oversized-survivor wording —
 §D.2 now states one rule per surface (write-time refusal in §C.1/§I,
@@ -1096,4 +1139,7 @@ line now both say "workers (Coder/Researcher) are bounded to
 `stage`-scoped memories only"; (NB3) FR-24 cited J.3 step 9 — fixed to
 step 8 in the §L coverage matrix.
 
-**Non-goal documented (§K):** cross-process concurrency on the same `.saivage/` — the in-memory mutex is sufficient under single-writer; `flock(2)` reserved as the future migration path.
+**Runtime-lock contract documented (§C.3, §K):** cross-process writer
+concurrency is blocked by `.saivage/tmp/state/runtime.lock`; lifecycle
+writers assert lock ownership; store-level mutexes and `flock(2)` are not
+the Phase B/G38 contract.

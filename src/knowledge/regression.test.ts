@@ -36,18 +36,25 @@ import { redactForRead } from "./loader.js";
 import type { AuthorAgent } from "./lifecycle.js";
 import { knowledgeSkillsTools } from "../mcp/knowledgeSkills.js";
 import { knowledgeMemoryTools } from "../mcp/knowledgeMemory.js";
+import { acquireRuntimeLock, type RuntimeLock } from "../runtime/recovery.js";
 
 const AUTHOR: AuthorAgent = { role: "manager", agent_id: "m1" };
 
 let projectRoot: string;
 let saivage: string;
+let runtimeLock: RuntimeLock | null;
 
 beforeEach(async () => {
   projectRoot = mkdtempSync(join(tmpdir(), "saivage-regress-"));
   await initProjectTree(projectRoot);
   saivage = join(projectRoot, ".saivage");
+  runtimeLock = await acquireRuntimeLock(saivage);
 });
-afterEach(() => rmSync(projectRoot, { recursive: true, force: true }));
+afterEach(() => {
+  runtimeLock?.release();
+  runtimeLock = null;
+  rmSync(projectRoot, { recursive: true, force: true });
+});
 
 // ─── FR-31c — update refreshes updated_at + audit + index row ─────────────
 
@@ -76,7 +83,8 @@ describe("FR-31c — update refreshes updated_at + audit + index", () => {
     ) as { entries: { id: string; updated_at: string }[] };
     const row = idx.entries.find((e) => e.id === s.id);
     expect(row).toBeDefined();
-    expect(row!.updated_at).toBe(u.updated_at);
+    if (!row) throw new Error("expected updated skill in index");
+    expect(row.updated_at).toBe(u.updated_at);
   });
 
   it("updateMemory persists new body and refreshes the index snippet", async () => {
@@ -198,8 +206,9 @@ describe("FR-31f (read-side) — redactForRead masks provider tokens on the wire
     writeFileSync(recordPath, JSON.stringify(raw), "utf-8");
     const read = await getMemory(saivage, { id: m.id });
     expect(read).not.toBeNull();
-    expect(read!.redacted_spans).toBeGreaterThanOrEqual(1);
-    expect(read!.body.includes("sk-")).toBe(false);
+    if (!read) throw new Error("expected memory to exist after manual record edit");
+    expect(read.redacted_spans).toBeGreaterThanOrEqual(1);
+    expect(read.body.includes("sk-")).toBe(false);
   });
 });
 

@@ -1,13 +1,20 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
+import { acquireRuntimeLock, type RuntimeLock } from "../runtime/recovery.js";
 import { knowledgeSkillsHandler } from "./knowledgeSkills.js";
 import type { ToolCallContext } from "./toolContext.js";
 
-function tmpProject(): string {
-  return mkdtempSync(join(tmpdir(), "saivage-mcp-skills-"));
+const roots: string[] = [];
+const locks: RuntimeLock[] = [];
+
+async function tmpProject(): Promise<string> {
+  const root = mkdtempSync(join(tmpdir(), "saivage-mcp-skills-"));
+  roots.push(root);
+  locks.push(await acquireRuntimeLock(join(root, ".saivage")));
+  return root;
 }
 
 function ctxFor(role: ToolCallContext["role"], projectRoot: string): ToolCallContext {
@@ -18,6 +25,11 @@ async function call(tool: string, args: Record<string, unknown>, ctx: ToolCallCo
   return knowledgeSkillsHandler(tool, args, ctx);
 }
 
+afterEach(() => {
+  for (const lock of locks.splice(0)) lock.release();
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
 describe("MCP knowledgeSkills handler — permissions (§F)", () => {
   it("requires a ToolCallContext", async () => {
     const r = await knowledgeSkillsHandler("list_skills", {}, undefined);
@@ -26,7 +38,7 @@ describe("MCP knowledgeSkills handler — permissions (§F)", () => {
   });
 
   it("rejects worker create_skill (coder)", async () => {
-    const root = tmpProject();
+    const root = await tmpProject();
     const r = await call("create_skill", {
       name: "x", description: "d", body: "b", scope: "project", reason: "test",
     }, ctxFor("coder", root));
@@ -35,7 +47,7 @@ describe("MCP knowledgeSkills handler — permissions (§F)", () => {
   });
 
   it("rejects data_agent any write", async () => {
-    const root = tmpProject();
+    const root = await tmpProject();
     const r = await call("create_skill", {
       name: "x", description: "d", body: "b", scope: "project", reason: "test",
     }, ctxFor("data_agent", root));
@@ -43,7 +55,7 @@ describe("MCP knowledgeSkills handler — permissions (§F)", () => {
   });
 
   it("allows manager create_skill", async () => {
-    const root = tmpProject();
+    const root = await tmpProject();
     const r = await call("create_skill", {
       name: "build-web", description: "How to build", body: "Run npm build",
       scope: "project", reason: "initial",
@@ -54,7 +66,7 @@ describe("MCP knowledgeSkills handler — permissions (§F)", () => {
 
 describe("MCP knowledgeSkills handler — lifecycle + redaction", () => {
   it("create + search round-trip with triggerless skill", async () => {
-    const root = tmpProject();
+    const root = await tmpProject();
     const created = await call("create_skill", {
       name: "deploy-prod", description: "deploy steps", body: "kubectl apply",
       scope: "project", reason: "doc",
@@ -68,7 +80,7 @@ describe("MCP knowledgeSkills handler — lifecycle + redaction", () => {
   });
 
   it("rejects empty reason (EMPTY_REASON)", async () => {
-    const root = tmpProject();
+    const root = await tmpProject();
     const r = await call("create_skill", {
       name: "x", description: "d", body: "b", scope: "project", reason: "   ",
     }, ctxFor("manager", root));
@@ -77,7 +89,7 @@ describe("MCP knowledgeSkills handler — lifecycle + redaction", () => {
   });
 
   it("rejects active name collision (NAME_COLLISION)", async () => {
-    const root = tmpProject();
+    const root = await tmpProject();
     const ctx = ctxFor("manager", root);
     await call("create_skill", { name: "dup", description: "a", body: "b1", scope: "project", reason: "r" }, ctx);
     const r = await call("create_skill", { name: "dup", description: "a", body: "b2", scope: "project", reason: "r" }, ctx);
@@ -86,7 +98,7 @@ describe("MCP knowledgeSkills handler — lifecycle + redaction", () => {
   });
 
   it("rejects invalid supersede scope (project→stage)", async () => {
-    const root = tmpProject();
+    const root = await tmpProject();
     const ctx = ctxFor("manager", root);
     const created = await call("create_skill", {
       name: "s1", description: "d", body: "b", scope: "project", reason: "r",
@@ -103,7 +115,7 @@ describe("MCP knowledgeSkills handler — lifecycle + redaction", () => {
   });
 
   it("redacts on read (round-trip)", async () => {
-    const root = tmpProject();
+    const root = await tmpProject();
     const ctx = ctxFor("manager", root);
     const created = await call("create_skill", {
       name: "redact-test", description: "d", body: "Plain body, no secrets.",

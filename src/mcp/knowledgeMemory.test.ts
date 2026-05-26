@@ -1,13 +1,20 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
+import { acquireRuntimeLock, type RuntimeLock } from "../runtime/recovery.js";
 import { knowledgeMemoryHandler } from "./knowledgeMemory.js";
 import type { ToolCallContext } from "./toolContext.js";
 
-function tmpProject(): string {
-  return mkdtempSync(join(tmpdir(), "saivage-mcp-mem-"));
+const roots: string[] = [];
+const locks: RuntimeLock[] = [];
+
+async function tmpProject(): Promise<string> {
+  const root = mkdtempSync(join(tmpdir(), "saivage-mcp-mem-"));
+  roots.push(root);
+  locks.push(await acquireRuntimeLock(join(root, ".saivage")));
+  return root;
 }
 
 function ctxFor(role: ToolCallContext["role"], projectRoot: string, stageId?: string): ToolCallContext {
@@ -23,9 +30,14 @@ async function call(tool: string, args: Record<string, unknown>, ctx: ToolCallCo
   return knowledgeMemoryHandler(tool, args, ctx);
 }
 
+afterEach(() => {
+  for (const lock of locks.splice(0)) lock.release();
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
 describe("MCP knowledgeMemory handler — permissions + scope (§F + Y†)", () => {
   it("rejects coder with scope='project' (UNAUTHORIZED_SCOPE)", async () => {
-    const root = tmpProject();
+    const root = await tmpProject();
     const r = await call("create_memory", {
       topic: { domain: "build", subject: "x" }, body: "b",
       scope: "project", reason: "r",
@@ -35,7 +47,7 @@ describe("MCP knowledgeMemory handler — permissions + scope (§F + Y†)", () 
   });
 
   it("allows coder with scope='stage' matching ctx.stageId", async () => {
-    const root = tmpProject();
+    const root = await tmpProject();
     const r = await call("create_memory", {
       topic: { domain: "build", subject: "x" }, body: "b",
       scope: "stage", scope_ref: "stage-1", reason: "r",
@@ -44,7 +56,7 @@ describe("MCP knowledgeMemory handler — permissions + scope (§F + Y†)", () 
   });
 
   it("rejects coder with mismatched scope_ref (UNAUTHORIZED_SCOPE)", async () => {
-    const root = tmpProject();
+    const root = await tmpProject();
     const r = await call("create_memory", {
       topic: { domain: "build", subject: "x" }, body: "b",
       scope: "stage", scope_ref: "stage-2", reason: "r",
@@ -54,7 +66,7 @@ describe("MCP knowledgeMemory handler — permissions + scope (§F + Y†)", () 
   });
 
   it("rejects coder supersede (workers cannot supersede)", async () => {
-    const root = tmpProject();
+    const root = await tmpProject();
     // First, planner writes a memory
     const created = await call("create_memory", {
       topic: { domain: "x", subject: "y" }, body: "b",
@@ -74,7 +86,7 @@ describe("MCP knowledgeMemory handler — permissions + scope (§F + Y†)", () 
 
 describe("MCP knowledgeMemory handler — lifecycle", () => {
   it("rejects topic collision (TOPIC_COLLISION)", async () => {
-    const root = tmpProject();
+    const root = await tmpProject();
     const ctx = ctxFor("planner", root);
     await call("create_memory", {
       topic: { domain: "d", subject: "s" }, body: "b1", scope: "project", reason: "r",
@@ -87,7 +99,7 @@ describe("MCP knowledgeMemory handler — lifecycle", () => {
   });
 
   it("rejects double-supersede (INVALID_SUPERSEDE_TARGET)", async () => {
-    const root = tmpProject();
+    const root = await tmpProject();
     const ctx = ctxFor("manager", root);
     const c1 = await call("create_memory", {
       topic: { domain: "a", subject: "b" }, body: "b1", scope: "project", reason: "r",
@@ -109,7 +121,7 @@ describe("MCP knowledgeMemory handler — lifecycle", () => {
   });
 
   it("get_memory walks supersession chain to head", async () => {
-    const root = tmpProject();
+    const root = await tmpProject();
     const ctx = ctxFor("manager", root);
     const topic = { domain: "chain", subject: "test" };
     const c1 = await call("create_memory", { topic, body: "v1", scope: "project", reason: "r" }, ctx);
@@ -125,7 +137,7 @@ describe("MCP knowledgeMemory handler — lifecycle", () => {
   });
 
   it("read returns NOT_FOUND for missing memory", async () => {
-    const root = tmpProject();
+    const root = await tmpProject();
     const r = await call("get_memory", { id: "00000000-0000-4000-8000-000000000000" }, ctxFor("planner", root));
     expect(r.isError).toBe(true);
     expect((r.content as { error: { code: string } }).error.code).toBe("NOT_FOUND");

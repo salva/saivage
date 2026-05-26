@@ -3,18 +3,25 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initProjectTree } from "../store/project.js";
+import { acquireRuntimeLock, type RuntimeLock } from "../runtime/recovery.js";
 import { createSkill, createMemory } from "./lifecycle.js";
 import { loadAllCandidates, formatEagerBlock, buildEagerBlock } from "./eagerLoader.js";
 import { resolveEagerRecords } from "./loader.js";
 
 describe("eagerLoader (WI-13)", () => {
   let projectRoot: string;
+  let runtimeLock: RuntimeLock | null;
 
   beforeEach(async () => {
     projectRoot = mkdtempSync(join(tmpdir(), "wi13-"));
     await initProjectTree(projectRoot);
+    runtimeLock = await acquireRuntimeLock(join(projectRoot, ".saivage"));
   });
-  afterEach(() => rmSync(projectRoot, { recursive: true, force: true }));
+  afterEach(() => {
+    runtimeLock?.release();
+    runtimeLock = null;
+    rmSync(projectRoot, { recursive: true, force: true });
+  });
 
   it("loads project-scope skills and memories as candidates", async () => {
     const saivage = join(projectRoot, ".saivage");
