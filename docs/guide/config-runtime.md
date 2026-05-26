@@ -65,8 +65,7 @@ each project carry its own `.saivage/saivage.json`.
 Per-role model assignments. Values may be legacy `provider/model` strings
 or ordered provider-independent model lists. Keys: `orchestrator`, `planner`,
 `manager`, `coder`, `researcher`, `data_agent`, `reviewer`, `inspector`,
-`executor`, `chat`, `default`. Project-level `model_overrides` take
-precedence.
+`executor`, `chat`, `default`. `ProjectConfig.routing` takes precedence.
 
 ```json
 "models": {

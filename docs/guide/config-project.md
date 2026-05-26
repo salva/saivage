@@ -36,16 +36,6 @@ The schema is the `ProjectConfigSchema` Zod type from [`src/types.ts`](https://g
   // default provider/model when no role override applies
   "provider": "github-copilot/claude-sonnet-4",
 
-  // per-role provider/model overrides (override runtime config too)
-  "model_overrides": {
-    "planner": "anthropic/claude-sonnet-4-20250514",
-    "manager": "github-copilot/claude-sonnet-4",
-    "coder":   "github-copilot/gpt-4o-mini",
-    "researcher": "github-copilot/gpt-4o-mini",
-    "inspector": "anthropic/claude-sonnet-4-20250514",
-    "chat":    "github-copilot/gpt-4o-mini"
-  },
-
   // structured routing — see /guide/routing
   "routing": {
     "roles": {},
@@ -86,7 +76,6 @@ The schema is the `ProjectConfigSchema` Zod type from [`src/types.ts`](https://g
 | `project_name` | string | Identifier shown in UIs. |
 | `objectives` | string[] | What you want done. Specific is better. |
 | `provider` | string? | Default `provider/model` for any role. |
-| `model_overrides` | record? | Role → `provider/model`. Overrides everything. |
 | `routing` | object? | Structured router config. See [Routing](./routing). |
 | `notifications.channels` | enum[] | `"web"`, `"telegram"`. |
 | `notifications.filters.min_severity` | enum | `"info"`, `"warning"`, `"error"`. |

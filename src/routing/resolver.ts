@@ -45,7 +45,6 @@ export type RoutingRule = z.infer<typeof routingRuleSchema>;
 export type ProjectRoutingConfig = z.infer<typeof projectRoutingSchema>;
 
 export interface ProjectRoutingInput {
-  model_overrides?: Record<string, string>;
   routing?: z.output<typeof projectRoutingSchema>;
 }
 
@@ -86,7 +85,7 @@ export interface ResolvedModelRoute {
   accountRef?: string;
   preferredModels: string[];
   preferredAccounts: string[];
-  source: "routing" | "legacy" | "runtime-default";
+  source: "routing" | "runtime-default";
   profileName?: string;
 }
 
@@ -148,7 +147,7 @@ export class ModelRoutingResolver {
     const roleRule = this.resolveRoleRule(role);
     const merged = this.mergeRuleChain(roleRule.rule);
     const preferredModels = this.resolvePreferredModels(role, merged);
-    const candidate = preferredModels[0] ?? this.resolveLegacyModels(role)[0];
+    const candidate = preferredModels[0] ?? this.resolveRuntimeDefaultModels(role)[0];
     if (!candidate) throw new MissingModelForRoleError([role], configPath());
     const modelSpec = candidate;
     const parsed = tryParseModelSpec(modelSpec);
@@ -165,7 +164,7 @@ export class ModelRoutingResolver {
       accountRef: preferredAccounts[0],
       preferredModels,
       preferredAccounts,
-      source: this.resolveSource(role, merged, preferredModels),
+      source: this.resolveSource(merged),
       profileName: roleRule.profileName,
     };
   }
@@ -246,7 +245,7 @@ export class ModelRoutingResolver {
     const allowed = rule.allowedModels?.length ? unique(rule.allowedModels) : undefined;
 
     if (!allowed) {
-      return candidates.length ? candidates : this.resolveLegacyModels(role);
+      return candidates.length ? candidates : this.resolveRuntimeDefaultModels(role);
     }
     if (candidates.length === 0) {
       return allowed;
@@ -297,27 +296,25 @@ export class ModelRoutingResolver {
   }
 
   private resolveRuntimeDefaultModels(role: string): string[] {
-    if (role === "supervisor") return normalizeModelList(this.runtime.supervisorModel);
-    if (role === "security") return normalizeModelList(this.runtime.securityModel);
+    if (role === "supervisor") {
+      const models = normalizeModelList(this.runtime.supervisorModel);
+      if (models.length) return models;
+      throw new MissingModelForRoleError([role], configPath());
+    }
+    if (role === "security") {
+      const models = normalizeModelList(this.runtime.securityModel);
+      if (models.length) return models;
+      throw new MissingModelForRoleError([role], configPath());
+    }
     const key = ROUTING_ROLE_TO_MODEL_KEY[role] ?? role;
-    return normalizeModelList(this.runtime.models?.[key] ?? this.runtime.models?.default);
-  }
-
-  private resolveLegacyModels(role: string): string[] {
-    const override = this.project.model_overrides?.[role];
-    if (override) return [override];
-
-    const runtimeDefault = this.resolveRuntimeDefaultModels(role);
-    if (runtimeDefault.length) return runtimeDefault;
-
+    const models = normalizeModelList(this.runtime.models?.[key] ?? this.runtime.models?.default);
+    if (models.length) return models;
     throw new MissingModelForRoleError([role], configPath());
   }
 
-  private resolveSource(role: string, rule: NormalizedRule, preferredModels: string[]): ResolvedModelRoute["source"] {
+  private resolveSource(rule: NormalizedRule): ResolvedModelRoute["source"] {
     if (rule.model || rule.preferredModels.length || rule.allowedModels?.length || rule.profile) return "routing";
-    if (this.project.model_overrides?.[role]) return "legacy";
-    if (this.resolveRuntimeDefaultModels(role).length) return "runtime-default";
-    throw new Error("unreachable: resolveLegacyModels would have thrown first");
+    return "runtime-default";
   }
 }
 

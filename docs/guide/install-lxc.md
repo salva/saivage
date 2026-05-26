@@ -101,7 +101,6 @@ cat > .saivage/config.json <<'EOF'
     "Write comprehensive tests for all endpoints."
   ],
   "provider": "github-copilot/claude-sonnet-4",
-  "model_overrides": {},
   "notifications": {
     "channels": [],
     "filters": { "min_severity": "warning", "categories": [] }

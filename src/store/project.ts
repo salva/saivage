@@ -126,7 +126,6 @@ export async function seedProject(
   const config: ProjectConfig = {
     project_name: opts.name ?? "my-project",
     objectives: opts.objectives ?? [],
-    model_overrides: {},
     routing: { roles: {}, profiles: {} },
     skills: { max_per_agent: 5 },
   };

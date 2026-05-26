@@ -1,7 +1,6 @@
 # Routing & Model Selection
 
-For non-trivial deployments, plain `model_overrides` are not expressive
-enough. Saivage ships a **`ModelRoutingResolver`** that lets you compose
+Saivage ships a **`ModelRoutingResolver`** that lets you compose
 re-usable routing **profiles**, attach them to roles, and constrain which
 models or accounts may be used.
 
@@ -12,7 +11,6 @@ The routing schema lives in [`src/routing/resolver.ts`](https://github.com/salva
 The resolver is consulted **per LLM call**. Inputs:
 
 - `ProjectConfig.routing`
-- `ProjectConfig.model_overrides` (legacy, still honored)
 - `RuntimeConfig.models` and `RuntimeConfig.providers`
 
 Output: a `ResolvedModelRoute` describing which provider/model to call,
@@ -70,8 +68,8 @@ models.
 
 1. Look up the role rule (`roles[<role>]`). A bare string is a profile name.
 2. Merge rule with referenced profile, then with `default_profile`.
-3. If still missing fields, fall back to `model_overrides[<role>]`,
-   `RuntimeConfig.models[<role>]`, or `RuntimeConfig.models.default`.
+3. If still missing fields, fall back to `RuntimeConfig.models[<role>]`,
+   or `RuntimeConfig.models.default`.
 4. Validate: refuse if model or account is not in the rule's allow-list.
 5. Emit `ResolvedModelRoute` with `source` set to whichever level provided
    the final spec.
@@ -91,7 +89,6 @@ list.
 
 - **Single solo project, one provider** → just set `provider` at top level
   and forget the rest.
-- **Mix of cheap & smart models** → use `model_overrides` per role.
 - **Multiple OAuth accounts or strict allow-lists** → switch to `routing`
   and use profiles.
 

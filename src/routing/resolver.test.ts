@@ -8,13 +8,9 @@ const routing = (
 ): z.output<typeof projectRoutingSchema> => projectRoutingSchema.parse(raw);
 
 describe("ModelRoutingResolver", () => {
-  it("preserves legacy override and runtime fallback behavior", () => {
+  it("falls back to runtime-default models when no routing rule is set", () => {
     const resolver = new ModelRoutingResolver(
-      {
-        model_overrides: {
-          planner: "github-copilot/claude-sonnet-4.6",
-        },
-      },
+      {},
       {
         models: {
           orchestrator: "anthropic/claude-sonnet-4-20250514",
@@ -23,10 +19,6 @@ describe("ModelRoutingResolver", () => {
       },
     );
 
-    expect(resolver.resolve("planner")).toMatchObject({
-      modelSpec: "github-copilot/claude-sonnet-4.6",
-      source: "legacy",
-    });
     expect(resolver.resolve("chat")).toMatchObject({
       modelSpec: "github-copilot/gpt-5.4",
       source: "runtime-default",

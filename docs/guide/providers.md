@@ -55,11 +55,10 @@ Token refresh is performed lazily on each LLM request — the router calls
 
 Resolution precedence (most specific wins):
 
-1. `ProjectConfig.model_overrides[<role>]`
-2. `ProjectConfig.routing` profiles (see [Routing](./routing))
-3. `RuntimeConfig.models[<role>]`
-4. `RuntimeConfig.models.default`
-5. The provider's "most capable" registered model.
+1. `ProjectConfig.routing` profiles (see [Routing](./routing))
+2. `RuntimeConfig.models[<role>]`
+3. `RuntimeConfig.models.default`
+4. The provider's "most capable" registered model.
 
 A role string is one of `planner`, `manager`, `coder`, `researcher`,
 `reviewer`, `inspector`, `chat`, `data_agent`.

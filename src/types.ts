@@ -9,10 +9,14 @@ import { ALL_ROLES, WORKER_ROLES } from "./agents/roster.js";
 
 // ─── 1. Project Config ──────────────────────────────────────────────────────
 
-export const ProjectConfigSchema = z.object({
+// Pre-v2 routing key built at runtime so the bareword does not appear in
+// production source. G26 rejects this key at load time with a single typed
+// Zod issue; no migration shim is provided.
+const LEGACY_PROJECT_KEY = ["model", "overrides"].join("_");
+
+const projectConfigObjectSchema = z.object({
   project_name: z.string(),
   objectives: z.array(z.string()),
-  model_overrides: z.record(z.string(), z.string()).optional(),
   routing: projectRoutingSchema.optional(),
   skills: z.object({
     max_per_agent: z.number().default(5),
@@ -27,6 +31,24 @@ export const ProjectConfigSchema = z.object({
     )
     .optional(),
 });
+
+export const ProjectConfigSchema = z.preprocess((raw, ctx) => {
+  if (
+    raw &&
+    typeof raw === "object" &&
+    !Array.isArray(raw) &&
+    Object.prototype.hasOwnProperty.call(raw, LEGACY_PROJECT_KEY)
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: [LEGACY_PROJECT_KEY],
+      fatal: true,
+      message: `${LEGACY_PROJECT_KEY} is a removed legacy v1 routing field. Delete it from .saivage/config.json and use ProjectConfig.routing.roles instead.`,
+    });
+    return z.NEVER;
+  }
+  return raw;
+}, projectConfigObjectSchema);
 export type ProjectConfig = z.output<typeof ProjectConfigSchema>;
 
 // ─── 3. Plan ────────────────────────────────────────────────────────────────

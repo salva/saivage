@@ -8,7 +8,7 @@
 | `EADDRINUSE: 8080` | Another process owns the port. Change `server.port` in `saivage.json`. |
 | Web UI loads but `/api/state` returns 404 | The web build is missing. Run `npm run build` (or `npm run build:web`). |
 | Planner does nothing on first start | No usable LLM credentials. Run `saivage login`. |
-| `Model not supported (HTTP 400)` | Provider deprecated/renamed the model. Use `saivage models …` to see resolved IDs and update `model_overrides`. |
+| `Model not supported (HTTP 400)` | Provider deprecated/renamed the model. Use `saivage models …` to see resolved IDs and update the routing profile. |
 | Constant `429` warnings | Rate-limited. The router backs off automatically; consider configuring `failover` to a secondary provider. |
 | `git not found` errors | Install `git` inside the LXC container. The git MCP tool shells out. |
 
