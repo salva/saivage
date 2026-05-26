@@ -21,6 +21,12 @@ export interface SyncFsScanOptions {
    * Default: `["createWriteStream"]`.
    */
   allowedNamedImports?: readonly string[];
+  /**
+   * `*Sync` identifiers permitted as call expressions. Use for the
+   * narrow cases where sync FS is unavoidable (e.g. process-exit
+   * handlers releasing lockfiles). Default: empty.
+   */
+  allowedSyncCalls?: readonly string[];
   /** File extensions to scan. Default: `[".ts"]`. */
   extensions?: readonly string[];
   /** Substrings; any file whose path contains one is skipped. */
@@ -35,6 +41,7 @@ export interface SyncFsViolation {
 
 export async function scanForSyncFs(opts: SyncFsScanOptions): Promise<SyncFsViolation[]> {
   const allowed = new Set(opts.allowedNamedImports ?? ["createWriteStream"]);
+  const allowedCalls = new Set(opts.allowedSyncCalls ?? []);
   const exts = opts.extensions ?? [".ts"];
   const skip = opts.skipPathContains ?? [".test.ts", ".d.ts"];
   const files: string[] = [];
@@ -45,7 +52,7 @@ export async function scanForSyncFs(opts: SyncFsScanOptions): Promise<SyncFsViol
     if (!NODE_FS_SPECIFIERS.some((s) => src.includes(s))) {
       // No node:fs import at all; still scan for *Sync calls in case
       // a future regression imports via require().
-      collectSyncCalls(file, src, violations);
+      collectSyncCalls(file, src, violations, allowedCalls);
       continue;
     }
     // Generalized regex: handles default, namespace, named, and mixed
@@ -82,15 +89,16 @@ export async function scanForSyncFs(opts: SyncFsScanOptions): Promise<SyncFsViol
         }
       }
     }
-    collectSyncCalls(file, src, violations);
+    collectSyncCalls(file, src, violations, allowedCalls);
   }
   return violations;
 }
 
-function collectSyncCalls(file: string, src: string, out: SyncFsViolation[]): void {
+function collectSyncCalls(file: string, src: string, out: SyncFsViolation[], allowed: ReadonlySet<string>): void {
   const callRe = new RegExp(`\\b(${SYNC_FS_IDENTIFIERS.join("|")})\\s*\\(`, "g");
   let m: RegExpExecArray | null;
   while ((m = callRe.exec(src)) !== null) {
+    if (allowed.has(m[1])) continue;
     out.push({ file, kind: "sync-call", detail: m[1] });
   }
 }

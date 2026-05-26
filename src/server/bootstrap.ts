@@ -137,6 +137,7 @@ export async function bootstrap(
 
   // 3. Initialize model router (OAuth credentials are resolved lazily on first use)
   const router = new ModelRouter(config);
+  await router.init();
   await router.inspectUsageAtStartup();
   log.info(`[v2] Providers: ${router.listProviders().join(", ")}`);
 

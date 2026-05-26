@@ -288,6 +288,7 @@ program
 
       const config = loadConfig(true, root ?? undefined);
       const router = new ModelRouter(config);
+      await router.init();
       const providers = opts.provider ? [opts.provider as string] : router.listProviders();
 
       for (const provider of providers) {
@@ -401,7 +402,7 @@ program
   .action(async (projectPath: string | undefined, opts) => {
     const { resolve } = await import("node:path");
     const { discoverProject } = await import("../store/project.js");
-    const { getOAuthProvider, saveProfile, loadProfiles } = await import("../auth/index.js");
+    const { getOAuthProvider, saveProfile } = await import("../auth/index.js");
 
     // Resolve project root so auth-profiles.json goes in the right .saivage/
     const root = projectPath
@@ -461,7 +462,7 @@ program
       }, { headers: loginHeaders });
 
       const profileKey = (opts.profile as string | undefined) ?? `${providerId}-${creds.accountId ?? "default"}`;
-      saveProfile(profileKey, {
+      await saveProfile(profileKey, {
         type: "oauth",
         provider: providerId,
         access: creds.access,
@@ -489,9 +490,7 @@ program
   .action(async (projectPath: string | undefined, opts) => {
     const { resolve } = await import("node:path");
     const { discoverProject } = await import("../store/project.js");
-    const { loadProfiles } = await import("../auth/index.js");
-    const { writeFileSync } = await import("node:fs");
-    const { join } = await import("node:path");
+    const { removeProfiles } = await import("../auth/index.js");
 
     const root = projectPath
       ? resolve(projectPath)
@@ -502,40 +501,32 @@ program
       process.env["SAIVAGE_ROOT"] = resolve(root, ".saivage");
     }
 
-    const store = loadProfiles();
     const providerId = opts.provider as string | undefined;
     const profileKey = opts.profile as string | undefined;
 
     if (profileKey) {
-      if (!store.profiles[profileKey]) {
+      const n = await removeProfiles((k) => k === profileKey);
+      if (n === 0) {
         console.log(`No credentials found for profile ${profileKey}.`);
         return;
       }
-      delete store.profiles[profileKey];
       console.log(`Removed credential profile ${profileKey}.`);
     } else if (providerId) {
-      const toRemove = Object.entries(store.profiles)
-        .filter(([, p]) => p.provider === providerId)
-        .map(([k]) => k);
-      if (toRemove.length === 0) {
+      const n = await removeProfiles((_, p) => p.provider === providerId);
+      if (n === 0) {
         console.log(`No credentials found for ${providerId}.`);
         return;
       }
-      for (const key of toRemove) delete store.profiles[key];
-      console.log(`Removed ${toRemove.length} credential(s) for ${providerId}.`);
+      console.log(`Removed ${n} credential(s) for ${providerId}.`);
     } else {
-      const count = Object.keys(store.profiles).length;
-      if (count === 0) {
+      const n = await removeProfiles(() => true);
+      if (n === 0) {
         console.log("No stored credentials.");
         return;
       }
-      store.profiles = {};
-      console.log(`Removed all ${count} credential(s).`);
+      console.log(`Removed all ${n} credential(s).`);
     }
 
-    const { saivageDir } = await import("../config.js");
-    const fp = join(saivageDir(), "auth-profiles.json");
-    writeFileSync(fp, JSON.stringify(store, null, 2) + "\n", "utf-8");
     console.log("Restart the service to apply changes.");
   });
 

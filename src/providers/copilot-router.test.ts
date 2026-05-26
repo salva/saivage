@@ -38,6 +38,7 @@ describe("ModelRouter github-copilot header wiring", () => {
       },
     } as unknown as SaivageConfig;
     const router = new ModelRouter(config);
+    await router.init();
 
     await router.chat({
       modelSpec: "github-copilot/claude-sonnet-4.6",

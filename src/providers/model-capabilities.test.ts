@@ -40,7 +40,7 @@ function makeConfig(overrides: Partial<SaivageConfig> = {}): SaivageConfig {
 const msgs: Message[] = [{ role: "user", content: "hi" }];
 
 describe("ModelCapabilities — per-provider direct-class tables", () => {
-  it("OpenAIProvider table", () => {
+  it("OpenAIProvider table", async () => {
     const p = new OpenAIProvider("k");
     expect(p.modelCapabilities("gpt-5")).toEqual({ contextWindow: 400_000, tokenEncoding: "o200k_base" });
     expect(p.modelCapabilities("o3-mini")).toEqual({ contextWindow: 200_000, tokenEncoding: "o200k_base" });
@@ -50,7 +50,7 @@ describe("ModelCapabilities — per-provider direct-class tables", () => {
     expect(p.modelCapabilities("unknown")).toBeUndefined();
   });
 
-  it("OpenAICodexProvider table", () => {
+  it("OpenAICodexProvider table", async () => {
     const p = new OpenAICodexProvider();
     expect(p.modelCapabilities("gpt-5-codex")).toEqual({ contextWindow: 200_000, tokenEncoding: "o200k_base" });
     expect(p.modelCapabilities("o4-mini")).toEqual({ contextWindow: 200_000, tokenEncoding: "o200k_base" });
@@ -59,7 +59,7 @@ describe("ModelCapabilities — per-provider direct-class tables", () => {
     expect(p.modelCapabilities("unknown")).toBeUndefined();
   });
 
-  it("AnthropicProvider table", () => {
+  it("AnthropicProvider table", async () => {
     const p = new AnthropicProvider("k");
     expect(p.modelCapabilities("claude-3-5-sonnet-20241022")).toEqual({
       contextWindow: 200_000,
@@ -76,7 +76,7 @@ describe("ModelCapabilities — per-provider direct-class tables", () => {
     expect(p.modelCapabilities("claude-9-future")).toBeUndefined();
   });
 
-  it("OpenRouterProvider table (prefix sensitive)", () => {
+  it("OpenRouterProvider table (prefix sensitive)", async () => {
     const p = new OpenRouterProvider("k");
     expect(p.modelCapabilities("openai/gpt-5-2025-09-01")).toEqual({
       contextWindow: 400_000,
@@ -93,7 +93,7 @@ describe("ModelCapabilities — per-provider direct-class tables", () => {
     expect(p.modelCapabilities("acme/unknown")).toBeUndefined();
   });
 
-  it("OllamaProvider — defaultContextWindow injection", () => {
+  it("OllamaProvider — defaultContextWindow injection", async () => {
     const sized = new OllamaProvider(undefined, 32_768);
     expect(sized.modelCapabilities("unknown-local-weight")).toEqual({
       contextWindow: 32_768,
@@ -103,7 +103,7 @@ describe("ModelCapabilities — per-provider direct-class tables", () => {
     expect(unsized.modelCapabilities("unknown-local-weight")).toBeUndefined();
   });
 
-  it("LlamaCppProvider — defaultContextWindow injection", () => {
+  it("LlamaCppProvider — defaultContextWindow injection", async () => {
     const sized = new LlamaCppProvider(undefined, 16_384);
     expect(sized.modelCapabilities("unknown")).toEqual({
       contextWindow: 16_384,
@@ -123,24 +123,24 @@ describe("PiAiProvider — live-registry modelCapabilities", () => {
     spy.mockRestore();
   }
 
-  it("openai gpt-5 → o200k_base, gpt-4o → cl100k via openai-registry token encoding mapping", () => {
+  it("openai gpt-5 → o200k_base, gpt-4o → cl100k via openai-registry token encoding mapping", async () => {
     // PiAi openai branch maps gpt-5|o1|o3|o4 to o200k, everything else to cl100k.
     expectEncoding("openai", "gpt-5", "o200k_base");
     expectEncoding("openai", "gpt-4o", "cl100k_base");
   });
 
-  it("openai-codex registry models pick correct encoding", () => {
+  it("openai-codex registry models pick correct encoding", async () => {
     expectEncoding("openai-codex", "gpt-5.3-codex", "o200k_base");
     expectEncoding("openai-codex", "gpt-5.1-codex-mini", "o200k_base");
   });
 
-  it("anthropic / opencode / opencode-go always cl100k_base", () => {
+  it("anthropic / opencode / opencode-go always cl100k_base", async () => {
     expectEncoding("anthropic", "claude-haiku-4-5", "cl100k_base");
     expectEncoding("opencode", "claude-opus-4-5", "cl100k_base");
     expectEncoding("opencode-go", "kimi-k2.5", "cl100k_base");
   });
 
-  it("modelCapabilities returns contextWindow from pi-ai registry for known models", () => {
+  it("modelCapabilities returns contextWindow from pi-ai registry for known models", async () => {
     const p = new PiAiProvider("openai");
     const caps = p.modelCapabilities("gpt-5");
     expect(caps).toBeDefined();
@@ -148,7 +148,7 @@ describe("PiAiProvider — live-registry modelCapabilities", () => {
     expect(caps!.tokenEncoding).toBe("o200k_base");
   });
 
-  it("modelCapabilities returns undefined for models not in the registry", () => {
+  it("modelCapabilities returns undefined for models not in the registry", async () => {
     const p = new PiAiProvider("openai");
     expect(p.modelCapabilities("totally-unknown-model")).toBeUndefined();
   });
@@ -165,12 +165,13 @@ describe("ModelRouter.getMaxContextTokens — throws on missing caps", () => {
     } as unknown as ModelProvider;
   }
 
-  it("throws with a helpful message referencing MODEL_CAPABILITIES and defaultContextWindow", () => {
+  it("throws with a helpful message referencing MODEL_CAPABILITIES and defaultContextWindow", async () => {
     const router = new ModelRouter(makeConfig({
       providers: {
         myprov: { priority: 10, models: ["unknown-model"] },
       },
     }));
+    await router.init();
     const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
     providers.clear();
     providers.set("myprov", makeProvider("myprov", undefined));
@@ -180,12 +181,13 @@ describe("ModelRouter.getMaxContextTokens — throws on missing caps", () => {
     );
   });
 
-  it("router.countTokens falls back to cl100k_base when caps are missing (no throw)", () => {
+  it("router.countTokens falls back to cl100k_base when caps are missing (no throw)", async () => {
     const router = new ModelRouter(makeConfig({
       providers: {
         myprov: { priority: 10, models: ["unknown-model"] },
       },
     }));
+    await router.init();
     const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
     providers.clear();
     const provider = {
@@ -208,21 +210,23 @@ describe("ModelRouter.getMaxContextTokens — throws on missing caps", () => {
 });
 
 describe("ModelRouter — defaultContextWindow propagation for ollama / llamacpp", () => {
-  it("ollama defaultContextWindow surfaces through router.getMaxContextTokens", () => {
+  it("ollama defaultContextWindow surfaces through router.getMaxContextTokens", async () => {
     const router = new ModelRouter(makeConfig({
       providers: {
         ollama: { priority: 10, models: ["unknown-local-weight"], defaultContextWindow: 32_768 },
       },
     }));
+    await router.init();
     expect(router.getMaxContextTokens("ollama/unknown-local-weight")).toBe(32_768);
   });
 
-  it("llamacpp defaultContextWindow surfaces through router.getMaxContextTokens", () => {
+  it("llamacpp defaultContextWindow surfaces through router.getMaxContextTokens", async () => {
     const router = new ModelRouter(makeConfig({
       providers: {
         llamacpp: { priority: 10, models: ["unknown"], defaultContextWindow: 16_384 },
       },
     }));
+    await router.init();
     expect(router.getMaxContextTokens("llamacpp/unknown")).toBe(16_384);
   });
 });

@@ -70,6 +70,7 @@ const PROVIDER_TO_OAUTH: Record<string, string> = {
 
 export class ModelRouter {
   private providers = new Map<string, ModelProvider>();
+  private readonly config: SaivageConfig;
   private failoverChains: Record<string, string[]>;
   private modelEquivalents: Map<string, string[]>;
   private modelAssignments: Record<string, string | string[] | undefined>;
@@ -88,18 +89,32 @@ export class ModelRouter {
   private static readonly MAX_BACKOFF_MS = 10 * 60 * 1000;
 
   constructor(config: SaivageConfig) {
+    this.config = config;
     this.failoverChains = config.failover;
     this.modelAssignments = config.models as Record<string, string | string[] | undefined>;
     this.providerConfigs = config.providers as Record<string, RuntimeProviderConfigLike>;
-    this.initProviders(config);
+    // Equivalence index defaults to empty; populated by init() once
+    // providers are registered (init reads OAuth state, so it must be
+    // async).
+    this.modelEquivalents = new Map<string, string[]>();
+  }
+
+  /**
+   * Two-phase construction: the constructor only captures config; this
+   * method does the async work (OAuth state probes inside
+   * `shouldRegisterProvider`) and the equivalence-index build that
+   * depends on the populated provider map.
+   */
+  async init(): Promise<void> {
+    await this.initProviders(this.config);
 
     // Build equivalence index: manual entries + autodiscovered from providers
-    const manualEquivs = buildModelEquivalenceIndex(config.modelEquivalents);
+    const manualEquivs = buildModelEquivalenceIndex(this.config.modelEquivalents);
     const discovered = this.discoverModelEquivalents();
     this.modelEquivalents = mergeEquivalenceIndexes(manualEquivs, discovered);
   }
 
-  private initProviders(config: SaivageConfig): void {
+  private async initProviders(config: SaivageConfig): Promise<void> {
     void config;
 
     const knownProviders = [
@@ -114,7 +129,7 @@ export class ModelRouter {
     ];
 
     for (const providerName of knownProviders) {
-      if (!this.shouldRegisterProvider(providerName)) continue;
+      if (!(await this.shouldRegisterProvider(providerName))) continue;
       const provider = this.createProvider(providerName);
       if (provider) this.providers.set(providerName, provider);
     }
@@ -181,7 +196,7 @@ export class ModelRouter {
     const headers = Object.keys(mergedHeaders).length > 0 ? mergedHeaders : undefined;
 
     if (options.authProfileKey) {
-      const explicitProfile = getProfileByKey(options.authProfileKey);
+      const explicitProfile = await getProfileByKey(options.authProfileKey);
       if (explicitProfile?.provider === oauthId) {
         const key = await getOAuthApiKey(oauthId, { profileKey: options.authProfileKey, headers });
         if (key) return key;
@@ -727,20 +742,19 @@ export class ModelRouter {
     const parsed = parseAccountRef(accountRef.includes(".") ? accountRef : `${providerName}.${accountRef}`);
     return parsed.provider === providerName ? parsed.account : undefined;
   }
-
-  private shouldRegisterProvider(providerName: string): boolean {
+  private async shouldRegisterProvider(providerName: string): Promise<boolean> {
     const cfg = this.providerConfigs[providerName];
     const hasAccounts = Object.keys(cfg?.accounts ?? {}).length > 0;
 
     switch (providerName) {
       case "github-copilot":
-        return !!cfg || hasAccounts || hasOAuthCredentials("github-copilot");
+        return !!cfg || hasAccounts || (await hasOAuthCredentials("github-copilot"));
       case "anthropic":
-        return !!cfg || hasAccounts || hasOAuthCredentials("anthropic") || !!process.env["ANTHROPIC_API_KEY"];
+        return !!cfg || hasAccounts || (await hasOAuthCredentials("anthropic")) || !!process.env["ANTHROPIC_API_KEY"];
       case "openai":
         return !!cfg || hasAccounts || !!process.env["OPENAI_API_KEY"];
       case "openai-codex":
-        return !!cfg || hasAccounts || hasOAuthCredentials("openai-codex") || !!process.env["OPENAI_CODEX_API_KEY"];
+        return !!cfg || hasAccounts || (await hasOAuthCredentials("openai-codex")) || !!process.env["OPENAI_CODEX_API_KEY"];
       case "opencode":
         return !!cfg || hasAccounts || !!process.env["OPENCODE_API_KEY"];
       case "opencode-go":

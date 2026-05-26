@@ -34,46 +34,51 @@ describe("ModelRouter", () => {
     vi.restoreAllMocks();
   });
 
-  it("resolves model for role", () => {
+  it("resolves model for role", async () => {
     const router = new ModelRouter(makeConfig());
+    await router.init();
     expect(router.resolveModelForRole("coder")).toBe(
       "anthropic/claude-sonnet-4-20250514",
     );
   });
 
-  it("falls back to default for unknown role", () => {
+  it("falls back to default for unknown role", async () => {
     const router = new ModelRouter(makeConfig());
+    await router.init();
     expect(router.resolveModelForRole("unknown")).toBe(
       "anthropic/claude-sonnet-4-20250514",
     );
   });
 
-  it("uses the first configured model when a role has an ordered model list", () => {
+  it("uses the first configured model when a role has an ordered model list", async () => {
     const router = new ModelRouter(makeConfig({
       models: {
         coder: ["kimi-k2.6", "deepseek-v4-pro"],
         default: ["deepseek-v4-flash"],
       },
     }));
+    await router.init();
 
     expect(router.resolveModelForRole("coder")).toBe("kimi-k2.6");
     expect(router.resolveModelForRole("unknown")).toBe("deepseek-v4-flash");
   });
 
-  it("lists registered providers", () => {
+  it("lists registered providers", async () => {
     const router = new ModelRouter(makeConfig());
+    await router.init();
     const providers = router.listProviders();
     // Ollama is always registered
     expect(providers).toContain("ollama");
   });
 
-  it("follows model-specific failover chains recursively", () => {
+  it("follows model-specific failover chains recursively", async () => {
     const router = new ModelRouter(makeConfig({
       failover: {
         "github-copilot/gpt-5.5": ["github-copilot/gpt-5.4"],
         "github-copilot/gpt-5.4": ["github-copilot/claude-sonnet-4.6"],
       },
     }));
+    await router.init();
 
     const chain = (router as unknown as { buildChain(modelSpec: string): string[] }).buildChain("github-copilot/gpt-5.5");
 
@@ -84,12 +89,13 @@ describe("ModelRouter", () => {
     ]);
   });
 
-  it("uses equivalent models interchangeably", () => {
+  it("uses equivalent models interchangeably", async () => {
     const router = new ModelRouter(makeConfig({
       modelEquivalents: {
         "github-copilot/gpt-5.4": ["openai-codex/gpt-5.4"],
       },
     }));
+    await router.init();
 
     const fromCopilot = (router as unknown as { buildChain(modelSpec: string): string[] }).buildChain("github-copilot/gpt-5.4");
     const fromCodex = (router as unknown as { buildChain(modelSpec: string): string[] }).buildChain("openai-codex/gpt-5.4");
@@ -104,7 +110,7 @@ describe("ModelRouter", () => {
     ]);
   });
 
-  it("expands equivalent models before lower-tier failover", () => {
+  it("expands equivalent models before lower-tier failover", async () => {
     const router = new ModelRouter(makeConfig({
       modelEquivalents: {
         "github-copilot/gpt-5.4": ["openai-codex/gpt-5.4"],
@@ -113,6 +119,7 @@ describe("ModelRouter", () => {
         "github-copilot/gpt-5.4": ["github-copilot/claude-sonnet-4.6"],
       },
     }));
+    await router.init();
 
     const chain = (router as unknown as { buildChain(modelSpec: string): string[] }).buildChain("github-copilot/gpt-5.4");
 
@@ -123,13 +130,14 @@ describe("ModelRouter", () => {
     ]);
   });
 
-  it("orders provider-independent model candidates by provider priority", () => {
+  it("orders provider-independent model candidates by provider priority", async () => {
     const router = new ModelRouter(makeConfig({
       providers: {
         alpha: { priority: 20, models: ["shared-model"] },
         beta: { priority: 10, models: ["shared-model"] },
       },
     }));
+    await router.init();
     const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
     providers.clear();
     providers.set("alpha", makeProvider("alpha", vi.fn(async () => successfulResponse("alpha"))));
@@ -147,6 +155,7 @@ describe("ModelRouter", () => {
         beta: { priority: 20, models: ["shared-model"], quota: { remainingTokens: 1000 } },
       },
     }));
+    await router.init();
     const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
     providers.clear();
     providers.set("alpha", makeProvider("alpha", vi.fn(async () => successfulResponse("alpha"))));
@@ -158,13 +167,14 @@ describe("ModelRouter", () => {
     expect(chain).toEqual(["beta/shared-model", "alpha/shared-model"]);
   });
 
-  it("resolves context window for provider-independent model candidates", () => {
+  it("resolves context window for provider-independent model candidates", async () => {
     const router = new ModelRouter(makeConfig({
       providers: {
         alpha: { priority: 20, models: ["shared-model"] },
         beta: { priority: 10, models: ["shared-model"] },
       },
     }));
+    await router.init();
     const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
     providers.clear();
     providers.set("alpha", { ...makeProvider("alpha", vi.fn(async () => successfulResponse("alpha"))), modelCapabilities: () => ({ contextWindow: 111, tokenEncoding: "cl100k_base" }) });
@@ -184,6 +194,7 @@ describe("ModelRouter", () => {
         "model-a": ["model-b"],
       },
     }));
+    await router.init();
     const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
     providers.clear();
 
@@ -217,6 +228,7 @@ describe("ModelRouter", () => {
         },
       },
     }));
+    await router.init();
     const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
     providers.clear();
 
@@ -247,6 +259,7 @@ describe("ModelRouter", () => {
         },
       },
     }));
+    await router.init();
     const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
     providers.clear();
 
@@ -264,7 +277,7 @@ describe("ModelRouter", () => {
     expect(response.modelSpec).toBe("gateway/shared-model");
   });
 
-  it("does not carry provider-only failover onto models with explicit equivalents", () => {
+  it("does not carry provider-only failover onto models with explicit equivalents", async () => {
     const router = new ModelRouter(makeConfig({
       modelEquivalents: {
         "github-copilot/claude-sonnet-4.6": ["openai-codex/gpt-5.3-codex"],
@@ -273,6 +286,7 @@ describe("ModelRouter", () => {
         "github-copilot": ["openai-codex"],
       },
     }));
+    await router.init();
 
     const chain = (router as unknown as { buildChain(modelSpec: string): string[] }).buildChain("github-copilot/claude-sonnet-4.6");
 
@@ -289,6 +303,7 @@ describe("ModelRouter", () => {
         "primary/model-a": ["fallback/model-b"],
       },
     }));
+    await router.init();
     const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
     providers.clear();
 
@@ -326,6 +341,7 @@ describe("ModelRouter", () => {
         "primary/model-a": ["fallback/model-b"],
       },
     }));
+    await router.init();
     const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
     providers.clear();
 
@@ -376,6 +392,7 @@ describe("ModelRouter", () => {
         "primary/model-a": ["fallback/model-b"],
       },
     }));
+    await router.init();
     const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
     providers.clear();
 
@@ -410,6 +427,7 @@ describe("ModelRouter", () => {
 
   it("reports provider and model separately when all providers fail", async () => {
     const router = new ModelRouter(makeConfig());
+    await router.init();
     const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
     providers.clear();
 
@@ -437,43 +455,38 @@ describe("ModelRouter", () => {
         },
       },
     }));
+    await router.init();
 
     await expect(router.resolveApiKey("github-copilot", { accountRef: "github-copilot.main" })).resolves.toBe("account-key");
     await expect(router.resolveApiKey("github-copilot")).resolves.toBe("account-key");
   });
 
   it("F15: resolves OAuth credentials lazily without eager startup injection", async () => {
-    const { mkdtempSync: mkTmp, mkdirSync: mkDir, writeFileSync: writeFile, rmSync: rm, chmodSync } = await import("node:fs");
+    const { mkdtemp, mkdir, rm } = await import("node:fs/promises");
     const { tmpdir: getTmp } = await import("node:os");
     const { join: joinPath } = await import("node:path");
-    const projectRoot = mkTmp(joinPath(getTmp(), "saivage-f15-router-"));
+    const { saveProfile } = await import("../auth/index.js");
+    const projectRoot = await mkdtemp(joinPath(getTmp(), "saivage-f15-router-"));
     const saivageDir = joinPath(projectRoot, ".saivage");
-    mkDir(saivageDir, { recursive: true });
-    const profiles = {
-      version: 1,
-      profiles: {
-        "anthropic.main": {
-          type: "oauth",
-          provider: "anthropic",
-          access: "lazy-access-token",
-          refresh: "refresh",
-          expires: Date.now() + 60_000,
-        },
-      },
-    };
-    const fp = joinPath(saivageDir, "auth-profiles.json");
-    writeFile(fp, JSON.stringify(profiles), "utf-8");
-    try { chmodSync(fp, 0o600); } catch { /* ignore on Windows */ }
+    await mkdir(saivageDir, { recursive: true });
     const prevRoot = process.env["SAIVAGE_ROOT"];
     process.env["SAIVAGE_ROOT"] = saivageDir;
     try {
+      await saveProfile("anthropic.main", {
+        type: "oauth",
+        provider: "anthropic",
+        access: "lazy-access-token",
+        refresh: "refresh",
+        expires: Date.now() + 60_000,
+      });
       const router = new ModelRouter(makeConfig());
+      await router.init();
       // No eager injection step here; first resolveApiKey must still find the token.
       await expect(router.resolveApiKey("anthropic")).resolves.toBe("lazy-access-token");
     } finally {
       if (prevRoot === undefined) delete process.env["SAIVAGE_ROOT"];
       else process.env["SAIVAGE_ROOT"] = prevRoot;
-      rm(projectRoot, { recursive: true, force: true });
+      await rm(projectRoot, { recursive: true, force: true });
     }
   });
 });

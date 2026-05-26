@@ -1,4 +1,4 @@
-export { getOAuthProvider, getOAuthProviders, getOAuthApiKey, hasOAuthCredentials, hasOAuthProfile, loadProfiles, saveProfile, getProfileByKey } from "./store.js";
+export { getOAuthProvider, getOAuthProviders, getOAuthApiKey, hasOAuthCredentials, hasOAuthProfile, loadProfiles, saveProfile, saveProfiles, removeProfiles, getProfileByKey } from "./store.js";
 export type { OAuthProviderDef, OAuthCredentials, OAuthLoginCallbacks } from "./types.js";
 export { openaiCodexOAuthProvider } from "./openai-codex.js";
 export { anthropicOAuthProvider } from "./anthropic.js";
