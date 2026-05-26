@@ -32,7 +32,6 @@ import { loadRolePrompt } from "./prompts.js";
 import { buildEagerBlock } from "../knowledge/eagerLoader.js";
 import {
   dispatchLocalCommand,
-  restartPlanner,
   type LocalCommandContext,
 } from "../chat/localCommands.js";
 
@@ -206,14 +205,6 @@ export class ChatAgent extends BaseAgent implements Agent {
       return;
     }
 
-    const restartResult = await this.tryHandleExplicitPlannerRestart(content.trim());
-    if (restartResult !== null) {
-      await this.channel.send(restartResult);
-      this.recordMessage("assistant", restartResult);
-      await this.saveChatLog();
-      return;
-    }
-
     // Inject into conversation
     this.injectMessage(content);
 
@@ -359,12 +350,6 @@ export class ChatAgent extends BaseAgent implements Agent {
     }
 
     return lines.join("\n");
-  }
-
-  private async tryHandleExplicitPlannerRestart(content: string): Promise<string | null> {
-    if (!/\b(restart|reset|relaunch)\b/i.test(content)) return null;
-    if (!/\bplanner\b/i.test(content)) return null;
-    return restartPlanner(this.localCommandContext(), content);
   }
 
   /** Handle a system event — format and push as notification. */

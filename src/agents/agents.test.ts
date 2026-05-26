@@ -19,6 +19,7 @@ import { EventBus } from "../events/bus.js";
 import type { ChatChannel } from "../channels/types.js";
 import type { AgentContext, ManagerInput, WorkerInput } from "./types.js";
 import type { ChatRequest, ChatResponse } from "../providers/types.js";
+import type { PlannerControl } from "../server/bootstrap.js";
 
 let tmpDir: string;
 
@@ -323,6 +324,70 @@ describe("ChatAgent", () => {
 
     expect(routerCalls).toHaveLength(5);
     expect(channel.sent).toHaveLength(6);
+
+    channel.close();
+    await runPromise;
+  });
+
+  it("does not restart the Planner on free text containing planner and restart", async () => {
+    const routerCalls: ChatRequest[] = [];
+    const router = {
+      getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
+      chat: async (request: ChatRequest): Promise<ChatResponse> => {
+        routerCalls.push(request);
+        return {
+          content: "ok",
+          toolCalls: [],
+          finishReason: "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+
+    const restartCalls: Array<{ reason: string; requestedBy: string }> = [];
+    const plannerControl = {
+      requestRestart: (reason: string, requestedBy: string) => {
+        restartCalls.push({ reason, requestedBy });
+        return { requestedAt: new Date().toISOString() };
+      },
+    } as unknown as PlannerControl;
+
+    const bus = new EventBus();
+    const publishedRestartEvents: string[] = [];
+    const originalPublish = bus.publish.bind(bus);
+    bus.publish = async (event) => {
+      if (
+        event.type === "plan_updated" &&
+        event.summary.startsWith("Planner restart requested from")
+      ) {
+        publishedRestartEvents.push(event.summary);
+      }
+      return originalPublish(event);
+    };
+
+    const channel = new TestChatChannel();
+    const agent = new ChatAgent(
+      makeChatContext(tmpDir, router),
+      { channel: "web", sessionId: "web-1" },
+      channel,
+      bus,
+      undefined,
+      plannerControl,
+    );
+
+    const runPromise = agent.run();
+    await channel.waitForHandler();
+
+    await channel.receive("Why did the planner restart yesterday?");
+
+    expect(restartCalls).toHaveLength(0);
+    expect(publishedRestartEvents).toHaveLength(0);
+    expect(routerCalls).toHaveLength(1);
+    expect(JSON.stringify(routerCalls[0].messages)).toContain(
+      "Why did the planner restart yesterday?",
+    );
+    expect(channel.sent).toEqual(["ok"]);
 
     channel.close();
     await runPromise;
