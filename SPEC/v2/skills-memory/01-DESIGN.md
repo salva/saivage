@@ -47,7 +47,7 @@ distinction.
 | 5.9 web UI / chat | **Chat commands now; web UI deferred to one hook point** | FR-22 is the testable requirement; UI is later work. |
 | 5.10 cross-agent visibility | **Inspector + Chat always readers; others honour `target_agents`** (Option C) | Matches Inspector's audit posture and Chat's user-facing role. |
 | 5.11 inspections relation | **Inspection → memory by reference** (Option A) | Preserves both lifecycles; no schema conflation. |
-| 5.12 compaction sufficiency | **Memory carries only what `plan-history.json` cannot** (Option A) | No duplication; FR-31 pins the boundary test. |
+| 5.12 compaction sufficiency | **Memory carries only what embedded plan history cannot** (Option A) | No duplication; FR-31 pins the boundary test. |
 
 ---
 
@@ -848,7 +848,7 @@ Bulleted; Phase C turns these into a plan.
   appear post-compaction; non-Planner skips hook; 5-turn cap.
 - **Regression-pin (FR-31a-g):** one test per defect, suffixed with the
   FR-31 letter.
-- **Boundary (FR-31 / §5.12):** `plan-history.json` round-trip asserts
+- **Boundary (FR-31 / §5.12):** `plan.json` embedded-history round-trip asserts
   Planner-recovery fields are history-derived, not duplicated in memory.
 - **Existing tests deleted-and-replaced:** `src/agents/agents.test.ts`
   (imports `resolveSkills`, `formatSkillsForPrompt`, `SkillIndexSchema`)

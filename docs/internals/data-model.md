@@ -14,8 +14,7 @@ both at write time (validation before atomic write) and at read time
 | Schema | Persisted as |
 |--------|-------------|
 | `ProjectConfigSchema` | `<project>/.saivage/config.json` |
-| `PlanSchema` | `<project>/.saivage/plan.json` |
-| `PlanHistorySchema` | `<project>/.saivage/plan-history.json` |
+| `PlanDocumentSchema` | `<project>/.saivage/plan.json` |
 | `TaskListSchema` | `<project>/.saivage/stages/<id>/tasks.json` |
 | `TaskReportSchema` | `<project>/.saivage/stages/<id>/reports/<task-id>.json` |
 | `StageSummarySchema` | `<project>/.saivage/stages/<id>/summary.json` |

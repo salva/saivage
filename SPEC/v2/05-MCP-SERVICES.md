@@ -244,7 +244,7 @@ Noise elements (scripts, styles, nav, ads) are automatically removed.
 **Source:** `src/mcp/plan-server.ts`
 **Full specification:** [03-PLAN-MCP-SERVICE.md](03-PLAN-MCP-SERVICE.md)
 
-Manages `plan.json` and `plan-history.json`. All reads and writes go through this service — no agent touches these files directly.
+Manages `plan.json`, including embedded plan history. All reads and writes go through this service — no agent touches the file directly.
 
 ### Tools
 
@@ -261,6 +261,7 @@ Manages `plan.json` and `plan-history.json`. All reads and writes go through thi
 | `plan_get_history(last_n?)` | Read plan history | no |
 | `plan_init(stages?)` | Initialize empty plan | yes |
 | `plan_commit(message)` | Commit plan files to git | yes |
+| `plan_done(reason)` | Signal verified project completion | no |
 
 **Atomicity:** All writes use temp-file + rename. Schema validation on every write.
 **Error codes:** `PLAN_NOT_FOUND`, `STAGE_NOT_FOUND`, `STAGE_EXISTS`, `VALIDATION_ERROR`, `IO_ERROR`.

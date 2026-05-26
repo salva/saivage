@@ -587,7 +587,6 @@ function makeReviewerContext(root: string, router: unknown, mcpRuntimeOverride?:
       },
       paths: {
         plan: join(saivageDir, "plan.json"),
-        planHistory: join(saivageDir, "plan-history.json"),
         stages: join(saivageDir, "stages"),
         notes: join(saivageDir, "notes"),
         inspections: join(saivageDir, "inspections"),

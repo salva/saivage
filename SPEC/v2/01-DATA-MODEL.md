@@ -66,14 +66,14 @@ interface ProjectConfig {
 
 ---
 
-## 3. Plan
+## 3. Active Plan View
 
 **Path:** `<project>/.saivage/plan.json`
 
-The active plan. Contains only stages that remain to be done.
+The active plan projection. Contains only stages that remain to be done.
 
 ```typescript
-interface Plan {
+interface ActivePlanView {
   updated_at: string;
   current_stage_id: string | null;   // stage currently being executed
   stages: Stage[];
@@ -87,19 +87,29 @@ interface Stage {
   acceptance_criteria: string[];     // how to know the stage is done
   references: string[];              // document paths relative to project root
   tags: string[];                    // for skill matching
+  started_at?: string;               // set when the stage becomes current
 }
 ```
 
 ---
 
-## 4. Plan History
+## 4. Embedded Plan History
 
-**Path:** `<project>/.saivage/plan-history.json`
+**Path:** `<project>/.saivage/plan.json` (`history` field)
 
-Archive of terminal stages (completed, failed, escalated, aborted). Append-only.
+Archive of terminal stages (completed, failed, escalated, aborted). The
+history is embedded in the authoritative plan document so completing a stage
+is a single atomic write.
 
 ```typescript
-interface PlanHistory {
+interface PlanDocument {
+  updated_at: string;
+  current_stage_id: string | null;
+  stages: Stage[];
+  history: CompletedStage[];
+}
+
+interface PlanHistoryView {
   stages: CompletedStage[];
 }
 
@@ -418,13 +428,15 @@ The Planner reads it and decides whether to revise the stage, remove it, split i
 ProjectConfig
      │
      ▼
-   Plan ──────────────────────► PlanHistory
-     │                              ▲
-     │ stages[]                     │ on completion
-     ▼                              │
-   Stage ──► Manager ──► TaskList ──┤
-                           │        │
-                           ▼        │
+   PlanDocument
+     │
+     ├─ stages[] ───────────► Stage
+     │                         │
+     └─ history[] ◄────────────┤ on completion
+                               ▼
+             Manager ──► TaskList
+                           │
+                           ▼
                          Task[] ────┤
                            │        │
                            ▼        │
@@ -465,7 +477,6 @@ IDs are generated with nanoid (12 chars, alphanumeric), prefixed by entity type.
 | Document                   | Created by   | Updated by   | Deleted when              |
 |----------------------------|-------------|-------------|---------------------------|
 | `plan.json`                | Plan MCP    | Plan MCP    | Never (overwritten)       |
-| `plan-history.json`        | Plan MCP    | Plan MCP    | Never (append-only)       |
 | `stages/<id>/tasks.json`   | Manager     | Manager     | Never (archived)          |
 | `stages/<id>/reports/*.json`| Coder/Researcher | —     | Never (archived)          |
 | `stages/<id>/summary.json` | Manager     | —           | Never (archived)          |

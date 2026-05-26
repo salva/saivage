@@ -64,7 +64,7 @@ export const ROSTER = [
     abortPriority: null,
     selfCheckFrequency: 30,
     convention: {
-      writeTerritory: [".saivage/plan.json", ".saivage/plan-history.json"],
+      writeTerritory: [".saivage/plan.json"],
       excludeTerritory: ["src/", "research/"],
       description: "Planner manages plan state via Plan MCP only",
     },

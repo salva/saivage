@@ -203,14 +203,18 @@ describe("FR-31f (read-side) — redactForRead masks provider tokens on the wire
   });
 });
 
-// ─── §5.12 — plan-history vs memory boundary (no cross-store duplication) ──
+// ─── §5.12 — plan history vs memory boundary (no cross-store duplication) ──
 
-describe("§5.12 — plan-history and knowledge stores stay distinct", () => {
-  it("creating a memory does not write to plan-history.json", async () => {
-    const planHist = join(saivage, "plan-history.json");
-    // Seed plan-history with a known shape so we can detect mutations.
-    const seed = { stages: [] as unknown[] };
-    writeFileSync(planHist, JSON.stringify(seed), "utf-8");
+describe("§5.12 — plan history and knowledge stores stay distinct", () => {
+  it("creating a memory does not mutate plan.json history", async () => {
+    const planPath = join(saivage, "plan.json");
+    const seed = {
+      updated_at: new Date().toISOString(),
+      current_stage_id: null,
+      stages: [] as unknown[],
+      history: [] as unknown[],
+    };
+    writeFileSync(planPath, JSON.stringify(seed), "utf-8");
 
     await createMemory(
       saivage,
@@ -223,7 +227,7 @@ describe("§5.12 — plan-history and knowledge stores stay distinct", () => {
       AUTHOR,
     );
 
-    const after = JSON.parse(readFileSync(planHist, "utf-8")) as { stages: unknown[] };
+    const after = JSON.parse(readFileSync(planPath, "utf-8")) as typeof seed;
     expect(after).toEqual(seed);
   });
 });

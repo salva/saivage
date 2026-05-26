@@ -1,10 +1,10 @@
 import { join } from "node:path";
 import { readDocLenient } from "../store/documents.js";
 import {
-  PlanHistorySchema,
-  PlanSchema,
+  PlanDocumentSchema,
   TaskListSchema,
-  type Plan,
+  type ActivePlanView,
+  type PlanDocument,
   type Stage,
 } from "../types.js";
 import type { AgentContext } from "./types.js";
@@ -19,8 +19,9 @@ export async function buildHandoffContext(
   ctx: AgentContext,
   options: HandoffOptions = {},
 ): Promise<string> {
-  const plan = await readDocLenient(ctx.project.paths.plan, PlanSchema);
-  const history = await readDocLenient(ctx.project.paths.planHistory, PlanHistorySchema);
+  const doc = await readDocLenient(ctx.project.paths.plan, PlanDocumentSchema);
+  const plan = doc ? activePlanView(doc) : null;
+  const history = doc ? { stages: doc.history } : null;
   const stage = options.stage ?? findStage(plan, options.stageId);
 
   const lines: string[] = [
@@ -107,9 +108,17 @@ export async function buildHandoffContext(
   return lines.join("\n");
 }
 
-function findStage(plan: Plan | null, stageId?: string): Stage | undefined {
+function findStage(plan: ActivePlanView | null, stageId?: string): Stage | undefined {
   if (!stageId || !plan?.stages) return undefined;
   return plan.stages.find((stage) => stage.id === stageId);
+}
+
+function activePlanView(doc: PlanDocument): ActivePlanView {
+  return {
+    updated_at: doc.updated_at,
+    current_stage_id: doc.current_stage_id,
+    stages: doc.stages,
+  };
 }
 
 function formatList(items: string[] | undefined): string {

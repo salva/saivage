@@ -529,7 +529,7 @@ Conventions: roles abbreviated as in §C.1 (Pl/Mg/Co/Re/Da/In/Rv/De/Ch). Every W
   - `fr31f` (write rejection): `create_memory` body containing `sk-AAAA…BBBB` → `SECRET_DETECTED`; `reason` does not echo the match; one `rejected` audit. (FR-27, FR-31f)
   - `fr31f_read` (read-time redaction, round-1 blocking 8): a record with a secret-shaped body on disk → `read_skill`/`get_memory`/`search_*` return the body with `[REDACTED]` substituted and `redacted_spans` populated. (FR-27)
   - `fr31g`: two parallel writes to same scope dir → either two distinct records or one deterministic winner; `index.json` always parseable; both records present when both writes succeed (per-scope index mutex, WI-03). (FR-31g)
-  - §5.12 boundary: `plan-history.json` round-trip — replay representative history, assert Planner-recovery fields are history-derived, not duplicated in memory.
+  - §5.12 boundary: `plan.json` embedded-history round-trip — replay representative history, assert Planner-recovery fields are history-derived, not duplicated in memory.
 - **Tests added**: `regression.test.ts`.
 - **Build-safe?** yes.
 - **Depends on**: WI-16.
@@ -657,7 +657,7 @@ sudo lxc-attach -n "$C" -- bash -lc "
 # with `index.json` + empty `audit.jsonl` in each leaf; appends
 # `skills/sessions/` and `memory/sessions/` to `.saivage/.gitignore` if not
 # already present; leaves every other `.saivage/` file (`saivage.json`,
-# `auth-profiles.json`, `plan.json`, `plan-history.json`, `runtime/`,
+# `auth-profiles.json`, `plan.json`, `runtime/`,
 # `tmp/`, `notes/`, etc.) byte-untouched.
 
 # Post-init verification — confirm the upgrade succeeded BEFORE restart.

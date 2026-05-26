@@ -22,25 +22,26 @@ Planner's mental model.
 | `plan_set_current(id)` | Move the cursor. |
 | `plan_complete_stage(id, result, summary)` | Archive a stage to history. |
 | `plan_get_history()` | Read the archive. |
-| `plan_commit(message?)` | Commit `.saivage/plan*.json` to git. |
+| `plan_done(reason)` | Signal verified project completion. |
+| `plan_commit(message?)` | Commit `.saivage/plan.json` to git. |
 
 ## Concurrency model
 
 Only the Planner holds plan-mutation tools. The Manager and Inspector see
 read-only variants. The Plan service implements **serialized writes**:
-each mutation reads the file, validates the result against
-`PlanSchema`/`PlanHistorySchema`, and writes atomically (temp + rename).
+each mutation updates the in-memory `PlanDocument`, validates it against
+`PlanDocumentSchema`, and writes atomically (temp + rename). Read tools
+bypass the writer queue and return a cloned snapshot.
 
 If multiple write requests arrive in flight (it can happen during parallel
 dispatch), they are queued in arrival order.
 
 ## Storage
 
-- `plan.json` — `{ updated_at, current_stage_id, stages[] }`.
-- `plan-history.json` — `{ stages: CompletedStage[] }`.
+- `plan.json` — `{ updated_at, current_stage_id, stages[], history[] }`.
 
-Both are committed to git by the agents (Planner via `plan_commit`,
-Manager indirectly via stage summaries).
+It is committed to git by the Planner via `plan_commit`; Manager output is
+persisted separately via stage summaries.
 
 ## Stage schema
 
@@ -53,6 +54,7 @@ interface Stage {
   acceptance_criteria: string[];
   references: string[];
   tags: string[];
+  started_at?: string;
 }
 ```
 
@@ -65,9 +67,10 @@ the stage; `tags` drive skill auto-attachment.
 type StageResult = "completed" | "failed" | "escalated" | "aborted";
 ```
 
+`plan_set_current(id)` stamps `started_at` once on the active `Stage`.
 `plan_complete_stage(id, result, summary)` constructs a `CompletedStage`
-record by merging the `Stage` with the runtime's started/completed
-timestamps and any escalation context, then appends to history.
+record from that stored start time plus the completion timestamp and any
+escalation context, then appends to embedded history.
 
 ## Why MCP and not direct file I/O?
 

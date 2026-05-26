@@ -20,7 +20,7 @@ down).
 ## Inputs
 
 - `ProjectConfig.objectives`
-- Active plan (`plan.json`) and history (`plan-history.json`) — read via
+- Active plan and history (`plan.json`) — read via
   the [Plan MCP service](./plan-mcp).
 - Stage summaries returned by `run_manager`.
 - User notes (injected by the runtime — see [Notes](/guide/notes)).
@@ -35,13 +35,13 @@ Mutates the plan via the Plan MCP service:
   `plan_set_current` for incremental updates.
 - `plan_complete_stage(stage_id, result, summary)` when a Manager returns.
 
-The runtime then writes `plan.json` / `plan-history.json` atomically.
+The runtime then writes `plan.json` atomically.
 
 ## Tools advertised
 
 | Category | Tools |
 |----------|-------|
-| Plan MCP | `plan_get`, `plan_get_stage`, `plan_get_current_stage`, `plan_set_stages`, `plan_add_stage`, `plan_remove_stage`, `plan_set_current`, `plan_complete_stage`, `plan_get_history`, `plan_init`, `plan_commit` |
+| Plan MCP | `plan_get`, `plan_get_stage`, `plan_get_current_stage`, `plan_set_stages`, `plan_add_stage`, `plan_remove_stage`, `plan_set_current`, `plan_complete_stage`, `plan_get_history`, `plan_init`, `plan_commit`, `plan_done` |
 | Dispatch | `run_manager`, `run_inspector` |
 | Filesystem | `read_file`, `list_dir`, `search_files` |
 | Git | `git_status`, `git_log`, `git_diff` |

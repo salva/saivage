@@ -29,7 +29,6 @@ export interface ProjectContext {
   // Convenience resolved paths
   paths: {
     plan: string;
-    planHistory: string;
     stages: string;
     notes: string;
     inspections: string;
@@ -71,7 +70,6 @@ export async function loadProject(projectRoot: string): Promise<ProjectContext> 
 
   const paths = {
     plan: join(saivageDir, "plan.json"),
-    planHistory: join(saivageDir, "plan-history.json"),
     stages: join(saivageDir, "stages"),
     notes: join(saivageDir, "notes"),
     inspections: join(saivageDir, "inspections"),

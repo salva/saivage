@@ -464,7 +464,7 @@ compaction is:
   time).
 - Permanent user notes (re-injected by `NoteManager.getPermanentNotes()`).
 - Anything the Planner re-reads from disk on its first post-compaction
-  turn (`plan.json`, `plan-history.json`, latest stage summaries).
+  turn (`plan.json` including embedded history, latest stage summaries).
 
 What **does not** survive:
 
@@ -510,7 +510,7 @@ the current snapshot of project state (`plan.json`, `stage-history`,
 disk). It has no persistent record of past *failures*. If the project has
 escalated three times for the same root cause, the Inspector cannot say
 "this looks like the pattern we hit in stages s7, s12, s19" unless it
-re-derives that from `plan-history.json` and the underlying task reports
+re-derives that from embedded plan history and the underlying task reports
 every time. The Inspector's persistent `tools/inspector/` directory holds
 *scripts*, not *findings*.
 
@@ -1159,31 +1159,30 @@ compaction?
 
 ### 5.12 Compaction sufficiency (NB-5)
 
-**Question:** `plan-history.json` is append-only and never truncated
-([01-DATA-MODEL.md:472](../01-DATA-MODEL.md)). Together with
-`plan.json` and the existing compaction summary, what *additional*
+**Question:** `plan.json` carries embedded completion history. Together with
+the existing compaction summary, what *additional*
 recovery does a memory store actually provide? Stated differently:
 which Planner-recovery use cases are *not* solved by replaying
-`plan-history.json` and re-reading `plan.json` after compaction, and
+embedded plan history and re-reading `plan.json` after compaction, and
 therefore genuinely require a memory channel?
 
-- **Option A: Memory carries only what `plan-history.json` cannot.**
+- **Option A: Memory carries only what embedded plan history cannot.**
   Restrict the memory scope to (i) cross-stage *lessons* (§2.1),
   (ii) failure-mode patterns (§2.4), and (iii) project facts that are
   not stage-shaped (§2.3). Anything that is already a plan-history
   event MUST NOT be duplicated into memory.
 - **Option B: Memory is the only post-compaction recall surface.**
-  Treat `plan-history.json` as audit-only, never read at runtime.
+  Treat embedded plan history as audit-only, never read at runtime.
   All recall goes through memory. Simpler runtime, but discards the
   compaction-summary work that already exists and forces memory to
   re-encode plan structure.
 - **Option C: Dual-read.** Compaction-time re-injection (FR-15)
-  pulls from both `plan-history.json` (last N entries) and
+  pulls from both embedded plan history (last N entries) and
   `active`-status memory records. Highest recall, highest token cost,
   and requires an explicit dedup rule.
 
 A regression test (FR-31) MUST pin the chosen boundary: replay a
-representative `plan-history.json` and assert which Planner-recovery
+representative `plan.json` history and assert which Planner-recovery
 fields come from history vs. memory.
 
 ---

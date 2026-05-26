@@ -38,7 +38,7 @@ schema. This is the mechanism that keeps `plan.json`, `tasks.json`,
 
 | Caller | Reads | Writes |
 |--------|-------|--------|
-| Plan MCP | `plan.json`, `plan-history.json` | `plan.json`, `plan-history.json` |
+| Plan MCP | `plan.json` | `plan.json` |
 | Manager | references[] | `tasks.json`, `summary.json` |
 | Workers | `tasks.json` | `reports/<task-id>.json` |
 | Notes runtime | `notes/*.json` | `notes/*.json` |
@@ -57,7 +57,6 @@ location:
 ```ts
 interface ProjectPaths {
   plan: string;
-  planHistory: string;
   stages: string;
   notes: string;
   inspections: string;

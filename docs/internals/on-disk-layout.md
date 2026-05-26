@@ -9,8 +9,7 @@ producer and lifecycle.
 <project>/
 ├── .saivage/                       # Saivage-managed (mostly committed)
 │   ├── config.json                 # ProjectConfig
-│   ├── plan.json                   # active Plan
-│   ├── plan-history.json           # archived stages
+│   ├── plan.json                   # active PlanDocument with history
 │   ├── auth-profiles.json          # OAuth profiles (sensitive — gitignored)
 │   ├── notes/                      # user notes (one file per note)
 │   │   └── note-<id>.json
@@ -55,8 +54,7 @@ When `SAIVAGE_ROOT` points at a project's `.saivage/` directory, both
 | Path | Producer | Committed? | Survives restart? | Notes |
 |------|----------|------------|-------------------|-------|
 | `.saivage/config.json` | Operator (`saivage init`) | yes | yes | Source of objectives. |
-| `.saivage/plan.json` | Plan MCP service | yes | yes | Authoritative plan. |
-| `.saivage/plan-history.json` | Plan MCP service | yes | yes | Archive. |
+| `.saivage/plan.json` | Plan MCP service | yes | yes | Authoritative plan and embedded history. |
 | `.saivage/notes/*` | CLI / Chat agent | yes | yes | Cleaned up by runtime after Planner ack. |
 | `.saivage/stages/<id>/tasks.json` | Manager | yes | yes | One per active stage. |
 | `.saivage/stages/<id>/reports/<tid>.json` | Worker | yes | yes | One per task. |

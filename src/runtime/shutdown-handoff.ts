@@ -5,8 +5,7 @@
  */
 
 import {
-  PlanHistorySchema,
-  PlanSchema,
+  PlanDocumentSchema,
   RuntimeStateSchema,
   ShutdownRequestSchema,
   ShutdownSummarySchema,
@@ -36,8 +35,7 @@ export async function writeShutdownSummary(project: ProjectContext): Promise<Shu
   const shutdownStartedAt = new Date(shutdownStartedAtMs).toISOString();
   const request = await readOptionalDoc(project.paths.shutdownRequest, ShutdownRequestSchema, "shutdown request");
   const runtimeState = await readOptionalDoc(project.paths.runtimeState, RuntimeStateSchema, "runtime state");
-  const plan = await readOptionalDoc(project.paths.plan, PlanSchema, "plan");
-  const history = await readOptionalDoc(project.paths.planHistory, PlanHistorySchema, "plan history");
+  const planDoc = await readOptionalDoc(project.paths.plan, PlanDocumentSchema, "plan");
   const reason = request?.reason ?? DEFAULT_SHUTDOWN_REASON;
   const requestedAt = request?.requested_at ?? null;
   const runtimeStartedAtMs = runtimeState?.started_at ? Date.parse(runtimeState.started_at) : NaN;
@@ -55,7 +53,7 @@ export async function writeShutdownSummary(project: ProjectContext): Promise<Shu
     runtime_started_at: runtimeState?.started_at ?? null,
     runtime_updated_at: runtimeState?.updated_at ?? null,
     uptime_ms: Number.isFinite(runtimeStartedAtMs) ? completedAtMs - runtimeStartedAtMs : null,
-    current_stage_id: runtimeState?.current_stage_id ?? plan?.current_stage_id ?? null,
+    current_stage_id: runtimeState?.current_stage_id ?? planDoc?.current_stage_id ?? null,
     active_agents: (runtimeState?.active_agents ?? []).map((agent) => {
       const startedAtMs = Date.parse(agent.started_at);
       return {
@@ -63,10 +61,10 @@ export async function writeShutdownSummary(project: ProjectContext): Promise<Shu
         elapsed_ms: Number.isFinite(startedAtMs) ? completedAtMs - startedAtMs : null,
       };
     }),
-    plan: plan ? {
-      current_stage_id: plan.current_stage_id,
-      pending_stages: plan.stages.length,
-      history_stages: history?.stages.length ?? 0,
+    plan: planDoc ? {
+      current_stage_id: planDoc.current_stage_id,
+      pending_stages: planDoc.stages.length,
+      history_stages: planDoc.history.length,
     } : null,
   };
 

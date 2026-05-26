@@ -5,10 +5,11 @@
 // Types
 export type {
   ProjectConfig,
-  Plan,
+  PlanDocument,
+  ActivePlanView,
   Stage,
   CompletedStage,
-  PlanHistory,
+  PlanHistoryView,
   Task,
   TaskList,
   TaskReport,

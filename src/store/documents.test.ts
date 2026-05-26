@@ -3,9 +3,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir, homedir } from "node:os";
+import { tmpdir } from "node:os";
 import { z } from "zod";
 
 import {
@@ -15,7 +15,6 @@ import {
   appendDoc,
   listDir,
   deleteDoc,
-  ensureDir,
 } from "./documents.js";
 
 import {
@@ -28,14 +27,11 @@ import {
 } from "../ids.js";
 
 import {
-  PlanSchema,
-  PlanHistorySchema,
+  PlanDocumentSchema,
   TaskSchema,
-  TaskListSchema,
   TaskReportSchema,
   StageSummarySchema,
   UserNoteSchema,
-  ProjectConfigSchema,
   StageSchema,
 } from "../types.js";
 
@@ -204,7 +200,7 @@ describe("ID Generator", () => {
 // ─── Zod Schema validation tests ────────────────────────────────────────────
 
 describe("Type schemas", () => {
-  it("validates a Plan", () => {
+  it("validates a PlanDocument", () => {
     const plan = {
       updated_at: new Date().toISOString(),
       current_stage_id: null,
@@ -219,17 +215,19 @@ describe("Type schemas", () => {
           tags: ["setup"],
         },
       ],
+      history: [],
     };
-    expect(() => PlanSchema.parse(plan)).not.toThrow();
+    expect(() => PlanDocumentSchema.parse(plan)).not.toThrow();
   });
 
-  it("rejects a Plan with missing stage fields", () => {
+  it("rejects a PlanDocument with missing stage fields", () => {
     const plan = {
       updated_at: new Date().toISOString(),
       current_stage_id: null,
       stages: [{ id: "stg-abc" }],
+      history: [],
     };
-    expect(() => PlanSchema.parse(plan)).toThrow();
+    expect(() => PlanDocumentSchema.parse(plan)).toThrow();
   });
 
   it("rejects a Stage with empty objective", () => {
@@ -370,7 +368,7 @@ describe("Type schemas", () => {
 // ─── Round-trip tests with Document Store + Schemas ──────────────────────────
 
 describe("Document Store + Schema round-trip", () => {
-  it("writes and reads a Plan", async () => {
+  it("writes and reads a PlanDocument", async () => {
     const path = join(tmpDir, "plan.json");
     const plan = {
       updated_at: new Date().toISOString(),
@@ -386,15 +384,16 @@ describe("Document Store + Schema round-trip", () => {
           tags: ["init"],
         },
       ],
+      history: [],
     };
 
-    await writeDoc(path, plan, PlanSchema);
-    const result = await readDoc(path, PlanSchema);
+    await writeDoc(path, plan, PlanDocumentSchema);
+    const result = await readDoc(path, PlanDocumentSchema);
     expect(result).toEqual(plan);
   });
 
-  it("appends to PlanHistory", async () => {
-    const path = join(tmpDir, "plan-history.json");
+  it("writes and reads embedded plan history", async () => {
+    const path = join(tmpDir, "plan.json");
     const entry = {
       id: "stg-1",
       objective: "Setup",
@@ -405,17 +404,17 @@ describe("Document Store + Schema round-trip", () => {
       result: "completed" as const,
       summary: "All done",
     };
+    const plan = {
+      updated_at: new Date().toISOString(),
+      current_stage_id: null,
+      stages: [],
+      history: [] as typeof entry[],
+    };
 
-    await appendDoc(
-      path,
-      "stages",
-      entry,
-      PlanHistorySchema,
-      {} as never,
-    );
+    await appendDoc(path, "history", entry, PlanDocumentSchema, plan);
 
-    const result = await readDoc(path, PlanHistorySchema);
-    expect(result.stages).toHaveLength(1);
-    expect(result.stages[0].id).toBe("stg-1");
+    const result = await readDoc(path, PlanDocumentSchema);
+    expect(result.history).toHaveLength(1);
+    expect(result.history[0].id).toBe("stg-1");
   });
 });

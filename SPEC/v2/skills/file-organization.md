@@ -9,8 +9,7 @@ Whenever you create, move, or organize files within the `.saivage/` directory or
 ```
 .saivage/
 ├── config.json              # Project config — do not modify during execution
-├── plan.json                # Managed by plan MCP service
-├── plan-history.json        # Managed by plan MCP service
+├── plan.json                # Managed by plan MCP service; includes history
 ├── notes/                   # Chat creates, Planner consumes
 ├── stages/<stage-id>/
 │   ├── tasks.json           # Manager creates/updates

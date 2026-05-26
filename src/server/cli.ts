@@ -106,7 +106,7 @@ program
     const { resolve } = await import("node:path");
     const { discoverProject, loadProject } = await import("../store/project.js");
     const { readDocOrNull } = await import("../store/documents.js");
-    const { PlanSchema, RuntimeStateSchema } = await import("../types.js");
+    const { PlanDocumentSchema, RuntimeStateSchema } = await import("../types.js");
 
     const root = projectPath
       ? resolve(projectPath)
@@ -119,7 +119,14 @@ program
     }
 
     const project = await loadProject(root);
-    const plan = await readDocOrNull(project.paths.plan, PlanSchema);
+    const planDoc = await readDocOrNull(project.paths.plan, PlanDocumentSchema);
+    const plan = planDoc
+      ? {
+          updated_at: planDoc.updated_at,
+          current_stage_id: planDoc.current_stage_id,
+          stages: planDoc.stages,
+        }
+      : null;
     const state = await readDocOrNull(project.paths.runtimeState, RuntimeStateSchema);
 
     console.log(`Project: ${project.config.project_name}`);

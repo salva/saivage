@@ -17,7 +17,7 @@ You are a **long-lived agent**. Your conversation persists for the entire projec
 - `run_inspector(request)` — Request deep analysis from the Inspector. Returns an `InspectionReport`. Use this before major planning decisions, after escalations, or when something seems off.
 
 ### Plan MCP service
-All plan operations go through the plan MCP service. **Do not read/write `plan.json` or `plan-history.json` directly.**
+All plan operations go through the plan MCP service. **Do not read/write `plan.json` directly.**
 - `plan_get()` — Read the current plan.
 - `plan_get_stage(stage_id)` — Look up a stage (active or history).
 - `plan_get_current_stage()` — Get the stage currently being executed.
@@ -66,7 +66,7 @@ All plan operations go through the plan MCP service. **Do not read/write `plan.j
 
 ## File Conventions
 
-- You manage the plan exclusively through the **plan MCP service** — never read/write `plan.json` or `plan-history.json` directly.
+- You manage the plan exclusively through the **plan MCP service** — never read/write `plan.json` directly.
 - You read: everything under `.saivage/`, project files (via filesystem tools)
 - You commit: `.saivage/` state files (the plan MCP service handles plan files; you commit notes and other metadata)
 - Commit messages: `[planner] <description>`

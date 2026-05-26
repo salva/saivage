@@ -151,7 +151,7 @@ REVISE: the analysis gets several major outcomes right, especially that built-in
 
 4. **Relation to inspections.** The Inspector section mentions failure-mode memory, but the analysis does not connect memory to `inspections/<id>.json` lifecycle, `expires_at`, report promotion, stale report review, or whether inspection findings should be retrieved as memory or remain reports.
 
-5. **Compaction sufficiency.** The analysis assumes memory is required for Planner recovery, but it does not state what compaction plus `plan.json` / `plan-history.json` already solves, what it cannot solve, and how to test the boundary. This is especially important because `plan-history.json` is specified as append-only, not truncated (`SPEC/v2/01-DATA-MODEL.md:472`).
+5. **Compaction sufficiency.** The analysis assumes memory is required for Planner recovery, but it does not state what compaction plus `plan.json` embedded history already solves, what it cannot solve, and how to test the boundary.
 
 6. **Concurrent writes and conflict resolution under JSON-on-disk.** Manager can dispatch workers in parallel, and future memory authoring could have multiple agents writing the same index/JSONL. The analysis discusses semantic contradictions but not file-level write races, duplicate ids, stale reads, or merge behavior.
 

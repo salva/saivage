@@ -38,7 +38,7 @@ Build the **Runtime Core** (06-SYSTEM-DESIGN §2.1) — the central orchestratio
 |------|------|-------------|
 | 2.1 Agent interface | `src/agents/types.ts` | Base `Agent` interface, `AgentContext`, `AgentResult` (success/failure/escalation/abort) |
 | 2.2 Tool-call dispatcher | `src/runtime/dispatcher.ts` | Nested tool-call pattern: intercept `run_*()` calls → suspend parent → spawn child → resume parent with result. Supports parallel dispatch with resume-on-each |
-| 2.3 Plan MCP service | `src/mcp/plan-server.ts` | 11 tools per [03-PLAN-MCP-SERVICE.md](03-PLAN-MCP-SERVICE.md). Atomic writes, schema validation, history append. Built on Document Store from Phase 1 |
+| 2.3 Plan MCP service | `src/mcp/plan-server.ts` | 12 tools per [03-PLAN-MCP-SERVICE.md](03-PLAN-MCP-SERVICE.md). Atomic writes, schema validation, embedded history. Built on Document Store from Phase 1 |
 | 2.4 Built-in services | `src/mcp/builtins.ts` | In-process handlers for filesystem, shell, git (with explicit file staging, `[tsk-<id>]` prefix, conflict returns), skills; stubs for web, memory, index, lock |
 | 2.5 Abort mechanism | `src/runtime/abort.ts` | Detect urgent notes → terminate active chain bottom-up → `git checkout -- .` (tracked files only; untracked left for rollback stage) → Manager writes partial StageSummary (aborted) → Planner resumes. See 06-SYSTEM-DESIGN §4.2 |
 | 2.6 Context compaction | `src/runtime/compaction.ts` | Track token usage → trigger at 80% → generate summary message → replace history. Max 3 compactions per conversation. See 06-SYSTEM-DESIGN §4.5 |

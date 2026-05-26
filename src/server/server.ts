@@ -10,16 +10,18 @@ import fastifyStatic from "@fastify/static";
 import { join, resolve, relative } from "node:path";
 import { readdir, stat, readFile } from "node:fs/promises";
 import type { SaivageRuntime } from "./bootstrap.js";
-import { readDocOrNull, readDocLenient, readJsonOrNull, listDocs, pathExists as pathExistsP } from "../store/documents.js";
+import { readDocOrNull, readDocLenient, listDocs, pathExists as pathExistsP } from "../store/documents.js";
 import {
-  PlanSchema,
-  PlanHistorySchema,
+  PlanDocumentSchema,
   RuntimeStateSchema,
   TaskListSchema,
   StageSummarySchema,
   TaskReportSchema,
   InspectionReportSchema,
   ChatLogSchema,
+  type ActivePlanView,
+  type PlanDocument,
+  type PlanHistoryView,
 } from "../types.js";
 import { ChatAgent } from "../agents/chat.js";
 import { chatSessionId, agentId } from "../ids.js";
@@ -42,6 +44,19 @@ export function isPathInside(base: string, target: string): boolean {
   if (rel.startsWith("..")) return false;
   if (rel.startsWith("/") || /^[A-Za-z]:/.test(rel)) return false;
   return true;
+}
+
+function activePlanView(doc: PlanDocument | null): ActivePlanView | null {
+  if (!doc) return null;
+  return {
+    updated_at: doc.updated_at,
+    current_stage_id: doc.current_stage_id,
+    stages: doc.stages,
+  };
+}
+
+function historyView(doc: PlanDocument | null): PlanHistoryView | null {
+  return doc ? { stages: doc.history } : null;
 }
 
 export interface ServerOptions {
@@ -140,11 +155,8 @@ export async function startServer(
   // ─── Plan API ───────────────────────────────────────────────────────────
 
   app.get("/api/plan", async () => {
-    const [plan, history] = await Promise.all([
-      readDocOrNull(runtime.project.paths.plan, PlanSchema),
-      readDocOrNull(runtime.project.paths.planHistory, PlanHistorySchema),
-    ]);
-    return { plan, history };
+    const doc = await readDocOrNull(runtime.project.paths.plan, PlanDocumentSchema);
+    return { plan: activePlanView(doc), history: historyView(doc) };
   });
 
   app.get("/api/plan/stages/:id", async (req) => {
@@ -171,11 +183,11 @@ export async function startServer(
   // ─── State API ──────────────────────────────────────────────────────────
 
   app.get("/api/state", async () => {
-    const [state, plan] = await Promise.all([
+    const [state, doc] = await Promise.all([
       readDocOrNull(runtime.project.paths.runtimeState, RuntimeStateSchema),
-      readDocOrNull(runtime.project.paths.plan, PlanSchema),
+      readDocOrNull(runtime.project.paths.plan, PlanDocumentSchema),
     ]);
-    return { state, plan };
+    return { state, plan: activePlanView(doc) };
   });
 
   // ─── Agent Conversation API ─────────────────────────────────────────────
@@ -475,10 +487,9 @@ export async function startServer(
   // ─── Debug API ─────────────────────────────────────────────────────────
 
   app.get("/api/debug/state", async () => {
-    const [runtimeState, plan, history] = await Promise.all([
+    const [runtimeState, doc] = await Promise.all([
       readDocOrNull(runtime.project.paths.runtimeState, RuntimeStateSchema),
-      readDocOrNull(runtime.project.paths.plan, PlanSchema),
-      readDocOrNull(runtime.project.paths.planHistory, PlanHistorySchema),
+      readDocOrNull(runtime.project.paths.plan, PlanDocumentSchema),
     ]);
 
     // Read raw config files
@@ -492,8 +503,8 @@ export async function startServer(
 
     return {
       runtime: runtimeState,
-      plan,
-      history,
+      plan: activePlanView(doc),
+      history: historyView(doc),
       config: runtime.project.config,
       saivage_config: saivageConfig,
     };
@@ -511,10 +522,7 @@ export async function startServer(
     const errors: ErrorEntry[] = [];
 
     // Collect from plan history
-    const history = await readDocOrNull(
-      runtime.project.paths.planHistory,
-      PlanHistorySchema,
-    );
+    const history = historyView(await readDocOrNull(runtime.project.paths.plan, PlanDocumentSchema));
     if (history?.stages) {
       for (const stage of history.stages) {
         if (stage.result === "failed" || stage.result === "escalated") {
@@ -605,10 +613,7 @@ export async function startServer(
     const events: TimelineEvent[] = [];
 
     // From plan history
-    const history = await readDocOrNull(
-      runtime.project.paths.planHistory,
-      PlanHistorySchema,
-    );
+    const history = historyView(await readDocOrNull(runtime.project.paths.plan, PlanDocumentSchema));
     if (history?.stages) {
       for (const stage of history.stages) {
         if (stage.started_at) {

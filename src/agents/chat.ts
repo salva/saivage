@@ -12,7 +12,7 @@ import type {
   ChatInput,
   Agent,
 } from "./types.js";
-import type { SystemEvent, ChatMessage, ChatLog } from "../types.js";
+import type { ActivePlanView, PlanDocument, PlanHistoryView, SystemEvent, ChatMessage, ChatLog } from "../types.js";
 import type { ChatChannel } from "../channels/types.js";
 import type { EventBus, EventFilter } from "../events/bus.js";
 import { chatSessionId } from "../ids.js";
@@ -21,8 +21,7 @@ import { createUserNote } from "../runtime/notes.js";
 import { parseSlashCommand, runSlashCommand } from "../chat/slashCommands.js";
 import {
   ChatLogSchema,
-  PlanSchema,
-  PlanHistorySchema,
+  PlanDocumentSchema,
   RuntimeStateSchema,
 } from "../types.js";
 import { join } from "node:path";
@@ -36,6 +35,19 @@ import {
   restartPlanner,
   type LocalCommandContext,
 } from "../chat/localCommands.js";
+
+function activePlanView(doc: PlanDocument | null): ActivePlanView | null {
+  if (!doc) return null;
+  return {
+    updated_at: doc.updated_at,
+    current_stage_id: doc.current_stage_id,
+    stages: doc.stages,
+  };
+}
+
+function historyView(doc: PlanDocument | null): PlanHistoryView | null {
+  return doc ? { stages: doc.history } : null;
+}
 
 
 /**
@@ -279,7 +291,8 @@ export class ChatAgent extends BaseAgent implements Agent {
   private async cmdStatus(): Promise<string> {
     const paths = this.ctx.project.paths;
     const runtime = await readDocOrNull(paths.runtimeState, RuntimeStateSchema);
-    const plan = await readDocLenient(paths.plan, PlanSchema);
+    const doc = await readDocLenient(paths.plan, PlanDocumentSchema);
+    const plan = activePlanView(doc);
 
     const lines: string[] = ["**System Status**", ""];
 
@@ -309,7 +322,7 @@ export class ChatAgent extends BaseAgent implements Agent {
   }
 
   private async cmdPlan(): Promise<string> {
-    const plan = await readDocLenient(this.ctx.project.paths.plan, PlanSchema);
+    const plan = activePlanView(await readDocLenient(this.ctx.project.paths.plan, PlanDocumentSchema));
     if (!plan) return "No plan exists yet.";
 
     const lines: string[] = [
@@ -333,8 +346,7 @@ export class ChatAgent extends BaseAgent implements Agent {
 
   private async cmdHistory(args: string): Promise<string> {
     const n = parseInt(args, 10) || 5;
-    const historyPath = this.ctx.project.paths.planHistory;
-    const history = await readDocLenient(historyPath, PlanHistorySchema);
+    const history = historyView(await readDocLenient(this.ctx.project.paths.plan, PlanDocumentSchema));
     if (!history || history.stages.length === 0) return "No completed stages yet.";
 
     const recent = history.stages.slice(-n);

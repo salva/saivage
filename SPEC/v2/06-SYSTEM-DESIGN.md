@@ -291,8 +291,7 @@ graph TB
     subgraph "Project Directory"
         subgraph "Git-Tracked (.saivage/)"
             CONF["config.json<br/><i>ProjectConfig</i>"]
-            PLAN["plan.json<br/><i>Active plan (via MCP)</i>"]
-            HIST["plan-history.json<br/><i>Terminal stages</i>"]
+            PLAN["plan.json<br/><i>Active plan + history (via MCP)</i>"]
             NOTES["notes/<br/><i>User → Planner</i>"]
             STAGES["stages/&lt;stage-id&gt;/<br/><i>tasks.json, summary.json,<br/>reports/&lt;task-id&gt;.json</i>"]
             INSP["inspections/<br/><i>Inspector reports</i>"]
@@ -324,7 +323,7 @@ Each data domain has a single owner and a defined access pattern:
 
 | Data | Owner | Written by | Read by | Storage |
 |------|-------|-----------|---------|---------|
-| `plan.json`, `plan-history.json` | Plan MCP service | Planner (via MCP tools) | Planner, Chat | Git-tracked |
+| `plan.json` | Plan MCP service | Planner (via MCP tools) | Planner, Chat | Git-tracked |
 | `stages/<id>/tasks.json` | Manager | Manager | Manager, Planner (via summary) | Git-tracked |
 | `stages/<id>/summary.json` | Manager | Manager | Planner | Git-tracked |
 | `stages/<id>/reports/<id>.json` | Worker | Coder/Researcher | Manager | Git-tracked |
@@ -339,7 +338,7 @@ Each data domain has a single owner and a defined access pattern:
 | Git history | Git MCP | All agents (via MCP) | All agents | Git |
 
 **Key rules:**
-- No agent reads or writes `plan.json` or `plan-history.json` directly — all access goes through the Plan MCP service.
+- No agent reads or writes `plan.json` directly — all access goes through the Plan MCP service.
 - No agent calls `git` CLI directly — all git operations go through the Git MCP service.
 - Conversations are ephemeral. Disk is the source of truth. On crash, all conversations are lost and reconstructed from files.
 
@@ -349,7 +348,7 @@ Each data domain has a single owner and a defined access pattern:
 erDiagram
     ProjectConfig ||--|| Plan : "defines objectives for"
     Plan ||--|{ Stage : "contains"
-    PlanHistory ||--|{ CompletedStage : "archives"
+    Plan ||--|{ CompletedStage : "history"
     Stage ||--|| TaskList : "decomposed into"
     TaskList ||--|{ Task : "contains"
     Task ||--|| TaskReport : "produces"
@@ -532,7 +531,7 @@ graph TB
         SH["Shell<br/><i>run_command</i>"]
         GIT["Git<br/><i>commit, status, diff, log</i><br/><b>serialized access</b>"]
         WEB["Web<br/><i>fetch_url, fetch_page_content</i>"]
-        PLAN["Plan<br/><i>11 tools for plan CRUD</i><br/><b>atomic writes</b>"]
+        PLAN["Plan<br/><i>12 tools for plan CRUD</i><br/><b>atomic writes</b>"]
         SK["Skills<br/><i>create, read, list, search, update, supersede, archive, delete</i><br/><b>per-record mutex + audit log</b>"]
         MEM["Memory<br/><i>create, get, list, search, update, supersede, archive, delete</i><br/><b>per-record mutex + audit log</b>"]
     end
@@ -645,7 +644,7 @@ flowchart TD
 
 | State | Survives? | How |
 |-------|-----------|-----|
-| Plan (stages, history) | ✓ | plan.json, plan-history.json on disk |
+| Plan (stages, history) | ✓ | plan.json on disk |
 | Task list and status | ✓ | tasks.json on disk |
 | Task reports | ✓ | reports/<task-id>.json on disk |
 | Stage summaries | ✓ | summary.json on disk |
@@ -758,7 +757,7 @@ graph TB
 
 Every agent action produces a persistent, git-committed artifact:
 
-- **Planner**: `plan.json`, `plan-history.json` (committed via `plan_commit()`)
+- **Planner**: `plan.json` (committed via `plan_commit()`)
 - **Manager**: `tasks.json`, `summary.json` (committed via git MCP)
 - **Workers**: task reports + git commits with `[tsk-<id>]` prefix
 - **Inspector**: `inspections/<id>.json` + tools under `tools/inspector/`

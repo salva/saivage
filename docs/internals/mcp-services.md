@@ -47,7 +47,7 @@ commit` directly outside the abort flow's `git checkout -- .`.
 
 ## Plan (`plan`)
 
-11 tools — see [Plan MCP Service](./plan-mcp).
+12 tools — see [Plan MCP Service](./plan-mcp).
 
 ## Notes (`notes`)
 

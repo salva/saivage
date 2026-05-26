@@ -6,8 +6,7 @@ import { join } from "node:path";
 import type { ProjectContext } from "../store/project.js";
 import { readDoc, writeDoc } from "../store/documents.js";
 import {
-  PlanHistorySchema,
-  PlanSchema,
+  PlanDocumentSchema,
   RuntimeStateSchema,
   ShutdownSummarySchema,
 } from "../types.js";
@@ -44,7 +43,6 @@ function makeProjectContext(root: string): ProjectContext {
     },
     paths: {
       plan: join(saivageDir, "plan.json"),
-      planHistory: join(saivageDir, "plan-history.json"),
       stages: join(saivageDir, "stages"),
       notes: join(saivageDir, "notes"),
       inspections: join(saivageDir, "inspections"),
@@ -95,10 +93,7 @@ async function seedRuntimeDocs(project: ProjectContext) {
         tags: [],
       },
     ],
-  }, PlanSchema);
-
-  await writeDoc(project.paths.planHistory, {
-    stages: [
+    history: [
       {
         id: "stage-done",
         objective: "Previous work",
@@ -110,7 +105,7 @@ async function seedRuntimeDocs(project: ProjectContext) {
         summary: "Finished earlier stage",
       },
     ],
-  }, PlanHistorySchema);
+  }, PlanDocumentSchema);
 }
 
 describe("shutdown handoff", () => {

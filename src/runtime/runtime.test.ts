@@ -9,26 +9,21 @@ import {
   rmSync,
   existsSync,
   writeFileSync,
-  mkdirSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { PlanService } from "../mcp/plan-server.js";
+import { PLAN_READER_TOOLS, PLAN_WRITER_TOOLS, PlanService } from "../mcp/plan-server.js";
 import { NoteService } from "../mcp/notes-server.js";
 import { NoteManager, NoteChannel } from "./notes.js";
-import { Dispatcher } from "./dispatcher.js";
 import { writeDoc, readDoc, ensureDir } from "../store/documents.js";
 import {
-  PlanSchema,
-  PlanHistorySchema,
+  PlanDocumentSchema,
   UserNoteSchema,
   TaskListSchema,
-  TaskReportSchema,
   RuntimeStateSchema,
   StageSummarySchema,
   type UserNote,
-  type RuntimeState,
 } from "../types.js";
 import {
   shouldCompact,
@@ -42,7 +37,6 @@ import {
 import {
   isAnotherInstanceRunning,
   recoverFromCrash,
-  createRuntimeState,
   writeRuntimeState,
   RuntimeTracker,
 } from "./recovery.js";
@@ -81,7 +75,6 @@ function makeProjectContext(root: string): ProjectContext {
     },
     paths: {
       plan: join(saivageDir, "plan.json"),
-      planHistory: join(saivageDir, "plan-history.json"),
       stages: join(saivageDir, "stages"),
       notes: join(saivageDir, "notes"),
       inspections: join(saivageDir, "inspections"),
@@ -410,6 +403,10 @@ describe("PlanService", () => {
   });
 
   it("plan_set_current sets current stage", async () => {
+    const startedAt = new Date("2026-01-01T00:00:00.000Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(startedAt);
+
     await planService.plan_init([
       {
         id: "stg-1",
@@ -421,9 +418,18 @@ describe("PlanService", () => {
         tags: [],
       },
     ]);
-    const result = await planService.plan_set_current("stg-1");
-    expect(result).not.toHaveProperty("code");
-    expect((result as any).current_stage_id).toBe("stg-1");
+    try {
+      const result = await planService.plan_set_current("stg-1");
+      expect(result).not.toHaveProperty("code");
+      expect((result as any).current_stage_id).toBe("stg-1");
+      expect((result as any).stages[0].started_at).toBe(startedAt.toISOString());
+
+      vi.setSystemTime(new Date("2026-01-01T01:00:00.000Z"));
+      const second = await planService.plan_set_current("stg-1");
+      expect((second as any).stages[0].started_at).toBe(startedAt.toISOString());
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("plan_set_current rejects missing stage", async () => {
@@ -489,6 +495,11 @@ describe("PlanService", () => {
   });
 
   it("plan_complete_stage moves to history", async () => {
+    const startedAt = new Date("2026-01-01T00:00:00.000Z");
+    const completedAt = new Date("2026-01-01T00:05:00.000Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(startedAt);
+
     await planService.plan_init([
       {
         id: "stg-1",
@@ -500,7 +511,45 @@ describe("PlanService", () => {
         tags: [],
       },
     ]);
-    await planService.plan_set_current("stg-1");
+    try {
+      await planService.plan_set_current("stg-1");
+      vi.setSystemTime(completedAt);
+
+      const result = await planService.plan_complete_stage({
+        stage_id: "stg-1",
+        result: "completed",
+        summary: "All done",
+        actual_outcomes: ["done"],
+      });
+
+      expect(result).not.toHaveProperty("code");
+      const res = result as { completed_stage: any; plan: any };
+      expect(res.completed_stage.id).toBe("stg-1");
+      expect(res.completed_stage.started_at).toBe(startedAt.toISOString());
+      expect(res.completed_stage.completed_at).toBe(completedAt.toISOString());
+      expect(res.plan.stages).toHaveLength(0);
+      expect(res.plan.current_stage_id).toBeNull();
+
+      const history = await planService.plan_get_history();
+      expect((history as any).stages).toHaveLength(1);
+      expect((history as any).stages[0].started_at).toBe(startedAt.toISOString());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("plan_complete_stage rejects stages that were never marked current", async () => {
+    await planService.plan_init([
+      {
+        id: "stg-1",
+        objective: "Test",
+        starting_points: [],
+        expected_outcomes: ["done"],
+        acceptance_criteria: ["pass"],
+        references: [],
+        tags: [],
+      },
+    ]);
 
     const result = await planService.plan_complete_stage({
       stage_id: "stg-1",
@@ -509,45 +558,63 @@ describe("PlanService", () => {
       actual_outcomes: ["done"],
     });
 
-    expect(result).not.toHaveProperty("code");
-    const res = result as { completed_stage: any; plan: any };
-    expect(res.completed_stage.id).toBe("stg-1");
-    expect(res.plan.stages).toHaveLength(0);
-    expect(res.plan.current_stage_id).toBeNull();
-
-    // Verify history
-    const history = await planService.plan_get_history();
-    expect((history as any).stages).toHaveLength(1);
+    expect(result).toHaveProperty("code", "VALIDATION_ERROR");
   });
 
   it("plan_set_stages replaces all stages", async () => {
+    const firstStart = new Date("2026-01-01T00:00:00.000Z");
+    const secondStart = new Date("2026-01-01T01:00:00.000Z");
+    vi.useFakeTimers();
+    vi.setSystemTime(firstStart);
     await planService.plan_init([]);
-    const result = await planService.plan_set_stages(
-      [
-        {
-          id: "stg-a",
-          objective: "A",
-          starting_points: [],
-          expected_outcomes: ["a"],
-          acceptance_criteria: ["a"],
-          references: [],
-          tags: [],
-        },
-        {
-          id: "stg-b",
-          objective: "B",
-          starting_points: [],
-          expected_outcomes: ["b"],
-          acceptance_criteria: ["b"],
-          references: [],
-          tags: [],
-        },
-      ],
-      "stg-a",
-    );
-    expect(result).not.toHaveProperty("code");
-    expect((result as any).stages).toHaveLength(2);
-    expect((result as any).current_stage_id).toBe("stg-a");
+    try {
+      await planService.plan_set_stages(
+        [
+          {
+            id: "stg-a",
+            objective: "A",
+            starting_points: [],
+            expected_outcomes: ["a"],
+            acceptance_criteria: ["a"],
+            references: [],
+            tags: [],
+          },
+        ],
+        "stg-a",
+      );
+
+      vi.setSystemTime(secondStart);
+      const result = await planService.plan_set_stages(
+        [
+          {
+            id: "stg-a",
+            objective: "A revised",
+            starting_points: [],
+            expected_outcomes: ["a"],
+            acceptance_criteria: ["a"],
+            references: [],
+            tags: [],
+          },
+          {
+            id: "stg-b",
+            objective: "B",
+            starting_points: [],
+            expected_outcomes: ["b"],
+            acceptance_criteria: ["b"],
+            references: [],
+            tags: [],
+          },
+        ],
+        "stg-b",
+      );
+      expect(result).not.toHaveProperty("code");
+      expect((result as any).stages).toHaveLength(2);
+      expect((result as any).current_stage_id).toBe("stg-b");
+      expect((result as any).stages.find((s: any) => s.id === "stg-a").started_at).toBe(firstStart.toISOString());
+      expect((result as any).stages.find((s: any) => s.id === "stg-b").started_at).toBe(secondStart.toISOString());
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("plan_get_stage finds from active and history", async () => {
@@ -566,7 +633,7 @@ describe("PlanService", () => {
     const active = await planService.plan_get_stage("stg-1");
     expect((active as any).source).toBe("active");
 
-    // Move to history
+    await planService.plan_set_current("stg-1");
     await planService.plan_complete_stage({
       stage_id: "stg-1",
       result: "completed",
@@ -605,6 +672,75 @@ describe("PlanService", () => {
     const result = await planService.handleToolCall("plan_done", { reason: "all objectives verified" });
     expect(result.isError).toBe(false);
     expect(result.content).toEqual({ ok: true });
+  });
+
+  it("plan_init persists a single plan document with embedded history", async () => {
+    await planService.plan_init([]);
+
+    const persisted = await readDoc(join(saivageDir, "plan.json"), PlanDocumentSchema);
+    expect(persisted.history).toEqual([]);
+    const legacyHistoryPath = join(saivageDir, "plan-" + "history.json");
+    expect(existsSync(legacyHistoryPath)).toBe(false);
+  });
+
+  it("active-plan mutators preserve embedded history", async () => {
+    await planService.plan_init([
+      {
+        id: "stg-done",
+        objective: "Done",
+        starting_points: [],
+        expected_outcomes: ["done"],
+        acceptance_criteria: ["done"],
+        references: [],
+        tags: [],
+      },
+    ]);
+    await planService.plan_set_current("stg-done");
+    await planService.plan_complete_stage({
+      stage_id: "stg-done",
+      result: "completed",
+      summary: "Done",
+      actual_outcomes: ["done"],
+    });
+
+    await planService.plan_add_stage({
+      id: "stg-next",
+      objective: "Next",
+      starting_points: [],
+      expected_outcomes: ["next"],
+      acceptance_criteria: ["next"],
+      references: [],
+      tags: [],
+    });
+    await planService.plan_set_current("stg-next");
+    await planService.plan_set_stages([
+      {
+        id: "stg-next",
+        objective: "Next revised",
+        starting_points: [],
+        expected_outcomes: ["next"],
+        acceptance_criteria: ["next"],
+        references: [],
+        tags: [],
+      },
+    ], "stg-next");
+
+    const history = await planService.plan_get_history();
+    expect((history as any).stages.map((stage: any) => stage.id)).toEqual(["stg-done"]);
+  });
+
+  it("plan_commit commits only the single plan document", async () => {
+    await planService.plan_init([]);
+    let committedFiles: string[] | null = null;
+    planService.setGitCommit(async (files) => {
+      committedFiles = files;
+      return { sha: "abc123" };
+    });
+
+    const result = await planService.plan_commit("commit plan");
+
+    expect(result).toEqual({ sha: "abc123" });
+    expect(committedFiles).toEqual([join(saivageDir, "plan.json")]);
   });
 
   it("serializes mutating tool calls across async boundaries", async () => {
@@ -681,23 +817,37 @@ describe("PlanService", () => {
     expect(second.current_stage_id).toBe(null);
   });
 
-  it("F34: concurrent reads/writes through handleToolCall are serialised in submission order", async () => {
+  it("G29: reader tools bypass a slow writer in handleToolCall", async () => {
     await planService.plan_init();
-    const stage = {
-      id: "stg-1",
-      objective: "do",
-      starting_points: ["a"],
-      expected_outcomes: ["b"],
-      acceptance_criteria: ["c"],
-      references: [],
-      tags: [],
-    };
-    const add = planService.handleToolCall("plan_add_stage", { stage });
-    const get = planService.handleToolCall("plan_get", {});
-    const [addRes, getRes] = await Promise.all([add, get]);
-    expect(addRes.isError).toBe(false);
-    expect(getRes.isError).toBe(false);
-    expect((getRes.content as any).stages.map((s: any) => s.id)).toEqual(["stg-1"]);
+    const commitGate = deferred<{ sha: string }>();
+    planService.setGitCommit(async () => commitGate.promise);
+
+    const commit = planService.handleToolCall("plan_commit", { message: "slow commit" });
+    let commitSettled = false;
+    commit.then(() => {
+      commitSettled = true;
+    });
+
+    const get = await planService.handleToolCall("plan_get", {});
+    expect(get.isError).toBe(false);
+    expect((get.content as any).stages).toEqual([]);
+
+    await Promise.resolve();
+    expect(commitSettled).toBe(false);
+
+    commitGate.resolve({ sha: "abc123" });
+    await expect(commit).resolves.toMatchObject({ isError: false });
+  });
+
+  it("G29: plan tool partition matches the registered tool schemas", () => {
+    const writers = new Set(PLAN_WRITER_TOOLS);
+    const readers = new Set(PLAN_READER_TOOLS);
+    const intersection = [...writers].filter((name) => readers.has(name));
+    const classified = new Set([...writers, ...readers]);
+    const registered = new Set(PlanService.getToolSchemas().map((tool) => tool.name));
+
+    expect(intersection).toEqual([]);
+    expect(classified).toEqual(registered);
   });
 
   it("F34: plan_init rejects when cache is already populated (no disk check)", async () => {
@@ -1017,7 +1167,7 @@ describe("NoteChannel", () => {
     });
     const first = await channel.drain();
     expect(first).not.toBeNull();
-    expect(first!.message).toContain("volatile-content");
+    expect(first?.message).toContain("volatile-content");
   });
 
   it("drain returns null on second call with no new volatile notes", async () => {
@@ -1078,7 +1228,7 @@ describe("NoteChannel", () => {
     channel.onContextReset();
     const again = await channel.drain();
     expect(again).not.toBeNull();
-    expect(again!.message).toContain("perm");
+    expect(again?.message).toContain("perm");
   });
 
   it("drain returns a volatile note delivered but not acknowledged only once (no duplicate injection)", async () => {
@@ -1212,7 +1362,7 @@ describe("Abort", () => {
 
     const note = await scanForUrgentNotes(notesDir);
     expect(note).not.toBeNull();
-    expect(note!.urgent).toBe(true);
+    expect(note?.urgent).toBe(true);
   });
 
   it("scanForUrgentNotes ignores acknowledged urgent notes", async () => {
@@ -1501,6 +1651,6 @@ describe("Crash Recovery", () => {
     expect(result.recovered).toBe(true);
     expect(result.needsArchival).toBe(true);
     expect(result.summary).toBeDefined();
-    expect(result.summary!.result).toBe("completed");
+    expect(result.summary?.result).toBe("completed");
   });
 });

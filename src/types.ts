@@ -61,17 +61,9 @@ export const StageSchema = z.object({
   acceptance_criteria: z.array(z.string()).min(1),
   references: z.array(z.string()),
   tags: z.array(z.string()),
+  started_at: z.string().optional(),
 });
 export type Stage = z.infer<typeof StageSchema>;
-
-export const PlanSchema = z.object({
-  updated_at: z.string(),
-  current_stage_id: z.string().nullable(),
-  stages: z.array(StageSchema),
-});
-export type Plan = z.infer<typeof PlanSchema>;
-
-// ─── 4. Plan History ────────────────────────────────────────────────────────
 
 export const CompletedStageSchema = z.object({
   id: z.string(),
@@ -96,10 +88,38 @@ export const CompletedStageSchema = z.object({
 });
 export type CompletedStage = z.infer<typeof CompletedStageSchema>;
 
-export const PlanHistorySchema = z.object({
-  stages: z.array(CompletedStageSchema),
+export const PlanDocumentSchema = z.object({
+  updated_at: z.string(),
+  current_stage_id: z.string().nullable(),
+  stages: z.array(StageSchema),
+  history: z.array(CompletedStageSchema),
+}).superRefine((doc, ctx) => {
+  const activeIds = new Set<string>();
+  for (const stage of doc.stages) {
+    if (activeIds.has(stage.id)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `Duplicate active stage id '${stage.id}'` });
+    }
+    activeIds.add(stage.id);
+  }
+
+  const historyIds = new Set<string>();
+  for (const stage of doc.history) {
+    if (historyIds.has(stage.id)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `Duplicate history stage id '${stage.id}'` });
+    }
+    historyIds.add(stage.id);
+    if (activeIds.has(stage.id)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `Stage id '${stage.id}' appears in both stages and history` });
+    }
+  }
+
+  if (doc.current_stage_id !== null && !activeIds.has(doc.current_stage_id)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `current_stage_id '${doc.current_stage_id}' is not an active stage` });
+  }
 });
-export type PlanHistory = z.infer<typeof PlanHistorySchema>;
+export type PlanDocument = z.infer<typeof PlanDocumentSchema>;
+export type ActivePlanView = Pick<PlanDocument, "updated_at" | "current_stage_id" | "stages">;
+export type PlanHistoryView = { stages: PlanDocument["history"] };
 
 /** Persisted Telegram chat-id subscriptions (notification destinations). */
 export const TelegramSubscriptionsSchema = z.object({

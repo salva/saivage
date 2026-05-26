@@ -42,7 +42,8 @@ When the conversation context grows too large (many stages completed), the Plann
   - `acceptance_criteria`: how to know the stage is done
   - `references`: list of document paths the Manager should read before planning tasks
   - `tags`: string array for skill matching (may be empty)
-- **Plan History** (`plan-history.json`): Terminal stages (completed, failed, escalated, aborted) with their summaries, archived from the active plan via `plan_complete_stage()`.
+  - `started_at`: set once when the stage becomes current
+- **Plan History** (`plan.json` `history` field): Terminal stages (completed, failed, escalated, aborted) with their summaries, archived from the active plan via `plan_complete_stage()`.
 
 **Execution model:**
 1. **Initial planning**: reads project objectives + current project state → calls `plan_init(stages)` via the plan MCP service.
@@ -358,8 +359,7 @@ Project-local (inside the project directory, e.g. `/project/foo/`):
     ├── auth/                      # Provider auth tokens
     │
     │── [PERSISTENT — committed to git]
-    ├── plan.json                  # Active plan (stages remaining)
-    ├── plan-history.json          # Terminal stages archive
+    ├── plan.json                  # Active plan plus terminal stages archive
     ├── notes/                     # User notes from Chat → Planner
     │   └── <note-id>.json         #   (volatile or permanent)
     ├── stages/
@@ -465,7 +465,7 @@ All git operations go through an **MCP git server** that serializes access. No d
 
 ### 4.5 Plan MCP Service
 
-All read and write operations on `plan.json` and `plan-history.json` go through the **plan MCP service**. No agent reads or writes these files directly. All writes are atomic (write to `.tmp`, rename). Schema validation is enforced on every write.
+All read and write operations on `plan.json` go through the **plan MCP service**. No agent reads or writes this file directly. All writes are atomic (write to `.tmp`, rename). Schema validation is enforced on every write.
 
 See [03-PLAN-MCP-SERVICE.md](03-PLAN-MCP-SERVICE.md) for the full specification and [05-MCP-SERVICES.md](05-MCP-SERVICES.md) §5 for the tool summary.
 
