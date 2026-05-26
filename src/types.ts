@@ -136,11 +136,11 @@ export type TestResult = z.infer<typeof TestResultSchema>;
 export const IssueSchema = z.object({
   severity: z.enum(["info", "warning", "error"]),
   description: z.string(),
-  file: z.string().optional(),
-  line: z.number().optional(),
-  error_output: z.string().optional(),
-  root_cause: z.string().optional(),
-  suggestion: z.string().optional(),
+  file: z.string().nullable().optional(),
+  line: z.number().nullable().optional(),
+  error_output: z.string().nullable().optional(),
+  root_cause: z.string().nullable().optional(),
+  suggestion: z.string().nullable().optional(),
 });
 export type Issue = z.infer<typeof IssueSchema>;
 
