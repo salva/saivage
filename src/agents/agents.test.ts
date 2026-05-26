@@ -17,9 +17,11 @@ import { ManagerAgent } from "./manager.js";
 import { WorkerAgent } from "./worker.js";
 import { EventBus } from "../events/bus.js";
 import type { ChatChannel } from "../channels/types.js";
+import type { WsOutbound } from "../channels/ws-schema.js";
 import type { AgentContext, ManagerInput, WorkerInput } from "./types.js";
 import type { ChatRequest, ChatResponse } from "../providers/types.js";
 import type { PlannerControl } from "../server/bootstrap.js";
+import { NoteManager } from "../runtime/notes.js";
 
 let tmpDir: string;
 
@@ -671,6 +673,7 @@ function makeReviewerContext(root: string, router: unknown, mcpRuntimeOverride?:
       callTool: async () => ({ ok: true }),
       ...mcpRuntimeOverride,
     } as AgentContext["mcpRuntime"],
+    noteManager: new NoteManager(join(saivageDir, "notes")),
     agentId: "reviewer-1",
     role: "reviewer",
     stageId: "stage-1",
@@ -698,6 +701,10 @@ class TestChatChannel implements ChatChannel {
 
   send(message: string): void {
     this.sent.push(message);
+  }
+
+  sendEvent(event: WsOutbound): void {
+    if (event.type === "message") this.send(event.content);
   }
 
   onMessage(handler: (message: string) => void | Promise<void>): void {

@@ -4,7 +4,7 @@
  * chat via WebSocket, and telemetry endpoints.
  */
 
-import Fastify from "fastify";
+import Fastify, { type FastifyInstance } from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
 import { join, resolve, relative } from "node:path";
@@ -27,7 +27,6 @@ import { ChatAgent } from "../agents/chat.js";
 import { chatSessionId, agentId } from "../ids.js";
 import { WebSocketChannel } from "../channels/websocket.js";
 import { log } from "../log.js";
-import { NoteManager } from "../runtime/notes.js";
 
 /**
  * Returns true if `target` is the same as or a descendant of `base` after
@@ -62,6 +61,36 @@ function historyView(doc: PlanDocument | null): PlanHistoryView | null {
 export interface ServerOptions {
   port: number;
   host: string;
+}
+
+export function registerNotesRoutes(
+  app: FastifyInstance,
+  runtime: Pick<SaivageRuntime, "noteManager">,
+): void {
+  app.get("/api/notes", async () => {
+    return { notes: await runtime.noteManager.listNotes() };
+  });
+
+  app.post("/api/notes/:noteId/acknowledge", async (req, reply) => {
+    const { noteId } = req.params as { noteId: string };
+    const result = await runtime.noteManager.acknowledgeNote(noteId);
+    if (!result) {
+      return reply.status(404).send({ error: "Note not found" });
+    }
+    return result;
+  });
+
+  app.delete("/api/notes/:noteId", async (req, reply) => {
+    const { noteId } = req.params as { noteId: string };
+    if (!(await runtime.noteManager.deleteNote(noteId))) {
+      return reply.status(404).send({ error: "Note not found" });
+    }
+    return { deleted: true };
+  });
+
+  app.delete("/api/notes", async () => {
+    return { deleted: await runtime.noteManager.clearNotes() };
+  });
 }
 
 export async function startServer(
@@ -264,34 +293,7 @@ export async function startServer(
 
   // ─── Notes API ─────────────────────────────────────────────────────────
 
-  app.get("/api/notes", async () => {
-    const noteManager = new NoteManager(runtime.project.paths.notes);
-    return { notes: await noteManager.listNotes() };
-  });
-
-  app.post("/api/notes/:noteId/acknowledge", async (req, reply) => {
-    const { noteId } = req.params as { noteId: string };
-    const noteManager = new NoteManager(runtime.project.paths.notes);
-    const result = await noteManager.acknowledgeNote(noteId);
-    if (!result) {
-      return reply.status(404).send({ error: "Note not found" });
-    }
-    return result;
-  });
-
-  app.delete("/api/notes/:noteId", async (req, reply) => {
-    const { noteId } = req.params as { noteId: string };
-    const noteManager = new NoteManager(runtime.project.paths.notes);
-    if (!(await noteManager.deleteNote(noteId))) {
-      return reply.status(404).send({ error: "Note not found" });
-    }
-    return { deleted: true };
-  });
-
-  app.delete("/api/notes", async () => {
-    const noteManager = new NoteManager(runtime.project.paths.notes);
-    return { deleted: await noteManager.clearNotes() };
-  });
+  registerNotesRoutes(app, runtime);
 
   // ─── Chat Sessions API ─────────────────────────────────────────────────
 
@@ -678,6 +680,7 @@ export async function startServer(
       project: runtime.project,
       router: runtime.router,
       mcpRuntime: runtime.mcpRuntime,
+      noteManager: runtime.noteManager,
       agentId: agentId(),
       role: "chat" as const,
       channelId: "web",

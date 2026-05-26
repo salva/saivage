@@ -1,3 +1,5 @@
+import type { WsOutbound } from "./ws-schema.js";
+
 /**
  * Chat channel abstraction — transports that send/receive messages
  * between a Chat agent and a user.
@@ -5,6 +7,9 @@
 export interface ChatChannel {
   /** Send a message to the user */
   send(message: string): void | Promise<void>;
+
+  /** Send a structured transport event to the user. */
+  sendEvent(event: WsOutbound): void | Promise<void>;
 
   /** Register handler for incoming user messages */
   onMessage(handler: (message: string) => void | Promise<void>): void;

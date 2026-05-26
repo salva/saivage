@@ -12,9 +12,11 @@ import { ChatAgent } from "./chat.js";
 import { EventBus } from "../events/bus.js";
 import { ensureDir } from "../store/documents.js";
 import type { ChatChannel } from "../channels/types.js";
+import type { WsOutbound } from "../channels/ws-schema.js";
 import type { AgentContext } from "./types.js";
 import type { BaseAgent } from "./base.js";
 import type { ChatRequest, ChatResponse } from "../providers/types.js";
+import { NoteManager } from "../runtime/notes.js";
 
 let tmpDir: string;
 
@@ -31,6 +33,10 @@ class FakeChannel implements ChatChannel {
   private closeHandler?: () => void;
 
   send(_message: string): void {
+    // no-op
+  }
+
+  sendEvent(_event: WsOutbound): void {
     // no-op
   }
 
@@ -95,6 +101,7 @@ function makeContext(root: string): AgentContext {
       getAllTools: () => [],
       callTool: async () => ({ ok: true }),
     } as AgentContext["mcpRuntime"],
+    noteManager: new NoteManager(join(saivageDir, "notes")),
     agentId: "chat-1",
     role: "chat",
     stageId: undefined,

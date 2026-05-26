@@ -121,9 +121,16 @@ export type PlanDocument = z.infer<typeof PlanDocumentSchema>;
 export type ActivePlanView = Pick<PlanDocument, "updated_at" | "current_stage_id" | "stages">;
 export type PlanHistoryView = { stages: PlanDocument["history"] };
 
-/** Persisted Telegram chat-id subscriptions (notification destinations). */
+/** Persisted Telegram chat subscriptions (notification destinations). */
+export const TelegramSubscriptionEntrySchema = z.object({
+  chatId: z.number(),
+  userId: z.number(),
+  subscribedAt: z.string(),
+});
+export type TelegramSubscriptionEntry = z.infer<typeof TelegramSubscriptionEntrySchema>;
+
 export const TelegramSubscriptionsSchema = z.object({
-  chatIds: z.array(z.number()).default([]),
+  entries: z.array(TelegramSubscriptionEntrySchema).default([]),
 });
 export type TelegramSubscriptions = z.infer<typeof TelegramSubscriptionsSchema>;
 

@@ -51,6 +51,7 @@ export interface SaivageRuntime {
   mcpRuntime: McpRuntime;
   eventBus: EventBus;
   planService: PlanService;
+  noteManager: NoteManager;
   project: ProjectContext;
   tracker: RuntimeTracker;
   plannerControl: PlannerControl;
@@ -183,9 +184,9 @@ export async function bootstrap(
   }
 
   // 7b. Clean up stale/expired notes from previous runs
+  const noteManager = new NoteManager(project.paths.notes);
   {
-    const noteCleanup = new NoteManager(project.paths.notes);
-    const cleaned = await noteCleanup.cleanupStaleNotes(config.runtime.notes.volatileTtlMs);
+    const cleaned = await noteManager.cleanupStaleNotes(config.runtime.notes.volatileTtlMs);
     if (cleaned > 0) {
       log.info(`[v2] Cleaned ${cleaned} stale/expired notes from previous run`);
     }
@@ -214,6 +215,7 @@ export async function bootstrap(
     mcpRuntime,
     eventBus,
     planService,
+    noteManager,
     project,
     tracker,
     plannerControl,
@@ -282,12 +284,13 @@ export function createChildSpawner(
     input: unknown,
     _parentCtx: AgentContext,
   ): Promise<AgentResult> => {
-    const { project, router, mcpRuntime, eventBus, tracker } = runtime;
+    const { project, router, mcpRuntime, noteManager, eventBus, tracker } = runtime;
 
     const ctx: AgentContext = {
       project,
       router,
       mcpRuntime,
+      noteManager,
       agentId: agentId(),
       role,
       ...resolveAgentRoute(runtime, role),
@@ -482,12 +485,13 @@ export async function runPlanner(
   runtime: SaivageRuntime,
   options: { abortSignal?: { aborted: boolean } } = {},
 ): Promise<AgentResult> {
-  const { project, router, mcpRuntime, tracker } = runtime;
+  const { project, router, mcpRuntime, noteManager, tracker } = runtime;
 
   const ctx: AgentContext = {
     project,
     router,
     mcpRuntime,
+    noteManager,
     agentId: agentId(),
     role: "planner",
     ...resolveAgentRoute(runtime, "planner"),

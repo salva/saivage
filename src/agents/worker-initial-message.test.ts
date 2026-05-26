@@ -7,6 +7,7 @@ import { buildInitialMessage } from "./worker.js";
 import type { AgentContext, WorkerInput } from "./types.js";
 import type { WorkerRole } from "./roster.js";
 import type { Task } from "../types.js";
+import { NoteManager } from "../runtime/notes.js";
 
 vi.mock("./handoff.js", () => ({
   buildHandoffContext: vi.fn().mockResolvedValue("## Shared Project Context\n[FIXTURE HANDOFF]"),
@@ -129,6 +130,7 @@ function makeContext(root: string): AgentContext {
       getAllTools: () => [],
       callTool: async () => ({ ok: true }),
     } as AgentContext["mcpRuntime"],
+    noteManager: new NoteManager(join(saivageDir, "notes")),
     agentId: "agent-1",
     role: "coder",
     stageId: "stage-1",

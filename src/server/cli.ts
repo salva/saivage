@@ -248,6 +248,7 @@ program
         project: runtime.project,
         router: runtime.router,
         mcpRuntime: runtime.mcpRuntime,
+        noteManager: runtime.noteManager,
         agentId: agentId(),
         role: "inspector" as const,
         modelSpec: runtime.routing.resolve("inspector").modelSpec,

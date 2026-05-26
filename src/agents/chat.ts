@@ -209,8 +209,7 @@ export class ChatAgent extends BaseAgent implements Agent {
     this.injectMessage(content);
 
     // Signal thinking to the client
-    const ch = this.channel as ChatChannel & { sendEvent?: (e: Record<string, unknown>) => void };
-    ch.sendEvent?.({ type: "thinking" });
+    this.channel.sendEvent({ type: "thinking" });
 
     // Run one LLM turn
     const { text, source } = await this.runLoop();
@@ -384,9 +383,8 @@ export class ChatAgent extends BaseAgent implements Agent {
   }
 
   private async sendAssistantResponse(content: string, source?: LlmResponseSource): Promise<void> {
-    const eventChannel = this.channel as ChatChannel & { sendEvent?: (e: Record<string, unknown>) => void };
-    if (this.input.channel !== "telegram" && eventChannel.sendEvent) {
-      eventChannel.sendEvent({ type: "message", content, ...source });
+    if (this.input.channel !== "telegram") {
+      this.channel.sendEvent({ type: "message", content, ...source });
       return;
     }
     await this.channel.send(content);

@@ -12,7 +12,7 @@ import type {
 } from "./types.js";
 import type { ToolCallResult } from "../providers/types.js";
 import type { ChildSpawner, DispatchResult } from "../runtime/dispatcher.js";
-import { NoteManager, NoteChannel } from "../runtime/notes.js";
+import { NoteChannel, type NoteManager } from "../runtime/notes.js";
 import { log } from "../log.js";
 import { loadContract } from "../repo-layout/contract.js";
 import { buildHandoffContext } from "./handoff.js";
@@ -50,7 +50,7 @@ export class PlannerAgent extends BaseAgent implements Agent {
     eagerSkillBlock: string,
     config?: Partial<BaseAgentConfig>,
   ) {
-    const noteManager = new NoteManager(ctx.project.paths.notes);
+    const noteManager = ctx.noteManager;
 
     super(ctx, {
       systemPrompt: loadRolePrompt("planner"),

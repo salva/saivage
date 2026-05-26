@@ -72,6 +72,7 @@ export async function startTelegramBot(
       project: runtime.project,
       router: runtime.router,
       mcpRuntime: runtime.mcpRuntime,
+      noteManager: runtime.noteManager,
       agentId: agentId(),
       role: "chat" as const,
       channelId: "telegram",
@@ -122,7 +123,7 @@ export async function startTelegramBot(
   const subsPath = runtime.project.paths.telegramSubscriptions;
 
   async function readSubs(): Promise<TelegramSubscriptions> {
-    return (await readDocOrNull(subsPath, TelegramSubscriptionsSchema)) ?? { chatIds: [] };
+    return (await readDocOrNull(subsPath, TelegramSubscriptionsSchema)) ?? { entries: [] };
   }
 
   async function writeSubs(next: TelegramSubscriptions): Promise<void> {
@@ -134,17 +135,23 @@ export async function startTelegramBot(
     const userId = ctx.from?.id;
 
     // Access control
-    if (allowedUserIds.size > 0 && (!userId || !allowedUserIds.has(userId))) {
+    if (!isAuthorizedTelegramUser(userId, allowedUserIds)) {
       log.warn(`[telegram] Rejected message from unauthorized user ${userId}`);
+      await ctx.reply("Not authorized.", { link_preview_options: { is_disabled: true } });
       return;
     }
 
     const text = ctx.message.text.trim();
 
-    if (text === "/subscribe" || text.startsWith("/subscribe ")) {
+    if (text === "/subscribe") {
       const subs = await readSubs();
-      if (!subs.chatIds.includes(chatId)) {
-        await writeSubs({ chatIds: [...subs.chatIds, chatId] });
+      if (!subs.entries.some((entry) => entry.chatId === chatId)) {
+        await writeSubs({
+          entries: [
+            ...subs.entries,
+            { chatId, userId, subscribedAt: new Date().toISOString() },
+          ],
+        });
         await getOrCreateSession(chatId);
         await bot.api.sendMessage(chatId, "Subscribed to project notifications.");
         log.info(`[telegram] Chat ${chatId} subscribed`);
@@ -154,10 +161,10 @@ export async function startTelegramBot(
       return;
     }
 
-    if (text === "/unsubscribe" || text.startsWith("/unsubscribe ")) {
+    if (text === "/unsubscribe") {
       const subs = await readSubs();
-      if (subs.chatIds.includes(chatId)) {
-        await writeSubs({ chatIds: subs.chatIds.filter((c) => c !== chatId) });
+      if (subs.entries.some((entry) => entry.chatId === chatId)) {
+        await writeSubs({ entries: subs.entries.filter((entry) => entry.chatId !== chatId) });
         const existing = sessions.get(chatId);
         if (existing) {
           existing.channel.close();
@@ -182,20 +189,43 @@ export async function startTelegramBot(
   });
 
   if (allowedUserIds.size === 0) {
-    log.warn("[telegram] No allowedUserIds configured; only previously subscribed chats can interact");
+    log.warn("[telegram] No allowedUserIds configured; accepting identifiable Telegram users");
   }
 
   // Boot: hydrate persisted subscriptions (notification destinations).
   const persisted = await readSubs();
-  for (const chatId of persisted.chatIds) await getOrCreateSession(chatId);
-  log.info(`[telegram] Restored ${persisted.chatIds.length} persisted subscription(s)`);
+  const survivors = persisted.entries.filter((entry) => isAuthorizedTelegramUser(entry.userId, allowedUserIds));
+  const dropped = persisted.entries.length - survivors.length;
+  if (dropped > 0) {
+    await writeSubs({ entries: survivors });
+    log.warn(`[telegram] Dropped ${dropped} persisted subscription(s) no longer allowed`);
+  }
+  for (const entry of survivors) await getOrCreateSession(entry.chatId);
+  log.info(`[telegram] Restored ${survivors.length} persisted subscription(s)`);
 
-  // Start long polling
+  // Phase 1b: open grammY long polling. Resolve when onStart fires (= init + setup
+  // complete, polling loop about to run). Reject only if bot.start rejects BEFORE
+  // onStart. Rejections AFTER onStart (first-poll failure, runtime polling failure)
+  // are logged, not propagated — see SPEC G47 / 02-design-r3.md §3.1.
   log.info("[telegram] Starting Telegram bot (long polling)...");
-  bot.start({
-    onStart: (botInfo) => {
-      log.info(`[telegram] Bot started: @${botInfo.username} (${botInfo.id})`);
-    },
+  await bot.init();
+  log.info(`[telegram] Bot initialized: @${bot.botInfo.username} (${bot.botInfo.id})`);
+  await new Promise<void>((resolve, reject) => {
+    let started = false;
+    bot.start({
+      onStart: (botInfo) => {
+        started = true;
+        log.info(`[telegram] Bot started: @${botInfo.username} (${botInfo.id})`);
+        resolve();
+      },
+    }).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (started) {
+        log.error(`[telegram] Polling stopped with error: ${msg}`);
+      } else {
+        reject(err);
+      }
+    });
   });
 
   return {
@@ -208,6 +238,14 @@ export async function startTelegramBot(
       sessions.clear();
     },
   };
+}
+
+export function isAuthorizedTelegramUser(
+  userId: number | undefined,
+  allowedUserIds: ReadonlySet<number>,
+): userId is number {
+  if (userId === undefined) return false;
+  return allowedUserIds.size === 0 || allowedUserIds.has(userId);
 }
 
 function telegramSessionId(chatId: number): string {

@@ -12,6 +12,7 @@ import { ensureDir } from "../store/documents.js";
 import { BaseAgent } from "./base.js";
 import type { AgentContext } from "./types.js";
 import type { ChatRequest, ChatResponse, Message, ContentBlock } from "../providers/types.js";
+import { NoteManager } from "../runtime/notes.js";
 
 class TestAgent extends BaseAgent {
   // Expose protected helpers to drive the snapshot from tests.
@@ -77,6 +78,7 @@ function makeContext(router: unknown): AgentContext {
       getAllTools: () => [],
       callTool: async () => ({ ok: true }),
     } as unknown as AgentContext["mcpRuntime"],
+    noteManager: new NoteManager(join(saivageDir, "notes")),
     agentId: "snap-1",
     role: "reviewer",
     stageId: "stage-snap-1",

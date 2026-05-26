@@ -10,6 +10,7 @@ import { ReviewerAgent } from "./reviewer.js";
 import type { AgentContext, WorkerInput } from "./types.js";
 import type { Task } from "../types.js";
 import type { BaseAgent } from "./base.js";
+import { NoteManager } from "../runtime/notes.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -125,6 +126,7 @@ function makeRuntime(root: string): SaivageRuntime & {
       getAllTools: () => [],
       callTool: async () => ({ ok: true }),
     } as SaivageRuntime["mcpRuntime"],
+    noteManager: new NoteManager(project.paths.notes),
     eventBus: {
       publish: async () => {},
       clear: () => {},
@@ -166,8 +168,9 @@ function makeTracker() {
 }
 
 function makeParentContext(root: string): AgentContext {
+  const project = makeProject(root);
   return {
-    project: makeProject(root),
+    project,
     router: {
       getMaxContextTokens: () => 200_000,
       countTokens: () => 0,
@@ -180,6 +183,7 @@ function makeParentContext(root: string): AgentContext {
       getAllTools: () => [],
       callTool: async () => ({ ok: true }),
     } as AgentContext["mcpRuntime"],
+    noteManager: new NoteManager(project.paths.notes),
     agentId: "manager-1",
     role: "manager",
     stageId: "stage-1",

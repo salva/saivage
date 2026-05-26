@@ -1,10 +1,7 @@
 import type { WebSocket } from "ws";
 import type { ChatChannel } from "./types.js";
-
-export interface WsEvent {
-  type: string;
-  [key: string]: unknown;
-}
+import { parseInbound, WsOutboundSchema, type WsOutbound } from "./ws-schema.js";
+import { log } from "../log.js";
 
 /**
  * WebSocket-based chat channel for the web UI.
@@ -15,16 +12,20 @@ export class WebSocketChannel implements ChatChannel {
 
   constructor(private ws: WebSocket) {
     ws.on("message", (data) => {
-      let msg = data.toString().trim();
-      if (!msg) return;
-      // Parse client JSON envelope — extract content from { type: "message", content: "..." }
-      try {
-        const parsed = JSON.parse(msg);
-        if (parsed.type === "message" && typeof parsed.content === "string") {
-          msg = parsed.content;
-        }
-      } catch { /* treat as raw text */ }
-      this.messageHandler?.(msg);
+      const result = parseInbound(data.toString());
+      if (!result.ok) {
+        log.warn(`[ws] dropping malformed inbound frame: ${result.error}`);
+        this.ws.close(1003, "schema-violation");
+        return;
+      }
+      if (result.value.type === "message") {
+        this.messageHandler?.(result.value.content);
+        return;
+      }
+      log.warn(
+        `[ws] client reported schema violation: ${result.value.reason}` +
+          (result.value.raw ? ` (raw=${result.value.raw})` : ""),
+      );
     });
 
     ws.on("close", () => {
@@ -36,10 +37,10 @@ export class WebSocketChannel implements ChatChannel {
     this.sendEvent({ type: "message", content: message });
   }
 
-  /** Send a typed event to the client */
-  sendEvent(event: WsEvent): void {
+  sendEvent(event: WsOutbound): void {
+    const parsed = WsOutboundSchema.parse(event);
     if (this.ws.readyState === this.ws.OPEN) {
-      this.ws.send(JSON.stringify(event));
+      this.ws.send(JSON.stringify(parsed));
     }
   }
 

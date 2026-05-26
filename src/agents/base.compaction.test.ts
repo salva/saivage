@@ -15,6 +15,7 @@ import { createSkill } from "../knowledge/lifecycle.js";
 import { readDoc } from "../store/documents.js";
 import { RuntimeStateSchema } from "../types.js";
 import { RuntimeTracker, acquireRuntimeLock, type RuntimeLock } from "../runtime/recovery.js";
+import { NoteManager } from "../runtime/notes.js";
 
 class TestAgent extends BaseAgent {
   public getMessages(): Message[] {
@@ -99,6 +100,7 @@ function makeContext(
       getAllTools: () => [],
       callTool: async () => ({ ok: true }),
     } as unknown as AgentContext["mcpRuntime"],
+    noteManager: new NoteManager(join(saivageDir, "notes")),
     agentId: "wi14-1",
     role,
     stageId: "stage-wi14",

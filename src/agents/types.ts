@@ -15,6 +15,7 @@ import type {
 import type { ProjectContext } from "../store/project.js";
 import type { ModelRouter } from "../providers/router.js";
 import type { McpRuntime } from "../mcp/runtime.js";
+import type { NoteManager } from "../runtime/notes.js";
 
 import type { AgentRole } from "./roster.js";
 export type { AgentRole };
@@ -34,6 +35,8 @@ export interface AgentContext {
   router: ModelRouter;
   /** MCP service runtime for tool calls. */
   mcpRuntime: McpRuntime;
+  /** Shared runtime-owned note lifecycle manager. */
+  noteManager: NoteManager;
   /** Agent instance ID. */
   agentId: string;
   /** Role of this agent. */

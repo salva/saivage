@@ -8,6 +8,7 @@ import type { AgentContext } from "./types.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
 import type { RuntimeToolEntry } from "../mcp/runtime.js";
 import type { ChatRequest, ChatResponse, ToolCallResult } from "../providers/types.js";
+import { NoteManager } from "../runtime/notes.js";
 
 const LEGACY_TOKEN = "PLAN_" + "COMPLETE";
 
@@ -161,6 +162,7 @@ function makePlannerContext(
         return { ok: true };
       },
     } as unknown as AgentContext["mcpRuntime"],
+    noteManager: new NoteManager(join(saivageDir, "notes")),
     agentId: "planner-1",
     role: "planner",
     stageId: undefined,

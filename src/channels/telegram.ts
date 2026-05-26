@@ -9,6 +9,7 @@
  */
 import telegramifyMarkdown from "telegramify-markdown";
 import type { ChatChannel } from "./types.js";
+import type { WsOutbound } from "./ws-schema.js";
 import { log } from "../log.js";
 
 /** Callback to send a message back to the Telegram user. */
@@ -372,9 +373,16 @@ export class TelegramChannel implements ChatChannel {
    * Handle typed events from ChatAgent. Only forward human-readable
    * "message" events; silently discard internal events.
    */
-  sendEvent(event: { type: string; [key: string]: unknown }): void {
-    if (event.type === "message" && typeof event.content === "string") {
-      this.send(event.content);
+  sendEvent(event: WsOutbound): void {
+    switch (event.type) {
+      case "message":
+        void this.send(event.content);
+        return;
+      case "session":
+      case "thinking":
+      case "system":
+      case "event":
+        return;
     }
   }
 

@@ -1,17 +1,19 @@
 import { ref, onMounted, onUnmounted } from "vue";
+import {
+  WsInboundSchema,
+  parseOutbound,
+  type WsInbound,
+  type WsOutbound,
+} from "@channels/ws-schema";
 import { withTokenQuery } from "../utils/api";
 import { useAuthState } from "./useAuthState";
-
-export interface WsEvent {
-  type: string;
-  [key: string]: unknown;
-}
 
 export type WsStatus = "connecting" | "open" | "closed";
 
 const INITIAL_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 30_000;
 const BACKOFF_FACTOR = 1.7;
+const ERRORS_CAP = 8;
 
 /**
  * WebSocket composable with:
@@ -30,7 +32,8 @@ const BACKOFF_FACTOR = 1.7;
 export function useWebSocket(url?: string) {
   const connected = ref(false);
   const status = ref<WsStatus>("connecting");
-  const events = ref<WsEvent[]>([]);
+  const errors = ref<{ raw: string; reason: string }[]>([]);
+  const handlers = new Set<(ev: WsOutbound) => void>();
   let ws: WebSocket | null = null;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let nextBackoffMs = INITIAL_BACKOFF_MS;
@@ -47,6 +50,19 @@ export function useWebSocket(url?: string) {
     return withTokenQuery(base);
   }
 
+  function pushError(reason: string, raw: string): void {
+    errors.value.push({ raw, reason });
+    if (errors.value.length > ERRORS_CAP) {
+      errors.value.splice(0, errors.value.length - ERRORS_CAP);
+    }
+  }
+
+  function emitErrorUpstream(reason: string, raw: string): void {
+    if (ws?.readyState !== WebSocket.OPEN) return;
+    const truncated = raw.length > 512 ? `${raw.slice(0, 512)}...` : raw;
+    ws.send(JSON.stringify({ type: "error", reason, raw: truncated }));
+  }
+
   function connect() {
     if (stopped) return;
     if (ws?.readyState === WebSocket.OPEN || ws?.readyState === WebSocket.CONNECTING) return;
@@ -61,12 +77,16 @@ export function useWebSocket(url?: string) {
     };
 
     ws.onmessage = (event) => {
-      try {
-        const evt = JSON.parse(event.data) as WsEvent;
-        events.value.push(evt);
-      } catch {
-        events.value.push({ type: "message", content: event.data });
+      const raw = typeof event.data === "string" ? event.data : "";
+      const result = parseOutbound(raw);
+      if (!result.ok) {
+        pushError(result.error, result.raw);
+        console.warn("[ws] schema violation from server:", result.error, { raw: result.raw });
+        emitErrorUpstream(result.error, result.raw);
+        ws?.close();
+        return;
       }
+      for (const handler of handlers) handler(result.value);
     };
 
     ws.onclose = (event) => {
@@ -91,10 +111,16 @@ export function useWebSocket(url?: string) {
     };
   }
 
-  function send(content: string) {
+  function send(msg: WsInbound) {
+    const parsed = WsInboundSchema.parse(msg);
     if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(content);
+      ws.send(JSON.stringify(parsed));
     }
+  }
+
+  function onEvent(handler: (ev: WsOutbound) => void): () => void {
+    handlers.add(handler);
+    return () => handlers.delete(handler);
   }
 
   function scheduleReconnect() {
@@ -138,5 +164,5 @@ export function useWebSocket(url?: string) {
   onMounted(() => connect());
   onUnmounted(() => disconnect());
 
-  return { connected, status, events, send, disconnect, reconnect };
+  return { connected, status, errors, onEvent, send, disconnect, reconnect };
 }

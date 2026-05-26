@@ -6,6 +6,7 @@ import { useAuthState } from "../composables/useAuthState";
 import { renderMarkdown } from "../utils/markdown";
 import { apiFetchJson, getApiToken, setApiToken } from "../utils/api";
 import { clockTime } from "../utils/time";
+import type { WsOutbound } from "@channels/ws-schema";
 
 defineExpose<{
   focusInput: () => void;
@@ -36,7 +37,7 @@ const stickToBottom = ref(true);
 const unseenCount = ref(0);
 const tokenInput = ref("");
 
-const { connected, status, events, send } = useWebSocket();
+const { connected, status, onEvent, send } = useWebSocket();
 const { unauthorized } = useAuthState();
 
 // Debounce the visible status by 400 ms so rapid connecting/closed flicker
@@ -68,12 +69,9 @@ const connectionLabel = computed(() => {
 });
 const inputDisabled = computed(() => !connected.value);
 
-watch(() => events.value.length, () => {
-  const ev = events.value[events.value.length - 1];
-  if (!ev) return;
-
+const unsubscribeWsEvent = onEvent((ev: WsOutbound) => {
   if (ev.type === "session" && ev.sessionId) {
-    const newSid = ev.sessionId as string;
+    const newSid = ev.sessionId;
     // The server hands out a fresh session id on every WebSocket
     // connection. A reconnect therefore arrives as a "new" session even
     // though the operator has not asked for one. Treat the first session
@@ -99,21 +97,24 @@ watch(() => events.value.length, () => {
     messages.value.push({
       id: ++msgId,
       role: "assistant",
-      content: ev.content as string,
+      content: ev.content,
       timestamp: new Date(),
-      provider: ev.provider as string | undefined,
-      model: ev.model as string | undefined,
-      modelSpec: ev.modelSpec as string | undefined,
-      requestedModelSpec: ev.requestedModelSpec as string | undefined,
+      provider: ev.provider,
+      model: ev.model,
+      modelSpec: ev.modelSpec,
+      requestedModelSpec: ev.requestedModelSpec,
     });
     if (stickToBottom.value) scrollToBottom();
     else unseenCount.value += 1;
   } else if (ev.type === "system" || ev.type === "event") {
     thinking.value = false;
+    const content = ev.type === "event"
+      ? ev.content ?? ev.summary ?? JSON.stringify(ev)
+      : ev.content;
     messages.value.push({
       id: ++msgId,
       role: "system",
-      content: (ev.content ?? ev.summary ?? JSON.stringify(ev)) as string,
+      content,
       timestamp: new Date(),
     });
     if (stickToBottom.value) scrollToBottom();
@@ -154,7 +155,7 @@ function sendMessage() {
     content: text,
     timestamp: new Date(),
   });
-  send(JSON.stringify({ type: "message", content: text }));
+  send({ type: "message", content: text });
   inputText.value = "";
   stickToBottom.value = true;
   unseenCount.value = 0;
@@ -230,6 +231,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  unsubscribeWsEvent();
   if (statusDebounceTimer) clearTimeout(statusDebounceTimer);
 });
 
