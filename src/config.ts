@@ -65,7 +65,7 @@ const mcpServerSchema = z.object({
   transport: z.enum(["stdio", "sse"]).default("stdio"),
 });
 
-const configSchema = z.object({
+export const SaivageConfigSchema = z.object({
   models: z
     .object({
       orchestrator: modelAssignmentSchema.optional(),
@@ -214,7 +214,7 @@ const configSchema = z.object({
   mcpServers: z.record(z.string(), mcpServerSchema).default({}),
 }).strict();
 
-export type SaivageConfig = z.infer<typeof configSchema>;
+export type SaivageConfig = z.infer<typeof SaivageConfigSchema>;
 
 // --- Paths ---
 
@@ -286,5 +286,5 @@ export async function loadConfig(projectRoot?: string): Promise<SaivageConfig> {
     raw = JSON.parse(text);
   }
   const interpolated = deepInterpolate(raw);
-  return configSchema.parse(interpolated);
+  return SaivageConfigSchema.parse(interpolated);
 }

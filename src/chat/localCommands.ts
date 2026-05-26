@@ -11,7 +11,7 @@
 import {
   LOCAL_CHAT_COMMANDS,
   type LocalChatCommandName,
-} from "../agents/conventions.js";
+} from "./localCommandRegistry.js";
 import { createUserNote } from "../runtime/notes.js";
 import type { EventBus } from "../events/bus.js";
 import type { PlannerControl } from "../server/bootstrap.js";

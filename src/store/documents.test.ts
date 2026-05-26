@@ -12,7 +12,6 @@ import {
   readDoc,
   readDocOrNull,
   writeDoc,
-  appendDoc,
   listDir,
   deleteDoc,
 } from "./documents.js";
@@ -123,38 +122,6 @@ describe("Document Store", () => {
 
   it("listDir returns empty for missing directory", async () => {
     expect(await listDir(join(tmpDir, "nope"))).toEqual([]);
-  });
-});
-
-// ─── Append tests ────────────────────────────────────────────────────────────
-
-describe("appendDoc", () => {
-  it("appends to existing array field", async () => {
-    const path = join(tmpDir, "history.json");
-    await writeDoc(
-      path,
-      { stages: [{ id: "stg-1" }] },
-      z.object({ stages: z.array(z.object({ id: z.string() })) }),
-    );
-    const schema = z.object({
-      stages: z.array(z.object({ id: z.string() })),
-    });
-    await appendDoc(path, "stages", { id: "stg-2" }, schema);
-
-    const result = await readDoc(path, schema);
-    expect(result.stages).toHaveLength(2);
-    expect(result.stages[1]).toEqual({ id: "stg-2" });
-  });
-
-  it("creates file with default doc if missing", async () => {
-    const path = join(tmpDir, "new.json");
-    const schema = z.object({
-      stages: z.array(z.object({ id: z.string() })),
-    });
-    await appendDoc(path, "stages", { id: "stg-1" }, schema, {} as never);
-
-    const result = await readDoc(path, schema);
-    expect(result.stages).toEqual([{ id: "stg-1" }]);
   });
 });
 
@@ -411,7 +378,7 @@ describe("Document Store + Schema round-trip", () => {
       history: [] as typeof entry[],
     };
 
-    await appendDoc(path, "history", entry, PlanDocumentSchema, plan);
+    await writeDoc(path, { ...plan, history: [entry] }, PlanDocumentSchema);
 
     const result = await readDoc(path, PlanDocumentSchema);
     expect(result.history).toHaveLength(1);

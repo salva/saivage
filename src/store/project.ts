@@ -6,6 +6,7 @@
 import { join } from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 import { readDoc, writeDoc, ensureDir, pathExists } from "./documents.js";
+import { SaivageConfigSchema } from "../config.js";
 import {
   ProjectConfigSchema,
   type ProjectConfig,
@@ -130,33 +131,8 @@ export async function seedProject(
   await writeDoc(configPath, config, ProjectConfigSchema);
 
   // Write canonical runtime config (saivage.json)
-  const saivageJson = {
-    providers: {
-      anthropic: {},
-      openai: {},
-      ollama: { baseUrl: "http://localhost:11434" },
-      llamacpp: { baseUrl: "http://localhost:8080" },
-    },
-    failover: {},
-    modelEquivalents: {},
-    server: { port: 8080, host: "0.0.0.0" },
-    agent: { maxConcurrentAgents: 3 },
-    notifications: {
-      channels: ["web"],
-      filters: { min_severity: "info", categories: [] },
-    },
-    mcpServers: {
-      playwright: {
-        command: "npx",
-        args: ["-y", "@playwright/mcp@latest", "--headless"],
-        env: { PLAYWRIGHT_BROWSERS_PATH: "${HOME}/.cache/ms-playwright" },
-        disabled: false,
-        autostart: true,
-        transport: "stdio",
-      },
-    },
-  };
-  await writeFile(saivageJsonPath, JSON.stringify(saivageJson, null, 2) + "\n", "utf-8");
+  const saivageJson = SaivageConfigSchema.parse({});
+  await writeDoc(saivageJsonPath, saivageJson, SaivageConfigSchema);
 
   // Seed knowledge trees (skills + memory) and .gitignore lines.
   await initProjectTree(projectRoot);

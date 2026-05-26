@@ -8,7 +8,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { loadRolePrompt, type RolePromptName } from "./prompts.js";
-import { LOCAL_CHAT_COMMANDS } from "./conventions.js";
+import { LOCAL_CHAT_COMMANDS } from "../chat/localCommandRegistry.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 

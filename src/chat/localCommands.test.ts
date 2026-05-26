@@ -18,7 +18,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   LOCAL_CHAT_COMMANDS,
   type LocalChatCommandName,
-} from "../agents/conventions.js";
+} from "./localCommandRegistry.js";
 
 vi.mock("../runtime/notes.js", () => ({
   createUserNote: vi.fn((opts: { content: string }) => ({
@@ -83,6 +83,12 @@ beforeEach(() => {
   vi.mocked(createUserNote).mockClear();
 });
 
+function firstCreatedNoteInput(): Parameters<typeof createUserNote>[0] {
+  const input = vi.mocked(createUserNote).mock.calls[0]?.[0];
+  if (!input) throw new Error("expected createUserNote to have been called");
+  return input;
+}
+
 describe("dispatchLocalCommand — registry coverage", () => {
   for (const entry of LOCAL_CHAT_COMMANDS) {
     it(`returns a non-null reply for ${entry.name}`, async () => {
@@ -138,7 +144,7 @@ describe("dispatchLocalCommand — argument handling", () => {
     const ctx = makeCtx();
     await dispatchLocalCommand("/replan", ctx);
     expect(createUserNote).toHaveBeenCalledTimes(1);
-    const call = vi.mocked(createUserNote).mock.calls[0]![0];
+    const call = firstCreatedNoteInput();
     expect(call.content).toContain("Re-evaluate the current plan");
     expect(call.permanent).toBe(false);
     expect(call.urgent).toBe(true);
@@ -147,7 +153,7 @@ describe("dispatchLocalCommand — argument handling", () => {
   it("/replan with explicit reason uses that reason", async () => {
     const ctx = makeCtx();
     await dispatchLocalCommand("/replan focus on data quality", ctx);
-    const call = vi.mocked(createUserNote).mock.calls[0]![0];
+    const call = firstCreatedNoteInput();
     expect(call.content).toBe("focus on data quality");
     expect(call.urgent).toBe(true);
   });
@@ -170,7 +176,7 @@ describe("dispatchLocalCommand — argument handling", () => {
 
   it("/note <text> creates a non-permanent, non-urgent note", async () => {
     await dispatchLocalCommand("/note hello there", makeCtx());
-    const call = vi.mocked(createUserNote).mock.calls[0]![0];
+    const call = firstCreatedNoteInput();
     expect(call.content).toBe("hello there");
     expect(call.permanent).toBe(false);
     expect(call.urgent).toBe(false);
@@ -178,7 +184,7 @@ describe("dispatchLocalCommand — argument handling", () => {
 
   it("/notep <text> creates a permanent note", async () => {
     await dispatchLocalCommand("/notep persist this", makeCtx());
-    const call = vi.mocked(createUserNote).mock.calls[0]![0];
+    const call = firstCreatedNoteInput();
     expect(call.permanent).toBe(true);
     expect(call.urgent).toBe(false);
   });
@@ -193,8 +199,11 @@ describe("dispatchLocalCommand — restart-planner alias", () => {
     expect(replyA).toBe(replyB);
     expect(ctxA._restartCalls).toHaveLength(1);
     expect(ctxB._restartCalls).toHaveLength(1);
-    expect(ctxA._restartCalls[0]!.reason).toBe("please");
-    expect(ctxB._restartCalls[0]!.reason).toBe("please");
+    const [restartA] = ctxA._restartCalls;
+    const [restartB] = ctxB._restartCalls;
+    if (!restartA || !restartB) throw new Error("expected restart calls");
+    expect(restartA.reason).toBe("please");
+    expect(restartB.reason).toBe("please");
   });
 });
 
@@ -210,8 +219,10 @@ describe("restartPlanner — without plannerControl", () => {
     const ctx = makeCtx();
     await restartPlanner(ctx, "user wants reset");
     expect(ctx._publishCalls).toHaveLength(1);
-    expect(ctx._publishCalls[0]!.type).toBe("plan_updated");
-    expect(ctx._publishCalls[0]!.summary).toContain("user wants reset");
+    const [published] = ctx._publishCalls;
+    if (!published) throw new Error("expected published plan update");
+    expect(published.type).toBe("plan_updated");
+    expect(published.summary).toContain("user wants reset");
   });
 });
 
@@ -247,9 +258,9 @@ describe("renderLocalHelp", () => {
   it("includes every MEMORY_SKILL_HELP_ROWS entry after the local rows", () => {
     const help = renderLocalHelp();
     let lastIdx = -1;
-    const lastLocalRow = `| \`${
-      LOCAL_CHAT_COMMANDS[LOCAL_CHAT_COMMANDS.length - 1]!.usage
-    }\` |`;
+    const lastLocalCommand = LOCAL_CHAT_COMMANDS.at(-1);
+    if (!lastLocalCommand) throw new Error("expected local commands to be non-empty");
+    const lastLocalRow = `| \`${lastLocalCommand.usage}\` |`;
     const localEnd = help.indexOf(lastLocalRow);
     for (const row of MEMORY_SKILL_HELP_ROWS) {
       const idx = help.indexOf(row);

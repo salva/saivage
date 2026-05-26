@@ -101,31 +101,6 @@ export async function writeDoc<T>(
   }
 }
 
-/**
- * Append an item to a JSON array document.
- */
-export async function appendDoc<T extends Record<string, unknown>>(
-  path: string,
-  itemKey: string & keyof T,
-  item: unknown,
-  schema: z.ZodType<T>,
-  defaultDoc?: Omit<T, typeof itemKey>,
-): Promise<void> {
-  let doc: T;
-  const existing = await readDocOrNull(path, schema);
-  if (existing !== null) {
-    doc = existing as T;
-  } else {
-    doc = { ...defaultDoc, [itemKey]: [] } as unknown as T;
-  }
-  const arr = doc[itemKey];
-  if (!Array.isArray(arr)) {
-    throw new Error(`Field "${itemKey}" is not an array`);
-  }
-  arr.push(item);
-  await writeDoc(path, doc, schema);
-}
-
 /** List files in a directory (returns filenames, not full paths). */
 export async function listDir(dirPath: string): Promise<string[]> {
   try {

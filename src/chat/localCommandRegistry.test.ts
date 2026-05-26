@@ -10,7 +10,7 @@ import { describe, it, expect } from "vitest";
 import {
   LOCAL_CHAT_COMMANDS,
   renderLocalChatCommandsTable,
-} from "./conventions.js";
+} from "./localCommandRegistry.js";
 
 describe("LOCAL_CHAT_COMMANDS", () => {
   it("is non-empty and well-formed", () => {

@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 import { renderRosterSummary, type AgentRole } from "./roster.js";
-import { renderLocalChatCommandsTable } from "./conventions.js";
+import { renderLocalChatCommandsTable } from "../chat/localCommandRegistry.js";
 import type { RolePromptName } from "./prompt-keys.js";
 
 export type { RolePromptName } from "./prompt-keys.js";

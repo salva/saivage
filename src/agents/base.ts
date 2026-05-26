@@ -4,8 +4,6 @@
  * manages the conversation loop, tool execution, compaction, and stash.
  */
 
-import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
 import type {
   Message,
   ContentBlock,
@@ -16,14 +14,13 @@ import type {
 import { ProviderError } from "../providers/error.js";
 import type {
   AgentContext,
-  AgentResult,
   AgentRole,
   InputChannel,
 } from "./types.js";
 import { ROSTER } from "./roster.js";
 import { getToolFilter } from "./roster.js";
 import { applyToolFilter } from "./tool-filters.js";
-import { Dispatcher, DISPATCH_TOOLS } from "../runtime/dispatcher.js";
+import { Dispatcher } from "../runtime/dispatcher.js";
 import type { ChildSpawner, DispatchResult } from "../runtime/dispatcher.js";
 import {
   shouldCompact,
@@ -35,7 +32,6 @@ import {
 import { buildSurvivorBlock } from "../knowledge/eagerLoader.js";
 import type { KnowledgeAgentRole } from "../knowledge/types.js";
 import type { SkillMatchContext } from "../knowledge/loader.js";
-import { checkConvention } from "./conventions.js";
 import { stashResult } from "../runtime/stash.js";
 import type { RuntimeToolEntry } from "../mcp/runtime.js";
 import { log } from "../log.js";
