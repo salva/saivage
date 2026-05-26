@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { ModelRoutingResolver, RoutingProfileCycleError, projectRoutingSchema } from "./resolver.js";
+import { NoAllowedRouteMatchError } from "../config-validation.js";
 
 const routing = (
   raw: z.input<typeof projectRoutingSchema>,
@@ -138,6 +139,174 @@ describe("ModelRoutingResolver", () => {
     const route = resolver.resolve("coder");
     expect(route.modelSpec).toBe("github-copilot/gpt-5.4");
     expect(route.source).toBe("routing");
+  });
+
+  it("throws NoAllowedRouteMatchError with full payload when preferred_models is filtered out (G25)", () => {
+    const resolver = new ModelRoutingResolver(
+      {
+        routing: {
+          roles: {
+            coder: {
+              preferred_models: ["github-copilot/claude-sonnet-4.6"],
+              allowed_models: ["github-copilot/gpt-5.4"],
+            },
+          },
+        },
+      },
+      {},
+    );
+    try {
+      resolver.resolve("coder");
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(NoAllowedRouteMatchError);
+      const e = err as NoAllowedRouteMatchError;
+      expect(e.kind).toBe("model");
+      expect(e.role).toBe("coder");
+      expect(e.candidates).toEqual(["github-copilot/claude-sonnet-4.6"]);
+      expect(e.allowed).toEqual(["github-copilot/gpt-5.4"]);
+      expect(typeof e.configPath).toBe("string");
+      expect(e.configPath.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("throws NoAllowedRouteMatchError with full payload when rule.model is filtered out by allowed_models (G25)", () => {
+    const resolver = new ModelRoutingResolver(
+      {
+        routing: {
+          roles: {
+            coder: {
+              model: "github-copilot/claude-sonnet-4.6",
+              allowed_models: ["github-copilot/gpt-5.4"],
+            },
+          },
+        },
+      },
+      {},
+    );
+    try {
+      resolver.resolve("coder");
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(NoAllowedRouteMatchError);
+      const e = err as NoAllowedRouteMatchError;
+      expect(e.kind).toBe("model");
+      expect(e.role).toBe("coder");
+      expect(e.candidates).toEqual(["github-copilot/claude-sonnet-4.6"]);
+      expect(e.allowed).toEqual(["github-copilot/gpt-5.4"]);
+      expect(typeof e.configPath).toBe("string");
+      expect(e.configPath.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("returns the filtered intersection when preferred_models and allowed_models overlap (G25)", () => {
+    const resolver = new ModelRoutingResolver(
+      {
+        routing: {
+          roles: {
+            coder: {
+              preferred_models: ["github-copilot/gpt-5.4", "github-copilot/claude-sonnet-4.6"],
+              allowed_models: ["github-copilot/gpt-5.4"],
+            },
+          },
+        },
+      },
+      {},
+    );
+    expect(resolver.resolve("coder").preferredModels).toEqual(["github-copilot/gpt-5.4"]);
+  });
+
+  it("throws NoAllowedRouteMatchError with full payload when both explicit and default account are filtered (G25)", () => {
+    const resolver = new ModelRoutingResolver(
+      {
+        routing: {
+          roles: {
+            coder: {
+              model: "github-copilot/gpt-5.4",
+              account: "user-a",
+              allowed_accounts: ["github-copilot.user-b"],
+            },
+          },
+        },
+      },
+      { providers: { "github-copilot": { defaultAccount: "user-c" } } },
+    );
+    try {
+      resolver.resolve("coder");
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(NoAllowedRouteMatchError);
+      const e = err as NoAllowedRouteMatchError;
+      expect(e.kind).toBe("account");
+      expect(e.role).toBe("coder");
+      expect(e.candidates).toEqual(["github-copilot.user-a", "github-copilot.user-c"]);
+      expect(e.allowed).toEqual(["github-copilot.user-b"]);
+      expect(typeof e.configPath).toBe("string");
+      expect(e.configPath.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("throws NoAllowedRouteMatchError with full payload when only the provider defaultAccount is a candidate and it is filtered out (G25)", () => {
+    const resolver = new ModelRoutingResolver(
+      {
+        routing: {
+          roles: {
+            coder: {
+              model: "github-copilot/gpt-5.4",
+              allowed_accounts: ["github-copilot.user-b"],
+            },
+          },
+        },
+      },
+      { providers: { "github-copilot": { defaultAccount: "user-a" } } },
+    );
+    try {
+      resolver.resolve("coder");
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(NoAllowedRouteMatchError);
+      const e = err as NoAllowedRouteMatchError;
+      expect(e.kind).toBe("account");
+      expect(e.role).toBe("coder");
+      expect(e.candidates).toEqual(["github-copilot.user-a"]);
+      expect(e.allowed).toEqual(["github-copilot.user-b"]);
+      expect(typeof e.configPath).toBe("string");
+      expect(e.configPath.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("returns the provider default account when it is in allowed_accounts (G25)", () => {
+    const resolver = new ModelRoutingResolver(
+      {
+        routing: {
+          roles: {
+            coder: {
+              model: "github-copilot/gpt-5.4",
+              allowed_accounts: ["github-copilot.user-b"],
+            },
+          },
+        },
+      },
+      { providers: { "github-copilot": { defaultAccount: "user-b" } } },
+    );
+    expect(resolver.resolve("coder").preferredAccounts).toEqual(["github-copilot.user-b"]);
+  });
+
+  it("returns allowed_accounts when no explicit and no default account is configured (G25)", () => {
+    const resolver = new ModelRoutingResolver(
+      {
+        routing: {
+          roles: {
+            coder: {
+              model: "github-copilot/gpt-5.4",
+              allowed_accounts: ["github-copilot.user-b"],
+            },
+          },
+        },
+      },
+      { providers: { "github-copilot": {} } },
+    );
+    expect(resolver.resolve("coder").preferredAccounts).toEqual(["github-copilot.user-b"]);
   });
 
   it("rejects a direct profile cycle at construction time", () => {

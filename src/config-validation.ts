@@ -21,6 +21,33 @@ export class MissingModelForRoleError extends Error {
   }
 }
 
+export class NoAllowedRouteMatchError extends Error {
+  readonly kind: "model" | "account";
+  readonly role: string;
+  readonly candidates: string[];
+  readonly allowed: string[];
+  readonly configPath: string;
+  constructor(
+    kind: "model" | "account",
+    role: string,
+    candidates: string[],
+    allowed: string[],
+    configPathStr: string,
+  ) {
+    super(
+      `No ${kind} in the configured allow-list for role "${role}" matches any candidate. ` +
+      `Candidates: [${candidates.join(", ")}]. Allowed: [${allowed.join(", ")}]. ` +
+      `Config: ${configPathStr}`,
+    );
+    this.name = "NoAllowedRouteMatchError";
+    this.kind = kind;
+    this.role = role;
+    this.candidates = candidates;
+    this.allowed = allowed;
+    this.configPath = configPathStr;
+  }
+}
+
 /**
  * Always-required worker/coordinator roles, plus chat. `designer` and
  * `manager` are roster roles too but `designer` is not always invoked;
@@ -47,22 +74,34 @@ export function validateModelCoverage(
   for (const role of REQUIRED_MODEL_ROLES) {
     try {
       routing.resolve(role);
-    } catch {
-      missing.push(role);
+    } catch (err) {
+      if (err instanceof MissingModelForRoleError) {
+        missing.push(role);
+        continue;
+      }
+      throw err;
     }
   }
   if (config.supervisor.enabled) {
     try {
       routing.resolve("supervisor");
-    } catch {
-      missing.push("supervisor");
+    } catch (err) {
+      if (err instanceof MissingModelForRoleError) {
+        missing.push("supervisor");
+      } else {
+        throw err;
+      }
     }
   }
   if (config.security.injectionScanner) {
     try {
       routing.resolve("security");
-    } catch {
-      missing.push("security");
+    } catch (err) {
+      if (err instanceof MissingModelForRoleError) {
+        missing.push("security");
+      } else {
+        throw err;
+      }
     }
   }
   if (missing.length > 0) {

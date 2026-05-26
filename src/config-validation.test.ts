@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { validateModelCoverage, MissingModelForRoleError } from "./config-validation.js";
+import { validateModelCoverage, MissingModelForRoleError, NoAllowedRouteMatchError } from "./config-validation.js";
 import { ModelRoutingResolver } from "./routing/resolver.js";
 import { loadConfig } from "./config.js";
 import type { SaivageConfig } from "./config.js";
@@ -143,6 +143,41 @@ describe("validateModelCoverage", () => {
       expect(e.roles).toContain("coder");
       expect(e.roles).not.toContain("supervisor");
       expect(e.roles).not.toContain("security");
+    }
+  });
+
+  it("propagates NoAllowedRouteMatchError verbatim with full payload instead of collapsing into MissingModelForRoleError (G25)", () => {
+    const cfg = makeConfig({
+      models: { default: "github-copilot/gpt-5.4" } as SaivageConfig["models"],
+      supervisor: { ...makeConfig().supervisor, enabled: false } as SaivageConfig["supervisor"],
+      security: { ...makeConfig().security, injectionScanner: false } as SaivageConfig["security"],
+    });
+    const routing = new ModelRoutingResolver(
+      {
+        routing: {
+          roles: {
+            coder: {
+              preferred_models: ["github-copilot/claude-sonnet-4.6"],
+              allowed_models: ["github-copilot/gpt-5.4"],
+            },
+          },
+        },
+      },
+      { models: { default: "github-copilot/gpt-5.4" } },
+    );
+    try {
+      validateModelCoverage(cfg, routing, "/proj/.saivage/saivage.json");
+      expect.fail("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(NoAllowedRouteMatchError);
+      expect(err).not.toBeInstanceOf(MissingModelForRoleError);
+      const e = err as NoAllowedRouteMatchError;
+      expect(e.kind).toBe("model");
+      expect(e.role).toBe("coder");
+      expect(e.candidates).toEqual(["github-copilot/claude-sonnet-4.6"]);
+      expect(e.allowed).toEqual(["github-copilot/gpt-5.4"]);
+      expect(typeof e.configPath).toBe("string");
+      expect(e.configPath.length).toBeGreaterThan(0);
     }
   });
 });

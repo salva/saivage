@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ROSTER } from "../agents/roster.js";
-import { MissingModelForRoleError } from "../config-validation.js";
+import { MissingModelForRoleError, NoAllowedRouteMatchError } from "../config-validation.js";
 import { configPath } from "../config.js";
 
 export class RoutingProfileCycleError extends Error {
@@ -154,7 +154,7 @@ export class ModelRoutingResolver {
     const parsed = tryParseModelSpec(modelSpec);
     const provider = parsed?.provider ?? "";
     const model = parsed?.model ?? modelSpec;
-    const preferredAccounts = parsed ? this.resolvePreferredAccounts(provider, merged) : [];
+    const preferredAccounts = parsed ? this.resolvePreferredAccounts(role, provider, merged) : [];
 
     return {
       role,
@@ -243,42 +243,57 @@ export class ModelRoutingResolver {
       ...(rule.model ? [rule.model] : []),
       ...rule.preferredModels,
     ]);
+    const allowed = rule.allowedModels?.length ? unique(rule.allowedModels) : undefined;
 
-    const allowed = rule.allowedModels?.length
-      ? new Set(rule.allowedModels)
-      : undefined;
-    const filtered = allowed
-      ? candidates.filter((candidate) => allowed.has(candidate))
-      : candidates;
+    if (!allowed) {
+      return candidates.length ? candidates : this.resolveLegacyModels(role);
+    }
+    if (candidates.length === 0) {
+      return allowed;
+    }
 
+    const allowedSet = new Set(allowed);
+    const filtered = candidates.filter((c) => allowedSet.has(c));
     if (filtered.length > 0) return filtered;
-    if (allowed?.size) return [...allowed];
-    return this.resolveLegacyModels(role);
+
+    throw new NoAllowedRouteMatchError("model", role, candidates, allowed, configPath());
   }
 
-  private resolvePreferredAccounts(provider: string, rule: NormalizedRule): string[] {
+  private resolvePreferredAccounts(role: string, provider: string, rule: NormalizedRule): string[] {
     if (rule.authProfile) return [];
 
     const explicit = unique([
       ...(rule.account ? [normalizeAccountRef(provider, rule.account)] : []),
       ...rule.preferredAccounts.map((entry) => normalizeAccountRef(provider, entry)),
     ]);
+    const defaultAccount = this.runtime.providers?.[provider]?.defaultAccount;
+    const normalizedDefault = defaultAccount
+      ? normalizeAccountRef(provider, defaultAccount)
+      : undefined;
+    const candidates = unique([
+      ...explicit,
+      ...(normalizedDefault ? [normalizedDefault] : []),
+    ]);
 
     const allowed = rule.allowedAccounts?.length
-      ? new Set(rule.allowedAccounts.map((entry) => normalizeAccountRef(provider, entry)))
+      ? unique(rule.allowedAccounts.map((entry) => normalizeAccountRef(provider, entry)))
       : undefined;
-    const filtered = allowed
-      ? explicit.filter((candidate) => allowed.has(candidate))
-      : explicit;
-    if (filtered.length > 0) return filtered;
 
-    const defaultAccount = this.runtime.providers?.[provider]?.defaultAccount;
-    if (defaultAccount) {
-      const normalizedDefault = normalizeAccountRef(provider, defaultAccount);
-      if (!allowed || allowed.has(normalizedDefault)) return [normalizedDefault];
+    if (!allowed) {
+      if (explicit.length) return explicit;
+      return normalizedDefault ? [normalizedDefault] : [];
     }
 
-    return allowed ? [...allowed] : [];
+    if (candidates.length === 0) {
+      return allowed;
+    }
+
+    const allowedSet = new Set(allowed);
+    const filteredExplicit = explicit.filter((c) => allowedSet.has(c));
+    if (filteredExplicit.length > 0) return filteredExplicit;
+    if (normalizedDefault && allowedSet.has(normalizedDefault)) return [normalizedDefault];
+
+    throw new NoAllowedRouteMatchError("account", role, candidates, allowed, configPath());
   }
 
   private resolveRuntimeDefaultModels(role: string): string[] {
