@@ -142,7 +142,7 @@ export async function bootstrap(
 
   // 4. Initialize MCP runtime + builtin services
   const mcpRuntime = new McpRuntime(config);
-  registerBuiltinServices(mcpRuntime, config.mcp, {
+  registerBuiltinServices(mcpRuntime, config.mcp, config.security, {
     promptInjectionCop: createPromptInjectionCop(
       config,
       router,

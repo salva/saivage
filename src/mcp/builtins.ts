@@ -22,6 +22,11 @@ import { log } from "../log.js";
 import type { PromptInjectionCop, PromptInjectionScanResult } from "../security/prompt-injection-cop.js";
 import { disabledCop } from "../security/prompt-injection-cop.js";
 import {
+  createSecretEnvNamePredicate,
+  DEFAULT_CREDENTIAL_LEXEMES,
+  DEFAULT_CONFIG_POINTER_SUFFIXES,
+} from "../security/secrets.js";
+import {
   fetchWithTimeout,
   readBoundedTextBody,
   readBoundedBinaryBody,
@@ -1075,33 +1080,29 @@ function clampTimeout(ms: number | undefined): number | undefined {
 }
 
 /**
- * Patterns of environment variable names whose values must NOT be inherited
- * by shell child processes. Agents very rarely need credentials in shell
- * commands; leaking them would create a one-shot exfiltration path via
- * `env` + any outbound network tool. Override exact values explicitly via
- * the `cwd` and dedicated tools when needed.
+ * Env-var NAME classifier used by `filterShellEnv` below. The rule
+ * set is configurable via .saivage/saivage.json under
+ * security.envScrubber; defaults are imported from
+ * src/security/secrets.ts. The predicate is rebuilt at the start of
+ * `registerBuiltinServices` from the resolved config and captured
+ * here so the spawn path stays allocation-free.
+ *
+ * Operator overrides are full replacements: if the operator sets
+ * `credentialLexemes`, only that list is used (no union with the
+ * defaults). The factory contract is documented on
+ * createSecretEnvNamePredicate.
  */
-const SECRET_ENV_PATTERNS: RegExp[] = [
-  /API[_-]?KEY/i,
-  /(?:^|_)TOKEN(?:$|_)/i,
-  /SECRET/i,
-  /PASSWORD/i,
-  /PASSWD/i,
-  /CREDENTIAL/i,
-  /^ANTHROPIC_/i,
-  /^OPENAI_/i,
-  /^GITHUB_/i,
-  /^GH_/i,
-  /^TELEGRAM_/i,
-  /^SAIVAGE_API_TOKEN$/i,
-  /^AWS_(ACCESS|SECRET|SESSION)/i,
-];
+let secretEnvNamePredicate: (name: string) => boolean =
+  createSecretEnvNamePredicate({
+    credentialLexemes: DEFAULT_CREDENTIAL_LEXEMES,
+    configPointerSuffixes: DEFAULT_CONFIG_POINTER_SUFFIXES,
+  });
 
 export function filterShellEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const result: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(env)) {
     if (value === undefined) continue;
-    if (SECRET_ENV_PATTERNS.some((pattern) => pattern.test(key))) continue;
+    if (secretEnvNamePredicate(key)) continue;
     result[key] = value;
   }
   return result;
@@ -2022,6 +2023,7 @@ const lockTools: ToolEntry[] = [
 export function registerBuiltinServices(
   mcpRuntime: McpRuntime,
   mcpConfig: import("../config.js").SaivageConfig["mcp"],
+  securityConfig: import("../config.js").SaivageConfig["security"],
   options: BuiltinServicesOptions = {},
 ): void {
   const promptInjectionCop = options.promptInjectionCop ?? disabledCop();
@@ -2034,6 +2036,10 @@ export function registerBuiltinServices(
   MAX_SEARCH_MS = mcpConfig.maxSearchMs;
   FETCH_TIMEOUT_MS = mcpConfig.fetchTimeoutMs;
   SHELL_TIMEOUT_FLOOR_MS = mcpConfig.shellTimeoutFloorMs;
+  secretEnvNamePredicate = createSecretEnvNamePredicate({
+    credentialLexemes: securityConfig.envScrubber.credentialLexemes,
+    configPointerSuffixes: securityConfig.envScrubber.configPointerSuffixes,
+  });
   WEB_SEARCH_MAX_BYTES = mcpConfig.webSearchMaxBytes;
   WEB_SEARCH_MAX_RESULTS = mcpConfig.webSearchMaxResults;
   WEB_SEARCH_TIMEOUT_MS = mcpConfig.webSearchTimeoutMs;

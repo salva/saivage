@@ -21,7 +21,7 @@ beforeEach(() => {
   process.chdir(tmpDir);
   const cfg = loadConfig(true, tmpDir);
   runtime = new McpRuntime(cfg);
-  registerBuiltinServices(runtime, cfg.mcp);
+  registerBuiltinServices(runtime, cfg.mcp, cfg.security);
 });
 afterEach(() => {
   process.chdir(prevCwd);

@@ -3,7 +3,14 @@
  * the shape but are not real secrets.
  */
 import { describe, expect, it } from "vitest";
-import { isBlockedPath, redact, scanForSecrets } from "./secrets.js";
+import {
+  isBlockedPath,
+  redact,
+  scanForSecrets,
+  createSecretEnvNamePredicate,
+  DEFAULT_CREDENTIAL_LEXEMES,
+  DEFAULT_CONFIG_POINTER_SUFFIXES,
+} from "./secrets.js";
 
 const SYNTHETIC = {
   openai: "sk-" + "A".repeat(40),
@@ -131,5 +138,168 @@ describe("isBlockedPath", () => {
     expect(isBlockedPath("")).toBe(false);
     // @ts-expect-error — defensive guard
     expect(isBlockedPath(null)).toBe(false);
+  });
+});
+
+const ENV_FALSE_POSITIVES: ReadonlyArray<string> = [
+  "PATH",
+  "HOME",
+  "USER",
+  "LANG",
+  "NODE_ENV",
+  "HTTPS_PROXY",
+  "HTTP_PROXY",
+  "NO_PROXY",
+  "PROJECT_ROOT",
+  "SAIVAGE_ROOT",
+  "SAIVAGE_PROJECT_ID",
+  "PYTHONPATH",
+  "LD_LIBRARY_PATH",
+  "TERM",
+  "SHELL",
+  "MY_SECRETARY",
+  "STAGETOKENISER_PATH",
+  "TOKENIZER",
+  "TOKENIZER_CACHE_DIR",
+  "PASSWORDLESS_MODE",
+  "CREDENTIALSMITH_BIN",
+  "RESET_PASSWORD_URL",
+  "PASSWORD_RESET_ENDPOINT",
+  "CREDENTIALS_FILE",
+  "API_KEY_URL",
+  "TOKEN_ISSUER_URL",
+  "SECRET_STORE_PATH",
+  "USER_PROFILE_URL",
+  "PASSWORD_PROMPT",
+  "API_KEY_PROMPT",
+  "TOKEN_TEMPLATE",
+  "GITHUB_API_BASE_URL",
+  "GITHUB_API_BASE_URL_TEMPLATE",
+  "OPENAI_BASE_URL",
+  "ANTHROPIC_BASE_URL",
+  "GH_USERNAME",
+  "TELEGRAM_BOT_NAME",
+];
+
+const ENV_FALSE_NEGATIVES: ReadonlyArray<string> = [
+  "API_KEY",
+  "MY_API_KEY",
+  "API_KEYS",
+  "SOME_API-KEY",
+  "ACCESS-KEY",
+  "SOME-ACCESS-KEY",
+  "TOKEN",
+  "MY_TOKEN",
+  "AUTH_TOKEN",
+  "TOKENS",
+  "SECRET",
+  "MY_SECRET",
+  "SECRETS",
+  "PASSWORD",
+  "DATABASE_PASSWORD",
+  "PASSWORDS",
+  "PASSWD",
+  "USER_CREDENTIAL",
+  "MY_CREDENTIALS",
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "GITHUB_TOKEN",
+  "GH_TOKEN",
+  "TELEGRAM_BOT_TOKEN",
+  "SLACK_TOKEN",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "SAIVAGE_API_TOKEN",
+];
+
+describe("createSecretEnvNamePredicate — defaults / false positives", () => {
+  const p = createSecretEnvNamePredicate({
+    credentialLexemes: DEFAULT_CREDENTIAL_LEXEMES,
+    configPointerSuffixes: DEFAULT_CONFIG_POINTER_SUFFIXES,
+  });
+  it.each(ENV_FALSE_POSITIVES)("%s is not a secret name", (name) => {
+    expect(p(name)).toBe(false);
+  });
+});
+
+describe("createSecretEnvNamePredicate — defaults / false negatives", () => {
+  const p = createSecretEnvNamePredicate({
+    credentialLexemes: DEFAULT_CREDENTIAL_LEXEMES,
+    configPointerSuffixes: DEFAULT_CONFIG_POINTER_SUFFIXES,
+  });
+  it.each(ENV_FALSE_NEGATIVES)("%s is a secret name", (name) => {
+    expect(p(name)).toBe(true);
+  });
+});
+
+describe("createSecretEnvNamePredicate — operator overrides", () => {
+  it("adds a project-specific credential lexeme (additive)", () => {
+    const defaultPredicate = createSecretEnvNamePredicate({
+      credentialLexemes: DEFAULT_CREDENTIAL_LEXEMES,
+      configPointerSuffixes: DEFAULT_CONFIG_POINTER_SUFFIXES,
+    });
+    expect(defaultPredicate("PII_DATA")).toBe(false);
+    expect(defaultPredicate("MY_PII")).toBe(false);
+
+    const extended = createSecretEnvNamePredicate({
+      credentialLexemes: [...DEFAULT_CREDENTIAL_LEXEMES, "PII"],
+      configPointerSuffixes: DEFAULT_CONFIG_POINTER_SUFFIXES,
+    });
+    expect(extended("PII_DATA")).toBe(true);
+    expect(extended("MY_PII")).toBe(true);
+    expect(extended("PII_URL")).toBe(false);
+    expect(extended("ANTHROPIC_API_KEY")).toBe(true);
+    expect(extended("RESET_PASSWORD_URL")).toBe(false);
+  });
+
+  it("replaces the lexeme list (full-replacement semantics)", () => {
+    const replaced = createSecretEnvNamePredicate({
+      credentialLexemes: ["PII"],
+      configPointerSuffixes: DEFAULT_CONFIG_POINTER_SUFFIXES,
+    });
+    expect(replaced("PII_DATA")).toBe(true);
+    expect(replaced("ANTHROPIC_API_KEY")).toBe(false);
+    expect(replaced("OPENAI_API_KEY")).toBe(false);
+    expect(replaced("GITHUB_TOKEN")).toBe(false);
+    expect(replaced("DATABASE_PASSWORD")).toBe(false);
+  });
+
+  it("adds a project-specific config-pointer suffix (additive)", () => {
+    const defaultPredicate = createSecretEnvNamePredicate({
+      credentialLexemes: DEFAULT_CREDENTIAL_LEXEMES,
+      configPointerSuffixes: DEFAULT_CONFIG_POINTER_SUFFIXES,
+    });
+    expect(defaultPredicate("ARTIFACT_TOKEN_BUILDFILE")).toBe(true);
+
+    const extended = createSecretEnvNamePredicate({
+      credentialLexemes: DEFAULT_CREDENTIAL_LEXEMES,
+      configPointerSuffixes: [
+        ...DEFAULT_CONFIG_POINTER_SUFFIXES,
+        "_BUILDFILE",
+      ],
+    });
+    expect(extended("ARTIFACT_TOKEN_BUILDFILE")).toBe(false);
+    expect(extended("ARTIFACT_TOKEN")).toBe(true);
+  });
+
+  it("replaces the suffix list with an empty array (layer 2 off)", () => {
+    const replaced = createSecretEnvNamePredicate({
+      credentialLexemes: DEFAULT_CREDENTIAL_LEXEMES,
+      configPointerSuffixes: [],
+    });
+    expect(replaced("ANTHROPIC_API_KEY")).toBe(true);
+    expect(replaced("RESET_PASSWORD_URL")).toBe(true);
+    expect(replaced("PASSWORD_PROMPT")).toBe(true);
+    expect(replaced("OPENAI_BASE_URL")).toBe(false);
+    expect(replaced("PATH")).toBe(false);
+  });
+
+  it("empty lexeme list produces an always-false predicate", () => {
+    const empty = createSecretEnvNamePredicate({
+      credentialLexemes: [],
+      configPointerSuffixes: DEFAULT_CONFIG_POINTER_SUFFIXES,
+    });
+    expect(empty("ANTHROPIC_API_KEY")).toBe(false);
   });
 });

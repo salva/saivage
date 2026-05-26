@@ -1,9 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { execSync } from "node:child_process";
 import { resolve } from "node:path";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { validateModelCoverage, MissingModelForRoleError } from "./config-validation.js";
 import { ModelRoutingResolver } from "./routing/resolver.js";
+import { loadConfig } from "./config.js";
 import type { SaivageConfig } from "./config.js";
+import {
+  DEFAULT_CREDENTIAL_LEXEMES,
+  DEFAULT_CONFIG_POINTER_SUFFIXES,
+} from "./security/secrets.js";
 
 function makeConfig(overrides: Partial<SaivageConfig> = {}): SaivageConfig {
   return {
@@ -157,5 +165,147 @@ describe("production-source sweep (F04 step 11)", () => {
       .filter((s) => s.length > 0)
       .filter((s) => !s.endsWith(".test.ts"));
     expect(offenders).toEqual([]);
+  });
+});
+
+describe("security.envScrubber", () => {
+  // Self-contained fixture: this file does not otherwise touch
+  // .saivage/saivage.json on disk, so the env scrubber tests own
+  // their PROJECT_ROOT / SAIVAGE_ROOT setup.
+
+  function withProject(
+    securityBlock: unknown,
+  ): { cleanup: () => void; cfg: SaivageConfig } | { cleanup: () => void; error: Error } {
+    const projectRoot = mkdtempSync(join(tmpdir(), "saivage-envscrubber-"));
+    const savedProject = process.env.PROJECT_ROOT;
+    const savedRoot = process.env.SAIVAGE_ROOT;
+    process.env.PROJECT_ROOT = projectRoot;
+    process.env.SAIVAGE_ROOT = join(projectRoot, ".saivage");
+    mkdirSync(process.env.SAIVAGE_ROOT, { recursive: true });
+    writeFileSync(
+      join(process.env.SAIVAGE_ROOT, "saivage.json"),
+      JSON.stringify({ security: securityBlock }),
+      "utf-8",
+    );
+    const cleanup = () => {
+      if (savedProject === undefined) delete process.env.PROJECT_ROOT;
+      else process.env.PROJECT_ROOT = savedProject;
+      if (savedRoot === undefined) delete process.env.SAIVAGE_ROOT;
+      else process.env.SAIVAGE_ROOT = savedRoot;
+      rmSync(projectRoot, { recursive: true, force: true });
+    };
+    try {
+      const cfg = loadConfig(true, projectRoot) as SaivageConfig;
+      return { cleanup, cfg };
+    } catch (error) {
+      return { cleanup, error: error as Error };
+    }
+  }
+
+  it("envScrubber is absent → defaults applied", () => {
+    const result = withProject({ injectionScanner: false });
+    try {
+      if ("error" in result) throw result.error;
+      expect(result.cfg.security.envScrubber.credentialLexemes).toEqual([
+        ...DEFAULT_CREDENTIAL_LEXEMES,
+      ]);
+      expect(result.cfg.security.envScrubber.configPointerSuffixes).toEqual([
+        ...DEFAULT_CONFIG_POINTER_SUFFIXES,
+      ]);
+    } finally {
+      result.cleanup();
+    }
+  });
+
+  it("envScrubber={} → defaults applied", () => {
+    const result = withProject({ injectionScanner: false, envScrubber: {} });
+    try {
+      if ("error" in result) throw result.error;
+      expect(result.cfg.security.envScrubber.credentialLexemes).toEqual([
+        ...DEFAULT_CREDENTIAL_LEXEMES,
+      ]);
+      expect(result.cfg.security.envScrubber.configPointerSuffixes).toEqual([
+        ...DEFAULT_CONFIG_POINTER_SUFFIXES,
+      ]);
+    } finally {
+      result.cleanup();
+    }
+  });
+
+  it("rejects empty credentialLexemes array", () => {
+    const result = withProject({ envScrubber: { credentialLexemes: [] } });
+    try {
+      expect("error" in result).toBe(true);
+    } finally {
+      result.cleanup();
+    }
+  });
+
+  it("rejects lowercase lexeme entry", () => {
+    const result = withProject({ envScrubber: { credentialLexemes: ["api_key"] } });
+    try {
+      expect("error" in result).toBe(true);
+    } finally {
+      result.cleanup();
+    }
+  });
+
+  it("rejects lexeme entry starting with digit", () => {
+    const result = withProject({ envScrubber: { credentialLexemes: ["1KEY"] } });
+    try {
+      expect("error" in result).toBe(true);
+    } finally {
+      result.cleanup();
+    }
+  });
+
+  it("rejects suffix without leading underscore", () => {
+    const result = withProject({ envScrubber: { configPointerSuffixes: ["URL"] } });
+    try {
+      expect("error" in result).toBe(true);
+    } finally {
+      result.cleanup();
+    }
+  });
+
+  it("rejects suffix with lowercase", () => {
+    const result = withProject({ envScrubber: { configPointerSuffixes: ["_url"] } });
+    try {
+      expect("error" in result).toBe(true);
+    } finally {
+      result.cleanup();
+    }
+  });
+
+  it("S-R-A: full-replacement singleton credentialLexemes: [\"PII\"]", () => {
+    const result = withProject({
+      injectionScanner: false,
+      envScrubber: { credentialLexemes: ["PII"] },
+    });
+    try {
+      if ("error" in result) throw result.error;
+      expect(result.cfg.security.envScrubber.credentialLexemes).toEqual(["PII"]);
+      expect(result.cfg.security.envScrubber.configPointerSuffixes).toEqual([
+        ...DEFAULT_CONFIG_POINTER_SUFFIXES,
+      ]);
+    } finally {
+      result.cleanup();
+    }
+  });
+
+  it("S-R-B: full-replacement singleton configPointerSuffixes: [\"_BUILDFILE\"]", () => {
+    const result = withProject({
+      injectionScanner: false,
+      envScrubber: { configPointerSuffixes: ["_BUILDFILE"] },
+    });
+    try {
+      if ("error" in result) throw result.error;
+      expect(result.cfg.security.envScrubber.credentialLexemes).toEqual([
+        ...DEFAULT_CREDENTIAL_LEXEMES,
+      ]);
+      expect(result.cfg.security.envScrubber.configPointerSuffixes).toEqual(["_BUILDFILE"]);
+    } finally {
+      result.cleanup();
+    }
   });
 });

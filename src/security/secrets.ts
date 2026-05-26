@@ -76,6 +76,96 @@ const BLOCKED_PATH_RULES: ReadonlyArray<RegExp> = [
   /\/\.zsh_history$/,
 ];
 
+/**
+ * Default credential lexemes used by the env-name scrubber. Each entry
+ * is matched (case-insensitively) inside a name with `_`/`-` boundary
+ * separators and an optional trailing plural `S`. The list lives here
+ * as a default that operators may fully replace via
+ * `security.envScrubber.credentialLexemes` in `.saivage/saivage.json`
+ * (full-replacement semantics; no merge with hidden defaults).
+ */
+export const DEFAULT_CREDENTIAL_LEXEMES: ReadonlyArray<string> = [
+  "API_KEY",
+  "ACCESS_KEY",
+  "TOKEN",
+  "SECRET",
+  "PASSWORD",
+  "PASSWD",
+  "CREDENTIAL",
+  "AUTH",
+  "BEARER",
+  "COOKIE",
+  "SESSION",
+];
+
+/**
+ * Default config-pointer suffixes — names that match a credential
+ * lexeme but end in one of these (uppercase) suffixes are treated as
+ * URL/path/prompt/template pointers and preserved. Full-replacement
+ * semantics; an empty operator-supplied list disables layer 2 entirely.
+ */
+export const DEFAULT_CONFIG_POINTER_SUFFIXES: ReadonlyArray<string> = [
+  "_URL",
+  "_URI",
+  "_ENDPOINT",
+  "_PATH",
+  "_DIR",
+  "_FILE",
+  "_PROMPT",
+  "_TEMPLATE",
+];
+
+export interface SecretEnvNameRules {
+  credentialLexemes: ReadonlyArray<string>;
+  configPointerSuffixes: ReadonlyArray<string>;
+}
+
+/**
+ * Build a `(name: string) => boolean` predicate that classifies env
+ * variable NAMES as secret. Two layers, evaluated in order:
+ *
+ *   1. credentialLexemes — each lexeme L is compiled to
+ *      /(?:^|[_-])L'S?(?:$|[_-])/i where L' is L with every regex
+ *      metachar escaped and then every internal `_` rewritten to
+ *      `[_-]`. The boundary alternations and the internal `[_-]`
+ *      together treat `_` and `-` as interchangeable separator
+ *      characters, so a configured `API_KEY` matches `API_KEY`,
+ *      `API-KEY`, `MY_API_KEY`, `SOME_API-KEY`, and `API_KEYS`, but
+ *      does NOT match `APIKEY`, `MYAPIKEY`, or `APIKEYNAME`. The
+ *      trailing `S?` covers plural forms.
+ *
+ *   2. configPointerSuffixes — names that pass layer 1 but end in
+ *      one of the (uppercase) suffixes are configuration pointers
+ *      or UI strings and are preserved. An empty suffix list
+ *      disables layer 2 (every layer-1 match is a secret).
+ *
+ * Operator overrides are FULL REPLACEMENTS — supplied lists fully
+ * replace the defaults; nothing is unioned in. Predicate construction
+ * is O(|credentialLexemes|) regex compiles; callers SHOULD build the
+ * predicate once and reuse it.
+ */
+export function createSecretEnvNamePredicate(
+  rules: SecretEnvNameRules,
+): (name: string) => boolean {
+  const lexemePatterns: RegExp[] = rules.credentialLexemes.map((lex) => {
+    const escaped = lex
+      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      .replace(/_/g, "[_-]");
+    return new RegExp(`(?:^|[_-])${escaped}S?(?:$|[_-])`, "i");
+  });
+  const suffixes: ReadonlyArray<string> = rules.configPointerSuffixes;
+
+  return function isSecretEnvName(name: string): boolean {
+    if (typeof name !== "string" || name.length === 0) return false;
+    if (!lexemePatterns.some((rx) => rx.test(name))) return false;
+    const upper = name.toUpperCase();
+    for (const suffix of suffixes) {
+      if (upper.endsWith(suffix)) return false;
+    }
+    return true;
+  };
+}
+
 /** Shannon entropy in bits/char. */
 function shannonEntropy(text: string): number {
   if (text.length === 0) return 0;

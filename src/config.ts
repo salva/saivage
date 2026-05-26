@@ -8,6 +8,10 @@ import {
   DEFAULT_GITHUB_COPILOT_CLIENT_ID,
 } from "./auth/defaults.js";
 import { WALL_CLOCK_HEADROOM_MS } from "./mcp/builtins.js";
+import {
+  DEFAULT_CREDENTIAL_LEXEMES,
+  DEFAULT_CONFIG_POINTER_SUFFIXES,
+} from "./security/secrets.js";
 
 // --- Schema ---
 
@@ -113,6 +117,17 @@ const configSchema = z.object({
       injectionScanner: z.boolean().default(true),
       injectionModel: z.string().optional(),
       maxScanLengthBytes: z.number().default(100_000),
+      envScrubber: z
+        .object({
+          credentialLexemes: z
+            .array(z.string().regex(/^[A-Z][A-Z0-9_]*$/))
+            .min(1)
+            .default([...DEFAULT_CREDENTIAL_LEXEMES]),
+          configPointerSuffixes: z
+            .array(z.string().regex(/^_[A-Z][A-Z0-9_]*$/))
+            .default([...DEFAULT_CONFIG_POINTER_SUFFIXES]),
+        })
+        .default({}),
     })
     .default({}),
 
