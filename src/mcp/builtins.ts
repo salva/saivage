@@ -13,7 +13,7 @@ import { knowledgeSkillsTools, knowledgeSkillsHandler } from "./knowledgeSkills.
 import { knowledgeMemoryTools, knowledgeMemoryHandler } from "./knowledgeMemory.js";
 
 import { createWriteStream } from "node:fs";
-import { readFile, writeFile, mkdir, readdir, stat, open } from "node:fs/promises";
+import { writeFile, mkdir, readdir, stat, open } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
@@ -31,6 +31,7 @@ const PROCESS_KILL_GRACE_MS = 2_000;
 const OUTPUT_GROWTH_POLL_MS = 1_000;
 let MAX_FETCH_CHARS = 200_000;
 let MAX_DOWNLOAD_BYTES = 250 * 1024 * 1024;
+let MAX_FILE_READ_BYTES = 200_000;
 let SHELL_TIMEOUT_FLOOR_MS = 10 * 60 * 1000; // 10 minutes
 const MAX_SCAN_DECODE_BYTES = 1_000_000;
 
@@ -231,8 +232,28 @@ async function downloadUrl(
 const filesystemTools: ToolEntry[] = [
   {
     name: "read_file",
-    description: "Read the contents of a file",
-    inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+    description:
+      "Read a windowed slice of a UTF-8 file. Returns up to mcp.maxFileReadBytes bytes per call. " +
+      "Use offset/length for windowed reads on larger files. " +
+      "Binary content (NUL byte in the first 4 KiB) is rejected; " +
+      "use run_command with file/xxd or download_file for raw bytes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        offset: {
+          type: "number",
+          description: "Byte offset to start reading from. Must be a non-negative integer. Default 0.",
+        },
+        length: {
+          type: "number",
+          description:
+            "Maximum number of bytes to read. Must be a non-negative integer and at most mcp.maxFileReadBytes. " +
+            "Defaults to mcp.maxFileReadBytes.",
+        },
+      },
+      required: ["path"],
+    },
   },
   {
     name: "write_file",
@@ -263,8 +284,183 @@ const filesystemHandler: InProcessToolHandler = async (toolName, args) => {
   switch (toolName) {
     case "read_file": {
       const fp = resolvePath(args.path as string);
-      const content = await readFile(fp, "utf-8");
-      return { content: { content }, isError: false };
+
+      let offset: number | undefined;
+      let length: number | undefined;
+      try {
+        offset = parseNonNegativeInt(args.offset, "offset");
+        length = parseNonNegativeInt(args.length, "length");
+      } catch (err) {
+        return {
+          content: {
+            error: `INVALID_ARGUMENT: ${(err as Error).message}`,
+            code: "INVALID_ARGUMENT",
+            path: args.path,
+          },
+          isError: true,
+        };
+      }
+
+      if (length !== undefined && length > MAX_FILE_READ_BYTES) {
+        return {
+          content: {
+            error:
+              `LENGTH_TOO_LARGE: length=${length} exceeds ` +
+              `mcp.maxFileReadBytes=${MAX_FILE_READ_BYTES}. ` +
+              `Issue multiple windowed reads or use run_command head/tail.`,
+            code: "LENGTH_TOO_LARGE",
+            path: args.path,
+            length,
+            max_bytes: MAX_FILE_READ_BYTES,
+          },
+          isError: true,
+        };
+      }
+
+      let st;
+      try {
+        st = await stat(fp);
+      } catch (err) {
+        const classified = classifyFsError(err, args.path as string, "stat");
+        return { content: { ...classified, path: args.path }, isError: true };
+      }
+      if (!st.isFile()) {
+        return {
+          content: {
+            error: `NOT_A_FILE: ${args.path} is not a regular file`,
+            code: "NOT_A_FILE",
+            path: args.path,
+          },
+          isError: true,
+        };
+      }
+
+      const totalSize = st.size;
+      const effectiveOffset = offset ?? 0;
+
+      if (effectiveOffset > totalSize) {
+        return {
+          content: {
+            error:
+              `INVALID_RANGE: offset=${effectiveOffset} exceeds ` +
+              `file size=${totalSize}`,
+            code: "INVALID_RANGE",
+            path: args.path,
+            offset: effectiveOffset,
+            size_bytes: totalSize,
+          },
+          isError: true,
+        };
+      }
+
+      if (
+        offset === undefined &&
+        length === undefined &&
+        totalSize > MAX_FILE_READ_BYTES
+      ) {
+        return {
+          content: {
+            error:
+              `FILE_TOO_LARGE: size=${totalSize} bytes exceeds ` +
+              `mcp.maxFileReadBytes=${MAX_FILE_READ_BYTES}. ` +
+              `Re-issue with explicit offset/length (each <= ${MAX_FILE_READ_BYTES}), ` +
+              `or use run_command with head/tail/grep, or use search_files.`,
+            code: "FILE_TOO_LARGE",
+            path: args.path,
+            size_bytes: totalSize,
+            max_bytes: MAX_FILE_READ_BYTES,
+          },
+          isError: true,
+        };
+      }
+
+      let handle;
+      try {
+        handle = await open(fp, "r");
+      } catch (err) {
+        const classified = classifyFsError(err, args.path as string, "open");
+        return { content: { ...classified, path: args.path }, isError: true };
+      }
+
+      let probeBytes = 0;
+      let windowBytes = 0;
+      let probeBuffer = Buffer.alloc(0);
+      let windowBuffer: Buffer = Buffer.alloc(0);
+      let isBinary = false;
+      let readFailure: ClassifiedFsError | null = null;
+      try {
+        const probeSize = Math.min(4096, totalSize);
+        if (probeSize > 0) {
+          probeBuffer = Buffer.alloc(probeSize);
+          const probeRead = await handle.read(probeBuffer, 0, probeSize, 0);
+          probeBytes = probeRead.bytesRead;
+          if (probeBuffer.subarray(0, probeBytes).includes(0)) {
+            isBinary = true;
+          }
+        }
+
+        if (!isBinary) {
+          const effectiveLength = length ?? MAX_FILE_READ_BYTES;
+          const remaining = totalSize - effectiveOffset;
+          const toRead = Math.min(effectiveLength, remaining);
+          if (toRead > 0) {
+            if (effectiveOffset === 0 && toRead <= probeBytes) {
+              windowBuffer = probeBuffer.subarray(0, toRead) as Buffer;
+              windowBytes = toRead;
+            } else {
+              windowBuffer = Buffer.alloc(toRead);
+              const winRead = await handle.read(windowBuffer, 0, toRead, effectiveOffset);
+              windowBytes = winRead.bytesRead;
+            }
+          }
+        }
+      } catch (err) {
+        readFailure = classifyFsError(err, args.path as string, "read");
+      } finally {
+        try {
+          await handle.close();
+        } catch (closeErr) {
+          // A close() rejection only surfaces when no primary failure
+          // (read rejection or binary detection) has been recorded; the
+          // primary observation always wins because it is the earlier,
+          // root-cause signal.
+          if (!readFailure && !isBinary) {
+            readFailure = classifyFsError(closeErr, args.path as string, "close");
+          }
+        }
+      }
+
+      if (isBinary) {
+        return {
+          content: {
+            error:
+              `BINARY_CONTENT: ${args.path} contains a NUL byte in its ` +
+              `first ${probeBytes} bytes. Use run_command with file/xxd, ` +
+              `or download_file if you need the raw bytes.`,
+            code: "BINARY_CONTENT",
+            path: args.path,
+            size_bytes: totalSize,
+          },
+          isError: true,
+        };
+      }
+
+      if (readFailure) {
+        return { content: { ...readFailure, path: args.path }, isError: true };
+      }
+
+      const content = windowBuffer.subarray(0, windowBytes).toString("utf-8");
+      const truncated = effectiveOffset + windowBytes < totalSize;
+      return {
+        content: {
+          content,
+          offset: effectiveOffset,
+          length: windowBytes,
+          size_bytes: totalSize,
+          truncated,
+        },
+        isError: false,
+      };
     }
     case "write_file": {
       const fp = resolvePath(args.path as string);
@@ -361,6 +557,74 @@ const shellTools: ToolEntry[] = [
     },
   },
 ];
+
+function parseNonNegativeInt(raw: unknown, label: string): number | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (
+    typeof raw !== "number" ||
+    !Number.isFinite(raw) ||
+    raw < 0 ||
+    !Number.isInteger(raw)
+  ) {
+    throw new Error(`${label} must be a non-negative integer`);
+  }
+  return raw;
+}
+
+export type FsErrorCode = "NOT_FOUND" | "PERMISSION_DENIED" | "NOT_A_FILE" | "IO_ERROR";
+
+export interface ClassifiedFsError {
+  code: FsErrorCode;
+  error: string;
+  errno?: string;
+}
+
+// Exported for unit testing only. classifyFsError is intentionally
+// scoped to read_file's contract; other filesystem tools should add
+// their own classifier if they need one.
+export function classifyFsError(
+  err: unknown,
+  path: string,
+  context: "stat" | "open" | "read" | "close",
+): ClassifiedFsError {
+  const errno = (err as NodeJS.ErrnoException | undefined)?.code;
+  const msg = (err as Error | undefined)?.message ?? String(err);
+  switch (errno) {
+    case "ENOENT":
+    case "ENOTDIR":
+      return {
+        code: "NOT_FOUND",
+        error:
+          `NOT_FOUND: ${path} does not exist (during ${context}). ` +
+          `Check the spelling or use list_dir on the parent directory.`,
+        errno,
+      };
+    case "EACCES":
+    case "EPERM":
+      return {
+        code: "PERMISSION_DENIED",
+        error:
+          `PERMISSION_DENIED: filesystem denied access to ${path} ` +
+          `(during ${context}). Verify permissions on the path and its parents.`,
+        errno,
+      };
+    case "EISDIR":
+      return {
+        code: "NOT_A_FILE",
+        error:
+          `NOT_A_FILE: ${path} is a directory (open returned EISDIR). ` +
+          `Use list_dir.`,
+        errno,
+      };
+    default:
+      return {
+        code: "IO_ERROR",
+        error:
+          `IO_ERROR: low-level I/O error on ${path} (during ${context}): ${msg}`,
+        ...(errno ? { errno } : {}),
+      };
+  }
+}
 
 function parseOptionalTimeoutMs(
   args: Record<string, unknown>,
@@ -1085,6 +1349,7 @@ export function registerBuiltinServices(
   MAX_OUTPUT = mcpConfig.maxOutputBytes;
   MAX_FETCH_CHARS = mcpConfig.maxFetchChars;
   MAX_DOWNLOAD_BYTES = mcpConfig.maxDownloadBytes;
+  MAX_FILE_READ_BYTES = mcpConfig.maxFileReadBytes;
   SHELL_TIMEOUT_FLOOR_MS = mcpConfig.shellTimeoutFloorMs;
   const innerCapMs = mcpConfig.shellTimeoutMs - WALL_CLOCK_HEADROOM_MS;
 

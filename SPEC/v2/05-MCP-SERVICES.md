@@ -62,13 +62,23 @@ Which agents can use which services. The Filesystem / Shell / Git / Web / Plan /
 ### Tools
 
 #### `read_file`
-Read the complete contents of a file.
+Read a windowed slice of a UTF-8 file. Returns up to `mcp.maxFileReadBytes`
+bytes per call.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `path` | string | yes | Absolute or project-relative file path |
+| `offset` | integer | no | Byte offset to start reading from (default 0). Non-negative integer. |
+| `length` | integer | no | Maximum bytes to read (defaults to `mcp.maxFileReadBytes`, capped by it). Non-negative integer. |
 
-**Returns:** `{ content: string }` or error if file not found.
+**Returns (success):** `{ content: string, offset: number, length: number, size_bytes: number, truncated: boolean }`
+where `length` is the actual bytes returned and `truncated` is `true` when
+`offset + length < size_bytes`.
+
+**Error codes:** `INVALID_ARGUMENT`, `FILE_TOO_LARGE`, `LENGTH_TOO_LARGE`,
+`INVALID_RANGE`, `BINARY_CONTENT`, `NOT_A_FILE`, `NOT_FOUND`,
+`PERMISSION_DENIED`, `IO_ERROR`. Binary content is detected by a 4 KiB
+NUL-byte probe at the file head, independent of `offset`.
 
 #### `write_file`
 Write content to a file. Creates parent directories if needed.

@@ -45,6 +45,7 @@ describe("config", () => {
       expect(config.mcp.maxOutputBytes).toBe(100 * 1024);
       expect(config.mcp.maxFetchChars).toBe(200_000);
       expect(config.mcp.maxDownloadBytes).toBe(250 * 1024 * 1024);
+      expect(config.mcp.maxFileReadBytes).toBe(200_000);
     });
 
     it("loads overrides from the on-disk config", () => {
@@ -61,6 +62,15 @@ describe("config", () => {
       expect(config.supervisor.forceCancelDelayMs).toBe(7);
       expect(config.mcp.shellTimeoutMs).toBe(1_200_000);
       expect(config.mcp.maxOutputBytes).toBe(13);
+    });
+
+    it("loads maxFileReadBytes overrides from the on-disk config", () => {
+      const saivageRoot = join(projectRoot, ".saivage");
+      mkdirSync(saivageRoot, { recursive: true });
+      writeFileSync(join(saivageRoot, "saivage.json"), JSON.stringify({
+        mcp: { maxFileReadBytes: 4096 },
+      }, null, 2));
+      expect(loadConfig(true, projectRoot).mcp.maxFileReadBytes).toBe(4096);
     });
 
     it("parses provider accounts and default account routing config", () => {

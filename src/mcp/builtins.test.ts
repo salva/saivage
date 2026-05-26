@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer, type Server } from "node:http";
 
-import { registerBuiltinServices } from "./builtins.js";
+import { registerBuiltinServices, classifyFsError } from "./builtins.js";
 import { McpRuntime } from "./runtime.js";
 import { loadConfig } from "../config.js";
 import type { PromptInjectionCop } from "../security/prompt-injection-cop.js";
@@ -47,7 +47,7 @@ describe("built-in MCP services", () => {
       join(projectRoot, ".saivage", "saivage.json"),
       JSON.stringify({
         runtime: { maxServices: 50, restartOnCrash: true, healthCheckIntervalMs: 0, idleShutdownMs: 0 },
-        mcp: { shellTimeoutFloorMs: 0 },
+        mcp: { shellTimeoutFloorMs: 0, maxFileReadBytes: 1024 },
       }),
       "utf-8",
     );
@@ -69,7 +69,13 @@ describe("built-in MCP services", () => {
     writeFileSync(join(projectRoot, "README.md"), "hello", "utf-8");
 
     await expect(runtime.callTool("filesystem", "read_file", { path: "README.md" }))
-      .resolves.toEqual({ content: "hello" });
+      .resolves.toMatchObject({
+        content: "hello",
+        offset: 0,
+        length: 5,
+        size_bytes: 5,
+        truncated: false,
+      });
   });
 
   it("rejects filesystem access outside the project root", async () => {
@@ -273,6 +279,221 @@ describe("built-in MCP services", () => {
       expect(res.stderr).not.toMatch(/inactivity/);
       expect(res.stderr).not.toMatch(/timed out/);
     }
+  });
+});
+
+describe("read_file size cap (G31)", () => {
+  let projectRoot: string;
+  let previousProjectRoot: string | undefined;
+  let previousSaivageRoot: string | undefined;
+  let runtime: McpRuntime;
+  let cfg: ReturnType<typeof loadConfig>;
+
+  beforeEach(() => {
+    projectRoot = mkdtempSync(join(tmpdir(), "saivage-builtins-g31-"));
+    previousProjectRoot = process.env["PROJECT_ROOT"];
+    previousSaivageRoot = process.env["SAIVAGE_ROOT"];
+    process.env["PROJECT_ROOT"] = projectRoot;
+    process.env["SAIVAGE_ROOT"] = join(projectRoot, ".saivage");
+    mkdirSync(join(projectRoot, ".saivage"), { recursive: true });
+    writeFileSync(
+      join(projectRoot, ".saivage", "saivage.json"),
+      JSON.stringify({
+        runtime: { maxServices: 50, restartOnCrash: true, healthCheckIntervalMs: 0, idleShutdownMs: 0 },
+        mcp: { shellTimeoutFloorMs: 0, maxFileReadBytes: 1024 },
+      }),
+      "utf-8",
+    );
+    cfg = loadConfig(true, projectRoot);
+    runtime = new McpRuntime(cfg);
+    registerBuiltinServices(runtime, cfg.mcp);
+  });
+
+  afterEach(async () => {
+    await runtime.shutdown();
+    if (previousProjectRoot === undefined) delete process.env["PROJECT_ROOT"];
+    else process.env["PROJECT_ROOT"] = previousProjectRoot;
+    if (previousSaivageRoot === undefined) delete process.env["SAIVAGE_ROOT"];
+    else process.env["SAIVAGE_ROOT"] = previousSaivageRoot;
+    rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  it("rejects whole-file reads above the configured cap (FILE_TOO_LARGE)", async () => {
+    const MAX = cfg.mcp.maxFileReadBytes;
+    writeFileSync(join(projectRoot, "big.log"), "x".repeat(MAX + 1));
+    await expect(runtime.callTool("filesystem", "read_file", { path: "big.log" }))
+      .rejects.toThrow(/FILE_TOO_LARGE/);
+  });
+
+  it("returns the requested slice for a windowed read", async () => {
+    writeFileSync(join(projectRoot, "win.log"), "abcdefghijklmnop");
+    await expect(runtime.callTool("filesystem", "read_file",
+      { path: "win.log", offset: 4, length: 4 }))
+      .resolves.toMatchObject({
+        content: "efgh",
+        offset: 4,
+        length: 4,
+        size_bytes: 16,
+        truncated: true,
+      });
+  });
+
+  it("rejects length > cap (LENGTH_TOO_LARGE)", async () => {
+    writeFileSync(join(projectRoot, "ok.txt"), "hi");
+    await expect(runtime.callTool("filesystem", "read_file",
+      { path: "ok.txt", length: cfg.mcp.maxFileReadBytes + 1 }))
+      .rejects.toThrow(/LENGTH_TOO_LARGE/);
+  });
+
+  it("rejects offset > file size (INVALID_RANGE)", async () => {
+    writeFileSync(join(projectRoot, "small.txt"), "abc");
+    await expect(runtime.callTool("filesystem", "read_file",
+      { path: "small.txt", offset: 99 }))
+      .rejects.toThrow(/INVALID_RANGE/);
+  });
+
+  it("rejects files with NUL bytes in the head (BINARY_CONTENT)", async () => {
+    writeFileSync(join(projectRoot, "bin.dat"), Buffer.from([1, 2, 0, 4]));
+    await expect(runtime.callTool("filesystem", "read_file", { path: "bin.dat" }))
+      .rejects.toThrow(/BINARY_CONTENT/);
+  });
+
+  it("reports truncated:false when the file fits below the cap", async () => {
+    writeFileSync(join(projectRoot, "tiny.txt"), "hi");
+    await expect(runtime.callTool("filesystem", "read_file", { path: "tiny.txt" }))
+      .resolves.toMatchObject({
+        content: "hi",
+        offset: 0,
+        length: 2,
+        size_bytes: 2,
+        truncated: false,
+      });
+  });
+
+  it("rejects malformed offset/length values (INVALID_ARGUMENT)", async () => {
+    writeFileSync(join(projectRoot, "tiny.txt"), "hi");
+    for (const bad of [-1, 1.5, "0", Number.NaN]) {
+      await expect(runtime.callTool("filesystem", "read_file",
+        { path: "tiny.txt", offset: bad as never }))
+        .rejects.toThrow(/INVALID_ARGUMENT/);
+    }
+    for (const bad of [-1, 1.5, "0", Number.NaN]) {
+      await expect(runtime.callTool("filesystem", "read_file",
+        { path: "tiny.txt", length: bad as never }))
+        .rejects.toThrow(/INVALID_ARGUMENT/);
+    }
+  });
+
+  it("rejects BINARY_CONTENT even when the requested window has no NULs", async () => {
+    // NUL at byte 1; window [4, 8) is all ASCII.
+    writeFileSync(join(projectRoot, "head-nul.dat"),
+      Buffer.from([0x41, 0x00, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47]));
+    await expect(runtime.callTool("filesystem", "read_file",
+      { path: "head-nul.dat", offset: 4, length: 4 }))
+      .rejects.toThrow(/BINARY_CONTENT/);
+  });
+
+  it("treats offset === size as an empty successful read", async () => {
+    writeFileSync(join(projectRoot, "three.txt"), "abc");
+    await expect(runtime.callTool("filesystem", "read_file",
+      { path: "three.txt", offset: 3 }))
+      .resolves.toMatchObject({
+        content: "",
+        offset: 3,
+        length: 0,
+        size_bytes: 3,
+        truncated: false,
+      });
+  });
+
+  it("rejects directories with NOT_A_FILE", async () => {
+    mkdirSync(join(projectRoot, "sub"));
+    await expect(runtime.callTool("filesystem", "read_file", { path: "sub" }))
+      .rejects.toThrow(/NOT_A_FILE/);
+  });
+
+  it("returns NOT_FOUND for missing paths", async () => {
+    await expect(runtime.callTool("filesystem", "read_file",
+      { path: "does-not-exist.txt" }))
+      .rejects.toThrow(/NOT_FOUND/);
+  });
+
+  it("returns PERMISSION_DENIED for unreadable files", async () => {
+    const denied = join(projectRoot, "no-read.txt");
+    writeFileSync(denied, "secret", "utf-8");
+    chmodSync(denied, 0o000);
+    try {
+      if (typeof process.getuid === "function" && process.getuid() === 0) {
+        // Running as root bypasses POSIX permission bits — skip per design r3 §8 risk 1.
+        return;
+      }
+      await expect(runtime.callTool("filesystem", "read_file",
+        { path: "no-read.txt" }))
+        .rejects.toThrow(/PERMISSION_DENIED/);
+    } finally {
+      chmodSync(denied, 0o600);
+    }
+  });
+});
+
+describe("classifyFsError (G31)", () => {
+  function fsErr(code: string, message = `simulated ${code}`): NodeJS.ErrnoException {
+    const err = new Error(message) as NodeJS.ErrnoException;
+    err.code = code;
+    return err;
+  }
+
+  it("maps ENOENT to NOT_FOUND with errno", () => {
+    const result = classifyFsError(fsErr("ENOENT"), "/x/y.txt", "stat");
+    expect(result).toEqual({
+      code: "NOT_FOUND",
+      errno: "ENOENT",
+      error: expect.stringMatching(/^NOT_FOUND: \/x\/y\.txt does not exist \(during stat\)\./),
+    });
+  });
+
+  it("maps ENOTDIR to NOT_FOUND", () => {
+    expect(classifyFsError(fsErr("ENOTDIR"), "/x", "stat").code).toBe("NOT_FOUND");
+  });
+
+  it("maps EACCES to PERMISSION_DENIED with errno", () => {
+    const result = classifyFsError(fsErr("EACCES"), "/x", "open");
+    expect(result.code).toBe("PERMISSION_DENIED");
+    expect(result.errno).toBe("EACCES");
+  });
+
+  it("maps EPERM to PERMISSION_DENIED", () => {
+    expect(classifyFsError(fsErr("EPERM"), "/x", "open").code).toBe("PERMISSION_DENIED");
+  });
+
+  it("maps EISDIR from open to NOT_A_FILE (covers the open-race branch)", () => {
+    const result = classifyFsError(fsErr("EISDIR"), "/x", "open");
+    expect(result).toMatchObject({
+      code: "NOT_A_FILE",
+      errno: "EISDIR",
+      error: expect.stringMatching(/NOT_A_FILE: \/x is a directory/),
+    });
+  });
+
+  it("maps unknown errno (EIO) to IO_ERROR with errno preserved", () => {
+    const result = classifyFsError(fsErr("EIO"), "/x", "read");
+    expect(result).toMatchObject({
+      code: "IO_ERROR",
+      errno: "EIO",
+      error: expect.stringMatching(/IO_ERROR: low-level I\/O error on \/x \(during read\)/),
+    });
+  });
+
+  it("maps a close() rejection through the close context", () => {
+    const result = classifyFsError(fsErr("EIO", "disk flush"), "/x", "close");
+    expect(result.code).toBe("IO_ERROR");
+    expect(result.error).toMatch(/\(during close\)/);
+  });
+
+  it("falls through to IO_ERROR without errno on a non-Error rejection", () => {
+    const result = classifyFsError("string-rejection", "/x", "read");
+    expect(result.code).toBe("IO_ERROR");
+    expect(result.errno).toBeUndefined();
   });
 });
 

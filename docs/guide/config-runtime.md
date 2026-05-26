@@ -248,7 +248,8 @@ Wall-clock and output caps for the in-process MCP tooling layer (F11).
   "inProcessTimeoutMs": 300000,
   "maxOutputBytes": 102400,
   "maxFetchChars": 200000,
-  "maxDownloadBytes": 262144000
+  "maxDownloadBytes": 262144000,
+  "maxFileReadBytes": 200000
 }
 ```
 
@@ -256,6 +257,11 @@ Wall-clock and output caps for the in-process MCP tooling layer (F11).
 `shellTimeoutFloorMs` is the minimum effective timeout enforced even when the
 caller requests less; it must not exceed `shellTimeoutMs - WALL_CLOCK_HEADROOM_MS`
 (the runtime rejects misconfiguration at boot).
+
+`maxFileReadBytes` is the per-call cap (in bytes) for the `read_file` MCP tool.
+Whole-file reads above the cap return `FILE_TOO_LARGE`; callers must use the
+`offset`/`length` window (each capped by the same value) or fall back to
+`run_command` with `head`/`tail`/`grep`.
 
 ### `oauth`
 

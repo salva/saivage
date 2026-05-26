@@ -42,6 +42,7 @@ function makeRuntime(): McpRuntime {
       maxOutputBytes: 100 * 1024,
       maxFetchChars: 200_000,
       maxDownloadBytes: 250 * 1024 * 1024,
+      maxFileReadBytes: 200_000,
     },
   } as any);
   rt.registerInProcess("skills", knowledgeSkillsTools, knowledgeSkillsHandler);
