@@ -11,6 +11,9 @@
 import { TaskReportSchema, type Task, type TaskReport } from "../types.js";
 import { parseLlmJsonAs } from "../parse-llm-json.js";
 import type { WorkerInput } from "./types.js";
+import type { WorkerRole } from "./roster.js";
+
+export type { WorkerRole };
 
 /**
  * Per-call validation schema for worker-emitted TaskReport payloads.
@@ -22,9 +25,7 @@ import type { WorkerInput } from "./types.js";
  */
 const WorkerPayloadSchema = TaskReportSchema.omit({ agent: true }).partial();
 
-export type WorkerRole = "coder" | "researcher" | "data_agent" | "reviewer" | "designer";
-
-const ROLE_TO_TASK_TYPE: Record<WorkerRole, Task["type"]> = {
+export const ROLE_TO_TASK_TYPE: Record<WorkerRole, Task["type"]> = {
   coder: "code",
   researcher: "research",
   data_agent: "data",

@@ -34,6 +34,7 @@ import { DataAgent } from "../agents/data-agent.js";
 import { ReviewerAgent } from "../agents/reviewer.js";
 import { DesignerAgent } from "../agents/designer.js";
 import { InspectorAgent } from "../agents/inspector.js";
+import { WorkerAgent } from "../agents/worker.js";
 import type { AgentContext, AgentResult, Agent } from "../agents/types.js";
 import { assertExhaustive } from "../agents/roster.js";
 import type { AgentState } from "../types.js";
@@ -319,7 +320,7 @@ export function createChildSpawner(
       case "coder": {
         const workerInput = normalizeWorkerDispatchInput(input, role);
         ctx.stageId = workerInput.stageId;
-        agent = await CoderAgent.create(ctx, workerInput, {
+        agent = await WorkerAgent.createWorker<CoderAgent>(ctx, workerInput, role, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
         });
         taskId = workerInput.task?.id;
@@ -330,7 +331,7 @@ export function createChildSpawner(
       case "researcher": {
         const workerInput = normalizeWorkerDispatchInput(input, role);
         ctx.stageId = workerInput.stageId;
-        agent = await ResearcherAgent.create(ctx, workerInput, {
+        agent = await WorkerAgent.createWorker<ResearcherAgent>(ctx, workerInput, role, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
         });
         taskId = workerInput.task?.id;
@@ -341,7 +342,7 @@ export function createChildSpawner(
       case "data_agent": {
         const workerInput = normalizeWorkerDispatchInput(input, role);
         ctx.stageId = workerInput.stageId;
-        agent = await DataAgent.create(ctx, workerInput, {
+        agent = await WorkerAgent.createWorker<DataAgent>(ctx, workerInput, role, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
         });
         taskId = workerInput.task?.id;
@@ -362,7 +363,7 @@ export function createChildSpawner(
           break;
         }
 
-        const reviewer = await ReviewerAgent.create(ctx, workerInput, {
+        const reviewer = await WorkerAgent.createWorker<ReviewerAgent>(ctx, workerInput, role, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
         });
         agent = reviewer;
@@ -375,7 +376,7 @@ export function createChildSpawner(
       case "designer": {
         const workerInput = normalizeWorkerDispatchInput(input, role);
         ctx.stageId = workerInput.stageId;
-        agent = await DesignerAgent.create(ctx, workerInput, {
+        agent = await WorkerAgent.createWorker<DesignerAgent>(ctx, workerInput, role, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
         });
         taskId = workerInput.task?.id;
@@ -826,4 +827,3 @@ async function publishAgentResult(
 function hasSummary(value: unknown): value is { summary: string } {
   return !!value && typeof value === "object" && typeof (value as { summary?: unknown }).summary === "string";
 }
-

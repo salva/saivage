@@ -10,19 +10,23 @@ import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
-import { renderRosterSummary } from "./roster.js";
+import { renderRosterSummary, type AgentRole } from "./roster.js";
 import { renderLocalChatCommandsTable } from "./conventions.js";
+import type { RolePromptName } from "./prompt-keys.js";
 
-export type RolePromptName =
-  | "planner"
-  | "manager"
-  | "coder"
-  | "researcher"
-  | "data-agent"
-  | "reviewer"
-  | "designer"
-  | "inspector"
-  | "chat";
+export type { RolePromptName } from "./prompt-keys.js";
+
+const PROMPT_KEY_TO_ROLE: Record<RolePromptName, AgentRole> = {
+  planner: "planner",
+  manager: "manager",
+  coder: "coder",
+  researcher: "researcher",
+  "data-agent": "data_agent",
+  reviewer: "reviewer",
+  designer: "designer",
+  inspector: "inspector",
+  chat: "chat",
+};
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -52,12 +56,8 @@ function readPromptFile(relPath: string): string {
 }
 
 function substitutions(role: RolePromptName): Record<string, string> {
-  // The roster summary marks the focal role; map "data-agent" to its
-  // AgentRole spelling ("data_agent") for the lookup.
-  const rosterRole =
-    role === "data-agent" ? "data_agent" : role;
   return {
-    roster_summary: renderRosterSummary(rosterRole as Parameters<typeof renderRosterSummary>[0]),
+    roster_summary: renderRosterSummary(PROMPT_KEY_TO_ROLE[role]),
     slash_commands_table: renderLocalChatCommandsTable(),
   };
 }

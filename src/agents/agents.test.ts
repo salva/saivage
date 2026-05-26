@@ -14,6 +14,7 @@ import { ChatAgent } from "./chat.js";
 import { CoderAgent } from "./coder.js";
 import { DesignerAgent } from "./designer.js";
 import { ManagerAgent } from "./manager.js";
+import { WorkerAgent } from "./worker.js";
 import { EventBus } from "../events/bus.js";
 import type { ChatChannel } from "../channels/types.js";
 import type { AgentContext, ManagerInput, WorkerInput } from "./types.js";
@@ -133,7 +134,7 @@ describe("ReviewerAgent", () => {
       callTool: async () => ({ ok: true }),
     });
     const firstInput = makeReviewInput("review-1", "Initial review");
-    const agent = new ReviewerAgent(ctx, firstInput);
+    const agent = await WorkerAgent.createWorker<ReviewerAgent>(ctx, firstInput, "reviewer");
 
     await agent.review(firstInput);
     await agent.review(makeReviewInput("review-2", "Recheck blocker after corrective task t2"));
@@ -197,7 +198,7 @@ describe("ReviewerAgent", () => {
       callTool: async () => ({ ok: true }),
     });
     const firstInput = makeReviewInput("review-1", "Initial review");
-    const agent = new ReviewerAgent(ctx, firstInput);
+    const agent = await WorkerAgent.createWorker<ReviewerAgent>(ctx, firstInput, "reviewer");
 
     await agent.review(firstInput);
     await agent.review(makeReviewInput("review-2", "Recheck"));
@@ -372,12 +373,13 @@ describe("Execution guards", () => {
       },
     };
 
-    const agent = new CoderAgent(
+    const agent = await WorkerAgent.createWorker<CoderAgent>(
       makeReviewerContext(tmpDir, router, {
         getAllTools: () => [{ name: "test_tool", description: "test", inputSchema: {}, service: "test" }],
         callTool: async () => ({ ok: true }),
       }),
       makeWorkerInput("task-1", "Do one thing"),
+      "coder",
     );
 
     const result = await agent.run();
@@ -547,7 +549,7 @@ describe("DesignerAgent", () => {
       },
     };
 
-    const agent = new DesignerAgent(
+    const agent = await WorkerAgent.createWorker<DesignerAgent>(
       makeReviewerContext(tmpDir, router2, {
         getAllTools: () => [
           { name: "test_tool", description: "test", inputSchema: {}, service: "test" },
@@ -555,6 +557,7 @@ describe("DesignerAgent", () => {
         callTool: async () => ({ ok: true }),
       }),
       input,
+      "designer",
     );
 
     const result = await agent.run();

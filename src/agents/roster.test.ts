@@ -21,12 +21,14 @@ import {
   getDispatchToolsFor,
   isConcurrencyLimitedDispatch,
   renderRosterSummary,
+  getWorkerInitMeta,
   type AgentRole,
   type DispatchableRole,
 } from "./roster.js";
 import { DISPATCH_ROLE_MAP, DISPATCH_TOOLS } from "../runtime/dispatcher.js";
 import { DEFAULT_SELF_CHECK_FREQUENCY } from "../runtime/self-check.js";
 import { getConvention } from "./conventions.js";
+import { hasWorkerCtor } from "./worker.js";
 
 describe("ROSTER — declarative source of truth", () => {
   it("contains one entry per known role with no duplicates", () => {
@@ -206,6 +208,31 @@ describe("ROSTER — derived accessors", () => {
       expect(isConcurrencyLimitedDispatch(role as DispatchableRole)).toBe(
         getRoster(role as AgentRole).worker,
       );
+    }
+  });
+});
+
+describe("ROSTER — worker init", () => {
+  it("every WorkerRole has a workerInit on ROSTER and a registered ctor", async () => {
+    await import("./coder.js");
+    await import("./researcher.js");
+    await import("./designer.js");
+    await import("./data-agent.js");
+    await import("./reviewer.js");
+
+    for (const role of WORKER_ROLES) {
+      const meta = getWorkerInitMeta(role);
+      expect(meta.heading).not.toBe("");
+      expect(meta.invalidFinalResponseMessage).not.toBe("");
+      expect(meta.promptKey).not.toBe("");
+      expect(getRoster(role).worker).toBe(true);
+      expect(hasWorkerCtor(role)).toBe(true);
+    }
+  });
+
+  it("non-worker roles have workerInit: null", () => {
+    for (const role of ["planner", "manager", "inspector", "chat"] as const) {
+      expect(getRoster(role).workerInit).toBeNull();
     }
   });
 });

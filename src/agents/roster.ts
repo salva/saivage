@@ -9,8 +9,23 @@
  */
 
 import type { ConventionRule } from "./conventions.js";
+import type { RolePromptName } from "./prompt-keys.js";
 
 export type ToolFilterKind = "planner" | "worker" | "reviewer" | "inspector" | "chat";
+
+/**
+ * Per-role metadata used by `WorkerAgent.createWorker` and `buildInitialMessage`
+ * to render the initial task message. Worker entries (`worker: true`) populate
+ * this; non-worker entries set it to `null`.
+ */
+export interface WorkerInitMeta {
+  heading: string;
+  extraInstructionLines: readonly string[];
+  notesDir: ((stageId: string) => string) | null;
+  followUpInstruction: string | null;
+  promptKey: RolePromptName;
+  invalidFinalResponseMessage: string;
+}
 
 export interface RosterEntry {
   /** Canonical role identifier used throughout the codebase. */
@@ -35,6 +50,8 @@ export interface RosterEntry {
   displayName: string;
   /** Prompt summary used by every agent's "## The Saivage System" section. */
   summary: string;
+  /** Worker-only initial-message metadata; null for non-worker roles. */
+  workerInit: WorkerInitMeta | null;
 }
 
 export const ROSTER = [
@@ -55,6 +72,7 @@ export const ROSTER = [
     displayName: "Planner",
     summary:
       "The top-level strategist. Owns the project plan — a sequence of stages — and drives the project from its current state to its declared objectives. Long-lived; thinks in stages, not code.",
+    workerInit: null,
   },
   {
     role: "manager",
@@ -73,6 +91,7 @@ export const ROSTER = [
     displayName: "Manager",
     summary:
       "A tactical executor scoped to one stage. Decomposes a stage into tasks, dispatches Coder/Researcher/Data Agent/Reviewer workers, supervises them, handles retries, and returns a `StageSummary`. Ephemeral.",
+    workerInit: null,
   },
   {
     role: "coder",
@@ -91,6 +110,15 @@ export const ROSTER = [
     displayName: "Coder",
     summary:
       "A one-shot coding agent. Receives a task, writes/modifies code, runs tests, commits changes, and returns a `TaskReport`. Does not plan or coordinate — executes.",
+    workerInit: {
+      heading: "Task Assignment",
+      extraInstructionLines: [],
+      notesDir: null,
+      followUpInstruction: null,
+      promptKey: "coder",
+      invalidFinalResponseMessage:
+        "Invalid final task response: you have not used any tools for this task yet.",
+    },
   },
   {
     role: "researcher",
@@ -109,6 +137,15 @@ export const ROSTER = [
     displayName: "Researcher",
     summary:
       "A one-shot information-gathering agent. Searches the web, reads documentation, organizes findings under `research/`, and returns a `TaskReport`. Does not write code.",
+    workerInit: {
+      heading: "Research Task Assignment",
+      extraInstructionLines: ["Write findings under: research/"],
+      notesDir: null,
+      followUpInstruction: null,
+      promptKey: "researcher",
+      invalidFinalResponseMessage:
+        "Invalid final task response: you have not used any tools for this research task yet.",
+    },
   },
   {
     role: "data_agent",
@@ -128,6 +165,19 @@ export const ROSTER = [
     displayName: "Data Agent",
     summary:
       "A one-shot data acquisition specialist. Searches for data sources, downloads files or API data, validates artifacts, records provenance, and returns a `TaskReport`.",
+    workerInit: {
+      heading: "Data Acquisition Task Assignment",
+      extraInstructionLines: [
+        "Write downloaded artifacts to the project-relative path that best fits the task; data/ is common but not mandatory.",
+        "Write provenance notes under research/data-sources/ or another clearly named research/provenance path.",
+        "Use retries, fallback source URLs, alternate access methods, and an attempt manifest when downloads are unreliable.",
+      ],
+      notesDir: null,
+      followUpInstruction: null,
+      promptKey: "data-agent",
+      invalidFinalResponseMessage:
+        "Invalid final task response: you have not used any tools for this data task yet.",
+    },
   },
   {
     role: "reviewer",
@@ -147,6 +197,19 @@ export const ROSTER = [
     displayName: "Reviewer",
     summary:
       "A stage-scoped quality gate. Reviews worker outputs at end of stage and persists across the stage so follow-up review requests build on earlier findings. Returns a `TaskReport`.",
+    workerInit: {
+      heading: "Stage Review Task Assignment",
+      extraInstructionLines: [
+        "Review the stage objectives, expected outcomes, acceptance criteria, task list, worker reports, changed artifacts, and any existing summary drafts.",
+        "For data-heavy or ML/research stages, validate data provenance/suitability, leakage controls, statistical acceptance, benchmark comparison, and whether conclusions are supported.",
+      ],
+      notesDir: (stageId: string) => `.saivage/stages/${stageId}/reviews/`,
+      followUpInstruction:
+        "This is a follow-up review in the same stage-scoped reviewer session. Your previous reports and reasoning are above in this conversation. Focus first on the new corrective-task results, then verify whether earlier issues are resolved or still open.",
+      promptKey: "reviewer",
+      invalidFinalResponseMessage:
+        "Invalid final review response: you have not used any tools to inspect evidence yet.",
+    },
   },
   {
     role: "designer",
@@ -166,6 +229,17 @@ export const ROSTER = [
     displayName: "Designer",
     summary:
       "A one-shot design agent. Produces product, UX, interface, information-architecture, and system-design artifacts that make ambiguous implementation work concrete before coding starts. Returns a `TaskReport`.",
+    workerInit: {
+      heading: "Design Task Assignment",
+      extraInstructionLines: [
+        "Produce design artifacts that are concrete enough for implementation and review.",
+      ],
+      notesDir: null,
+      followUpInstruction: null,
+      promptKey: "designer",
+      invalidFinalResponseMessage:
+        "Invalid final design response: you have not used any tools for this design task yet.",
+    },
   },
   {
     role: "inspector",
@@ -188,6 +262,7 @@ export const ROSTER = [
     displayName: "Inspector",
     summary:
       "A one-shot deep-analysis agent. Investigates project state, failure root causes, or architecture and returns an `InspectionReport` with findings, evidence, and recommendations.",
+    workerInit: null,
   },
   {
     role: "chat",
@@ -206,6 +281,7 @@ export const ROSTER = [
     displayName: "Chat",
     summary:
       "The user-facing surface. Answers user questions about project state, relays user direction to the Planner via notes, pushes notifications about significant events, and may dispatch the Inspector for deep investigations.",
+    workerInit: null,
   },
 ] as const satisfies readonly RosterEntry[];
 
@@ -288,3 +364,27 @@ export function renderRosterSummary(forRole: AgentRole): string {
     return `- **${entry.displayName}**${marker}: ${entry.summary}`;
   }).join("\n");
 }
+
+/**
+ * Worker-only accessor for the initial-message metadata. Throws if `role` is
+ * a worker on `ROSTER` but `workerInit` was forgotten (cannot happen given the
+ * compile-time anchor below, but documents intent at the runtime boundary).
+ */
+export function getWorkerInitMeta(role: WorkerRole): WorkerInitMeta {
+  const meta = getRoster(role).workerInit;
+  if (meta === null) {
+    throw new Error(`Roster entry for "${role}" has no workerInit metadata`);
+  }
+  return meta;
+}
+
+// Compile-time guard: every entry with worker: true must have a non-null
+// workerInit. Wrapped-tuple form prevents the bare `extends never`
+// distribution over the union.
+type _WorkerEntriesWithNullInit = Extract<
+  (typeof ROSTER)[number],
+  { worker: true; workerInit: null }
+>;
+type _EveryWorkerHasInit = [_WorkerEntriesWithNullInit] extends [never] ? true : never;
+const _everyWorkerHasInit: _EveryWorkerHasInit = true;
+void _everyWorkerHasInit;
