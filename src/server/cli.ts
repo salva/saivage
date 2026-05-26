@@ -3,6 +3,7 @@
  */
 
 import { Command } from "commander";
+import { inspectAction, startAction } from "./cli-actions.js";
 
 const PLANNER_SHUTDOWN_TIMEOUT_MS = 30_000;
 
@@ -59,44 +60,7 @@ program
 program
   .command("start [project-path]")
   .description("Start the autonomous execution loop")
-  .action(async (projectPath?: string) => {
-    const { resolve } = await import("node:path");
-    const { bootstrap, runPlanner } = await import("./bootstrap.js");
-
-    const path = projectPath ? resolve(projectPath) : undefined;
-
-    let runtime;
-    try {
-      runtime = await bootstrap(path);
-      console.log(`Starting Saivage on ${runtime.project.projectRoot}...`);
-
-      const result = await runPlanner(runtime);
-
-      switch (result.kind) {
-        case "success":
-          console.log("Plan completed successfully.");
-          break;
-        case "failure":
-          console.error(`Plan failed: ${result.reason}`);
-          process.exitCode = 1;
-          break;
-        case "abort":
-          console.log(`Plan aborted: ${result.reason}`);
-          break;
-        case "escalation":
-          console.error(`Plan escalated — manual intervention required.`);
-          process.exitCode = 1;
-          break;
-      }
-    } catch (err) {
-      console.error(
-        `Fatal: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      process.exitCode = 1;
-    } finally {
-      await runtime?.shutdown();
-    }
-  });
+  .action(startAction);
 
 // --- Status ---
 program
@@ -226,55 +190,7 @@ program
   .command("inspect <project-path> <scope>")
   .description("Dispatch the Inspector from CLI")
   .option("-q, --question <questions...>", "Questions to investigate")
-  .action(async (projectPath: string, scope: string, opts) => {
-    const { resolve } = await import("node:path");
-    const { bootstrap } = await import("./bootstrap.js");
-    const { InspectorAgent } = await import("../agents/inspector.js");
-    const { agentId, inspectionId } = await import("../ids.js");
-
-    try {
-      const runtime = await bootstrap(resolve(projectPath));
-
-      const reqId = inspectionId();
-      const request = {
-        id: reqId,
-        scope,
-        questions: opts.question ?? [scope],
-        requested_at: new Date().toISOString(),
-        requested_by: "chat" as const,
-      };
-
-      const ctx = {
-        project: runtime.project,
-        router: runtime.router,
-        mcpRuntime: runtime.mcpRuntime,
-        noteManager: runtime.noteManager,
-        agentId: agentId(),
-        role: "inspector" as const,
-        modelSpec: runtime.routing.resolve("inspector").modelSpec,
-        authProfileKey: runtime.routing.resolve("inspector").authProfile,
-        accountRef: runtime.routing.resolve("inspector").accountRef,
-      };
-
-      const inspector = await InspectorAgent.create(ctx, { request });
-      const result = await inspector.run();
-
-      if (result.kind === "success") {
-        console.log("Inspection complete.");
-        console.log(JSON.stringify(result.data, null, 2));
-      } else {
-        console.error(`Inspection failed: ${result.kind}`);
-        process.exitCode = 1;
-      }
-
-      await runtime.shutdown();
-    } catch (err) {
-      console.error(
-        `Error: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      process.exitCode = 1;
-    }
-  });
+  .action(inspectAction);
 
 // --- Models ---
 program
