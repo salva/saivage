@@ -147,7 +147,7 @@ export class Dispatcher {
         if (!args.path) {
           return { toolUseId: tc.id, content: "Error: 'path' is required for read_stash", isError: true };
         }
-        const result = readStash(args.path, args.offset ?? 0, args.length ?? 10_000);
+        const result = await readStash(args.path, args.offset ?? 0, args.length ?? 10_000);
         this.consecutiveInvalidCalls = 0;
         return { toolUseId: tc.id, content: JSON.stringify(result), isError: false };
       }

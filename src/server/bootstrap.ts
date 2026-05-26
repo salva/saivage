@@ -201,7 +201,7 @@ export async function bootstrap(
   const eventBus = new EventBus();
 
   // 9. Clean stale stash files
-  cleanStash();
+  await cleanStash();
 
   // Write initial runtime state
   const runtimeState = createRuntimeState();

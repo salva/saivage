@@ -33,7 +33,7 @@ import { buildSurvivorBlock } from "../knowledge/eagerLoader.js";
 import type { KnowledgeAgentRole } from "../knowledge/types.js";
 import type { SkillMatchContext } from "../knowledge/loader.js";
 import { checkConvention } from "./conventions.js";
-import { stashResult, readStash, cleanStash } from "../runtime/stash.js";
+import { stashResult } from "../runtime/stash.js";
 import type { RuntimeToolEntry } from "../mcp/runtime.js";
 import { log } from "../log.js";
 
@@ -332,13 +332,13 @@ export class BaseAgent {
       this.recordActivity();
 
       // Build tool result message
-      const resultBlocks: ContentBlock[] = dispatchResult.toolResults.map(
-        (r) => ({
+      const resultBlocks: ContentBlock[] = await Promise.all(
+        dispatchResult.toolResults.map(async (r) => ({
           type: "tool_result" as const,
           tool_use_id: r.toolUseId,
-          content: this.maybeStash(r.content, r.toolUseId),
+          content: await this.maybeStash(r.content, r.toolUseId),
           is_error: r.isError,
-        }),
+        })),
       );
       this.pushMessage({ role: "user", content: resultBlocks });
 
@@ -694,14 +694,14 @@ export class BaseAgent {
    * Stash large tool results to disk and return a reference instead.
    * Threshold: 5% of context window (in tokens).
    */
-  private maybeStash(content: string, toolUseId: string): string {
+  private async maybeStash(content: string, toolUseId: string): Promise<string> {
     const tokenBudget = Math.floor(this.compactionConfig.contextWindow * 0.05);
     const tokens = this.ctx.router.countTokens(this.ctx.modelSpec, [
       { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseId, content }] },
     ]);
     if (tokens <= tokenBudget) return content;
 
-    const path = stashResult(content, `tool_${toolUseId}`);
+    const path = await stashResult(content, `tool_${toolUseId}`);
     return (
       `[Result stashed to disk — too large for context window (${tokens} tokens)]\n` +
       `Use read_stash(path="${path}") to read portions of this result.`
