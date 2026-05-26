@@ -6,20 +6,9 @@ import { getRecentLogs } from "../log.js";
 import type { ModelRouter } from "../providers/router.js";
 import type { BaseAgent } from "../agents/base.js";
 import type { AgentRole } from "../agents/types.js";
+import { getAbortPriority } from "../agents/roster.js";
 import { parseLlmJsonAs } from "../parse-llm-json.js";
 import { log } from "../log.js";
-
-const ABORT_PRIORITY: Record<AgentRole, number> = {
-  reviewer: 0,
-  data_agent: 1,
-  coder: 2,
-  researcher: 3,
-  designer: 4,
-  manager: 5,
-  inspector: 6,
-  chat: 7,
-  planner: 8,
-};
 
 type SupervisorVerdict = {
   stuck: boolean;
@@ -99,7 +88,7 @@ export class RuntimeSupervisor {
       if (this.consecutiveStuck >= this.threshold) {
         const target = this.selectAbortTarget();
         if (!target) {
-          log.warn("[supervisor] Stuck threshold reached, but no lower-level agent is running");
+          log.warn("[supervisor] Stuck threshold reached, but no abortable agent is running");
           return;
         }
         log.warn(
@@ -152,10 +141,16 @@ export class RuntimeSupervisor {
   }
 
   private selectAbortTarget(): { agentId: string; role: AgentRole; agent: BaseAgent } | null {
-    const sorted = [...this.context.agentRegistry.entries()]
-      .map(([agentId, agent]) => ({ agentId, role: agent.role, agent }))
-      .sort((a, b) => ABORT_PRIORITY[a.role] - ABORT_PRIORITY[b.role]);
-    return sorted[0] ?? null;
+    const candidates = [...this.context.agentRegistry.entries()]
+      .map(([agentId, agent]) => ({
+        agentId,
+        role: agent.role,
+        agent,
+        priority: getAbortPriority(agent.role),
+      }))
+      .filter((c): c is typeof c & { priority: number } => c.priority !== null)
+      .sort((a, b) => a.priority - b.priority);
+    return candidates[0] ?? null;
   }
 }
 

@@ -251,12 +251,17 @@ describe("RuntimeSupervisor", () => {
     expect(cancel).not.toHaveBeenCalled();
   });
 
-  it("aborts roles in the order reviewer -> data_agent -> coder -> researcher -> designer -> manager -> inspector -> chat -> planner", async () => {
-    const order = ["reviewer", "data_agent", "coder", "researcher", "designer", "manager", "inspector", "chat", "planner"] as const;
+  it("aborts roles in roster priority order and never aborts non-abortable roles", async () => {
+    const order = ["reviewer", "data_agent", "coder", "researcher", "designer", "manager"] as const;
     const cancels = Object.fromEntries(order.map((r) => [r, vi.fn()]));
     const agentRegistry = new Map<string, any>(
       order.map((role) => [`${role}-1`, { role, cancel: cancels[role] }]),
     );
+    const nonAbortable = ["planner", "inspector", "chat"] as const;
+    const nonAbortableCancels = Object.fromEntries(nonAbortable.map((r) => [r, vi.fn()]));
+    for (const role of nonAbortable) {
+      agentRegistry.set(`${role}-1`, { role, cancel: nonAbortableCancels[role] });
+    }
     const router = {
       chat: vi.fn(async () => ({
         content: JSON.stringify({ stuck: true, confidence: 0.95, reason: "persistent retry loop", evidence: [] }),
@@ -275,15 +280,24 @@ describe("RuntimeSupervisor", () => {
       expect(cancels[role]).toHaveBeenCalledTimes(1);
       agentRegistry.delete(`${role}-1`);
     }
+
+    for (const role of nonAbortable) {
+      expect(nonAbortableCancels[role]).not.toHaveBeenCalled();
+    }
+
+    // Three more rounds with only non-abortable agents present: nothing is cancelled.
+    await supervisor.checkOnce();
+    await supervisor.checkOnce();
+    await supervisor.checkOnce();
+    for (const role of nonAbortable) {
+      expect(nonAbortableCancels[role]).not.toHaveBeenCalled();
+    }
   });
 
-  it("does not starve planner when chat is the highest-priority live entry", async () => {
+  it("never aborts chat or planner because both are non-abortable in the roster", async () => {
     const planner = { role: "planner", cancel: vi.fn() };
+    const chat = { role: "chat", cancel: vi.fn() };
     const agentRegistry = new Map<string, any>();
-    const chat = {
-      role: "chat",
-      cancel: vi.fn(() => { agentRegistry.delete("chat-1"); }),
-    };
     agentRegistry.set("chat-1", chat);
     agentRegistry.set("planner-1", planner);
 
@@ -297,16 +311,11 @@ describe("RuntimeSupervisor", () => {
     };
     const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry }, "github-copilot/gpt-5.4");
 
-    await supervisor.checkOnce();
-    await supervisor.checkOnce();
-    await supervisor.checkOnce();
-    expect(chat.cancel).toHaveBeenCalledTimes(1);
+    for (let i = 0; i < 9; i++) {
+      await supervisor.checkOnce();
+    }
+    expect(chat.cancel).not.toHaveBeenCalled();
     expect(planner.cancel).not.toHaveBeenCalled();
-
-    await supervisor.checkOnce();
-    await supervisor.checkOnce();
-    await supervisor.checkOnce();
-    expect(planner.cancel).toHaveBeenCalledTimes(1);
   });
 });
 function makeSupervisorConfig(overrides: Partial<SaivageConfig["supervisor"]> = {}): SaivageConfig {

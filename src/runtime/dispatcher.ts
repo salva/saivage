@@ -8,7 +8,7 @@
 import type { Message, ContentBlock, ToolCallResult, ChatResponse, ToolSchema } from "../providers/types.js";
 import { ProviderError } from "../providers/error.js";
 import type { AgentContext, AgentResult } from "../agents/types.js";
-import { ROSTER, type DispatchableRole } from "../agents/roster.js";
+import { ROSTER, isConcurrencyLimitedDispatch, type DispatchableRole } from "../agents/roster.js";
 import type { McpRuntime, RuntimeToolEntry } from "../mcp/runtime.js";
 import { readStash } from "./stash.js";
 import { log } from "../log.js";
@@ -274,7 +274,7 @@ export class Dispatcher {
       if (!role) continue;
 
       // For workers, enforce max 1 of each.
-      if (role === "coder" || role === "researcher" || role === "data_agent" || role === "reviewer") {
+      if (isConcurrencyLimitedDispatch(role)) {
         if (seen[role]) {
           log.warn(
             `[dispatcher] Rejecting duplicate ${role} dispatch — max 1 per batch`,

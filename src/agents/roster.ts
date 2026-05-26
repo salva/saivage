@@ -256,6 +256,24 @@ export function getRosterByDispatchTool(toolName: string): RosterEntry | undefin
   return ROSTER_BY_DISPATCH_TOOL.get(toolName);
 }
 
+export function getAbortPriority(role: AgentRole): number | null {
+  return getRoster(role).abortPriority;
+}
+
+export function getToolFilter(role: AgentRole): ToolFilterKind {
+  return getRoster(role).toolFilter;
+}
+
+export function getDispatchToolsFor(parent: AgentRole): string[] {
+  return ROSTER
+    .filter((e) => e.dispatchTool !== null && (e.dispatchableBy as readonly string[]).includes(parent))
+    .map((e) => e.dispatchTool as string);
+}
+
+export function isConcurrencyLimitedDispatch(role: DispatchableRole): boolean {
+  return getRoster(role).worker;
+}
+
 export function assertExhaustive(value: never): never {
   throw new Error(`Unhandled roster case: ${String(value)}`);
 }

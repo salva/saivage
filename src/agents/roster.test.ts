@@ -16,8 +16,13 @@ import {
   DISPATCHABLE_ROLES,
   getRoster,
   getRosterByDispatchTool,
+  getAbortPriority,
+  getToolFilter,
+  getDispatchToolsFor,
+  isConcurrencyLimitedDispatch,
   renderRosterSummary,
   type AgentRole,
+  type DispatchableRole,
 } from "./roster.js";
 import { DISPATCH_ROLE_MAP, DISPATCH_TOOLS } from "../runtime/dispatcher.js";
 import { DEFAULT_SELF_CHECK_FREQUENCY } from "../runtime/self-check.js";
@@ -168,6 +173,39 @@ describe("ROSTER ↔ SPEC parity", () => {
     const spec = readFileSync(specPath, "utf8");
     for (const entry of ROSTER) {
       expect(spec).toContain(entry.displayName);
+    }
+  });
+});
+
+describe("ROSTER — derived accessors", () => {
+  it("getAbortPriority matches every roster entry's abortPriority", () => {
+    for (const role of ALL_ROLES) {
+      expect(getAbortPriority(role)).toBe(getRoster(role).abortPriority);
+    }
+  });
+
+  it("getToolFilter matches every roster entry's toolFilter", () => {
+    for (const role of ALL_ROLES) {
+      expect(getToolFilter(role)).toBe(getRoster(role).toolFilter);
+    }
+  });
+
+  it("getDispatchToolsFor returns the roster's dispatch tools for each parent role", () => {
+    expect(getDispatchToolsFor("manager").sort()).toEqual(
+      ["run_coder", "run_data_agent", "run_designer", "run_researcher", "run_reviewer"].sort(),
+    );
+    expect(getDispatchToolsFor("planner").sort()).toEqual(
+      ["run_inspector", "run_manager"].sort(),
+    );
+    expect(getDispatchToolsFor("chat")).toEqual(["run_inspector"]);
+    expect(getDispatchToolsFor("coder")).toEqual([]);
+  });
+
+  it("isConcurrencyLimitedDispatch equals roster `worker` for every dispatchable role", () => {
+    for (const role of DISPATCHABLE_ROLES) {
+      expect(isConcurrencyLimitedDispatch(role as DispatchableRole)).toBe(
+        getRoster(role as AgentRole).worker,
+      );
     }
   });
 });

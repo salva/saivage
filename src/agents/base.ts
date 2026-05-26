@@ -20,6 +20,8 @@ import type {
   InputChannel,
 } from "./types.js";
 import { ROSTER } from "./roster.js";
+import { getToolFilter } from "./roster.js";
+import { applyToolFilter } from "./tool-filters.js";
 import { Dispatcher, DISPATCH_TOOLS } from "../runtime/dispatcher.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
 import {
@@ -627,10 +629,10 @@ export class BaseAgent {
   /** Get available tool schemas for this agent, filtered by role. */
   protected getToolSchemas(): ToolSchema[] {
     const allTools = this.ctx.mcpRuntime.getAllTools();
-    const roleFilter = ROLE_TOOL_FILTER[this.role];
-    const filtered = roleFilter
-      ? allTools.filter((t: RuntimeToolEntry) => roleFilter(t.name, t.service))
-      : allTools;
+    const kind = getToolFilter(this.role);
+    const filtered = allTools.filter((t: RuntimeToolEntry) =>
+      applyToolFilter(kind, { name: t.name, service: t.service }),
+    );
     const schemas: ToolSchema[] = filtered.map((t: RuntimeToolEntry) => ({
       name: t.name,
       description: t.description,
@@ -1073,51 +1075,3 @@ const ROLE_DISPATCH_TOOLS: Partial<Record<AgentRole, ToolSchema[]>> = (() => {
 function getDispatchToolsForRole(role: AgentRole): ToolSchema[] {
   return ROLE_DISPATCH_TOOLS[role] ?? [];
 }
-
-// ─── Role-Based Tool Filtering ──────────────────────────────────────────
-
-/** Read-only tools safe for roles that should not modify the project. */
-const READ_ONLY_TOOLS = new Set([
-  "read_file", "list_dir", "search_files", "git_status", "git_log", "git_diff",
-  "list_skills", "read_skill",
-]);
-
-/** Tools that only the planner (and manager for delegation) should use. */
-const PLAN_TOOLS = new Set([
-  "plan_get", "plan_get_stage", "plan_get_current_stage",
-  "plan_set_stages", "plan_add_stage", "plan_remove_stage",
-  "plan_set_current", "plan_complete_stage",
-  "plan_get_history", "plan_init", "plan_commit",
-]);
-
-/** Tools workers (coder/researcher/data_agent) do NOT need. */
-const WORKER_EXCLUDED_TOOLS = new Set([
-  ...PLAN_TOOLS,
-  // Skills management — workers consume skills, not manage them
-  "create_skill", "update_skill",
-]);
-
-/**
- * Role → tool filter function. Returns true if the tool is allowed.
- * Roles without an entry get all available tools (no filtering).
- */
-const ROLE_TOOL_FILTER: Partial<Record<AgentRole, (toolName: string, service: string) => boolean>> = {
-  // Planner: plan tools + read-only filesystem + skills — no shell, no write_file
-  planner: (name, _service) =>
-    PLAN_TOOLS.has(name) || READ_ONLY_TOOLS.has(name) ||
-    name === "read_stash",
-
-  // Inspector: read-only tools only
-  inspector: (name, _service) =>
-    READ_ONLY_TOOLS.has(name) || name === "run_command" || name === "read_stash" ||
-    name === "web_search" || name === "fetch_url" || name === "fetch_page_text",
-
-  // Reviewer: read-only + shell (for running tests)
-  reviewer: (name, _service) =>
-    READ_ONLY_TOOLS.has(name) || name === "run_command" || name === "read_stash",
-
-  // Workers: everything except plan management
-  coder: (name, _service) => !WORKER_EXCLUDED_TOOLS.has(name),
-  researcher: (name, _service) => !WORKER_EXCLUDED_TOOLS.has(name),
-  data_agent: (name, _service) => !WORKER_EXCLUDED_TOOLS.has(name),
-};

@@ -20,6 +20,7 @@ import { log } from "../log.js";
 import { buildHandoffContext } from "./handoff.js";
 import { loadRolePrompt } from "./prompts.js";
 import { buildEagerBlock } from "../knowledge/eagerLoader.js";
+import { getDispatchToolsFor } from "./roster.js";
 
 
 export class ManagerAgent extends BaseAgent implements Agent {
@@ -108,7 +109,7 @@ export class ManagerAgent extends BaseAgent implements Agent {
   }
 
   protected override validateFinalResponse(): string | null {
-    if (this.hasUsedToolNamed("run_coder", "run_researcher", "run_data_agent", "run_designer", "run_reviewer")) {
+    if (this.hasUsedToolNamed(...getDispatchToolsFor("manager"))) {
       return null;
     }
     return "Invalid final stage response: you have not dispatched any worker yet.";
