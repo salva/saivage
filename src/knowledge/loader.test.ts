@@ -1,6 +1,3 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import type { MemoryRecord, SkillRecord } from "./types.js";
@@ -18,7 +15,6 @@ import {
   splitByBudget,
   type EagerCandidate,
 } from "./loader.js";
-import { builtinAsSkillRecord, parseSkillFrontmatter, walkBuiltinSkills } from "./builtinWalker.js";
 
 const NOW = "2026-05-23T00:00:00.000Z";
 const AUTHOR = { role: "manager" as const, agent_id: "agent-1" };
@@ -323,88 +319,5 @@ describe("estimateTokens", () => {
   it("approximates length/4 (matches compaction.ts)", () => {
     expect(estimateTokens("a".repeat(40))).toBe(10);
     expect(estimateTokens("")).toBe(0);
-  });
-});
-
-// ─── builtinWalker tests ───────────────────────────────────────────────────
-
-function makeFixtureSkill(root: string, name: string, frontmatter: string, body: string): void {
-  const dir = join(root, name);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "SKILL.md"), `---\n${frontmatter}\n---\n${body}`, "utf-8");
-}
-
-describe("parseSkillFrontmatter", () => {
-  it("parses scalars, flow arrays, and block arrays", () => {
-    const { frontmatter, body } = parseSkillFrontmatter(
-      [
-        "---",
-        'name: "coding-style"',
-        "description: My style guide",
-        "triggers: [keyword:build, agent:coder]",
-        "target_agents:",
-        "  - coder",
-        "  - reviewer",
-        "survive_compaction: true",
-        "---",
-        "Body content here.",
-      ].join("\n"),
-    );
-    expect(frontmatter.name).toBe("coding-style");
-    expect(frontmatter.description).toBe("My style guide");
-    expect(frontmatter.triggers).toEqual(["keyword:build", "agent:coder"]);
-    expect(frontmatter.target_agents).toEqual(["coder", "reviewer"]);
-    expect(frontmatter.survive_compaction).toBe(true);
-    expect(body.trim()).toBe("Body content here.");
-  });
-
-  it("returns body unchanged when no frontmatter", () => {
-    const { frontmatter, body } = parseSkillFrontmatter("just a body");
-    expect(frontmatter).toEqual({});
-    expect(body).toBe("just a body");
-  });
-
-  it("throws on duplicate keys", () => {
-    expect(() => parseSkillFrontmatter("---\nname: a\nname: b\n---\nbody")).toThrow(/duplicate/);
-  });
-
-  it("rejects malformed lines", () => {
-    expect(() => parseSkillFrontmatter("---\nthis is not yaml\n---\n")).toThrow();
-  });
-});
-
-describe("walkBuiltinSkills + builtinAsSkillRecord", () => {
-  it("walks SKILL.md files and projects to records", () => {
-    const root = mkdtempSync(join(tmpdir(), "saivage-builtins-"));
-    makeFixtureSkill(
-      root,
-      "alpha",
-      'name: "alpha-skill"\ndescription: "first"\ntriggers: [agent:coder]\nsurvive_compaction: true',
-      "Alpha body.",
-    );
-    makeFixtureSkill(
-      root,
-      "beta",
-      'name: "beta-skill"\ndescription: "second"',
-      "Beta body.",
-    );
-    // a directory without SKILL.md must be ignored
-    mkdirSync(join(root, "no-skill"), { recursive: true });
-
-    const raws = walkBuiltinSkills(root);
-    expect(raws.map((r) => r.name).sort()).toEqual(["alpha-skill", "beta-skill"]);
-
-    const rec = builtinAsSkillRecord(
-      raws.find((r) => r.name === "alpha-skill")!,
-      "33333333-3333-4333-8333-333333333333",
-      NOW,
-    );
-    expect(rec.origin).toBe("builtin");
-    expect(rec.scope).toBe("project");
-    expect(rec.survive_compaction).toBe(true);
-  });
-
-  it("returns [] for missing dir", () => {
-    expect(walkBuiltinSkills(join(tmpdir(), "saivage-nonexistent-" + Date.now()))).toEqual([]);
   });
 });

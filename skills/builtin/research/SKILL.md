@@ -1,9 +1,9 @@
 ---
 name: research
 description: Techniques for finding and synthesizing information
-version: 0.1.0
-agentTypes: [researcher]
-triggers: [research, find, search, look up, investigate, analyse]
+triggers: [agent:researcher, keyword:research, keyword:find, keyword:search, keyword:investigate, keyword:analyse]
+target_agents: [researcher]
+survive_compaction: false
 ---
 
 ## Research Guidelines

@@ -12,7 +12,7 @@ A skill is a record (one `SkillRecord` per skill) holding instructions an agent 
 
 ### A. Built-in skills (shipped with Saivage)
 
-Built-in skills live at `saivage/skills/builtin/<topic>/SKILL.md`, are walked by `src/knowledge/builtinWalker.ts`, and are bundled into `dist/skills/builtin/` by `tsup`. They are loaded with `origin="builtin"`, `scope="project"`.
+Built-in skills live at `saivage/skills/builtin/<topic>/SKILL.md`, are walked by `src/knowledge/eagerLoader.ts`, and are bundled into `dist/skills/builtin/` by `tsup`. They are loaded with `origin="builtin"`, `scope="project"`.
 
 Each `SKILL.md` carries YAML frontmatter followed by markdown body:
 
@@ -20,11 +20,11 @@ Each `SKILL.md` carries YAML frontmatter followed by markdown body:
 ---
 name: <skill-name>                # unique within scope; lowercase + hyphens
 description: <one-line summary>
-triggers:                          # all optional; see "Triggers" below
+triggers:                          # optional; see "Triggers" below
   - keyword:<word>
   - tag:<label>
   - agent:<role>
-target_agents: [coder, manager]    # optional; empty = any role
+target_agents: [coder, manager]    # required; [] means any role
 survive_compaction: false          # optional; true => always reinjected after compaction
 ---
 
@@ -78,7 +78,7 @@ Triggerless skills (`triggers: []`) are valid (FR-8). They never participate in 
 
 ## `target_agents`
 
-`target_agents` is a **role filter** for eager injection: empty means "any role", non-empty restricts injection (and on-demand visibility for worker roles) to the listed roles. Inspector and Chat are privileged readers — they bypass the filter on read.
+`target_agents` is a **role filter** for eager injection: empty means "any role", non-empty restricts injection (and on-demand visibility for worker roles) to the listed roles. Built-in skills must declare the key explicitly; use `target_agents: []` only when a built-in is deliberately global. Inspector and Chat are privileged readers — they bypass the filter on read.
 
 ## Lifecycle
 
@@ -93,7 +93,7 @@ Records transition `active` → `superseded` (via `supersede_skill`) | `archived
 | `project` | `<project>/.saivage/skills/stages/<stage_id>/records/...`  | `create_skill` (Mg/In, stage-scoped) | `stage` |
 | `project` | `<project>/.saivage/skills/sessions/<channel_id>/records/...` | `create_skill` (Mg/In, session-scoped) | `session` |
 
-The `SPEC/v2/skills/` directory (this file, plus `code-quality.md`, `git-conventions.md`, etc.) holds spec / convention documentation, **not** runtime-loaded skills. It is not walked by `builtinWalker.ts`.
+The `SPEC/v2/skills/` directory (this file, plus `code-quality.md`, `git-conventions.md`, etc.) holds spec / convention documentation, **not** runtime-loaded skills. It is not walked by `eagerLoader.ts`.
 
 ## When to author a skill
 

@@ -1,10 +1,9 @@
 ---
 name: mcp-authoring
 description: How to create MCP server tools
-version: 0.1.0
-agentTypes: [coder]
-triggers: [mcp, tool, service, server, generate.*service]
-dependencies: [coding]
+triggers: [agent:coder, keyword:mcp, keyword:tool, keyword:service, keyword:server]
+target_agents: [coder]
+survive_compaction: false
 ---
 
 ## MCP Service Authoring

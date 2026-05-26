@@ -23,7 +23,8 @@
     "src/server/server.ts",
     "src/store/project.ts",
     "src/store/documents.ts",
-    "src/skills/loader.ts"
+    "src/knowledge/eagerLoader.ts",
+    "src/knowledge/loader.ts"
   ],
   "tsconfig": "tsconfig.json",
   "out": "docs/api",

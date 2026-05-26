@@ -115,6 +115,22 @@ export const SkillRecordSchema = z
   .refine(scopeRefRefinement, scopeRefRefinementMsg);
 export type SkillRecord = z.infer<typeof SkillRecordSchema>;
 
+/**
+ * Frontmatter contract for bundled skills under `skills/builtin/<topic>/SKILL.md`.
+ * `target_agents: []` is the canonical spelling for a global built-in and
+ * must be declared deliberately.
+ */
+export const BuiltinSkillFrontmatterSchema = z
+  .object({
+    name: z.string().min(1),
+    description: z.string(),
+    triggers: z.array(z.string()).default([]),
+    target_agents: z.array(KnowledgeAgentRoleSchema),
+    survive_compaction: z.boolean().default(false),
+  })
+  .strict();
+export type BuiltinSkillFrontmatter = z.infer<typeof BuiltinSkillFrontmatterSchema>;
+
 const TopicSchema = z.object({
   domain: z.string().min(1),
   subject: z.string().min(1),

@@ -245,11 +245,11 @@ Skill and memory records share one document-store substrate, one Zod base (`Reco
 
 **Authoring surface** (design §C.1). Sixteen MCP tools — eight per kind — backed by a shared store/permissions engine: `create_*`, `read_*` / `get_*`, `list_*`, `search_*`, `update_*`, `supersede_*`, `archive_*`, `delete_*`. Direct filesystem writes under `.saivage/{skills,memory}/` are rejected by `fsGuard` from every role. Authorization is enforced at the MCP runtime via `ToolCallContext` + `permissions.canCall`, not by handler convention.
 
-**Built-in vs project skills.** Built-in skills ship at `saivage/skills/builtin/<topic>/SKILL.md` with YAML frontmatter, walked by `src/knowledge/builtinWalker.ts`, and have `origin="builtin"`, `scope="project"`. Project skills are authored at runtime via `create_skill` (no frontmatter — fields live in the JSON record).
+**Built-in vs project skills.** Built-in skills ship at `saivage/skills/builtin/<topic>/SKILL.md` with strict YAML frontmatter, walked by `src/knowledge/eagerLoader.ts`, and have `origin="builtin"`, `scope="project"`. Project skills are authored at runtime via `create_skill` (no frontmatter — fields live in the JSON record).
 
 **Eager-injection algorithm** (design §D.1). When a `BaseAgent` is constructed, the knowledge loader:
 
-1. Collects candidates from four sources: built-in skills (frontmatter walk), `skills/project/index.json`, `skills/stages/<ctx.stage_id>/index.json`, `skills/sessions/<ctx.channel_id>/index.json`, plus memory records (in the same scope tree) whose `target_agents` is non-empty.
+1. Collects candidates from built-in skills (frontmatter walk), project-scope records, stage-scope records, session-scope records, plus memory records (in the same scope tree) whose `target_agents` is non-empty.
 2. Filters to `status == "active"` and `target_agents` matching the current agent role (empty `target_agents` = any role).
 3. Scores skills against `keyword:` / `tag:` / `agent:` triggers only. Triggerless skills score 0 (FR-8): not eager-injected, but findable via `search_skills`. Memories score 1 when eligible.
 4. Sorts: origin precedence (project > builtin) → score desc → `updated_at` desc → `id` asc.

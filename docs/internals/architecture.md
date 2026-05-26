@@ -95,7 +95,7 @@ graph TB
 | Routing | `src/routing/resolver.ts` | Project-level routing rules + profiles. |
 | Channels | `src/channels/` | CLI, websocket, telegram, oneshot. |
 | Server | `src/server/` | `bootstrap`, `server`, `cli`, `telegram-bot`. |
-| Skills | `src/skills/loader.ts` | Trigger matching + prompt assembly. |
+| Skills | `src/knowledge/eagerLoader.ts`, `src/knowledge/loader.ts` | Candidate loading, trigger matching, and prompt assembly. |
 | Security | `src/security/secrets.ts` | Secret environment-variable scrubbing. |
 | Events | `src/events/bus.ts` | Pub/sub for `SystemEvent`s. |
 

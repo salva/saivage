@@ -1,9 +1,9 @@
 ---
 name: coding
 description: Best practices for writing and modifying code
-version: 0.1.0
-agentTypes: [coder]
-triggers: [write, implement, fix, refactor, code, function, class, module]
+triggers: [agent:coder, keyword:write, keyword:implement, keyword:fix, keyword:refactor, keyword:code, keyword:function, keyword:class, keyword:module]
+target_agents: [coder]
+survive_compaction: false
 ---
 
 ## Coding Guidelines

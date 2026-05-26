@@ -1,91 +1,60 @@
 # Skills
 
-A **skill** is a Markdown document containing reusable advice or
-constraints, attached to one or more agent roles. Skills are discovered at
-runtime and injected into an agent's system prompt when the skill's triggers
-match the current task.
+Skills are Markdown instructions that can be injected into agent prompts when
+their triggers and role filters match the current context.
 
-## Skill source paths
+## Built-In Skills
 
-Skills are loaded from two locations (later entries override earlier ones):
+Built-ins ship with Saivage under `skills/builtin/<topic>/SKILL.md` and are
+bundled into `dist/skills/builtin/`. The current built-in set is `coding`,
+`mcp-authoring`, and `research`. Planner-facing planning guidance lives in
+`prompts/planner.md`, not in a built-in skill.
 
-1. **Built-in**: `<saivage>/skills/` — ships with the daemon
-   (`coding/`, `planning/`, `research/`, `mcp-authoring/`).
-2. **Project**: `<project>/.saivage/skills/` — committed alongside the
-   project; created by the agents themselves over time.
+Each built-in file has strict YAML frontmatter:
 
-Each directory has an `index.json`:
-
-```json
-{
-  "skills": [
-    {
-      "id": "ts-strict-mode",
-      "name": "TypeScript strict mode",
-      "file": "ts-strict-mode.md",
-      "target_agents": ["coder", "reviewer"],
-      "triggers": {
-        "tags": ["typescript", "ts"],
-        "keywords": ["tsconfig", "strict", "noImplicitAny"],
-        "tools": []
-      },
-      "updated_at": "2025-08-15T10:00:00Z"
-    }
-  ]
-}
+```yaml
+name: coding
+description: Best practices for writing and modifying code
+triggers: [agent:coder, keyword:implement]
+target_agents: [coder]
+survive_compaction: false
 ```
 
-## Trigger matching
+Allowed keys are `name`, `description`, `triggers`, `target_agents`, and
+`survive_compaction`. Unknown keys fail loudly. `target_agents` is required; use
+`target_agents: []` only when a built-in should be global.
 
-The loader (`src/skills/loader.ts`) scores each skill against the task
-context:
+## Project Skills
 
-- `tags`: stage or task tags vs. skill `triggers.tags`.
-- `keywords`: case-insensitive match in the task description.
-- `tools`: tools available to the agent vs. skill `triggers.tools`.
+Project skills are authored through MCP tools such as `create_skill`,
+`update_skill`, `supersede_skill`, `archive_skill`, and `delete_skill`. They are
+stored under `.saivage/skills/{project,stages,sessions}/` as records plus body
+files. Agents should not hand-edit those files or patch `index.json`.
 
-The top-N skills (default 5, capped by `ProjectConfig.skills.max_per_agent`)
-are concatenated into the system prompt as labelled blocks:
+Typical creation shape:
 
-```
---- SKILL: TypeScript strict mode ---
-<contents of ts-strict-mode.md>
----
-```
-
-## Authoring skills
-
-A skill file is plain Markdown. Keep it tightly focused on a single concern
-and reusable across tasks. The file should be **short** — agents pay context
-tokens for every byte.
-
-```md
-# TypeScript strict mode
-
-When working in this project always:
-
-- Add `"strict": true` and `"noUncheckedIndexedAccess": true` to tsconfig.
-- Prefer `import type` for type-only imports.
-- Use Zod for runtime parsing of external JSON.
+```ts
+create_skill({
+  name: "oauth-pattern",
+  description: "How this project wires OAuth providers.",
+  body: "Use the existing provider registry and profile store...",
+  triggers: ["keyword:oauth", "tag:auth"],
+  target_agents: ["coder"],
+  scope: "project",
+  survive_compaction: false,
+  reason: "Repeated OAuth edits need one reusable convention."
+})
 ```
 
-After authoring, register it in `index.json` (or let the Manager schedule a
-**skill-creation task** for the workers — see the built-in
-`skill-creation.md` skill).
+## Matching
 
-## Self-extension
+Skill triggers are flat `kind:value` strings. The eager loader scores:
 
-Skills are how Saivage *self-extends*. A typical lifecycle:
+- `keyword:<word>` against task or stage description tokens.
+- `tag:<label>` against stage or task tags.
+- `agent:<role>` against the current agent role.
 
-1. The Manager notices a worker repeatedly making the same kind of mistake
-   or following a non-obvious convention.
-2. The Manager schedules a `code` task: *"Promote this convention into a
-   skill"*.
-3. The Coder writes the Markdown file under `.saivage/skills/<id>/` and
-   patches `index.json`.
-4. The skill is auto-attached to future tasks matching the triggers.
-
-## Inspecting which skills are attached
-
-Each agent invocation logs the resolved skill list. The web UI surfaces
-this under the agent's conversation panel.
+Triggerless skills are valid and remain findable through search/read tools, but
+they are not eager-injected unless they survive compaction. Memories use the
+same knowledge store and are generally looked up on demand; memory records only
+enter eager injection when they declare `target_agents`.

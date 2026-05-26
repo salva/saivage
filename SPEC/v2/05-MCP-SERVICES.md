@@ -292,7 +292,7 @@ All write tools require a non-empty `reason` (`EMPTY_REASON` on violation) and a
 
 **Triggers.** Only `keyword:<word>`, `tag:<label>`, `agent:<role>` are valid. `tool:` and `path:` are removed from `SkillRecord.triggers` validation (design §D.4). Triggerless skills are allowed (FR-8): they are never eager-injected but participate in `search_skills` and `read_skill` by id.
 
-**Origin & built-ins.** `SkillRecord.origin` is `"builtin"` for skills shipped at `saivage/skills/builtin/<topic>/SKILL.md` (bundled into `dist/skills/builtin/` by `tsup`), or `"project"` for skills authored at runtime under `<project>/.saivage/skills/{project,stages/<id>,sessions/<id>}/`. Built-ins are walked by `src/knowledge/builtinWalker.ts` and projected into the eager-injection candidate set with `origin="builtin"`, `scope="project"`. They have no `index.json`.
+**Origin & built-ins.** `SkillRecord.origin` is `"builtin"` for skills shipped at `saivage/skills/builtin/<topic>/SKILL.md` (bundled into `dist/skills/builtin/` by `tsup`), or `"project"` for skills authored at runtime under `<project>/.saivage/skills/{project,stages/<id>,sessions/<id>}/`. Built-ins are walked by `src/knowledge/eagerLoader.ts`, parsed through strict frontmatter, and projected into the eager-injection candidate set with `origin="builtin"`, `scope="project"`. They have no `index.json`.
 
 **Generic filesystem writes targeted at `.saivage/{skills,memory}/` are rejected by `fsGuard`** from any role — the MCP surface is the only authoring path (closes FA §1.6.4 escape hatch).
 

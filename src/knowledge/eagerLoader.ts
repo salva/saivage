@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
+  BuiltinSkillFrontmatterSchema,
   SkillRecordSchema,
   MemoryRecordSchema,
   type SkillRecord,
@@ -85,6 +86,81 @@ async function walkScopeTree(
   }
 }
 
+function splitBuiltinSkillMarkdown(text: string): { frontmatter: Record<string, unknown>; body: string } {
+  const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  if (!match) return { frontmatter: {}, body: text };
+  const yamlBlock = match[1] ?? "";
+  const body = (match[2] ?? "").replace(/^\r?\n/, "");
+  return { frontmatter: parseBuiltinFrontmatterYaml(yamlBlock), body };
+}
+
+function parseBuiltinFrontmatterYaml(yamlBlock: string): Record<string, unknown> {
+  const frontmatter: Record<string, unknown> = {};
+  const lines = yamlBlock.split(/\r?\n/);
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i] ?? "";
+    if (line.trim().length === 0) {
+      i++;
+      continue;
+    }
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/);
+    if (!match) {
+      throw new Error(`unparseable frontmatter line: ${line}`);
+    }
+
+    const key = match[1] ?? "";
+    const rawValue = match[2] ?? "";
+    if (Object.prototype.hasOwnProperty.call(frontmatter, key)) {
+      throw new Error(`duplicate frontmatter key: ${key}`);
+    }
+
+    if (rawValue.length === 0) {
+      const items: string[] = [];
+      i++;
+      while (i < lines.length) {
+        const inner = lines[i] ?? "";
+        const blockMatch = inner.match(/^\s+-\s+(.*)$/);
+        if (!blockMatch) break;
+        items.push(stripYamlQuotes((blockMatch[1] ?? "").trim()));
+        i++;
+      }
+      frontmatter[key] = items;
+      continue;
+    }
+
+    frontmatter[key] = parseBuiltinYamlValue(rawValue);
+    i++;
+  }
+  return frontmatter;
+}
+
+function parseBuiltinYamlValue(rawValue: string): string | string[] | boolean {
+  const value = rawValue.trim();
+  if (value.startsWith("[") && value.endsWith("]")) {
+    const inside = value.slice(1, -1).trim();
+    return inside.length === 0
+      ? []
+      : inside.split(",").map((item) => stripYamlQuotes(item.trim()));
+  }
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return stripYamlQuotes(value);
+}
+
+function stripYamlQuotes(value: string): string {
+  return value.replace(/^['"]|['"]$/g, "");
+}
+
+function describeBuiltinFrontmatterError(error: unknown): string {
+  if (error instanceof z.ZodError) {
+    return error.issues
+      .map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
+      .join("; ");
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 /**
  * Walk the bundled built-in skills tree. Looks for `<builtinRoot>/<topic>/SKILL.md`
  * (post-WI-16 layout). Each file becomes a synthetic active SkillRecord with
@@ -95,10 +171,28 @@ export async function walkBuiltinSkills(builtinRoot: string, out: RawCandidate[]
   for (const topic of (await readdir(builtinRoot)).sort()) {
     const skillPath = join(builtinRoot, topic, "SKILL.md");
     if (!(await pathExists(skillPath))) continue;
-    let body: string;
+    let text: string;
     try {
-      body = await readFile(skillPath, "utf-8");
-    } catch { continue; }
+      text = await readFile(skillPath, "utf-8");
+    } catch (error) {
+      throw new Error(
+        `Unable to read builtin skill ${skillPath}: ${describeBuiltinFrontmatterError(error)}`,
+        { cause: error },
+      );
+    }
+
+    let parsed: ReturnType<typeof splitBuiltinSkillMarkdown>;
+    let frontmatter: z.infer<typeof BuiltinSkillFrontmatterSchema>;
+    try {
+      parsed = splitBuiltinSkillMarkdown(text);
+      frontmatter = BuiltinSkillFrontmatterSchema.parse(parsed.frontmatter);
+    } catch (error) {
+      throw new Error(
+        `Invalid builtin skill frontmatter in ${skillPath}: ${describeBuiltinFrontmatterError(error)}`,
+        { cause: error },
+      );
+    }
+
     const now = new Date(0).toISOString();
     const rec: SkillRecord = SkillRecordSchema.parse({
       id: randomUUID(),
@@ -108,16 +202,16 @@ export async function walkBuiltinSkills(builtinRoot: string, out: RawCandidate[]
       created_at: now,
       updated_at: now,
       author_agent: { role: "manager", agent_id: "builtin" },
-      name: topic,
-      description: `Built-in skill: ${topic}`,
-      triggers: [topic],
-      target_agents: [],
+      name: frontmatter.name,
+      description: frontmatter.description,
+      triggers: frontmatter.triggers,
+      target_agents: frontmatter.target_agents,
       origin: "builtin",
-      body_path: "SKILL.md",
+      body_path: skillPath,
       relates_to: [],
-      survive_compaction: false,
+      survive_compaction: frontmatter.survive_compaction,
     });
-    out.push({ record: rec, body, origin: "builtin" });
+    out.push({ record: rec, body: parsed.body, origin: "builtin" });
   }
 }
 
