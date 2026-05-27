@@ -9,7 +9,7 @@ import { z } from "zod";
 
 /**
  * Roles that may appear as `author_agent.role` on a knowledge record.
- * Aligned with SPEC §F (nine roles including `designer`). Kept distinct
+ * Aligned with SPEC §F (ten roles including `designer` and `critic`). Kept distinct
  * from `AgentRole` in `src/agents/types.ts` because the knowledge layer
  * accepts every authoring role independently of which roles are currently
  * wired into the agent registry.
@@ -23,6 +23,7 @@ export const KnowledgeAgentRoleSchema = z.enum([
   "inspector",
   "reviewer",
   "designer",
+  "critic",
   "chat",
 ]);
 export type KnowledgeAgentRole = z.infer<typeof KnowledgeAgentRoleSchema>;

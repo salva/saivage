@@ -1080,6 +1080,12 @@ const RUN_DESIGNER_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
   "The design task",
 );
 
+const RUN_CRITIC_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
+  "run_critic",
+  "Dispatch a design-critique task to a Critic worker agent. Use after the Designer produces specs, briefs, architecture docs, or other design artifacts: the Critic reviews them, writes a standalone critique document, and returns a TaskReport with actionable issues. Does not review code, tests, or data.",
+  "The design critique task",
+);
+
 function makeWorkerDispatchSchema(
   name: string,
   description: string,
@@ -1120,6 +1126,7 @@ const DISPATCH_SCHEMA_BY_TOOL: Record<string, ToolSchema> = {
   run_data_agent: RUN_DATA_AGENT_SCHEMA,
   run_reviewer: RUN_REVIEWER_SCHEMA,
   run_designer: RUN_DESIGNER_SCHEMA,
+  run_critic: RUN_CRITIC_SCHEMA,
 };
 
 /** Role → dispatch tools mapping, derived from `ROSTER[*].dispatchableBy`. */

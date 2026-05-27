@@ -24,6 +24,7 @@ const PROMPT_KEY_TO_ROLE: Record<RolePromptName, AgentRole> = {
   "data-agent": "data_agent",
   reviewer: "reviewer",
   designer: "designer",
+  critic: "critic",
   inspector: "inspector",
   chat: "chat",
 };
@@ -89,4 +90,35 @@ export function loadRolePrompt(role: RolePromptName): string {
 
   cache.set(role, rendered);
   return rendered;
+}
+
+/** Ordered list of every role prompt name shipped under `prompts/`. */
+export const ROLE_PROMPT_NAMES: readonly RolePromptName[] = [
+  "planner",
+  "manager",
+  "coder",
+  "researcher",
+  "data-agent",
+  "reviewer",
+  "designer",
+  "critic",
+  "inspector",
+  "chat",
+];
+
+/**
+ * Render every role prompt with the same include/variable expansion used at
+ * runtime. Intended for the debug UI so operators can inspect the exact
+ * system prompt each agent receives.
+ */
+export function loadAllRolePrompts(): Array<{
+  name: RolePromptName;
+  role: AgentRole;
+  content: string;
+}> {
+  return ROLE_PROMPT_NAMES.map((name) => ({
+    name,
+    role: PROMPT_KEY_TO_ROLE[name],
+    content: loadRolePrompt(name),
+  }));
 }

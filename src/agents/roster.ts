@@ -32,6 +32,14 @@ export interface RosterEntry {
   role: string;
   /** Whether this role is a stage-scoped worker (assignable via TaskSchema). */
   worker: boolean;
+  /**
+   * Whether the worker instance is reused across follow-up dispatches within
+   * the same stage. Stage-scoped workers (reviewer, designer, critic) keep
+   * their conversation history so each subsequent task builds on prior turns;
+   * non-stage-scoped workers (coder, researcher, data_agent) get a fresh
+   * instance per task. Only meaningful when `worker === true`.
+   */
+  stageScoped: boolean;
   /** Dispatch tool name a parent uses to spawn this role, or null if not dispatchable. */
   dispatchTool: string | null;
   /** Roles that may dispatch this role via the dispatch tool. */
@@ -58,6 +66,7 @@ export const ROSTER = [
   {
     role: "planner",
     worker: false,
+    stageScoped: false,
     dispatchTool: null,
     dispatchableBy: [],
     toolFilter: "planner",
@@ -77,10 +86,11 @@ export const ROSTER = [
   {
     role: "manager",
     worker: false,
+    stageScoped: false,
     dispatchTool: "run_manager",
     dispatchableBy: ["planner"],
     toolFilter: "worker",
-    abortPriority: 6,
+    abortPriority: 7,
     selfCheckFrequency: 20,
     convention: {
       writeTerritory: [".saivage/stages/"],
@@ -96,10 +106,11 @@ export const ROSTER = [
   {
     role: "coder",
     worker: true,
+    stageScoped: false,
     dispatchTool: "run_coder",
     dispatchableBy: ["manager"],
     toolFilter: "worker",
-    abortPriority: 3,
+    abortPriority: 4,
     selfCheckFrequency: 15,
     convention: {
       writeTerritory: ["src/", "tests/", "test/", "package.json", "tsconfig.json"],
@@ -123,10 +134,11 @@ export const ROSTER = [
   {
     role: "researcher",
     worker: true,
+    stageScoped: false,
     dispatchTool: "run_researcher",
     dispatchableBy: ["manager"],
     toolFilter: "worker",
-    abortPriority: 4,
+    abortPriority: 5,
     selfCheckFrequency: 15,
     convention: {
       writeTerritory: ["research/"],
@@ -150,10 +162,11 @@ export const ROSTER = [
   {
     role: "data_agent",
     worker: true,
+    stageScoped: false,
     dispatchTool: "run_data_agent",
     dispatchableBy: ["manager"],
     toolFilter: "worker",
-    abortPriority: 2,
+    abortPriority: 3,
     selfCheckFrequency: 15,
     convention: {
       writeTerritory: ["data/", "research/data-sources/", ".saivage/stages/"],
@@ -182,6 +195,7 @@ export const ROSTER = [
   {
     role: "reviewer",
     worker: true,
+    stageScoped: true,
     dispatchTool: "run_reviewer",
     dispatchableBy: ["manager"],
     toolFilter: "reviewer",
@@ -214,10 +228,11 @@ export const ROSTER = [
   {
     role: "designer",
     worker: true,
+    stageScoped: true,
     dispatchTool: "run_designer",
     dispatchableBy: ["manager"],
     toolFilter: "worker",
-    abortPriority: 5,
+    abortPriority: 6,
     selfCheckFrequency: 15,
     convention: {
       writeTerritory: ["research/design/", "docs/", ".saivage/stages/"],
@@ -234,16 +249,56 @@ export const ROSTER = [
       extraInstructionLines: [
         "Produce design artifacts that are concrete enough for implementation and review.",
       ],
-      notesDir: null,
-      followUpInstruction: null,
+      notesDir: (stageId: string) => `.saivage/stages/${stageId}/design-notes/`,
+      followUpInstruction:
+        "This is a follow-up design turn in the same stage-scoped designer session. Your prior design artifacts and reasoning are above in this conversation. Build on them: extend or revise, do not start over. If this turn responds to critique, address each issue explicitly.",
       promptKey: "designer",
       invalidFinalResponseMessage:
         "Invalid final design response: you have not used any tools for this design task yet.",
     },
   },
   {
+    role: "critic",
+    worker: true,
+    stageScoped: true,
+    dispatchTool: "run_critic",
+    dispatchableBy: ["manager"],
+    toolFilter: "reviewer",
+    abortPriority: 2,
+    selfCheckFrequency: 15,
+    convention: {
+      writeTerritory: [
+        "research/design/critiques/",
+        "docs/critiques/",
+        ".saivage/stages/",
+      ],
+      excludeTerritory: ["src/", "data/", "research/data-sources/"],
+      description:
+        "Critic writes critique documents reviewing design artifacts, not implementation, data, or new design artifacts",
+    },
+    defaultModelKey: "critic",
+    displayName: "Critic",
+    summary:
+      "A one-shot reviewer of design documents. Reads specs, briefs, and architecture docs produced by the Designer, writes a standalone critique document, and returns a `TaskReport` with actionable issues. Does not review code, tests, or data — that is the Reviewer.",
+    workerInit: {
+      heading: "Design Critique Task Assignment",
+      extraInstructionLines: [
+        "Read the design artifacts named in the task and any referenced source/docs needed to judge them in context.",
+        "Write a standalone critique document at the project-relative path that best fits the artifact under review (e.g. research/design/critiques/<artifact-id>.md, docs/critiques/<artifact-id>.md, or .saivage/stages/<stage-id>/critiques/<task-id>.md).",
+        "Do not rewrite the design yourself; tell the Designer what to fix via issues_found[] and the critique document.",
+      ],
+      notesDir: (stageId: string) => `.saivage/stages/${stageId}/critiques/`,
+      followUpInstruction:
+        "This is a follow-up critique turn in the same stage-scoped critic session. Your previous critique documents and reasoning are above in this conversation. Focus first on whether the Designer addressed your previous issues, then look for new problems introduced by the revisions.",
+      promptKey: "critic",
+      invalidFinalResponseMessage:
+        "Invalid final critique response: you have not used any tools to inspect the design artifacts yet.",
+    },
+  },
+  {
     role: "inspector",
     worker: false,
+    stageScoped: false,
     dispatchTool: "run_inspector",
     dispatchableBy: ["planner", "chat"],
     toolFilter: "inspector",
@@ -267,6 +322,7 @@ export const ROSTER = [
   {
     role: "chat",
     worker: false,
+    stageScoped: false,
     dispatchTool: null,
     dispatchableBy: [],
     toolFilter: "chat",

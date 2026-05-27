@@ -74,6 +74,7 @@ export const SaivageConfigSchema = z.object({
       data_agent: modelAssignmentSchema.optional(),
       reviewer: modelAssignmentSchema.optional(),
       designer: modelAssignmentSchema.optional(),
+      critic: modelAssignmentSchema.optional(),
       chat: modelAssignmentSchema.optional(),
       default: modelAssignmentSchema.optional(),
     })

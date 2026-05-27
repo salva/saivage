@@ -245,7 +245,7 @@ describe("RuntimeSupervisor", () => {
   });
 
   it("aborts roles in roster priority order and never aborts non-abortable roles", async () => {
-    const order = ["reviewer", "data_agent", "coder", "researcher", "designer", "manager"] as const;
+    const order = ["reviewer", "critic", "data_agent", "coder", "researcher", "designer", "manager"] as const;
     const cancels = Object.fromEntries(order.map((r) => [r, vi.fn()]));
     const agentRegistry = new Map<string, any>(
       order.map((role) => [`${role}-1`, { role, cancel: cancels[role] }]),

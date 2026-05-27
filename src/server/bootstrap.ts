@@ -27,15 +27,19 @@ import { RuntimeSupervisor } from "../runtime/supervisor.js";
 import { consumeShutdownHandoff, writeShutdownSummary } from "../runtime/shutdown-handoff.js";
 import { PlannerAgent } from "../agents/planner.js";
 import { ManagerAgent } from "../agents/manager.js";
-import { CoderAgent } from "../agents/coder.js";
-import { ResearcherAgent } from "../agents/researcher.js";
-import { DataAgent } from "../agents/data-agent.js";
-import { ReviewerAgent } from "../agents/reviewer.js";
-import { DesignerAgent } from "../agents/designer.js";
+// Worker subclasses register themselves with `WorkerAgent` via
+// `registerWorkerCtor(...)` as a side effect of being imported. The dispatcher
+// only needs the `WorkerAgent` base type after that.
+import "../agents/coder.js";
+import "../agents/researcher.js";
+import "../agents/data-agent.js";
+import "../agents/reviewer.js";
+import "../agents/designer.js";
+import "../agents/critic.js";
 import { InspectorAgent } from "../agents/inspector.js";
 import { WorkerAgent } from "../agents/worker.js";
 import type { AgentContext, AgentResult, Agent } from "../agents/types.js";
-import { assertExhaustive } from "../agents/roster.js";
+import { assertExhaustive, getRoster } from "../agents/roster.js";
 import type { AgentState } from "../types.js";
 import type { ServiceEntry } from "../mcp/types.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
@@ -277,7 +281,36 @@ export async function bootstrap(
 export function createChildSpawner(
   runtime: SaivageRuntime,
 ): ChildSpawner {
-  const stageReviewers = new Map<string, { agent: ReviewerAgent; ctx: AgentContext }>();
+  /**
+   * Stage-scoped worker cache. Indexed by `stageId` then by role. Stage-scoped
+   * roles (reviewer, designer, critic) keep their conversation history across
+   * follow-up dispatches within the same stage so each new task builds on the
+   * prior turns instead of starting from a blank slate.
+   */
+  const stageWorkers = new Map<
+    string,
+    Map<import("../agents/roster.js").WorkerRole, { agent: WorkerAgent; ctx: AgentContext }>
+  >();
+
+  function getCachedStageWorker(
+    stageId: string,
+    role: import("../agents/roster.js").WorkerRole,
+  ): { agent: WorkerAgent; ctx: AgentContext } | undefined {
+    return stageWorkers.get(stageId)?.get(role);
+  }
+
+  function cacheStageWorker(
+    stageId: string,
+    role: import("../agents/roster.js").WorkerRole,
+    entry: { agent: WorkerAgent; ctx: AgentContext },
+  ): void {
+    let perStage = stageWorkers.get(stageId);
+    if (!perStage) {
+      perStage = new Map();
+      stageWorkers.set(stageId, perStage);
+    }
+    perStage.set(role, entry);
+  }
 
   return async (
     role: import("../agents/roster.js").DispatchableRole,
@@ -313,73 +346,37 @@ export function createChildSpawner(
         break;
       }
 
-      case "coder": {
-        const workerInput = normalizeWorkerDispatchInput(input, role);
-        ctx.stageId = workerInput.stageId;
-        agent = await WorkerAgent.createWorker<CoderAgent>(ctx, workerInput, role, {
-          onActivity: (agentId) => tracker.agentActivity(agentId),
-          onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
-        });
-        taskId = workerInput.task?.id;
-        tracker.setCurrentStage(workerInput.stageId);
-        break;
-      }
-
-      case "researcher": {
-        const workerInput = normalizeWorkerDispatchInput(input, role);
-        ctx.stageId = workerInput.stageId;
-        agent = await WorkerAgent.createWorker<ResearcherAgent>(ctx, workerInput, role, {
-          onActivity: (agentId) => tracker.agentActivity(agentId),
-          onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
-        });
-        taskId = workerInput.task?.id;
-        tracker.setCurrentStage(workerInput.stageId);
-        break;
-      }
-
-      case "data_agent": {
-        const workerInput = normalizeWorkerDispatchInput(input, role);
-        ctx.stageId = workerInput.stageId;
-        agent = await WorkerAgent.createWorker<DataAgent>(ctx, workerInput, role, {
-          onActivity: (agentId) => tracker.agentActivity(agentId),
-          onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
-        });
-        taskId = workerInput.task?.id;
-        tracker.setCurrentStage(workerInput.stageId);
-        break;
-      }
-
-      case "reviewer": {
+      case "coder":
+      case "researcher":
+      case "data_agent":
+      case "reviewer":
+      case "designer":
+      case "critic": {
         const workerInput = normalizeWorkerDispatchInput(input, role);
         const stageId = workerInput.stageId ?? "unknown-stage";
         ctx.stageId = workerInput.stageId;
-        const existing = stageReviewers.get(stageId);
-        if (existing) {
-          agent = existing.agent;
-          trackingAgentId = existing.ctx.agentId;
-          taskId = workerInput.task?.id;
-          tracker.setCurrentStage(workerInput.stageId);
-          break;
+
+        const isStageScoped = getRoster(role).stageScoped;
+        const cached = isStageScoped ? getCachedStageWorker(stageId, role) : undefined;
+
+        if (cached) {
+          agent = cached.agent;
+          trackingAgentId = cached.ctx.agentId;
+          // Update the bound input on the cached worker before dispatch so the
+          // post-loop branch below routes to `runNext(...)`.
+          (agent as WorkerAgent & { input: import("../agents/types.js").WorkerInput }).input =
+            workerInput;
+        } else {
+          const worker = await WorkerAgent.createWorker<WorkerAgent>(ctx, workerInput, role, {
+            onActivity: (agentId) => tracker.agentActivity(agentId),
+            onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
+          });
+          agent = worker;
+          if (isStageScoped) {
+            cacheStageWorker(stageId, role, { agent: worker, ctx });
+          }
         }
 
-        const reviewer = await WorkerAgent.createWorker<ReviewerAgent>(ctx, workerInput, role, {
-          onActivity: (agentId) => tracker.agentActivity(agentId),
-          onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
-        });
-        agent = reviewer;
-        stageReviewers.set(stageId, { agent: reviewer, ctx });
-        taskId = workerInput.task?.id;
-        tracker.setCurrentStage(workerInput.stageId);
-        break;
-      }
-
-      case "designer": {
-        const workerInput = normalizeWorkerDispatchInput(input, role);
-        ctx.stageId = workerInput.stageId;
-        agent = await WorkerAgent.createWorker<DesignerAgent>(ctx, workerInput, role, {
-          onActivity: (agentId) => tracker.agentActivity(agentId),
-          onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
-        });
         taskId = workerInput.task?.id;
         tracker.setCurrentStage(workerInput.stageId);
         break;
@@ -403,9 +400,11 @@ export function createChildSpawner(
       runtime.agentRegistry.set(trackingAgentId, agent as unknown as import("../agents/base.js").BaseAgent);
 
     try {
-      const result = role === "reviewer" && agent instanceof ReviewerAgent
-        ? await agent.review(input as import("../agents/types.js").WorkerInput)
-        : await agent.run();
+      // Stage-scoped workers reuse one instance across follow-up dispatches;
+      // `WorkerAgent.run()` handles both the first turn and follow-up turns
+      // uniformly based on its internal `turnCount`, so the dispatcher does
+      // not need a per-role branch here.
+      const result = await agent.run();
 
       // Publish events for significant results
       if (role === "manager") {

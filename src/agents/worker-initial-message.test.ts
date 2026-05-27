@@ -56,6 +56,17 @@ describe("buildInitialMessage", () => {
     }
   });
 
+  it("renders critic assignment", async () => {
+    const { root, cleanup } = makeProjectRoot();
+    try {
+      expect(
+        await buildInitialMessage(makeContext(root), makeInput("critic"), "critic"),
+      ).toMatchSnapshot();
+    } finally {
+      cleanup();
+    }
+  });
+
   it("renders reviewer assignment", async () => {
     const { root, cleanup } = makeProjectRoot();
     try {
@@ -145,6 +156,7 @@ function makeInput(role: WorkerRole): WorkerInput {
     data_agent: "data",
     reviewer: "review",
     designer: "design",
+    critic: "critique",
   };
   return {
     stageId: "stage-1",

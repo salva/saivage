@@ -41,6 +41,10 @@ describe("applyToolFilter — per-kind dispatch", () => {
     expect(applyToolFilter("chat", t("read_file"))).toBe(true);
     expect(applyToolFilter("chat", t("run_command", "shell"))).toBe(false);
   });
+
+  it("chat allows create_note so it can relay user direction to the Planner", () => {
+    expect(applyToolFilter("chat", t("create_note", "notes"))).toBe(true);
+  });
 });
 
 describe("applyToolFilter — regression cases", () => {

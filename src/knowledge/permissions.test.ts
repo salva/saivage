@@ -11,6 +11,7 @@ const ROLES: KnowledgeAgentRole[] = [
   "inspector",
   "reviewer",
   "designer",
+  "critic",
   "chat",
 ];
 
@@ -104,6 +105,18 @@ const EXPECTED: Record<KnowledgeAgentRole, Record<string, "Y" | "Y†" | "-">> =
     "search-memory": "Y",
   },
   designer: {
+    "create-skill": "-",
+    "create-memory": "-",
+    "supersede-skill": "-",
+    "supersede-memory": "-",
+    "archive-skill": "-",
+    "archive-memory": "-",
+    "read-skill": "Y",
+    "read-memory": "Y",
+    "search-skill": "Y",
+    "search-memory": "Y",
+  },
+  critic: {
     "create-skill": "-",
     "create-memory": "-",
     "supersede-skill": "-",

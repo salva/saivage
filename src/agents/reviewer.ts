@@ -1,32 +1,11 @@
 /**
- * Saivage — Reviewer Agent
+ * Saivage — Reviewer Agent (nominal subclass; metadata lives on ROSTER).
  *
- * Stage-scoped quality gate. Survives across multiple review calls within one
- * stage so follow-up requests build on earlier findings.
+ * Stage-scoped quality gate. The shared follow-up logic lives on
+ * `WorkerAgent`; this class only registers the worker constructor.
  */
 
-import { WorkerAgent, registerWorkerCtor, buildInitialMessage } from "./worker.js";
-import { normalizeTask } from "./task-report.js";
-import type { AgentResult, WorkerInput } from "./types.js";
+import { WorkerAgent, registerWorkerCtor } from "./worker.js";
 
-export class ReviewerAgent extends WorkerAgent {
-  private reviewCount = 0;
-
-  override async run(): Promise<AgentResult> {
-    return this.review(this.input);
-  }
-
-  async review(input: WorkerInput): Promise<AgentResult> {
-    this.input = { ...input, task: normalizeTask(input.task, "reviewer") };
-    if (this.reviewCount > 0) {
-      const followUp = await buildInitialMessage(this.ctx, this.input, "reviewer", {
-        headingSuffix: ` - Follow-up Review ${this.reviewCount + 1}`,
-        prependFollowUp: true,
-      });
-      this.injectMessage(followUp);
-    }
-    this.reviewCount++;
-    return this.executeTask(this.input);
-  }
-}
+export class ReviewerAgent extends WorkerAgent {}
 registerWorkerCtor("reviewer", ReviewerAgent);

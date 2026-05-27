@@ -139,13 +139,13 @@ describe("ReviewerAgent", () => {
     const firstInput = makeReviewInput("review-1", "Initial review");
     const agent = await WorkerAgent.createWorker<ReviewerAgent>(ctx, firstInput, "reviewer");
 
-    await agent.review(firstInput);
-    await agent.review(makeReviewInput("review-2", "Recheck blocker after corrective task t2"));
+    await agent.run();
+    await agent.runNext(makeReviewInput("review-2", "Recheck blocker after corrective task t2"));
 
     expect(calls).toHaveLength(4);
     const secondMessages = JSON.stringify(calls[3].messages);
     expect(secondMessages).toContain("first review found blocker");
-    expect(secondMessages).toContain("Follow-up Review 2");
+    expect(secondMessages).toContain("Follow-up 2");
     expect(secondMessages).toContain("Recheck blocker after corrective task t2");
   });
 
@@ -203,8 +203,8 @@ describe("ReviewerAgent", () => {
     const firstInput = makeReviewInput("review-1", "Initial review");
     const agent = await WorkerAgent.createWorker<ReviewerAgent>(ctx, firstInput, "reviewer");
 
-    await agent.review(firstInput);
-    await agent.review(makeReviewInput("review-2", "Recheck"));
+    await agent.run();
+    await agent.runNext(makeReviewInput("review-2", "Recheck"));
 
     const assistantTextEquals = (
       m: { role: string; content: unknown },

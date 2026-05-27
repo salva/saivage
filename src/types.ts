@@ -144,7 +144,7 @@ export type ChecklistItem = z.infer<typeof ChecklistItemSchema>;
 
 export const TaskSchema = z.object({
   id: z.string(),
-  type: z.enum(["code", "research", "data", "review", "test", "document", "design"]),
+  type: z.enum(["code", "research", "data", "review", "test", "document", "design", "critique"]),
   assigned_to: z.enum(WORKER_ROLES),
   description: z.string(),
   checklist: z.array(ChecklistItemSchema),

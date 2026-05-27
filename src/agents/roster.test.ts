@@ -42,6 +42,7 @@ describe("ROSTER — declarative source of truth", () => {
       "data_agent",
       "reviewer",
       "designer",
+      "critic",
       "inspector",
       "chat",
     ]);
@@ -56,6 +57,7 @@ describe("ROSTER — declarative source of truth", () => {
       "data_agent",
       "reviewer",
       "designer",
+      "critic",
       "inspector",
       "chat",
     ]);
@@ -65,6 +67,7 @@ describe("ROSTER — declarative source of truth", () => {
       "data_agent",
       "reviewer",
       "designer",
+      "critic",
     ]);
     expect([...DISPATCHABLE_ROLES]).toEqual([
       "manager",
@@ -73,6 +76,7 @@ describe("ROSTER — declarative source of truth", () => {
       "data_agent",
       "reviewer",
       "designer",
+      "critic",
       "inspector",
     ]);
   });
@@ -194,7 +198,7 @@ describe("ROSTER — derived accessors", () => {
 
   it("getDispatchToolsFor returns the roster's dispatch tools for each parent role", () => {
     expect(getDispatchToolsFor("manager").sort()).toEqual(
-      ["run_coder", "run_data_agent", "run_designer", "run_researcher", "run_reviewer"].sort(),
+      ["run_coder", "run_critic", "run_data_agent", "run_designer", "run_researcher", "run_reviewer"].sort(),
     );
     expect(getDispatchToolsFor("planner").sort()).toEqual(
       ["run_inspector", "run_manager"].sort(),
@@ -217,6 +221,7 @@ describe("ROSTER — worker init", () => {
     await import("./coder.js");
     await import("./researcher.js");
     await import("./designer.js");
+    await import("./critic.js");
     await import("./data-agent.js");
     await import("./reviewer.js");
 

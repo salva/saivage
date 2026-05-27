@@ -23,6 +23,33 @@ Commit using MCP git with message prefix: [coder-task] if you modify files.
 Return the full TaskReport JSON as your final response."
 `;
 
+exports[`buildInitialMessage > renders critic assignment 1`] = `
+"## Design Critique Task Assignment
+
+## Shared Project Context
+[FIXTURE HANDOFF]
+
+**Task ID:** critic-task
+**Stage ID:** stage-1
+**Type:** critique
+**Attempt:** 2 of 4
+
+### Description
+Complete the critic task
+
+### Checklist
+- [REQUIRED] first acceptance check
+
+### Instructions
+Read the design artifacts named in the task and any referenced source/docs needed to judge them in context.
+Write a standalone critique document at the project-relative path that best fits the artifact under review (e.g. research/design/critiques/<artifact-id>.md, docs/critiques/<artifact-id>.md, or .saivage/stages/<stage-id>/critiques/<task-id>.md).
+Do not rewrite the design yourself; tell the Designer what to fix via issues_found[] and the critique document.
+Write optional detailed notes to: .saivage/stages/stage-1/critiques/
+Write the report to: .saivage/stages/stage-1/reports/critic-task.json
+Commit using MCP git with message prefix: [critic-task] if you modify files.
+Return the full TaskReport JSON as your final response."
+`;
+
 exports[`buildInitialMessage > renders data-agent assignment 1`] = `
 "## Data Acquisition Task Assignment
 
@@ -68,6 +95,7 @@ Complete the designer task
 
 ### Instructions
 Produce design artifacts that are concrete enough for implementation and review.
+Write optional detailed notes to: .saivage/stages/stage-1/design-notes/
 Write the report to: .saivage/stages/stage-1/reports/designer-task.json
 Commit using MCP git with message prefix: [designer-task] if you modify files.
 Return the full TaskReport JSON as your final response."

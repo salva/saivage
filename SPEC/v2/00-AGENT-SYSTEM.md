@@ -220,7 +220,27 @@ This means the Manager maintains its full conversation context throughout the st
 - Self-assesses every checklist item.
 - **Commits** design artifacts via the MCP git tool when files are created or modified.
 
-### 2.8 Inspector
+### 2.8 Critic
+
+**Purpose:** Review the design documents produced by the Designer (and design-adjacent docs from other roles) and write a standalone critique document with actionable issues.
+
+**Lifecycle:** Critic is **one-shot**, dispatched by the Manager via `run_critic(task)`. It reads the design artifacts, writes a critique document, returns a `TaskReport`, and terminates.
+
+**Inputs:**
+- A critique `Task` whose description names the design artifacts under review, plus stage context.
+
+**Outputs:**
+- **Task Reports** (`.saivage/stages/<stage-id>/reports/<task-id>.json`).
+- A standalone **critique document** written at the project-relative path that best fits the artifact under review, typically `research/design/critiques/<artifact-id>.md`, `docs/critiques/<artifact-id>.md`, or `.saivage/stages/<stage-id>/critiques/<task-id>.md`.
+
+**Behaviors:**
+- Reads design briefs, specs, architecture docs, UX flows, and interface contracts; inspects referenced source/docs only to judge fit.
+- Probes for hand-wavy goals, missing acceptance criteria, contradictions, undefined terms, hidden assumptions, undefined interfaces, ambiguity that blocks the Coder, and design that does not fit the existing codebase or product.
+- Distinguishes blockers from improvements from nits in `issues_found[]`.
+- Does **not** rewrite the design, write source code, produce data artifacts, or review code/tests/data (that is the Reviewer's job).
+- **Commits** the critique document via the MCP git tool.
+
+### 2.9 Inspector
 
 **Purpose:** Deep analysis of project state on demand.
 
@@ -255,7 +275,7 @@ This means the Manager maintains its full conversation context throughout the st
 - Planner calls `run_inspector(request)` tool → Inspector spawned
 - Chat calls `run_inspector(request)` tool → Inspector spawned
 
-### 2.9 Chat
+### 2.10 Chat
 
 **Purpose:** User-facing interface for queries, status updates, and steering.
 

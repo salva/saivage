@@ -31,6 +31,7 @@ export const ROLE_TO_TASK_TYPE: Record<WorkerRole, Task["type"]> = {
   data_agent: "data",
   reviewer: "review",
   designer: "design",
+  critic: "critique",
 };
 
 /** Normalize a task object that may have alternate field names from LLM output. */

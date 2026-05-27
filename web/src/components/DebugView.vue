@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { AlertTriangle, Braces, Clock, RefreshCw } from "lucide-vue-next";
+import { AlertTriangle, Braces, Brain, Clock, FileText, Lightbulb, RefreshCw } from "lucide-vue-next";
 import JsonHighlight from "./JsonHighlight.vue";
+import FormattedContent from "./FormattedContent.vue";
 import { apiFetch } from "../utils/api";
 
 interface ErrorEntry {
@@ -20,10 +21,62 @@ interface TimelineEvent {
   description: string;
 }
 
-const activeTab = ref<"state" | "errors" | "timeline">("state");
+interface RolePrompt {
+  name: string;
+  role: string;
+  content: string;
+}
+
+interface SkillSummary {
+  id: string;
+  name: string;
+  scope: string;
+  scope_ref?: string;
+  status: string;
+  updated_at: string;
+  triggers: string[];
+  target_agents: string[];
+  survive_compaction: boolean;
+  description: string;
+}
+
+interface SkillDetail {
+  record: SkillSummary & Record<string, unknown>;
+  body: string;
+  redacted_spans: number;
+}
+
+interface MemorySummary {
+  id: string;
+  topic: { domain: string; subject: string; aspect?: string };
+  scope: string;
+  scope_ref?: string;
+  status: string;
+  updated_at: string;
+  keys: string[];
+  target_agents: string[];
+  source_ref?: { kind: string; id: string };
+}
+
+interface MemoryDetail extends MemorySummary {
+  body: string;
+  redacted_spans: number;
+}
+
+const activeTab = ref<"state" | "errors" | "timeline" | "prompts" | "skills" | "memories">("state");
 const stateData = ref<Record<string, unknown> | null>(null);
 const errors = ref<ErrorEntry[]>([]);
 const timeline = ref<TimelineEvent[]>([]);
+const prompts = ref<RolePrompt[]>([]);
+const selectedPrompt = ref<string | null>(null);
+const skills = ref<SkillSummary[]>([]);
+const selectedSkillId = ref<string | null>(null);
+const skillDetail = ref<SkillDetail | null>(null);
+const skillDetailLoading = ref(false);
+const memories = ref<MemorySummary[]>([]);
+const selectedMemoryId = ref<string | null>(null);
+const memoryDetail = ref<MemoryDetail | null>(null);
+const memoryDetailLoading = ref(false);
 const expandedSections = ref<Set<string>>(new Set(["runtime"]));
 const loading = ref(false);
 let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -55,9 +108,81 @@ async function fetchTimeline() {
   } catch { /* ignore */ }
 }
 
+async function fetchPrompts() {
+  try {
+    const res = await apiFetch("/api/debug/prompts");
+    if (res.ok) {
+      const data = await res.json();
+      prompts.value = data.prompts ?? [];
+      if (!selectedPrompt.value && prompts.value.length > 0) {
+        selectedPrompt.value = prompts.value[0].name;
+      }
+    }
+  } catch { /* ignore */ }
+}
+
+async function fetchSkills() {
+  try {
+    const res = await apiFetch("/api/debug/skills");
+    if (res.ok) {
+      const data = await res.json();
+      skills.value = data.skills ?? [];
+      if (!selectedSkillId.value && skills.value.length > 0) {
+        await selectSkill(skills.value[0].id);
+      }
+    }
+  } catch { /* ignore */ }
+}
+
+async function selectSkill(id: string) {
+  selectedSkillId.value = id;
+  skillDetail.value = null;
+  skillDetailLoading.value = true;
+  try {
+    const res = await apiFetch(`/api/debug/skills/${encodeURIComponent(id)}`);
+    if (res.ok) {
+      skillDetail.value = await res.json();
+    }
+  } catch { /* ignore */ }
+  finally { skillDetailLoading.value = false; }
+}
+
+async function fetchMemories() {
+  try {
+    const res = await apiFetch("/api/debug/memories");
+    if (res.ok) {
+      const data = await res.json();
+      memories.value = data.memories ?? [];
+      if (!selectedMemoryId.value && memories.value.length > 0) {
+        await selectMemory(memories.value[0].id);
+      }
+    }
+  } catch { /* ignore */ }
+}
+
+async function selectMemory(id: string) {
+  selectedMemoryId.value = id;
+  memoryDetail.value = null;
+  memoryDetailLoading.value = true;
+  try {
+    const res = await apiFetch(`/api/debug/memories/${encodeURIComponent(id)}`);
+    if (res.ok) {
+      memoryDetail.value = await res.json();
+    }
+  } catch { /* ignore */ }
+  finally { memoryDetailLoading.value = false; }
+}
+
 async function fetchAll() {
   loading.value = true;
-  await Promise.all([fetchState(), fetchErrors(), fetchTimeline()]);
+  await Promise.all([
+    fetchState(),
+    fetchErrors(),
+    fetchTimeline(),
+    fetchPrompts(),
+    fetchSkills(),
+    fetchMemories(),
+  ]);
   loading.value = false;
 }
 
@@ -108,7 +233,33 @@ const tabItems = computed(() => [
   { id: "state", label: "State", icon: Braces, count: STATE_SECTIONS.length },
   { id: "errors", label: "Errors", icon: AlertTriangle, count: errors.value.length },
   { id: "timeline", label: "Timeline", icon: Clock, count: timeline.value.length },
+  { id: "prompts", label: "Prompts", icon: FileText, count: prompts.value.length },
+  { id: "skills", label: "Skills", icon: Lightbulb, count: skills.value.length },
+  { id: "memories", label: "Memories", icon: Brain, count: memories.value.length },
 ] as const);
+
+const activePrompt = computed<RolePrompt | null>(() => {
+  if (!selectedPrompt.value) return null;
+  return prompts.value.find((p) => p.name === selectedPrompt.value) ?? null;
+});
+
+const activeSkill = computed<SkillSummary | null>(() => {
+  if (!selectedSkillId.value) return null;
+  return skills.value.find((s) => s.id === selectedSkillId.value) ?? null;
+});
+
+const activeMemory = computed<MemorySummary | null>(() => {
+  if (!selectedMemoryId.value) return null;
+  return memories.value.find((m) => m.id === selectedMemoryId.value) ?? null;
+});
+
+function memoryTopicLabel(t: MemorySummary["topic"]): string {
+  return [t.domain, t.subject, t.aspect].filter(Boolean).join(" / ");
+}
+
+function shortId(id: string): string {
+  return id.length > 14 ? id.slice(0, 6) + "…" + id.slice(-6) : id;
+}
 </script>
 
 <template>
@@ -182,6 +333,101 @@ const tabItems = computed(() => [
         </div>
       </article>
     </div>
+
+    <div v-if="activeTab === 'prompts'" class="debug-content prompts-content">
+      <div v-if="prompts.length === 0" class="debug-empty">No prompts available</div>
+      <template v-else>
+        <aside class="prompts-sidebar">
+          <button
+            v-for="p in prompts"
+            :key="p.name"
+            class="prompt-item"
+            :class="{ active: selectedPrompt === p.name }"
+            @click="selectedPrompt = p.name"
+          >
+            <strong>{{ p.name }}</strong>
+            <span v-if="p.role !== p.name.replace('-', '_')">{{ p.role }}</span>
+          </button>
+        </aside>
+        <article class="prompt-viewer">
+          <header v-if="activePrompt" class="prompt-header">
+            <strong>{{ activePrompt.name }}.md</strong>
+            <code>role: {{ activePrompt.role }}</code>
+            <span>{{ activePrompt.content.length.toLocaleString() }} chars</span>
+          </header>
+          <div v-if="activePrompt" class="prompt-body">
+            <FormattedContent :content="activePrompt.content" />
+          </div>
+          <div v-else class="debug-empty">Select a prompt to view its rendered content</div>
+        </article>
+      </template>
+    </div>
+
+    <div v-if="activeTab === 'skills'" class="debug-content prompts-content">
+      <div v-if="skills.length === 0" class="debug-empty">No skills recorded for this project</div>
+      <template v-else>
+        <aside class="prompts-sidebar">
+          <button
+            v-for="s in skills"
+            :key="s.id"
+            class="prompt-item"
+            :class="{ active: selectedSkillId === s.id }"
+            @click="selectSkill(s.id)"
+          >
+            <strong>{{ s.name }}</strong>
+            <span>{{ s.scope }} · {{ s.status }}</span>
+          </button>
+        </aside>
+        <article class="prompt-viewer">
+          <header v-if="activeSkill" class="prompt-header">
+            <strong>{{ activeSkill.name }}</strong>
+            <code>{{ activeSkill.scope }}</code>
+            <code>{{ activeSkill.status }}</code>
+            <code v-if="activeSkill.target_agents.length">→ {{ activeSkill.target_agents.join(", ") }}</code>
+            <span>{{ shortId(activeSkill.id) }}</span>
+            <time>{{ formatTime(activeSkill.updated_at) }}</time>
+          </header>
+          <div v-if="skillDetailLoading" class="debug-empty">Loading skill…</div>
+          <div v-else-if="skillDetail" class="prompt-body">
+            <FormattedContent :content="skillDetail.body" />
+          </div>
+          <div v-else class="debug-empty">Select a skill to view its body</div>
+        </article>
+      </template>
+    </div>
+
+    <div v-if="activeTab === 'memories'" class="debug-content prompts-content">
+      <div v-if="memories.length === 0" class="debug-empty">No memories recorded for this project</div>
+      <template v-else>
+        <aside class="prompts-sidebar">
+          <button
+            v-for="m in memories"
+            :key="m.id"
+            class="prompt-item"
+            :class="{ active: selectedMemoryId === m.id }"
+            @click="selectMemory(m.id)"
+          >
+            <strong>{{ memoryTopicLabel(m.topic) }}</strong>
+            <span>{{ m.scope }} · {{ m.status }}</span>
+          </button>
+        </aside>
+        <article class="prompt-viewer">
+          <header v-if="activeMemory" class="prompt-header">
+            <strong>{{ memoryTopicLabel(activeMemory.topic) }}</strong>
+            <code>{{ activeMemory.scope }}</code>
+            <code>{{ activeMemory.status }}</code>
+            <code v-if="activeMemory.target_agents.length">→ {{ activeMemory.target_agents.join(", ") }}</code>
+            <span>{{ shortId(activeMemory.id) }}</span>
+            <time>{{ formatTime(activeMemory.updated_at) }}</time>
+          </header>
+          <div v-if="memoryDetailLoading" class="debug-empty">Loading memory…</div>
+          <div v-else-if="memoryDetail" class="prompt-body">
+            <FormattedContent :content="memoryDetail.body" />
+          </div>
+          <div v-else class="debug-empty">Select a memory to view its body</div>
+        </article>
+      </template>
+    </div>
   </section>
 </template>
 
@@ -196,7 +442,9 @@ const tabItems = computed(() => [
 
 .debug-toolbar {
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
@@ -206,12 +454,17 @@ const tabItems = computed(() => [
 .debug-tabs {
   display: flex;
   gap: 7px;
+  flex: 1 1 auto;
   min-width: 0;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
 }
 
 .dtab {
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
   gap: 7px;
   height: 32px;
   padding: 0 10px;
@@ -243,6 +496,7 @@ const tabItems = computed(() => [
 }
 
 .refresh {
+  flex: 0 0 auto;
   padding: 0 10px;
 }
 
@@ -302,6 +556,106 @@ const tabItems = computed(() => [
 .list-content {
   max-width: 1080px;
   width: 100%;
+}
+
+.prompts-content {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 16px;
+  min-height: 0;
+}
+
+.prompts-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  padding: 8px;
+}
+
+.prompt-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 6px 9px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.prompt-item:hover {
+  background: var(--surface-2);
+}
+
+.prompt-item.active {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+.prompt-item span {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.prompt-viewer {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  overflow: hidden;
+}
+
+.prompt-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.prompt-header strong {
+  color: var(--text);
+  font-family: var(--mono);
+}
+
+.prompt-header code {
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.prompt-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 18px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+@media (max-width: 900px) {
+  .prompts-content {
+    grid-template-columns: 1fr;
+  }
+
+  .prompts-sidebar {
+    max-height: 180px;
+  }
 }
 
 .error-card {

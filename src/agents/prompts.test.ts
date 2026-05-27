@@ -20,6 +20,7 @@ const ROLES: { role: RolePromptName; marker: string }[] = [
   { role: "data-agent", marker: "# Data Agent" },
   { role: "reviewer",   marker: "# Reviewer" },
   { role: "designer",   marker: "# Designer" },
+  { role: "critic",     marker: "# Critic" },
   { role: "inspector",  marker: "# Inspector" },
   { role: "chat",       marker: "# Chat" },
 ];

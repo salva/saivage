@@ -1,15 +1,18 @@
 /**
  * Saivage — WorkerAgent base class.
  *
- * Shared lifecycle for the four manager-dispatched, task-scoped, TaskReport-
- * producing worker roles: Coder, Researcher, Data Agent, Reviewer.
- * `BaseAgent` keeps its role as "LLM/tool/compact loop". `WorkerAgent` owns
- * "build initial message → normalise task → run loop → parse TaskReport → return".
+ * Shared lifecycle for every manager-dispatched, TaskReport-producing worker
+ * role. `BaseAgent` owns the LLM/tool/compact loop; `WorkerAgent` owns the
+ * "build initial message → normalise task → run loop → parse TaskReport →
+ * return" wrapper.
  *
- * `ReviewerAgent` extends `WorkerAgent` but overrides `run()` to delegate to
- * `review(this.input)`; the shared post-loop mapping lives in `executeTask()`
- * so reviewer can reuse it without giving up its pre-loop normalisation and
- * message injection.
+ * Some worker roles are **stage-scoped** (see `RosterEntry.stageScoped`).
+ * For those, the dispatcher reuses one instance across follow-up dispatches
+ * within the same stage. `runNext()` is the public entry point used by the
+ * dispatcher for those reuse cases: it updates the input, injects a follow-up
+ * banner so the LLM sees a clear boundary between turns, and reuses the
+ * shared `executeTask()` pipeline. The conversation history (and therefore
+ * prior findings) is preserved automatically by `BaseAgent`.
  */
 
 import { BaseAgent, type BaseAgentConfig } from "./base.js";
@@ -112,6 +115,8 @@ export abstract class WorkerAgent extends BaseAgent implements Agent {
   protected input: WorkerInput;
   protected readonly workerRole: WorkerRole;
   private readonly invalidFinalResponseMessage: string;
+  /** Number of completed turns; >0 means the next `run()` is a follow-up. */
+  private turnCount = 0;
 
   constructor(
     ctx: AgentContext,
@@ -158,13 +163,33 @@ export abstract class WorkerAgent extends BaseAgent implements Agent {
   }
 
   async run(): Promise<AgentResult> {
+    this.input = { ...this.input, task: normalizeTask(this.input.task, this.workerRole) };
+    if (this.turnCount > 0) {
+      const followUp = await buildInitialMessage(this.ctx, this.input, this.workerRole, {
+        headingSuffix: ` — Follow-up ${this.turnCount + 1}`,
+        prependFollowUp: true,
+      });
+      this.injectMessage(followUp);
+    }
+    this.turnCount++;
     return this.executeTask(this.input);
   }
 
   /**
-   * Shared try/catch/finishReason → AgentResult mapping. Used by `run()` on
-   * the pure workers (coder, researcher, data-agent) and by
-   * `ReviewerAgent.review()` after it injects its follow-up message.
+   * Public entry point used by the dispatcher when reusing a stage-scoped
+   * worker for a follow-up task. Swaps the bound input and re-enters `run()`
+   * so the follow-up banner is injected and the shared `executeTask()`
+   * pipeline handles the rest.
+   */
+  async runNext(input: WorkerInput): Promise<AgentResult> {
+    this.input = input;
+    return this.run();
+  }
+
+  /**
+   * Shared try/catch/finishReason → AgentResult mapping. Used by `run()` for
+   * every worker, including stage-scoped roles after the follow-up banner has
+   * been injected.
    */
   protected async executeTask(input: WorkerInput): Promise<AgentResult> {
     log.info(

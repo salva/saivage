@@ -36,7 +36,7 @@ const TOOL_FILTERS: Record<ToolFilterKind, (name: string) => boolean> = {
   inspector: (n) =>
     READ_ONLY_TOOLS.has(n) || n === "run_command" || n === READ_STASH || WEB_TOOLS.has(n),
   chat: (n) =>
-    READ_ONLY_TOOLS.has(n) || n === READ_STASH || WEB_TOOLS.has(n),
+    READ_ONLY_TOOLS.has(n) || n === READ_STASH || WEB_TOOLS.has(n) || n === "create_note",
 };
 
 export function applyToolFilter(

@@ -17,7 +17,7 @@ const baseFields = {
 };
 
 describe("KnowledgeAgentRoleSchema", () => {
-  it("accepts all nine roles in §F", () => {
+  it("accepts all ten roles in §F", () => {
     for (const r of [
       "planner",
       "manager",
@@ -27,6 +27,7 @@ describe("KnowledgeAgentRoleSchema", () => {
       "inspector",
       "reviewer",
       "designer",
+      "critic",
       "chat",
     ]) {
       expect(KnowledgeAgentRoleSchema.parse(r)).toBe(r);

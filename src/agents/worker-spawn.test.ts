@@ -42,7 +42,7 @@ describe("createChildSpawner worker dispatch", () => {
     }
   });
 
-  it("dispatches reviewer via review(), not run()", async () => {
+  it("dispatches stage-scoped workers through WorkerAgent.run()", async () => {
     const root = mkdtempSync(join(tmpdir(), "saivage-worker-spawn-"));
     try {
       const runtime = makeRuntime(root);
@@ -50,8 +50,7 @@ describe("createChildSpawner worker dispatch", () => {
         text: JSON.stringify(makeTaskReport("reviewer")),
         finishReason: "end_turn",
       });
-      const reviewSpy = vi.spyOn(ReviewerAgent.prototype, "review");
-      const runSpy = vi.spyOn(ReviewerAgent.prototype, "run");
+      const runSpy = vi.spyOn(WorkerAgent.prototype, "run");
 
       const result = await createChildSpawner(runtime)(
         "reviewer",
@@ -61,32 +60,35 @@ describe("createChildSpawner worker dispatch", () => {
 
       expect(result.kind).toBe("success");
       expect(runtime.agentRegistry.lastSet).toBeInstanceOf(ReviewerAgent);
-      expect(reviewSpy).toHaveBeenCalledOnce();
-      expect(runSpy).not.toHaveBeenCalled();
+      expect(runSpy).toHaveBeenCalledOnce();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it("reuses a reviewer for the same stage and injects the follow-up message", async () => {
+  it.each([
+    { role: "reviewer" as const, banner: "Follow-up 2" },
+    { role: "designer" as const, banner: "Follow-up 2" },
+    { role: "critic" as const, banner: "Follow-up 2" },
+  ])("reuses a $role for the same stage and injects the follow-up banner", async ({ role, banner }) => {
     const root = mkdtempSync(join(tmpdir(), "saivage-worker-spawn-"));
     try {
       const runtime = makeRuntime(root);
       vi.spyOn(WorkerAgent.prototype as any, "runLoop").mockResolvedValue({
-        text: JSON.stringify(makeTaskReport("reviewer")),
+        text: JSON.stringify(makeTaskReport(role)),
         finishReason: "end_turn",
       });
       const spawner = createChildSpawner(runtime);
 
-      await spawner("reviewer", makeInput("reviewer", { id: "review-1" }), makeParentContext(root));
-      const firstAgent = runtime.agentRegistry.lastSet as ReviewerAgent;
-      await spawner("reviewer", makeInput("reviewer", { id: "review-2" }), makeParentContext(root));
-      const secondAgent = runtime.agentRegistry.lastSet as ReviewerAgent;
+      await spawner(role, makeInput(role, { id: `${role}-1` }), makeParentContext(root));
+      const firstAgent = runtime.agentRegistry.lastSet as WorkerAgent;
+      await spawner(role, makeInput(role, { id: `${role}-2` }), makeParentContext(root));
+      const secondAgent = runtime.agentRegistry.lastSet as WorkerAgent;
 
       expect(secondAgent).toBe(firstAgent);
-      expect((secondAgent as any).reviewCount).toBe(2);
+      expect((secondAgent as any).turnCount).toBe(2);
       const snapshot = secondAgent.getConversationSnapshot();
-      expect(snapshot.some((entry) => entry.content.includes("Follow-up Review 2"))).toBe(true);
+      expect(snapshot.some((entry) => entry.content.includes(banner))).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -224,11 +226,19 @@ function makeInput(
   role: WorkerInput["task"]["assigned_to"],
   opts: { id?: string; type?: Task["type"] } = {},
 ): WorkerInput {
+  const defaultType: Record<string, Task["type"]> = {
+    coder: "code",
+    researcher: "research",
+    data_agent: "data",
+    reviewer: "review",
+    designer: "design",
+    critic: "critique",
+  };
   return {
     stageId: "stage-1",
     task: {
       id: opts.id ?? `${role}-task`,
-      type: opts.type ?? (role === "reviewer" ? "review" : "code"),
+      type: opts.type ?? defaultType[role] ?? "code",
       assigned_to: role,
       description: `Complete ${role} work`,
       checklist: [{ description: "done", required: true }],

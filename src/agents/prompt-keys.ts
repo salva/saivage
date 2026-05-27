@@ -14,5 +14,6 @@ export type RolePromptName =
   | "data-agent"
   | "reviewer"
   | "designer"
+  | "critic"
   | "inspector"
   | "chat";
