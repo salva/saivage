@@ -342,3 +342,8 @@ export async function loadConfig(projectRoot?: string): Promise<SaivageConfig> {
   const interpolated = deepInterpolate(raw);
   return SaivageConfigSchema.parse(interpolated);
 }
+
+// --- Persistence (raw JSON, atomic; bypasses env interpolation) ---
+
+export { SaivagePersistError, saveSaivageConfig } from "./server/rag/persist.js";
+export type { SaivagePersistStage } from "./server/rag/persist.js";

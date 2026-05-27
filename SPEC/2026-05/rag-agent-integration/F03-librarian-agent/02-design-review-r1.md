@@ -1,0 +1,54 @@
+# F03 - Librarian Agent Design Review R1
+
+Reviewed on 2026-05-27 against the approved analysis and current source tree.
+
+## Summary
+
+Changes requested. The design contains the required focused proposal, level-up alternative, and chosen direction: see [saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/02-design-r1.md](saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/02-design-r1.md#L7-L129). The chosen direction also matches the approved architectural intent: bounded non-worker Librarian, ACL enforcement in knowledge permissions, F02 RAG-admin authorization, and Manager-prompt retrieval-miss routing.
+
+Three issues need correction before approval: one compile-level class-shape mismatch, one dispatch-schema/prompt mismatch, and one source-citation/prerequisite gap around `ragService.adminRoles`.
+
+## Findings
+
+### 1. Blocking - `LibrarianAgent` class shape does not match `BaseAgent`
+
+[saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/02-design-r1.md](saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/02-design-r1.md#L46-L57) sketches `export class LibrarianAgent extends BaseAgent<LibrarianInput, string>`, calls `super({ role, promptKey, input })`, and implements `runImpl()` via `driveModelLoop()`. None of those APIs exist in the current source.
+
+Current [saivage/src/agents/base.ts](saivage/src/agents/base.ts#L144-L183) declares a non-generic `BaseAgent` whose constructor is `constructor(ctx: AgentContext, config: BaseAgentConfig)`. [saivage/src/agents/base.ts](saivage/src/agents/base.ts#L242-L251) exposes `runLoop()`, not `driveModelLoop()` or a `runImpl()` hook. The existing non-worker pattern is [saivage/src/agents/inspector.ts](saivage/src/agents/inspector.ts#L22-L57): a concrete class extends `BaseAgent`, usually has `static async create(...)`, loads the prompt with `loadRolePrompt(...)`, supplies `initialMessage` and eager knowledge, and implements `run(): Promise<AgentResult>` around `runLoop()` as shown in [saivage/src/agents/inspector.ts](saivage/src/agents/inspector.ts#L62-L82).
+
+Required change: rewrite A.2 so `LibrarianAgent` mirrors the Inspector non-worker shape required by [saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/01-analysis-r6.md](saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/01-analysis-r6.md#L239-L244). The design should specify a source-real constructor/factory, an initial message built from `objective`, `collection_id`, and `context`, and a `run()` method returning `AgentResult` with markdown in `data` on success.
+
+### 2. High - Manager retrieval-miss prompt omits required `objective`
+
+[saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/02-design-r1.md](saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/02-design-r1.md#L104-L108) tells the Manager to dispatch `run_librarian` with the issue description as `context`. That is not enough to satisfy the approved dispatch schema. [saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/01-analysis-r6.md](saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/01-analysis-r6.md#L232-L238) requires `objective: string`, with optional `collection_id` and `context`.
+
+This matters because dispatch schemas are keyed by dispatch tool name in [saivage/src/agents/base.ts](saivage/src/agents/base.ts#L1121-L1130), and the existing schemas declare their required fields directly in the tool schema, as shown by [saivage/src/agents/base.ts](saivage/src/agents/base.ts#L1097-L1115). The Manager prompt rule should instruct a complete call, for example: `objective: "Investigate RAG retrieval miss for <collection_id or query>", collection_id: <if extractable>, context: <issue description plus relevant worker findings>`.
+
+Required change: update A.7 and the planned [saivage/prompts/manager.md](saivage/prompts/manager.md#L9-L15) patch so retrieval-miss routing always supplies the required `objective`, not just `context`.
+
+### 3. High - `ragService.adminRoles` bootstrap mutation is not source-anchored in the current tree
+
+[saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/02-design-r1.md](saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/02-design-r1.md#L31-L32) and [saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/02-design-r1.md](saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/02-design-r1.md#L85-L98) require `ragService.adminRoles.add("librarian")` inside the bootstrap case. The approved analysis allows this only as an F02-dependent hook: [saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/01-analysis-r6.md](saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/01-analysis-r6.md#L92-L100) says the RAG tool surface is absent and F02 is a hard prerequisite, and [saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/01-analysis-r6.md](saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/01-analysis-r6.md#L292-L296) says actual mutating authority comes from F02's handler-side role check.
+
+Against current [saivage/src/server/bootstrap.ts](saivage/src/server/bootstrap.ts#L315-L330), the child spawner has `project`, `router`, `mcpRuntime`, `noteManager`, `eventBus`, and `tracker`, but no `ragService`. The current switch only has `manager`, worker roles, and `inspector` before `assertExhaustive` in [saivage/src/server/bootstrap.ts](saivage/src/server/bootstrap.ts#L336-L396). Current built-in service registration in [saivage/src/mcp/builtins.ts](saivage/src/mcp/builtins.ts#L1961-L1971) registers filesystem, shell, data, git, skills, memory, and stubs; it has no RAG service or admin-role set.
+
+Required change: make A.6 explicitly conditional on the post-F02 source shape. The design should name where F02 exposes the RAG service to bootstrap or runtime, and then state that the Librarian case mutates that existing F02-owned `adminRoles` set before constructing the agent. Without that source anchor, the bootstrap citation is not verifiable against [saivage/src/](saivage/src/).
+
+## Coverage Checks
+
+- Focused proposal: present in [saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/02-design-r1.md](saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/02-design-r1.md#L7-L110), but A.2 and A.7 need the fixes above.
+- Level-up alternative: present and correctly rejected in [saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/02-design-r1.md](saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/02-design-r1.md#L112-L123). It agrees with the approved analysis that routing belongs at Manager-prompt level rather than a runtime hook, per [saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/01-analysis-r6.md](saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/01-analysis-r6.md#L151-L159).
+- Chosen direction: present in [saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/02-design-r1.md](saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/02-design-r1.md#L125-L129), and directionally correct after the three findings are fixed.
+- Roster entry: the proposed non-worker, non-stage-scoped role with `dispatchableBy: ["planner", "manager"]` matches [saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/01-analysis-r6.md](saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/01-analysis-r6.md#L228-L244). Current roster fields and `ToolFilterKind` are in [saivage/src/agents/roster.ts](saivage/src/agents/roster.ts#L14-L58), so adding `librarian` to the union and `ROSTER` is the right integration point.
+- Tool filter: the design delegates to the approved whitelist and denies in [saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/01-analysis-r6.md](saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/01-analysis-r6.md#L271-L290). Current [saivage/src/agents/tool-filters.ts](saivage/src/agents/tool-filters.ts#L32-L40) is a typed `Record<ToolFilterKind, ...>`, so adding `librarian` without `TOOL_FILTERS.librarian` should fail compilation.
+- Dispatch schema: adding `RUN_LIBRARIAN_SCHEMA` to [saivage/src/agents/base.ts](saivage/src/agents/base.ts#L1121-L1130) is correct, provided the Manager prompt fix supplies the required `objective`.
+- ACL row and branch placement: the design matches the approved `Y†` row and requires the Librarian branch before the existing worker-stage branch. Current `checkScope` returns early for non-`Y†` cells and then enters the worker-stage branch at [saivage/src/knowledge/permissions.ts](saivage/src/knowledge/permissions.ts#L268-L292), so the Librarian-specific `project` branch must indeed be inserted before [saivage/src/knowledge/permissions.ts](saivage/src/knowledge/permissions.ts#L270-L292).
+- Handler topic guard and `update_memory` preflight: the design matches [saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/01-analysis-r6.md](saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/01-analysis-r6.md#L303-L329). Current [saivage/src/mcp/knowledgeMemory.ts](saivage/src/mcp/knowledgeMemory.ts#L193-L228) has the exact gap: `create_memory` gates scope before create, while `update_memory` currently updates without fetching and scope-checking the existing record. Current [saivage/src/knowledge/lifecycle.ts](saivage/src/knowledge/lifecycle.ts#L733-L737) supports the proposed `getMemory(root, { id })` preflight, and [saivage/src/knowledge/lifecycle.ts](saivage/src/knowledge/lifecycle.ts#L572-L596) confirms `updateMemory` itself preserves existing `scope` and `topic`.
+- Prompt-key and prompt-loader wiring: the design correctly lists [saivage/src/agents/prompt-keys.ts](saivage/src/agents/prompt-keys.ts#L9-L19) and [saivage/src/agents/prompts.ts](saivage/src/agents/prompts.ts#L19-L30) plus [saivage/src/agents/prompts.ts](saivage/src/agents/prompts.ts#L95-L105) as required additions.
+- Secret-incident payload: the design's test strategy keeps the payload to `count`, `collection_id`, and `context`, matching approved analysis and current [saivage/src/rag/types.ts](saivage/src/rag/types.ts#L150-L159), which exposes only aggregate `IngestReport` counters.
+
+## Citation Notes
+
+Most source citations point at the right current files and ranges. One cleanup item: [saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/02-design-r1.md](saivage/SPEC/2026-05/rag-agent-integration/F03-librarian-agent/02-design-r1.md#L3-L5) links to the approved analysis with a `saivage/` prefix from inside the `saivage/` tree. If this document is viewed as normal Markdown relative to its own directory, that link will not resolve. This is not a source-behavior issue, but it should be fixed while revising the design.
+
+VERDICT: CHANGES_REQUESTED
