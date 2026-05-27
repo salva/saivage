@@ -36,6 +36,7 @@ import type {
   QueryHit,
   QueryOptions,
 } from "./types.js";
+import { WatcherController } from "./watcher/index.js";
 
 const STORE_FILENAME = "store.db";
 const LOCK_FILENAME = ".ingest.lock";
@@ -65,6 +66,7 @@ export class Dataset {
   readonly dirs: DatasetDirs;
   readonly store: VectorStore;
   readonly provider: EmbeddingProvider;
+  private watcher: WatcherController | null = null;
   readonly chunker: Chunker;
 
   private constructor(args: {
@@ -124,11 +126,59 @@ export class Dataset {
   }
 
   async close(): Promise<void> {
+    if (this.watcher) {
+      await this.watcher.disarm();
+      this.watcher = null;
+    }
     await this.store.close();
   }
 
   async drop(): Promise<void> {
+    if (this.watcher) {
+      await this.watcher.disarm();
+      this.watcher = null;
+    }
     await this.store.drop();
     await fs.rm(this.dirs.root, { recursive: true, force: true });
+  }
+
+  /**
+   * F01 B12 — arm the chokidar watcher for this dataset. Throws if
+   * `config.watch === false`. Idempotent: calling twice is a no-op.
+   */
+  async watch(): Promise<void> {
+    if (this.config.watch === false || this.config.watch === undefined) {
+      throw new Error(`watch is disabled for dataset ${this.id}`);
+    }
+    if (this.watcher && this.watcher.isArmed()) return;
+    this.watcher ??= this.createWatcherController();
+    await this.watcher.arm();
+  }
+
+  /** F01 B12 — disarm the watcher. Idempotent. */
+  async unwatch(): Promise<void> {
+    if (!this.watcher) return;
+    await this.watcher.disarm();
+  }
+
+  /**
+   * F01 B12 — one-shot reconciliation sweep over the dataset's configured
+   * `sources`. Runs even when `watch === false`. Routes deltas through the
+   * regular `ingest()` path so all secret + chunker + provider invariants
+   * are preserved.
+   */
+  async reconcile(): Promise<void> {
+    const ctrl = this.watcher ?? this.createWatcherController();
+    await ctrl.reconcile();
+  }
+
+  private createWatcherController(): WatcherController {
+    return new WatcherController({
+      datasetId: this.id,
+      sources: this.config.sources ?? [],
+      watch: this.config.watch ?? false,
+      store: this.store,
+      ingest: (input) => this.ingest(input),
+    });
   }
 }

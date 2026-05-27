@@ -25,6 +25,17 @@ export interface ChunkerRef {
   overlap?: number;
 }
 
+export interface SourceRoot {
+  root: string;
+  include?: string[];
+  exclude?: string[];
+}
+
+// F01 B12 — watcher configuration. `false` is the default; `true` enables
+// chokidar in native-events mode; `{ usePolling: true }` enables polling
+// (for LXC bind-mounts, NFS, FUSE, …).
+export type WatchConfig = false | true | { usePolling: true; interval?: number };
+
 export interface DatasetConfig {
   id: string;
   projectId: string;
@@ -33,6 +44,14 @@ export interface DatasetConfig {
   store: VectorStoreRef;
   chunker: ChunkerRef;
   exclusions?: string[];
+  /**
+   * F01 B12 — canonical declaration of the on-disk roots that belong to
+   * this dataset. Used by the watcher and by zero-argument
+   * `dataset.reconcile()`. May be empty.
+   */
+  sources?: SourceRoot[];
+  /** F01 B12 — opt-in watcher switch. Default false. */
+  watch?: WatchConfig;
 }
 
 // ChunkMetadata mirrors the indexable columns of `chunk` in the store schema

@@ -121,6 +121,31 @@ export class InvalidQueryFilterError extends RagError {
   }
 }
 
+export class WatcherUnavailableError extends RagError {
+  override readonly name = "WatcherUnavailableError";
+  readonly datasetId: string;
+  readonly sourceCount: number;
+  readonly fileCountApprox: number;
+  constructor(args: {
+    datasetId: string;
+    sourceCount: number;
+    fileCountApprox: number;
+    cause?: unknown;
+    message?: string;
+  }) {
+    super(
+      args.message ??
+        `watcher unavailable for dataset ${args.datasetId}: inotify watch limit ` +
+          `reached (see /proc/sys/fs/inotify/max_user_watches) — ` +
+          `${args.sourceCount} source roots, ~${args.fileCountApprox} files`,
+      { cause: args.cause },
+    );
+    this.datasetId = args.datasetId;
+    this.sourceCount = args.sourceCount;
+    this.fileCountApprox = args.fileCountApprox;
+  }
+}
+
 function stampToString(s: ProviderStamp): string {
   return `${s.provider}/${s.model}@dim=${s.dim}#${s.releaseFingerprint}`;
 }

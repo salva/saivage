@@ -11,6 +11,7 @@ export {
   SecretDroppedError,
   DatasetNotFoundError,
   InvalidQueryFilterError,
+  WatcherUnavailableError,
 } from "./errors.js";
 export { createRagManager, type RagManager, type RagManagerOptions } from "./manager.js";
 export { Dataset, datasetDirs } from "./dataset.js";

@@ -240,6 +240,25 @@ export const SaivageConfigSchema = z.object({
               overlap: z.number().min(0).max(0.5).optional(),
             }),
             exclusions: z.array(z.string()).default([]),
+            sources: z
+              .array(
+                z.object({
+                  root: z.string().min(1),
+                  include: z.array(z.string()).optional(),
+                  exclude: z.array(z.string()).optional(),
+                }),
+              )
+              .default([]),
+            watch: z
+              .union([
+                z.literal(false),
+                z.literal(true),
+                z.object({
+                  usePolling: z.literal(true),
+                  interval: z.number().int().positive().optional(),
+                }),
+              ])
+              .default(false),
           }),
         )
         .default([]),
