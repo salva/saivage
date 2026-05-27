@@ -2,7 +2,7 @@
 
 ## 1. Scope
 
-This plan implements a focused in-process RAG (retrieval-augmented generation) library for Saivage v2 at [saivage/src/rag/](saivage/src/rag/), exposing dataset-centric ingest and query operations backed by a single SQLite-vector vector store (sqlite-vec on better-sqlite3), a single hosted embedding provider (OpenAI `text-embedding-3-small` routed through the existing OpenAI auth path), and three chunkers (markdown, code, memory). The library is opt-in via the project configuration slice `rag.enabled`; with the slice absent or `enabled: false`, no module path runs, no native dependency loads, no on-disk artifact is created under `.saivage/rag/`. The implementation raises the Saivage Node engine pin from `>=20.0.0` to `>=24.0.0` in [saivage/package.json](saivage/package.json) and lands new dependencies (`better-sqlite3`, `sqlite-vec`, `tree-sitter`, `tree-sitter-typescript`, `tree-sitter-python`, `picomatch`, `proper-lockfile`) in the same manifest. Modifications outside [saivage/src/rag/](saivage/src/rag/) are limited to [saivage/package.json](saivage/package.json) and [saivage/src/config.ts](saivage/src/config.ts) — no other config files are touched. The existing [saivage/tsconfig.json](saivage/tsconfig.json), [saivage/eslint.config.js](saivage/eslint.config.js), and [saivage/vitest.config.ts](saivage/vitest.config.ts) are assumed sufficient as-is; if the implementer discovers a real need at execution time to alter any of them, that requires a new design decision rather than a midstream config edit. All work is TypeScript / ESM under Node LTS >=24.
+This plan implements a focused in-process RAG (retrieval-augmented generation) library for Saivage v2 at [saivage/src/rag/](saivage/src/rag/), exposing dataset-centric ingest and query operations backed by a single SQLite-vector vector store (sqlite-vec on better-sqlite3), a single hosted embedding provider (OpenAI `text-embedding-3-small` routed through the existing OpenAI auth path), and three chunkers (markdown, code, memory). The library is opt-in via the project configuration slice `rag.enabled`; with the slice absent or `enabled: false`, no module path runs, no native dependency loads, no on-disk artifact is created under `.saivage/rag/`. The implementation lands new RAG-specific dependencies (`better-sqlite3`, `sqlite-vec`, `tree-sitter`, `tree-sitter-typescript`, `tree-sitter-python`, `picomatch`, `proper-lockfile`) in [saivage/package.json](saivage/package.json). The Node engine pin at `>=24.0.0` is a prerequisite owned by [F02](saivage/SPEC/2026-05/node24-deps-refresh/F02-node24-deps-refresh.md) step (a); F01 does not modify `engines.node`. Modifications outside [saivage/src/rag/](saivage/src/rag/) are limited to [saivage/package.json](saivage/package.json) and [saivage/src/config.ts](saivage/src/config.ts) — no other config files are touched. The existing [saivage/tsconfig.json](saivage/tsconfig.json), [saivage/eslint.config.js](saivage/eslint.config.js), and [saivage/vitest.config.ts](saivage/vitest.config.ts) are assumed sufficient as-is; if the implementer discovers a real need at execution time to alter any of them, that requires a new design decision rather than a midstream config edit. All work is TypeScript / ESM under Node LTS >=24.
 
 ## 2. Explicit non-goals
 
@@ -40,7 +40,7 @@ Each batch lands as a single commit on a feature branch (e.g. `feat/rag-subsyste
 
 | Id | Title | Adds files | Modifies files | Validation | Depends on |
 |---|---|---|---|---|---|
-| B01 | Node engines + dependencies | none | [saivage/package.json](saivage/package.json) | `T`, `L`, `A` | — |
+| B01 | RAG dependency landing | none | [saivage/package.json](saivage/package.json) | `T`, `L`, `A` | — |
 | B02 | Public types, errors, config slice | [saivage/src/rag/types.ts](saivage/src/rag/types.ts), [saivage/src/rag/errors.ts](saivage/src/rag/errors.ts), [saivage/src/rag/index.ts](saivage/src/rag/index.ts), [saivage/src/rag/types.test.ts](saivage/src/rag/types.test.ts), [saivage/src/rag/errors.test.ts](saivage/src/rag/errors.test.ts) | [saivage/src/config.ts](saivage/src/config.ts) | `T`, `L`, `U`, `A` | B01 |
 | B03 | Vector store seam + sqlite-vec adapter | [saivage/src/rag/store/index.ts](saivage/src/rag/store/index.ts), [saivage/src/rag/store/sqlite-vec.ts](saivage/src/rag/store/sqlite-vec.ts), [saivage/src/rag/store/sql.ts](saivage/src/rag/store/sql.ts), [saivage/src/rag/store/sqlite-vec.test.ts](saivage/src/rag/store/sqlite-vec.test.ts) | none | `T`, `L`, `U`, `A` | B02 |
 | B04 | Embedding provider seam + OpenAI adapter | [saivage/src/rag/provider/index.ts](saivage/src/rag/provider/index.ts), [saivage/src/rag/provider/openai.ts](saivage/src/rag/provider/openai.ts), [saivage/src/rag/provider/openai.test.ts](saivage/src/rag/provider/openai.test.ts) | none | `T`, `L`, `U`, `A` | B02 |
@@ -56,17 +56,15 @@ Eleven batches total. Branching strategy: a single long-lived branch `feat/rag-s
 
 ## 6. Batch detail
 
-### B01 — Node engines and dependency landing
+### B01 — RAG dependency landing
 
-Goal: raise the Node engine pin and declare the new runtime dependencies in one isolated commit so the rest of the work proceeds against a stable lockfile.
+Prerequisite: [F02](saivage/SPEC/2026-05/node24-deps-refresh/F02-node24-deps-refresh.md) step (a) merged — `engines.node` is already `>=24.0.0` on master.
+
+Goal: declare the new RAG runtime dependencies in one isolated commit so the rest of the work proceeds against a stable lockfile. The Node engine pin is not modified here; it is owned by F02 step (a).
 
 Files modified:
 
-- [saivage/package.json](saivage/package.json) — set `engines.node` to `>=24.0.0`; add the dependencies listed below.
-
-```
-"engines": { "node": ">=24.0.0" }
-```
+- [saivage/package.json](saivage/package.json) — add the dependencies listed below. Do NOT touch the `engines` block.
 
 Dependencies added (runtime):
 
