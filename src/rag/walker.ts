@@ -5,14 +5,16 @@
 //   `**/.git/**`, `**/node_modules/**`, `**/.saivage/**`, plus anything
 //   `shouldSkipPath` rejects.
 //
-// Symlink-cycle protection uses a visited-inode set keyed on
-// (dev, ino) from `fs.statSync`. Symlinks that point outside the root
-// are followed exactly once.
+// Symlink containment: every entry is canonicalised via `realpath` and
+// silently skipped if its real path escapes the canonicalised root.
+// Directory cycles are detected via a visited-inode set keyed on
+// `(dev, ino)` from `fs.statSync`.
 
 import { promises as fs, type Stats } from "node:fs";
 import * as path from "node:path";
 import picomatch from "picomatch";
 import { shouldSkipPath } from "./security/secrets.js";
+import { log } from "../log.js";
 
 const HARD_EXCLUDES: ReadonlyArray<string> = [
   "**/.git/**",
@@ -37,8 +39,19 @@ export interface WalkedFile {
   mtimeMs: number;
 }
 
+function escapesRoot(rootReal: string, realAbs: string): boolean {
+  const rel = path.relative(rootReal, realAbs);
+  return rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel);
+}
+
 export async function* walk(opts: WalkOptions): AsyncIterable<WalkedFile> {
   const root = path.resolve(opts.root);
+  let rootReal: string;
+  try {
+    rootReal = await fs.realpath(root);
+  } catch {
+    return;
+  }
   const includeMatch = picomatch(opts.include, { dot: true });
   const excludeMatch = picomatch([...(opts.exclude ?? []), ...HARD_EXCLUDES], { dot: true });
   const visited = new Set<string>(); // `${dev}:${ino}` for directories
@@ -55,6 +68,20 @@ export async function* walk(opts: WalkOptions): AsyncIterable<WalkedFile> {
       const rel = path.relative(root, abs).split(path.sep).join("/");
       if (excludeMatch(rel)) continue;
       if (shouldSkipPath(rel)) continue;
+
+      let realAbs: string;
+      try {
+        realAbs = await fs.realpath(abs);
+      } catch {
+        continue;
+      }
+      if (escapesRoot(rootReal, realAbs)) {
+        log.warn(
+          "rag.walker.symlink-escape " +
+            JSON.stringify({ root: rootReal, path: realAbs }),
+        );
+        continue;
+      }
 
       let st: Stats;
       try {
@@ -81,10 +108,11 @@ export async function* walk(opts: WalkOptions): AsyncIterable<WalkedFile> {
 
   // Seed visited set with root.
   try {
-    const st = await fs.stat(root);
+    const st = await fs.stat(rootReal);
     if (st.isDirectory()) visited.add(`${st.dev}:${st.ino}`);
   } catch {
     return;
   }
   yield* walkDir(root);
 }
+

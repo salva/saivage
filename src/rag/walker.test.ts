@@ -65,4 +65,33 @@ describe("walker", () => {
     const got = await collect(walk({ root: dir, include: ["**/*.md"] }));
     expect(got).toEqual(["a.md"]);
   });
+
+  it("silently skips symlinks that escape the root", async () => {
+    // Create an outside directory with a file and a symlink into it.
+    const outside = mkdtempSync(path.join(tmpdir(), "rag-walk-out-"));
+    try {
+      writeFileSync(path.join(outside, "leak.md"), "secret");
+      writeFileSync(path.join(dir, "ok.md"), "ok");
+      try {
+        symlinkSync(outside, path.join(dir, "out"));
+      } catch {
+        return;
+      }
+      const got = await collect(walk({ root: dir, include: ["**/*.md"] }));
+      expect(got).toEqual(["ok.md"]);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("follows symlinks that point to siblings inside the root", async () => {
+    writeFileSync(path.join(dir, "real.md"), "x");
+    try {
+      symlinkSync(path.join(dir, "real.md"), path.join(dir, "alias.md"));
+    } catch {
+      return;
+    }
+    const got = await collect(walk({ root: dir, include: ["**/*.md"] }));
+    expect(got).toEqual(["alias.md", "real.md"]);
+  });
 });
