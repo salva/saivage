@@ -1,6 +1,4 @@
-// F01 B02 — public re-exports for the Saivage RAG subsystem.
-// The RagManager factory is filled in by B09; in B02 this file re-exports
-// only the type surface and the error hierarchy.
+// F01 B09 — public re-exports for the Saivage RAG subsystem.
 
 export * from "./types.js";
 export {
@@ -14,3 +12,5 @@ export {
   DatasetNotFoundError,
   InvalidQueryFilterError,
 } from "./errors.js";
+export { createRagManager, type RagManager, type RagManagerOptions } from "./manager.js";
+export { Dataset, datasetDirs } from "./dataset.js";
