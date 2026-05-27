@@ -8,8 +8,32 @@
 
 import { resolve } from "node:path";
 import { bootstrap, runPlanner, type SaivageRuntime } from "./bootstrap.js";
+import type { ToolCallContext } from "../mcp/toolContext.js";
+import type { AgentRole } from "../agents/types.js";
 
 export type { SaivageRuntime } from "./bootstrap.js";
+
+/**
+ * Build a `ToolCallContext` for operator-driven CLI / server entry
+ * points. This is the ONLY call site allowed to set
+ * `operatorContext: true`; agent dispatcher and chat slash command
+ * builders MUST leave the flag unset so that authorisation paths that
+ * grant operator-only privileges cannot be reached by agent traffic.
+ */
+export function buildOperatorToolContext(args: {
+  projectRoot: string;
+  agentId: string;
+  role?: AgentRole;
+  author?: string;
+}): ToolCallContext {
+  return {
+    role: args.role ?? "planner",
+    agentId: args.agentId,
+    projectRoot: args.projectRoot,
+    operatorContext: true,
+    ...(args.author ? { author: args.author } : {}),
+  };
+}
 
 export async function withRuntime(
   projectPath: string | undefined,

@@ -32,6 +32,18 @@ export interface ToolCallContext {
   channelId?: string;
   /** Chat session id (per-channel monotonic id) for Chat-agent calls. */
   sessionId?: string;
+  /**
+   * Marks the call as originating from an operator-driven runtime path
+   * (CLI invocation or HTTP/slash command bound to the operator). Set
+   * only by the server bootstrap and CLI entry points; agent dispatch
+   * paths and chat sessions MUST leave this unset.
+   *
+   * Authorization decisions that grant operator-only privileges (e.g.
+   * RAG control tools without an admin role) MUST consult this flag via
+   * `isRuntimeOperatorContext` in `src/server/rag/service.ts` and never
+   * infer operator-ness from `role`.
+   */
+  operatorContext?: boolean;
 }
 
 /**
