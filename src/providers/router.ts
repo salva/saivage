@@ -14,6 +14,7 @@ import { PiAiProvider } from "./pi-ai.js";
 import { CopilotProvider } from "./copilot.js";
 import { OllamaProvider } from "./ollama.js";
 import { LlamaCppProvider } from "./llamacpp.js";
+import { NvidiaNimProvider } from "./nvidia-nim.js";
 import { ProviderError, classifyProviderError } from "./error.js";
 import { getOAuthApiKey, getProfileByKey, hasOAuthCredentials } from "../auth/index.js";
 import { log } from "../log.js";
@@ -118,6 +119,20 @@ const PROVIDER_DESCRIPTORS = [
     create: ({ providerConfig, accountConfig }) =>
       new LlamaCppProvider(
         accountConfig?.baseUrl ?? providerConfig?.baseUrl ?? process.env["LLAMACPP_BASE_URL"],
+        providerConfig?.defaultContextWindow,
+      ),
+  },
+  {
+    name: "nvidia-nim",
+    shouldRegister: async ({ cfg, hasAccounts }) =>
+      !!cfg
+      || hasAccounts
+      || !!process.env["NVIDIA_API_KEY"]
+      || !!process.env["NVIDIA_NIM_API_KEY"],
+    create: ({ providerConfig, accountConfig }) =>
+      new NvidiaNimProvider(
+        accountConfig?.apiKey ?? providerConfig?.apiKey,
+        accountConfig?.baseUrl ?? providerConfig?.baseUrl,
         providerConfig?.defaultContextWindow,
       ),
   },
