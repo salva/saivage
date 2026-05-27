@@ -1,0 +1,12 @@
+# F01 - Markdown Table Rendering - Analysis Review r3
+
+## Findings
+
+1. Section 9 open question 2 still mentions the invalid `marked` options it was supposed to remove. The R3 text explicitly names `mangle:false, headerIds:false` in [saivage/SPEC/2026-05/markdown-table-rendering/F01-markdown-tables/01-analysis-r3.md](saivage/SPEC/2026-05/markdown-table-rendering/F01-markdown-tables/01-analysis-r3.md#L552-L553), then repeats `mangle` / `headerIds` in [saivage/SPEC/2026-05/markdown-table-rendering/F01-markdown-tables/01-analysis-r3.md](saivage/SPEC/2026-05/markdown-table-rendering/F01-markdown-tables/01-analysis-r3.md#L557-L558). The requested R2 fix was that this open question no longer mention `mangle`, `headerIds`, or invented `marked` options at all. The same paragraph otherwise points at the right Marked safety evidence: [saivage/node_modules/marked/README.md](saivage/node_modules/marked/README.md#L53-L56) says Marked does not sanitize output HTML and recommends sanitizing the output, while [saivage/node_modules/marked/lib/marked.d.ts](saivage/node_modules/marked/lib/marked.d.ts#L443-L490) shows the installed option / hook surface. One small citation cleanup is also needed there: `async` is not inside the cited 443-490 range; it is immediately above that range.
+
+## Verified
+
+- Section 7's `markdown-it` provenance is now correct. `npm ls markdown-it --all` reports only `saivage@0.1.0 -> typedoc@0.28.19 -> markdown-it@14.1.1`; [saivage/package.json](saivage/package.json#L63) declares `typedoc: "^0.28.19"`; [saivage/package-lock.json](saivage/package-lock.json#L8069-L8085) is the `markdown-it@14.1.1` block; and [saivage/package-lock.json](saivage/package-lock.json#L11426-L11447) is the `typedoc@0.28.19` block declaring `markdown-it` at line 11434. The R3 VitePress wording no longer makes the bogus dependency-chain claim.
+- Section 7's Mermaid child citations are correct. The requested grep returns `6051` for `node_modules/dompurify` and `8098` for `node_modules/marked`; the Mermaid block declares `dompurify` at [saivage/package-lock.json](saivage/package-lock.json#L8380) and `marked` at [saivage/package-lock.json](saivage/package-lock.json#L8384).
+
+VERDICT: CHANGES_REQUESTED
