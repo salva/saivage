@@ -573,15 +573,69 @@ After both edits land, the targeted negative grep in §6.g validation must find 
 
 ## 9. Evidence section (populated by batch (f))
 
-This section is empty until batch (f) lands. The commit for (f) pastes the verbatim contents of `../tmp/f02-evidence.txt` (workspace-relative from [saivage/](saivage/)) between the markers below.
+Verbatim contents of `../tmp/f02-evidence.txt` (workspace-relative from [saivage/](saivage/)) captured at the (f) commit between the markers below.
 
 ```text
 <BEGIN F02(f) EVIDENCE>
-... captured by `tmp/f02-evidence.txt` at (f) commit time ...
+## F02(f) — final evidence
+2026-05-27T17:35:40+02:00
+node: v24.16.0
+npm: 11.13.0
+--- npm audit (production-only) ---
+found 0 vulnerabilities
+--- npm audit (full) ---
+# npm audit report
+
+esbuild  <=0.24.2
+Severity: moderate
+esbuild enables any website to send any requests to the development server and read the response - https://github.com/advisories/GHSA-67mh-4wv8-2f99
+No fix available
+node_modules/vite/node_modules/esbuild
+  vite  <=6.4.1
+  Depends on vulnerable versions of esbuild
+  node_modules/vite
+    vitepress  <=1.6.4
+    Depends on vulnerable versions of vite
+    node_modules/vitepress
+      vitepress-plugin-mermaid  *
+      Depends on vulnerable versions of vitepress
+      node_modules/vitepress-plugin-mermaid
+
+
+4 moderate severity vulnerabilities
+
+Some issues need review, and may require choosing
+a different dependency.
+--- npm audit --json (counts only) ---
+{
+  "metadata": {
+    "vulnerabilities": {
+      "info": 0,
+      "low": 0,
+      "moderate": 4,
+      "high": 0,
+      "critical": 0,
+      "total": 4
+    }
+  }
+}
+Residual advisory names: esbuild, vite, vitepress, vitepress-plugin-mermaid (all on the vitepress chain, all moderate, no fix available upstream).
+--- npm run typecheck ---
+clean (tsc --noEmit)
+--- npm run lint ---
+169 problems (91 errors, 78 warnings) — ALL PRE-EXISTING at the F02 baseline (verified against `git stash` of master prior to batch (a); identical totals). F02 introduced ZERO net-new lint findings. Cleanup is out of F02 scope; see F07 follow-up topic.
+--- npm test ---
+Test Files  80 passed (80)
+Tests       1123 passed (1123)
+Duration    ~22s
+--- npm outdated ---
+Package            Current   Wanted  Latest
+@anthropic-ai/sdk   0.95.2   0.95.2  0.99.0   (deferred to F05)
+zod                3.25.76  3.25.76   4.4.3   (deferred to F04)
 <END F02(f) EVIDENCE>
 ```
 
-Net-new lint warnings (if any), residual moderate advisories from the vitepress chain, and any pre-existing-failing tests recorded at the F02 baseline are listed here verbatim. Anything outside the §7 contract is flagged in this section as a gate failure, and F02 returns to (c) or (d).
+Residual moderate advisories (4) are exactly the vitepress chain documented in analysis §3.8 and allowed by the §7 final-state contract. No `high` or `critical`. No advisory outside the allow-list. The pre-existing lint findings (91 errors / 78 warnings) are recorded here as baseline; F02 was not chartered to clean them up — see F07.
 
 ---
 
@@ -593,6 +647,7 @@ The following identifiers are registered here so the deferrals from the topic, a
 - **F04 — zod 4 migration**: workspace-wide refactor across ~20 `src/` files plus `web/` and tests; deferred from F02 because the migration exceeds the topic's "smallest possible API migration" constraint. Confirmed by analysis §2.3 that no open CVE is left behind by deferring `zod`.
 - **F05 — `@anthropic-ai/sdk` 0.99.x evaluation**: read the 0.96/0.97/0.98/0.99 release notes, identify API drift against the single Saivage import site, decide whether to take the jump as one bump or as a chain of intermediate releases.
 - **F06 — protobufjs CVE remediation**: contingency topic allocated only if F02 batch (c)'s non-force `audit fix` plus the `overrides` fallback fail to close the `protobufjs` advisory without breaking `@google/genai`. F06 finds an alternative remediation path (upstream upgrade in `@google/genai`, replacement of `@google/genai`, or removal of the affected code path).
+- **F07 — lint baseline cleanup**: the F02(f) evidence transcript records 91 lint errors + 78 warnings on master (pre-existing at the F02 baseline; F02 introduced zero net-new findings). A separate topic resolves these; F02 was scoped to dependency mechanics, not source-level cleanup.
 
 ---
 
