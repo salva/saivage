@@ -87,6 +87,7 @@ const EXPECTED_SEED: SaivageConfig = {
     githubCopilot: { clientId: DEFAULT_GITHUB_COPILOT_CLIENT_ID },
   },
   mcpServers: {},
+  rag: { enabled: false, datasets: [] },
 };
 
 beforeEach(() => {

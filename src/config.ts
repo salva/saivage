@@ -213,7 +213,41 @@ export const SaivageConfigSchema = z.object({
     .default({}),
 
   mcpServers: z.record(z.string(), mcpServerSchema).default({}),
+
+  rag: z
+    .object({
+      enabled: z.boolean().default(false),
+      datasets: z
+        .array(
+          z.object({
+            id: z.string().min(1),
+            source: z.enum(["skill", "memory", "doc", "code"]),
+            provider: z.object({
+              kind: z.literal("openai"),
+              model: z.literal("text-embedding-3-small").default("text-embedding-3-small"),
+              dim: z
+                .union([z.literal(256), z.literal(512), z.literal(1024), z.literal(1536)])
+                .default(1536),
+            }),
+            store: z
+              .object({
+                kind: z.literal("sqlite-vec").default("sqlite-vec"),
+              })
+              .default({ kind: "sqlite-vec" }),
+            chunker: z.object({
+              kind: z.enum(["markdown", "code", "memory"]),
+              chunkSize: z.number().int().positive().optional(),
+              overlap: z.number().min(0).max(0.5).optional(),
+            }),
+            exclusions: z.array(z.string()).default([]),
+          }),
+        )
+        .default([]),
+    })
+    .default({ enabled: false, datasets: [] }),
 }).strict();
+
+export type RagConfig = z.infer<typeof SaivageConfigSchema>["rag"];
 
 export type SaivageConfig = z.infer<typeof SaivageConfigSchema>;
 
