@@ -56,7 +56,7 @@ The implementation plan (`03-plan-rN.md`) must:
 
 - `Architecture-first, no backward compatibility` (user memory `preferences.md`).
 - `implementationDiscipline`: no docstrings/comments in untouched code; no helpers for one-time ops; no speculative error handling.
-- Saivage v2 runs as Node 20+/ESM/TypeScript. Dependencies must be ESM-friendly.
+- Saivage v2 runs on the latest stable Node.js (>= 24, current LTS at design time) with ESM and TypeScript. The prior `"engines": { "node": ">=20.0.0" }` pin in [saivage/package.json](saivage/package.json) is to be raised as part of this work — analysis and design must assume Node 24+ APIs (including `node:sqlite` if it helps, `worker_threads` improvements, native `fetch`, etc.). Do NOT design around Node 20 limitations. Dependencies must be ESM-friendly and must have working prebuilt binaries for current Node on Linux x64.
 - No new files outside `saivage/SPEC/2026-05/rag-subsystem-design/`.
 - All file references in generated docs use repo-root-relative markdown links (`saivage/...#Lnn`).
 - Each `rN` document is self-contained — no "as in r1", no references to reviewer / APPROVED markers, no allusions to the dance itself (per the skill's "Autonomous documents" rule).
