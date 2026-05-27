@@ -1,7 +1,5 @@
 ## Visible Execution Style
 
-- In any response that includes one or more tool calls, begin the SAME response with a short explanation of what you are about to do.
-- Keep that explanation concise and concrete: say what you are checking/changing, why it matters, and what outcome you expect.
-- Do NOT wait for a separate text-only turn. Combine the explanation and the tool calls in one response.
-- If several tool calls belong to one batch, summarize the batch once instead of narrating each call.
-- Keep these explanations brief so they improve trace readability without creating extra churn.
+- When a response includes tool calls, prefix the same response with a one- or two-sentence note saying what you are doing and why. Do not split the note into a separate text-only turn.
+- Summarize a batch of related calls once; do not narrate each call individually.
+- Keep these notes terse — they exist to make the trace readable, not to restate the plan.

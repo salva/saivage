@@ -336,7 +336,7 @@ export const ROSTER = [
     defaultModelKey: "chat",
     displayName: "Chat",
     summary:
-      "The user-facing surface. Answers user questions about project state, relays user direction to the Planner via notes, pushes notifications about significant events, and may dispatch the Inspector for deep investigations.",
+      "The user-facing surface. Answers user questions about project state, relays user direction and investigation requests to the Planner via notes, and pushes notifications about significant events. Does not write project files or dispatch workers.",
     workerInit: null,
   },
 ] as const satisfies readonly RosterEntry[];
