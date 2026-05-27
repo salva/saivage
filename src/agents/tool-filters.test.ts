@@ -68,3 +68,21 @@ describe("applyToolFilter — regression cases", () => {
     expect(applyToolFilter("inspector", t("write_file"))).toBe(false);
   });
 });
+
+describe("applyToolFilter — read_stash is allowed for every kind", () => {
+  it("planner allows read_stash", () => {
+    expect(applyToolFilter("planner", t("read_stash", "stash"))).toBe(true);
+  });
+  it("worker allows read_stash", () => {
+    expect(applyToolFilter("worker", t("read_stash", "stash"))).toBe(true);
+  });
+  it("reviewer allows read_stash", () => {
+    expect(applyToolFilter("reviewer", t("read_stash", "stash"))).toBe(true);
+  });
+  it("inspector allows read_stash", () => {
+    expect(applyToolFilter("inspector", t("read_stash", "stash"))).toBe(true);
+  });
+  it("chat allows read_stash", () => {
+    expect(applyToolFilter("chat", t("read_stash", "stash"))).toBe(true);
+  });
+});

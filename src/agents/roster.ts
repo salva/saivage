@@ -300,7 +300,7 @@ export const ROSTER = [
     worker: false,
     stageScoped: false,
     dispatchTool: "run_inspector",
-    dispatchableBy: ["planner", "chat"],
+    dispatchableBy: ["planner"],
     toolFilter: "inspector",
     abortPriority: null,
     selfCheckFrequency: 15,

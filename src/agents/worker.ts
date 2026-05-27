@@ -94,7 +94,7 @@ export async function buildInitialMessage(
     `Write the report to: .saivage/stages/${input.stageId}/reports/${input.task.id}.json`,
   );
   instructions.push(
-    `Commit using MCP git with message prefix: [${input.task.id}] if you modify files.`,
+    `Commit using git with message prefix: [${input.task.id}] if you modify files.`,
   );
   instructions.push("Return the full TaskReport JSON as your final response.");
 

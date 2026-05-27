@@ -203,7 +203,7 @@ describe("ROSTER — derived accessors", () => {
     expect(getDispatchToolsFor("planner").sort()).toEqual(
       ["run_inspector", "run_manager"].sort(),
     );
-    expect(getDispatchToolsFor("chat")).toEqual(["run_inspector"]);
+    expect(getDispatchToolsFor("chat")).toEqual([]);
     expect(getDispatchToolsFor("coder")).toEqual([]);
   });
 

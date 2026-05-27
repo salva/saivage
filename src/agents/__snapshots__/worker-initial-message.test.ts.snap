@@ -19,7 +19,7 @@ Complete the coder task
 
 ### Instructions
 Write the report to: .saivage/stages/stage-1/reports/coder-task.json
-Commit using MCP git with message prefix: [coder-task] if you modify files.
+Commit using git with message prefix: [coder-task] if you modify files.
 Return the full TaskReport JSON as your final response."
 `;
 
@@ -46,7 +46,7 @@ Write a standalone critique document at the project-relative path that best fits
 Do not rewrite the design yourself; tell the Designer what to fix via issues_found[] and the critique document.
 Write optional detailed notes to: .saivage/stages/stage-1/critiques/
 Write the report to: .saivage/stages/stage-1/reports/critic-task.json
-Commit using MCP git with message prefix: [critic-task] if you modify files.
+Commit using git with message prefix: [critic-task] if you modify files.
 Return the full TaskReport JSON as your final response."
 `;
 
@@ -72,7 +72,7 @@ Write downloaded artifacts to the project-relative path that best fits the task;
 Write provenance notes under research/data-sources/ or another clearly named research/provenance path.
 Use retries, fallback source URLs, alternate access methods, and an attempt manifest when downloads are unreliable.
 Write the report to: .saivage/stages/stage-1/reports/data_agent-task.json
-Commit using MCP git with message prefix: [data_agent-task] if you modify files.
+Commit using git with message prefix: [data_agent-task] if you modify files.
 Return the full TaskReport JSON as your final response."
 `;
 
@@ -97,7 +97,7 @@ Complete the designer task
 Produce design artifacts that are concrete enough for implementation and review.
 Write optional detailed notes to: .saivage/stages/stage-1/design-notes/
 Write the report to: .saivage/stages/stage-1/reports/designer-task.json
-Commit using MCP git with message prefix: [designer-task] if you modify files.
+Commit using git with message prefix: [designer-task] if you modify files.
 Return the full TaskReport JSON as your final response."
 `;
 
@@ -121,7 +121,7 @@ Complete the researcher task
 ### Instructions
 Write findings under: research/
 Write the report to: .saivage/stages/stage-1/reports/researcher-task.json
-Commit using MCP git with message prefix: [researcher-task] if you modify files.
+Commit using git with message prefix: [researcher-task] if you modify files.
 Return the full TaskReport JSON as your final response."
 `;
 
@@ -147,7 +147,7 @@ Review the stage objectives, expected outcomes, acceptance criteria, task list, 
 For data-heavy or ML/research stages, validate data provenance/suitability, leakage controls, statistical acceptance, benchmark comparison, and whether conclusions are supported.
 Write optional detailed notes to: .saivage/stages/stage-1/reviews/
 Write the report to: .saivage/stages/stage-1/reports/reviewer-task.json
-Commit using MCP git with message prefix: [reviewer-task] if you modify files.
+Commit using git with message prefix: [reviewer-task] if you modify files.
 Return the full TaskReport JSON as your final response."
 `;
 
@@ -174,6 +174,6 @@ Review the stage objectives, expected outcomes, acceptance criteria, task list, 
 For data-heavy or ML/research stages, validate data provenance/suitability, leakage controls, statistical acceptance, benchmark comparison, and whether conclusions are supported.
 Write optional detailed notes to: .saivage/stages/stage-1/reviews/
 Write the report to: .saivage/stages/stage-1/reports/reviewer-task.json
-Commit using MCP git with message prefix: [reviewer-task] if you modify files.
+Commit using git with message prefix: [reviewer-task] if you modify files.
 Return the full TaskReport JSON as your final response."
 `;
