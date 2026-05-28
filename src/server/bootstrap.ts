@@ -37,6 +37,7 @@ import "../agents/reviewer.js";
 import "../agents/designer.js";
 import "../agents/critic.js";
 import { InspectorAgent } from "../agents/inspector.js";
+import { LibrarianAgent } from "../agents/librarian.js";
 import { WorkerAgent } from "../agents/worker.js";
 import type { AgentContext, AgentResult, Agent } from "../agents/types.js";
 import { assertExhaustive, getRoster } from "../agents/roster.js";
@@ -427,12 +428,12 @@ export function createChildSpawner(
       }
 
       case "librarian": {
-        // F03(B02) exposes the run_librarian dispatch tool, but the
-        // LibrarianAgent class itself lands in F03(B03). Invoking the
-        // librarian before B03 is a programmer error.
-        throw new Error(
-          "run_librarian dispatched but LibrarianAgent is not yet implemented (lands in F03(B03)).",
-        );
+        const librarianInput = input as import("../agents/librarian.js").LibrarianInput;
+        agent = await LibrarianAgent.create(ctx, librarianInput, {
+          onActivity: (agentId) => tracker.agentActivity(agentId),
+          onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
+        });
+        break;
       }
 
       default:

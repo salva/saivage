@@ -124,6 +124,7 @@ describe("G50 /api/notes routes", () => {
       "src/agents/base.compaction.test.ts",
       "src/agents/chat.lifecycle.test.ts",
       "src/agents/conversation-snapshot.test.ts",
+      "src/agents/librarian.test.ts",
       "src/agents/planner.nudge.test.ts",
       "src/agents/worker-initial-message.test.ts",
       "src/agents/worker-spawn.test.ts",
