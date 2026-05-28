@@ -9,14 +9,13 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { initProjectTree, loadProject, seedProject } from "./project.js";
+import { initProjectTree, seedProject } from "./project.js";
 import { readDoc } from "./documents.js";
 import { loadConfig, SaivageConfigSchema, type SaivageConfig } from "../config.js";
 import {
@@ -99,34 +98,14 @@ afterEach(() => {
 });
 
 describe("seedProject", () => {
-  it("creates skills + memory subtrees with seeded indexes (FR-1)", async () => {
+  it("does not seed legacy skills/memory JSON tree (F01 B07)", async () => {
     await seedProject(projectRoot, { name: "test-project", objectives: ["test"] });
     const saivage = join(projectRoot, ".saivage");
-
-    for (const kind of ["skills", "memory"] as const) {
-      for (const sub of ["project", "stages", "sessions"] as const) {
-        expect(statSync(join(saivage, kind, sub)).isDirectory()).toBe(true);
-      }
-    }
-
-    const skillsIndex = JSON.parse(
-      readFileSync(join(saivage, "skills", "project", "index.json"), "utf-8"),
-    );
-    expect(skillsIndex).toEqual({ skills: [] });
-
-    const memoryIndex = JSON.parse(
-      readFileSync(join(saivage, "memory", "project", "index.json"), "utf-8"),
-    );
-    expect(memoryIndex).toEqual({ memories: [], topic_map: {} });
-
-    for (const kind of ["skills", "memory"] as const) {
-      const auditPath = join(saivage, kind, "project", "audit.jsonl");
-      expect(existsSync(auditPath)).toBe(true);
-      expect(readFileSync(auditPath, "utf-8")).toBe("");
-    }
+    expect(existsSync(join(saivage, "skills"))).toBe(false);
+    expect(existsSync(join(saivage, "memory"))).toBe(false);
   });
 
-  it("writes .gitignore with tmp/ + session subtrees (FR-21)", async () => {
+  it("writes .gitignore with tmp/ (FR-21)", async () => {
     await seedProject(projectRoot, { name: "test-project", objectives: ["test"] });
     const gitignore = readFileSync(
       join(projectRoot, ".saivage", ".gitignore"),
@@ -134,16 +113,8 @@ describe("seedProject", () => {
     );
     const lines = gitignore.split("\n").map((l) => l.trim()).filter(Boolean);
     expect(lines).toContain("tmp/");
-    expect(lines).toContain("skills/sessions/");
-    expect(lines).toContain("memory/sessions/");
   });
 
-  it("exposes paths.memory on the loaded ProjectContext", async () => {
-    await seedProject(projectRoot, { name: "test-project", objectives: ["test"] });
-    const ctx = await loadProject(projectRoot);
-    expect(ctx.paths.memory).toBe(join(projectRoot, ".saivage", "memory"));
-    expect(ctx.paths.skills).toBe(join(projectRoot, ".saivage", "skills"));
-  });
   it("writes saivage.json with web channel and info severity", async () => {
     await seedProject(projectRoot, { name: "p", objectives: [] });
     const cfg = await loadConfig(projectRoot);
@@ -192,24 +163,6 @@ describe("seedProject", () => {
 });
 
 describe("initProjectTree — idempotence", () => {
-  it("is a no-op when the tree already exists", async () => {
-    await seedProject(projectRoot, { name: "test-project", objectives: ["test"] });
-    const indexPath = join(
-      projectRoot,
-      ".saivage",
-      "skills",
-      "project",
-      "index.json",
-    );
-    // Sentinel content — must not be overwritten on re-run.
-    writeFileSync(indexPath, JSON.stringify({ skills: ["sentinel"] }), "utf-8");
-
-    await initProjectTree(projectRoot);
-
-    const after = JSON.parse(readFileSync(indexPath, "utf-8"));
-    expect(after).toEqual({ skills: ["sentinel"] });
-  });
-
   it("does not duplicate .gitignore lines on re-run", async () => {
     await seedProject(projectRoot, { name: "test-project", objectives: ["test"] });
     const gitignorePath = join(projectRoot, ".saivage", ".gitignore");
@@ -222,9 +175,9 @@ describe("initProjectTree — idempotence", () => {
 
   it("appends missing lines to a pre-existing .gitignore", async () => {
     const saivage = join(projectRoot, ".saivage");
-    // Simulate a pre-existing .gitignore without the new lines.
+    // Simulate a pre-existing .gitignore without the required lines.
     mkdirSync(saivage, { recursive: true });
-    writeFileSync(join(saivage, ".gitignore"), "tmp/\n# user comment\n", "utf-8");
+    writeFileSync(join(saivage, ".gitignore"), "# user comment\n", "utf-8");
 
     await initProjectTree(projectRoot);
 
@@ -232,7 +185,5 @@ describe("initProjectTree — idempotence", () => {
     const lines = content.split("\n").map((l) => l.trim()).filter(Boolean);
     expect(lines).toContain("tmp/");
     expect(lines).toContain("# user comment");
-    expect(lines).toContain("skills/sessions/");
-    expect(lines).toContain("memory/sessions/");
   });
 });

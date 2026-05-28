@@ -67,6 +67,8 @@ export interface SaivageRuntime {
   supervisor: RuntimeSupervisor | null;
   /** RAG MCP service skeleton (F02 B07). */
   ragService: import("./rag/service.js").RagService;
+  /** Knowledge store façade (F01 B07). */
+  knowledgeStore: import("../knowledge/init.js").KnowledgeStore;
   /** Stop the runtime gracefully. */
   shutdown: () => Promise<void>;
 }
@@ -168,7 +170,14 @@ export async function bootstrap(
     projectRoot: project.projectRoot,
   };
   // TODO(F01 B07): construct KnowledgeStore here and pass via { knowledge }
-  registerBuiltinServices(mcpRuntime, config.mcp, config.security, { rag: ragService });
+  const { initKnowledgeStore } = await import("../knowledge/init.js");
+  const knowledgeStore = await initKnowledgeStore({
+    projectRoot: project.projectRoot,
+    ragManager: ragService.manager,
+    ragDatasets: ragService.datasets,
+    ragEnabled: ragService.enabled,
+  });
+  registerBuiltinServices(mcpRuntime, config.mcp, config.security, { rag: ragService, knowledge: knowledgeStore });
   await startConfiguredMcpServers(mcpRuntime, config);
   mcpRuntime.startMonitoring();
 
@@ -248,6 +257,7 @@ export async function bootstrap(
     agentRegistry,
     supervisor: null,
     ragService,
+    knowledgeStore,
     shutdown: async () => {
       log.info("[v2] Shutting down...");
       // Freeze the tracker FIRST so any agent activity callbacks firing
@@ -260,6 +270,8 @@ export async function bootstrap(
       }
       supervisor?.stop();
       await mcpRuntime.shutdown();
+      knowledgeStore.sidecar.close();
+      await ragManager.close();
       eventBus.clear();
       const finalState = createRuntimeState();
       finalState.status = "idle";

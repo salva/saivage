@@ -12,11 +12,8 @@ import {
   type ProjectConfig,
 } from "../types.js";
 
-/** Subscopes under skills/ and memory/ knowledge trees (design §B.4). */
-const KNOWLEDGE_SUBSCOPES = ["project", "stages", "sessions"] as const;
-
 /** Lines that must be present in `.saivage/.gitignore` after init. */
-const GITIGNORE_LINES = ["tmp/", "skills/sessions/", "memory/sessions/"];
+const GITIGNORE_LINES = ["tmp/"];
 
 /** Resolved paths and loaded config for a project. */
 export interface ProjectContext {
@@ -33,8 +30,6 @@ export interface ProjectContext {
     stages: string;
     notes: string;
     inspections: string;
-    skills: string;
-    memory: string;
     tools: string;
     research: string;
     tmp: string;
@@ -74,8 +69,6 @@ export async function loadProject(projectRoot: string): Promise<ProjectContext> 
     stages: join(saivageDir, "stages"),
     notes: join(saivageDir, "notes"),
     inspections: join(saivageDir, "inspections"),
-    skills: join(saivageDir, "skills"),
-    memory: join(saivageDir, "memory"),
     tools: join(saivageDir, "tools"),
     research: join(projectRoot, "research"),
     tmp: join(saivageDir, "tmp"),
@@ -141,12 +134,14 @@ export async function seedProject(
 }
 
 /**
- * Ensure the `.saivage/{skills,memory}/{project,stages,sessions}/` tree
- * exists with seeded empty `index.json` and empty `audit.jsonl` files,
- * and that `.saivage/.gitignore` contains the lines required by FR-21.
+ * Ensure the `.saivage/.gitignore` contains the lines required by FR-21.
  *
- * Idempotent: running on an already-initialized tree is a no-op (no
- * file is overwritten if it already exists).
+ * Pre-F01 this also seeded `.saivage/{skills,memory}/{project,stages,sessions}/`
+ * trees with empty `index.json` + `audit.jsonl` files. F01 B07 cut that over
+ * to the SQLite sidecar at `.saivage/knowledge/store.sqlite`, which is
+ * created on demand by `openSidecar` during knowledge boot.
+ *
+ * Idempotent: only appends missing `.gitignore` lines.
  *
  * Called from {@link seedProject} during fresh init, and safe to call
  * independently to upgrade a partially-initialized tree.
@@ -154,22 +149,6 @@ export async function seedProject(
 export async function initProjectTree(projectRoot: string): Promise<void> {
   const saivageDir = join(projectRoot, ".saivage");
   await ensureDir(saivageDir);
-
-  for (const kind of ["skills", "memory"] as const) {
-    for (const sub of KNOWLEDGE_SUBSCOPES) {
-      await ensureDir(join(saivageDir, kind, sub));
-    }
-    // Seed empty project-scope index + audit. Stage and session scopes
-    // are created on demand by their respective lifecycle events.
-    const indexPath = join(saivageDir, kind, "project", "index.json");
-    if (!(await pathExists(indexPath))) {
-      const initial =
-        kind === "skills" ? { skills: [] } : { memories: [], topic_map: {} };
-      await writeFile(indexPath, JSON.stringify(initial, null, 2), "utf-8");
-    }
-    const auditPath = join(saivageDir, kind, "project", "audit.jsonl");
-    if (!(await pathExists(auditPath))) await writeFile(auditPath, "", "utf-8");
-  }
 
   // Idempotent .gitignore update. We only append missing lines, preserving
   // any pre-existing entries (e.g. user customizations).

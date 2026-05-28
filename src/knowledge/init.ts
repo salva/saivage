@@ -48,6 +48,8 @@ export async function initKnowledgeStore(
       "knowledge store requires rag.enabled = true; refusing to boot",
     );
   }
+  const { refuseOrCleanLegacyTree } = await import("./legacy.js");
+  await refuseOrCleanLegacyTree(opts.projectRoot);
   const { openSidecar } = await import("./sidecar.js");
   const sidecar = await openSidecar(opts.projectRoot);
   const { reingestKind } = await import("./reingest.js");
@@ -60,7 +62,5 @@ export async function initKnowledgeStore(
   };
   const { upsertBuiltinSkills } = await import("./builtins.js");
   await upsertBuiltinSkills(store);
-  // B07 adds: refuseOrCleanLegacyTree, ensureProtectedDatasets,
-  // registerProtectedDatasets, runBootDivergenceSweep.
   return store;
 }
