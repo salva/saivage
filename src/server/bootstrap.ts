@@ -65,6 +65,8 @@ export interface SaivageRuntime {
   agentRegistry: Map<string, import("../agents/base.js").BaseAgent>;
   /** Background log-only supervisor for stuck-agent detection. */
   supervisor: RuntimeSupervisor | null;
+  /** RAG MCP service skeleton (F02 B07). */
+  ragService: import("./rag/service.js").RagService;
   /** Stop the runtime gracefully. */
   shutdown: () => Promise<void>;
 }
@@ -147,7 +149,25 @@ export async function bootstrap(
 
   // 4. Initialize MCP runtime + builtin services
   const mcpRuntime = new McpRuntime(config);
-  registerBuiltinServices(mcpRuntime, config.mcp, config.security);
+  // F02 B07 — construct RagService (shares mutable datasets array with the manager).
+  const ragDatasets = [...config.rag.datasets];
+  const { createRagManager } = await import("../rag/index.js");
+  const ragManager = await createRagManager({
+    projectRoot: project.projectRoot,
+    projectId: project.config.project_name,
+    enabled: config.rag.enabled,
+    datasets: ragDatasets,
+  });
+  const ragService: import("./rag/service.js").RagService = {
+    manager: ragManager,
+    datasets: ragDatasets,
+    watchStatus: new Map(),
+    adminRoles: new Set(),
+    control: { busy: false },
+    enabled: config.rag.enabled,
+    projectRoot: project.projectRoot,
+  };
+  registerBuiltinServices(mcpRuntime, config.mcp, config.security, { rag: ragService });
   await startConfiguredMcpServers(mcpRuntime, config);
   mcpRuntime.startMonitoring();
 
@@ -226,6 +246,7 @@ export async function bootstrap(
     plannerStartupDirectives: [],
     agentRegistry,
     supervisor: null,
+    ragService,
     shutdown: async () => {
       log.info("[v2] Shutting down...");
       // Freeze the tracker FIRST so any agent activity callbacks firing
