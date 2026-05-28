@@ -1,18 +1,14 @@
 /**
- * Eager-injection candidate loader (design §D.4 + §D.6).
+ * Eager-injection candidate loader (design §A.7 + §D.4 + §D.6).
  *
- * Reads every active skill + memory record under `<projectRoot>/.saivage/{skills,memory}/`
- * plus the built-in skills bundled with the saivage package, returning a flat
- * candidate pool ready to feed `resolveEagerRecords`. Pure I/O — no scoring
- * or budgeting decisions live here.
+ * After F01(B05) the canonical source of candidates is the SQLite
+ * sidecar (`<project>/.saivage/knowledge/store.sqlite`). Built-in
+ * skills live there too with `origin = "builtin"` — they are upserted
+ * at boot by {@link upsertBuiltinSkills}. This module no longer scans
+ * any on-disk SKILL.md tree.
  */
 
-import { readdir, readFile } from "node:fs/promises";
-import { pathExists } from "../store/documents.js";
-import { join } from "node:path";
-import { z } from "zod";
 import {
-  BuiltinSkillFrontmatterSchema,
   SkillRecordSchema,
   MemoryRecordSchema,
   type SkillRecord,
@@ -35,186 +31,44 @@ export interface RawCandidate {
   origin?: "builtin" | "project";
 }
 
-async function walkSidecarRecords(
-  projectRoot: string,
-  out: RawCandidate[],
-): Promise<void> {
+function assembleRecord(raw: unknown): SkillRecord | MemoryRecord | undefined {
+  if (raw === null || typeof raw !== "object") return undefined;
+  const kind = (raw as { kind?: string }).kind;
+  try {
+    if (kind === "skill") return SkillRecordSchema.parse(raw);
+    if (kind === "memory") return MemoryRecordSchema.parse(raw);
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Load every active candidate (project + builtin) for the
+ * eager-injection pipeline. Reads directly from the sidecar; the
+ * caller is responsible for invoking {@link resolveEagerRecords}
+ * (or {@link reinjectSurvivors}) on the result.
+ */
+export async function loadAllCandidates(projectRoot: string): Promise<RawCandidate[]> {
   const sidecar = await openSidecar(projectRoot);
   try {
-    const rows = loadAllActiveRowsForEager(sidecar);
-    for (const row of rows) {
+    const out: RawCandidate[] = [];
+    for (const row of loadAllActiveRowsForEager(sidecar)) {
+      let parsed: unknown;
       try {
-        const raw = JSON.parse(row.record_json) as { kind?: string };
-        if (raw.kind === "skill") {
-          const rec = SkillRecordSchema.parse(raw);
-          if (rec.status !== "active") continue;
-          out.push({ record: rec, body: row.body, origin: row.origin });
-        } else if (raw.kind === "memory") {
-          const rec = MemoryRecordSchema.parse(raw);
-          if (rec.status !== "active") continue;
-          out.push({ record: rec, body: row.body, origin: row.origin });
-        }
-      } catch { /* skip malformed */ }
+        parsed = JSON.parse(row.record_json);
+      } catch {
+        continue;
+      }
+      const record = assembleRecord(parsed);
+      if (!record) continue;
+      if (record.status !== "active") continue;
+      out.push({ record, body: row.body, origin: row.origin });
     }
+    return out;
   } finally {
     sidecar.close();
   }
-}
-
-function splitBuiltinSkillMarkdown(text: string): { frontmatter: Record<string, unknown>; body: string } {
-  const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
-  if (!match) return { frontmatter: {}, body: text };
-  const yamlBlock = match[1] ?? "";
-  const body = (match[2] ?? "").replace(/^\r?\n/, "");
-  return { frontmatter: parseBuiltinFrontmatterYaml(yamlBlock), body };
-}
-
-function parseBuiltinFrontmatterYaml(yamlBlock: string): Record<string, unknown> {
-  const frontmatter: Record<string, unknown> = {};
-  const lines = yamlBlock.split(/\r?\n/);
-  let i = 0;
-  while (i < lines.length) {
-    const line = lines[i] ?? "";
-    if (line.trim().length === 0) {
-      i++;
-      continue;
-    }
-    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/);
-    if (!match) {
-      throw new Error(`unparseable frontmatter line: ${line}`);
-    }
-
-    const key = match[1] ?? "";
-    const rawValue = match[2] ?? "";
-    if (Object.prototype.hasOwnProperty.call(frontmatter, key)) {
-      throw new Error(`duplicate frontmatter key: ${key}`);
-    }
-
-    if (rawValue.length === 0) {
-      const items: string[] = [];
-      i++;
-      while (i < lines.length) {
-        const inner = lines[i] ?? "";
-        const blockMatch = inner.match(/^\s+-\s+(.*)$/);
-        if (!blockMatch) break;
-        items.push(stripYamlQuotes((blockMatch[1] ?? "").trim()));
-        i++;
-      }
-      frontmatter[key] = items;
-      continue;
-    }
-
-    frontmatter[key] = parseBuiltinYamlValue(rawValue);
-    i++;
-  }
-  return frontmatter;
-}
-
-function parseBuiltinYamlValue(rawValue: string): string | string[] | boolean {
-  const value = rawValue.trim();
-  if (value.startsWith("[") && value.endsWith("]")) {
-    const inside = value.slice(1, -1).trim();
-    return inside.length === 0
-      ? []
-      : inside.split(",").map((item) => stripYamlQuotes(item.trim()));
-  }
-  if (value === "true") return true;
-  if (value === "false") return false;
-  return stripYamlQuotes(value);
-}
-
-function stripYamlQuotes(value: string): string {
-  return value.replace(/^['"]|['"]$/g, "");
-}
-
-function describeBuiltinFrontmatterError(error: unknown): string {
-  if (error instanceof z.ZodError) {
-    return error.issues
-      .map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
-      .join("; ");
-  }
-  return error instanceof Error ? error.message : String(error);
-}
-
-/**
- * Walk the bundled built-in skills tree. Looks for `<builtinRoot>/<topic>/SKILL.md`
- * (post-WI-16 layout). Each file becomes a synthetic active SkillRecord with
- * origin=builtin. Returns empty if the directory does not exist.
- */
-export async function walkBuiltinSkills(builtinRoot: string, out: RawCandidate[]): Promise<void> {
-  if (!(await pathExists(builtinRoot))) return;
-  for (const topic of (await readdir(builtinRoot)).sort()) {
-    const skillPath = join(builtinRoot, topic, "SKILL.md");
-    if (!(await pathExists(skillPath))) continue;
-    let text: string;
-    try {
-      text = await readFile(skillPath, "utf-8");
-    } catch (error) {
-      throw new Error(
-        `Unable to read builtin skill ${skillPath}: ${describeBuiltinFrontmatterError(error)}`,
-        { cause: error },
-      );
-    }
-
-    let parsed: ReturnType<typeof splitBuiltinSkillMarkdown>;
-    let frontmatter: z.infer<typeof BuiltinSkillFrontmatterSchema>;
-    try {
-      parsed = splitBuiltinSkillMarkdown(text);
-      frontmatter = BuiltinSkillFrontmatterSchema.parse(parsed.frontmatter);
-    } catch (error) {
-      throw new Error(
-        `Invalid builtin skill frontmatter in ${skillPath}: ${describeBuiltinFrontmatterError(error)}`,
-        { cause: error },
-      );
-    }
-
-    const now = new Date(0).toISOString();
-    const rec: SkillRecord = SkillRecordSchema.parse({
-      id: "builtin:" + topic,
-      kind: "skill",
-      scope: "project",
-      status: "active",
-      created_at: now,
-      updated_at: now,
-      author_agent: { role: "manager", agent_id: "builtin" },
-      name: frontmatter.name,
-      description: frontmatter.description,
-      triggers: frontmatter.triggers,
-      target_agents: frontmatter.target_agents,
-      origin: "builtin",
-      relates_to: [],
-      survive_compaction: frontmatter.survive_compaction,
-    });
-    out.push({ record: rec, body: parsed.body, origin: "builtin" });
-  }
-}
-
-/**
- * Default builtin path under the running bundle. At dev time
- * `import.meta.dirname` is `src/knowledge`; at runtime it's `dist/knowledge`.
- * Both resolve to `<bundle>/skills/builtin` after WI-16 moves the legacy
- * `skills/<topic>` tree under `skills/builtin/`.
- */
-export function defaultBuiltinSkillsRoot(): string {
-  // import.meta.dirname is set in Node ≥ 20.11.
-  const here = import.meta.dirname ?? __dirname;
-  return join(here, "..", "..", "skills", "builtin");
-}
-
-/**
- * Load every candidate (project + builtin) for the eager-injection
- * pipeline. The caller is responsible for invoking
- * {@link resolveEagerRecords} (or {@link reinjectSurvivors}) on the
- * result.
- */
-export async function loadAllCandidates(
-  projectRoot: string,
-  builtinRoot: string = defaultBuiltinSkillsRoot(),
-): Promise<RawCandidate[]> {
-  const out: RawCandidate[] = [];
-  await walkSidecarRecords(projectRoot, out);
-  await walkBuiltinSkills(builtinRoot, out);
-  return out;
 }
 
 /** Format §D.6 — eager block appended to the static system prompt. */

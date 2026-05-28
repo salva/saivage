@@ -58,7 +58,9 @@ export async function initKnowledgeStore(
     projectRoot: opts.projectRoot,
     reingestKind: (kind) => reingestKind(store, kind),
   };
-  // B04/B05/B07 add: refuseOrCleanLegacyTree, ensureProtectedDatasets,
-  // registerProtectedDatasets, upsertBuiltinSkills, runBootDivergenceSweep.
+  const { upsertBuiltinSkills } = await import("./builtins.js");
+  await upsertBuiltinSkills(store);
+  // B07 adds: refuseOrCleanLegacyTree, ensureProtectedDatasets,
+  // registerProtectedDatasets, runBootDivergenceSweep.
   return store;
 }

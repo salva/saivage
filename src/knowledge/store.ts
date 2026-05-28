@@ -34,6 +34,7 @@ export type KnowledgeErrorCode =
   | "BLOCKED_PATH"
   | "NO_RUNTIME_LOCK"
   | "OVERSIZED_SURVIVOR"
+  | "INVALID_BUILTIN_NAME"
   | "KNOWLEDGE_MIGRATION_REQUIRED";
 
 export class KnowledgeStoreError extends Error {

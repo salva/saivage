@@ -56,6 +56,14 @@ interface InputItem {
     : never;
   /** For records input, the caller-supplied `id` (used as `path`). */
   recordId?: string;
+  /**
+   * Caller-declared chunk source. For records-mode ingest the caller
+   * already knows whether the item is a skill / memory / doc /
+   * code (set by `toIngestItem` in `sidecar-queries.ts`); the pipeline
+   * honours it instead of re-inferring from the synthetic path.
+   * Undefined for fs-mode items (where `inferSource(path)` decides).
+   */
+  declaredSource?: RawChunk["metadata"]["source"];
 }
 
 function sha256Hex(s: string): string {
@@ -116,6 +124,7 @@ function buildRecordItems(
       mtimeMs: it.metadata.mtimeMs ?? Date.now(),
       sourceHash: sha256Hex(text),
       recordId: it.id,
+      declaredSource: it.metadata.source,
       metadataOverlay: {
         language: it.metadata.language,
         headingPath: it.metadata.headingPath,
@@ -194,7 +203,7 @@ export async function runIngest(args: RunIngestArgs): Promise<IngestReport> {
       const needsEmbedding: Array<{ idx: number; text: string }> = [];
 
       for (const item of batch) {
-        const source = item.metadataOverlay?.scope === "memory" ? "memory" : inferSource(item.path);
+        const source = item.declaredSource ?? inferSource(item.path);
         const language = item.metadataOverlay?.language;
         const chunks: RawChunk[] = [];
         for await (const ch of chunker.chunk({

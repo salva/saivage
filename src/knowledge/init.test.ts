@@ -69,11 +69,15 @@ describe("reingestKind", () => {
       ragDatasets: [],
       ragEnabled: true,
     });
+    // initKnowledgeStore upserts bundled builtin skills and reingests them;
+    // clear those calls so the assertion targets just this test's action.
+    calls.length = 0;
     store.sidecar.db.prepare(
       "INSERT INTO record (id, kind, scope, status, origin, record_json, body, created_at, updated_at, pending_reingest) VALUES (?,?,?,?,?,?,?,?,?,?)",
     ).run("s1", "skill", "project", "active", "project", "{}", "body", "t", "t", 1);
     await reingestKind(store, "skill");
-    expect(calls).toEqual([{ id: "knowledge.skills", n: 1 }]);
+    // 3 bundled builtin skills + s1 = 4 active rows republished.
+    expect(calls).toEqual([{ id: "knowledge.skills", n: 4 }]);
     const row = store.sidecar.db
       .prepare("SELECT pending_reingest FROM record WHERE id = 's1'")
       .get() as { pending_reingest: number };
@@ -97,6 +101,7 @@ describe("runBootDivergenceSweep", () => {
       ragDatasets: [],
       ragEnabled: true,
     });
+    calls.length = 0;
     store.sidecar.db.prepare(
       "INSERT INTO record (id, kind, scope, status, origin, record_json, body, created_at, updated_at, pending_reingest) VALUES (?,?,?,?,?,?,?,?,?,?)",
     ).run("m1", "memory", "project", "active", "project", "{}", "b", "t", "t", 1);
