@@ -85,4 +85,47 @@ describe("applyToolFilter — read_stash is allowed for every kind", () => {
   it("chat allows read_stash", () => {
     expect(applyToolFilter("chat", t("read_stash", "stash"))).toBe(true);
   });
+  it("librarian allows read_stash", () => {
+    expect(applyToolFilter("librarian", t("read_stash", "stash"))).toBe(true);
+  });
+});
+
+describe("applyToolFilter — librarian allow-list", () => {
+  const LIBRARIAN_ALLOWED = [
+    "rag_list", "rag_stats", "rag_query",
+    "rag_register", "rag_ingest", "rag_drop", "rag_admin",
+    "read_file", "list_dir", "search_files",
+    "list_skills", "read_skill", "search_skills",
+    "list_memories", "get_memory", "search_memories",
+    "create_memory", "update_memory",
+    "read_stash",
+  ];
+
+  for (const name of LIBRARIAN_ALLOWED) {
+    it(`librarian allows ${name}`, () => {
+      expect(applyToolFilter("librarian", t(name))).toBe(true);
+    });
+  }
+
+  const LIBRARIAN_DENIED = [
+    "create_note",
+    "archive_memory",
+    "delete_memory",
+    "supersede_memory",
+    "create_skill",
+    "archive_skill",
+    "delete_skill",
+    "run_command",
+    "run_coder",
+    "run_manager",
+    "run_inspector",
+    "web_search",
+    "write_file",
+  ];
+
+  for (const name of LIBRARIAN_DENIED) {
+    it(`librarian excludes ${name}`, () => {
+      expect(applyToolFilter("librarian", t(name))).toBe(false);
+    });
+  }
 });

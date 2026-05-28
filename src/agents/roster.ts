@@ -349,11 +349,8 @@ export const ROSTER = [
     role: "librarian",
     worker: false,
     stageScoped: false,
-    // dispatchTool and dispatchableBy are populated in F03(B02) together with
-    // RUN_LIBRARIAN_SCHEMA in src/agents/base.ts. Keeping null here in F03(B01)
-    // avoids the dispatcher's "Missing dispatch schema" load-time check.
-    dispatchTool: null,
-    dispatchableBy: [],
+    dispatchTool: "run_librarian",
+    dispatchableBy: ["planner", "manager"],
     toolFilter: "librarian",
     abortPriority: 8,
     selfCheckFrequency: 20,

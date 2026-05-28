@@ -80,6 +80,7 @@ describe("ROSTER — declarative source of truth", () => {
       "designer",
       "critic",
       "inspector",
+      "librarian",
     ]);
   });
 
@@ -200,10 +201,10 @@ describe("ROSTER — derived accessors", () => {
 
   it("getDispatchToolsFor returns the roster's dispatch tools for each parent role", () => {
     expect(getDispatchToolsFor("manager").sort()).toEqual(
-      ["run_coder", "run_critic", "run_data_agent", "run_designer", "run_researcher", "run_reviewer"].sort(),
+      ["run_coder", "run_critic", "run_data_agent", "run_designer", "run_librarian", "run_researcher", "run_reviewer"].sort(),
     );
     expect(getDispatchToolsFor("planner").sort()).toEqual(
-      ["run_inspector", "run_manager"].sort(),
+      ["run_inspector", "run_librarian", "run_manager"].sort(),
     );
     expect(getDispatchToolsFor("chat")).toEqual([]);
     expect(getDispatchToolsFor("coder")).toEqual([]);

@@ -426,6 +426,15 @@ export function createChildSpawner(
         break;
       }
 
+      case "librarian": {
+        // F03(B02) exposes the run_librarian dispatch tool, but the
+        // LibrarianAgent class itself lands in F03(B03). Invoking the
+        // librarian before B03 is a programmer error.
+        throw new Error(
+          "run_librarian dispatched but LibrarianAgent is not yet implemented (lands in F03(B03)).",
+        );
+      }
+
       default:
         return assertExhaustive(role);
     }

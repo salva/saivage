@@ -29,6 +29,16 @@ const WORKER_EXCLUDED_TOOLS = new Set<string>([
 const READ_STASH = "read_stash";
 const WEB_TOOLS = new Set<string>(["web_search", "fetch_url", "fetch_page_text"]);
 
+const LIBRARIAN_TOOLS = new Set<string>([
+  "rag_list", "rag_stats", "rag_query",
+  "rag_register", "rag_ingest", "rag_drop", "rag_admin",
+  "read_file", "list_dir", "search_files",
+  "list_skills", "read_skill", "search_skills",
+  "list_memories", "get_memory", "search_memories",
+  "create_memory", "update_memory",
+  "read_stash",
+]);
+
 const TOOL_FILTERS: Record<ToolFilterKind, (name: string) => boolean> = {
   planner: (n) => PLAN_TOOLS.has(n) || READ_ONLY_TOOLS.has(n) || n === READ_STASH,
   worker: (n) => !WORKER_EXCLUDED_TOOLS.has(n),
@@ -37,10 +47,7 @@ const TOOL_FILTERS: Record<ToolFilterKind, (name: string) => boolean> = {
     READ_ONLY_TOOLS.has(n) || n === "run_command" || n === READ_STASH || WEB_TOOLS.has(n),
   chat: (n) =>
     READ_ONLY_TOOLS.has(n) || n === READ_STASH || WEB_TOOLS.has(n) || n === "create_note",
-  // The librarian allow-list is populated in F03(B02); kept as a closed deny
-  // here so the `Record<ToolFilterKind, ...>` stays exhaustive after the
-  // ToolFilterKind union gained "librarian" in F03(B01).
-  librarian: () => false,
+  librarian: (n) => LIBRARIAN_TOOLS.has(n),
 };
 
 export function applyToolFilter(

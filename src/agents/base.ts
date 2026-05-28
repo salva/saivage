@@ -1086,6 +1086,30 @@ const RUN_CRITIC_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
   "The design critique task",
 );
 
+const RUN_LIBRARIAN_SCHEMA: ToolSchema = {
+  name: "run_librarian",
+  description:
+    "Dispatch a one-shot Librarian agent to investigate or curate the RAG knowledge surface. Returns a markdown report (not a TaskReport). The Librarian may register, ingest, query, or drop unprotected collections and record memories under topic.domain='rag', but does not edit source files, write skills, or mutate plan state.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      objective: {
+        type: "string",
+        description: "What the Librarian should investigate or curate.",
+      },
+      collection_id: {
+        type: "string",
+        description: "Optional collection the operator wants the Librarian to focus on.",
+      },
+      context: {
+        type: "string",
+        description: "Optional additional context, links, or constraints.",
+      },
+    },
+    required: ["objective"],
+  },
+};
+
 function makeWorkerDispatchSchema(
   name: string,
   description: string,
@@ -1127,6 +1151,7 @@ const DISPATCH_SCHEMA_BY_TOOL: Record<string, ToolSchema> = {
   run_reviewer: RUN_REVIEWER_SCHEMA,
   run_designer: RUN_DESIGNER_SCHEMA,
   run_critic: RUN_CRITIC_SCHEMA,
+  run_librarian: RUN_LIBRARIAN_SCHEMA,
 };
 
 /** Role → dispatch tools mapping, derived from `ROSTER[*].dispatchableBy`. */
