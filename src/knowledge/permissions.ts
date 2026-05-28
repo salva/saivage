@@ -217,27 +217,26 @@ const MATRIX: Record<KnowledgeAgentRole, Record<string, AccessCell>> = {
     "search-skill": "Y",
     "search-memory": "Y",
   },
-  // The full Librarian row (read/list/search = Y, create/update memory = Y†,
-  // everything else = "-") is installed by F03(B04). This stub keeps the
-  // exhaustive `Record<KnowledgeAgentRole, ...>` typecheck happy after
-  // F03(B01) added "librarian" to `KnowledgeAgentRoleSchema`.
+  // Librarian (F03 §F): read-only across both kinds, may write memory at
+  // project scope only (Y†), and restricted further by topic (see
+  // `enforceLibrarianTopic` in mcp/knowledgeMemory.ts).
   librarian: {
     "create-skill": "-",
-    "create-memory": "-",
+    "create-memory": "Y†",
     "update-skill": "-",
-    "update-memory": "-",
+    "update-memory": "Y†",
     "supersede-skill": "-",
     "supersede-memory": "-",
     "archive-skill": "-",
     "archive-memory": "-",
     "delete-skill": "-",
     "delete-memory": "-",
-    "read-skill": "-",
-    "read-memory": "-",
-    "list-skill": "-",
-    "list-memory": "-",
-    "search-skill": "-",
-    "search-memory": "-",
+    "read-skill": "Y",
+    "read-memory": "Y",
+    "list-skill": "Y",
+    "list-memory": "Y",
+    "search-skill": "Y",
+    "search-memory": "Y",
   },
 };
 
@@ -288,7 +287,16 @@ export function checkScope(
   ctx: { stageId?: string; channelId?: string },
 ): ScopeCheckResult {
   if (cellFor(role, op, kind) !== "Y†") return { ok: true };
-  // Y† applies to coder/researcher memory create/update only.
+  // Librarian Y†: project scope only.
+  if (role === "librarian") {
+    if (scope === "project") return { ok: true };
+    return {
+      ok: false,
+      code: "UNAUTHORIZED_SCOPE",
+      reason: `role=librarian may only write memory with scope='project', got '${scope}'`,
+    };
+  }
+  // Y† for coder/researcher: stage scope tied to current stage.
   if (scope !== "stage") {
     return {
       ok: false,

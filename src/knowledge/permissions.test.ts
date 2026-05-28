@@ -13,6 +13,7 @@ const ROLES: KnowledgeAgentRole[] = [
   "designer",
   "critic",
   "chat",
+  "librarian",
 ];
 
 /**
@@ -140,6 +141,18 @@ const EXPECTED: Record<KnowledgeAgentRole, Record<string, "Y" | "Y†" | "-">> =
     "search-skill": "Y",
     "search-memory": "Y",
   },
+  librarian: {
+    "create-skill": "-",
+    "create-memory": "Y†",
+    "supersede-skill": "-",
+    "supersede-memory": "-",
+    "archive-skill": "-",
+    "archive-memory": "-",
+    "read-skill": "Y",
+    "read-memory": "Y",
+    "search-skill": "Y",
+    "search-memory": "Y",
+  },
 };
 
 describe("canCall — full §F matrix", () => {
@@ -214,4 +227,28 @@ describe("checkScope — Y† worker scope restriction", () => {
     expect(checkScope("data_agent", "read", "skill", "project", undefined, {}).ok).toBe(true);
     expect(checkScope("chat", "search", "memory", "stage", "x", {}).ok).toBe(true);
   });
+});
+
+describe("checkScope — librarian Y† project-scope restriction", () => {
+  it("librarian create_memory(project) is allowed", () => {
+    const r = checkScope("librarian", "create", "memory", "project", undefined, {});
+    expect(r.ok).toBe(true);
+  });
+
+  it("librarian update_memory(project) is allowed", () => {
+    const r = checkScope("librarian", "update", "memory", "project", undefined, {});
+    expect(r.ok).toBe(true);
+  });
+
+  it.each(["stage", "session"] as const)(
+    "librarian create_memory(%s) is rejected",
+    (scope) => {
+      const r = checkScope("librarian", "create", "memory", scope, "x", { stageId: "stg-1" });
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.code).toBe("UNAUTHORIZED_SCOPE");
+        expect(r.reason).toContain("librarian");
+      }
+    },
+  );
 });

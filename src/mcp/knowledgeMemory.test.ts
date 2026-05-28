@@ -148,3 +148,131 @@ describe("MCP knowledgeMemory handler — lifecycle", () => {
     expect((r.content as { error: { code: string } }).error.code).toBe("NOT_FOUND");
   });
 });
+
+describe("MCP knowledgeMemory handler — librarian topic guard (F03 B04)", () => {
+  it.each(["policy", "secret-incidents", "drift-incidents"] as const)(
+    "allows librarian to create_memory with topic rag/%s",
+    async (subject) => {
+      const { root, handler } = await tmpProject();
+      const r = await handler(
+        "create_memory",
+        { topic: { domain: "rag", subject }, body: "b", scope: "project", reason: "r" },
+        ctxFor("librarian", root),
+      );
+      expect(r.isError).toBe(false);
+    },
+  );
+
+  it("rejects librarian create_memory with non-rag domain (UNAUTHORIZED_TOPIC)", async () => {
+    const { root, handler } = await tmpProject();
+    const r = await handler(
+      "create_memory",
+      { topic: { domain: "general", subject: "policy" }, body: "b", scope: "project", reason: "r" },
+      ctxFor("librarian", root),
+    );
+    expect(r.isError).toBe(true);
+    expect((r.content as { error: { code: string } }).error.code).toBe("UNAUTHORIZED_TOPIC");
+  });
+
+  it("rejects librarian create_memory with rag/<other> (UNAUTHORIZED_TOPIC)", async () => {
+    const { root, handler } = await tmpProject();
+    const r = await handler(
+      "create_memory",
+      { topic: { domain: "rag", subject: "other" }, body: "b", scope: "project", reason: "r" },
+      ctxFor("librarian", root),
+    );
+    expect(r.isError).toBe(true);
+    expect((r.content as { error: { code: string } }).error.code).toBe("UNAUTHORIZED_TOPIC");
+  });
+
+  it("rejects librarian create_memory at stage scope (UNAUTHORIZED_SCOPE)", async () => {
+    const { root, handler } = await tmpProject();
+    const r = await handler(
+      "create_memory",
+      {
+        topic: { domain: "rag", subject: "policy" },
+        body: "b",
+        scope: "stage",
+        scope_ref: "stage-1",
+        reason: "r",
+      },
+      ctxFor("librarian", root, "stage-1"),
+    );
+    expect(r.isError).toBe(true);
+    expect((r.content as { error: { code: string } }).error.code).toBe("UNAUTHORIZED_SCOPE");
+  });
+
+  it("non-librarian roles are unaffected by topic guard", async () => {
+    const { root, handler } = await tmpProject();
+    const r = await handler(
+      "create_memory",
+      { topic: { domain: "general", subject: "anything" }, body: "b", scope: "project", reason: "r" },
+      ctxFor("planner", root),
+    );
+    expect(r.isError).toBe(false);
+  });
+
+  it("update_memory: librarian update on rag/policy is allowed", async () => {
+    const { root, handler } = await tmpProject();
+    const c = await handler(
+      "create_memory",
+      { topic: { domain: "rag", subject: "policy" }, body: "v1", scope: "project", reason: "r" },
+      ctxFor("librarian", root),
+    );
+    expect(c.isError).toBe(false);
+    const id = (c.content as { id: string }).id;
+    const u = await handler(
+      "update_memory",
+      { id, body: "v2", reason: "r2" },
+      ctxFor("librarian", root),
+    );
+    expect(u.isError).toBe(false);
+  });
+
+  it("update_memory: librarian update on non-allowed topic (created by planner) is rejected", async () => {
+    const { root, handler } = await tmpProject();
+    const c = await handler(
+      "create_memory",
+      { topic: { domain: "general", subject: "x" }, body: "v1", scope: "project", reason: "r" },
+      ctxFor("planner", root),
+    );
+    expect(c.isError).toBe(false);
+    const id = (c.content as { id: string }).id;
+    const u = await handler(
+      "update_memory",
+      { id, body: "v2", reason: "r2" },
+      ctxFor("librarian", root),
+    );
+    expect(u.isError).toBe(true);
+    expect((u.content as { error: { code: string } }).error.code).toBe("UNAUTHORIZED_TOPIC");
+  });
+});
+
+describe("MCP knowledgeMemory handler — update_memory worker scope regression (F03 B04)", () => {
+  it("coder update_memory fails UNAUTHORIZED_SCOPE when prior.scope_ref != current stage", async () => {
+    const { root, handler } = await tmpProject();
+    // Coder creates a stage memory under stage-1
+    const c = await handler(
+      "create_memory",
+      {
+        topic: { domain: "build", subject: "x" },
+        body: "v1",
+        scope: "stage",
+        scope_ref: "stage-1",
+        reason: "r",
+      },
+      ctxFor("coder", root, "stage-1"),
+    );
+    expect(c.isError).toBe(false);
+    const id = (c.content as { id: string }).id;
+
+    // Switch to stage-2: update must be rejected since prior.scope_ref==stage-1.
+    const u = await handler(
+      "update_memory",
+      { id, body: "v2", reason: "r2" },
+      ctxFor("coder", root, "stage-2"),
+    );
+    expect(u.isError).toBe(true);
+    expect((u.content as { error: { code: string } }).error.code).toBe("UNAUTHORIZED_SCOPE");
+  });
+});

@@ -179,6 +179,34 @@ function gateScope(
   }
 }
 
+/**
+ * F03(B04) — Librarian topic guard.
+ *
+ * Librarian may only write memory whose topic is one of:
+ *   `rag/policy`, `rag/secret-incidents`, `rag/drift-incidents`.
+ * Any other domain/subject combination is rejected with
+ * `UNAUTHORIZED_TOPIC`. Other roles are unaffected.
+ */
+const LIBRARIAN_ALLOWED_SUBJECTS = new Set(["policy", "secret-incidents", "drift-incidents"]);
+
+function enforceLibrarianTopic(
+  role: KnowledgeAgentRole,
+  topic: { domain: string; subject: string; aspect?: string } | undefined,
+) {
+  if (role !== "librarian") return;
+  const domain = topic?.domain ?? "";
+  const subject = topic?.subject ?? "";
+  if (domain !== "rag" || !LIBRARIAN_ALLOWED_SUBJECTS.has(subject)) {
+    throw new KnowledgeStoreError(
+      "UNAUTHORIZED_TOPIC",
+      "librarian topic must be rag/{policy|secret-incidents|drift-incidents}, got " +
+        domain +
+        "/" +
+        subject,
+    );
+  }
+}
+
 export function makeKnowledgeMemoryHandler(store: KnowledgeStore): InProcessToolHandler {
   return async (toolName, args, ctx) => {
     if (!validateCtx(ctx)) {
@@ -193,6 +221,10 @@ export function makeKnowledgeMemoryHandler(store: KnowledgeStore): InProcessTool
           const scope = args.scope as KnowledgeScope;
           const scope_ref = args.scope_ref !== undefined ? String(args.scope_ref) : undefined;
           gateScope(role, "create", scope, scope_ref, { stageId: ctx.stageId, channelId: ctx.channelId });
+          enforceLibrarianTopic(
+            role,
+            args.topic as { domain: string; subject: string; aspect?: string } | undefined,
+          );
           const result = await createMemory(store, {
             topic: args.topic as { domain: string; subject: string; aspect?: string },
             keys: (args.keys as string[] | undefined) ?? [],
@@ -224,6 +256,20 @@ export function makeKnowledgeMemoryHandler(store: KnowledgeStore): InProcessTool
             prior.scope_ref ?? undefined,
             { stageId: ctx.stageId, channelId: ctx.channelId },
           );
+          // F03(B04) — Librarian topic guard on update: rehydrate the topic from the
+          // sidecar record_json since RecordRow does not denormalize it.
+          if (role === "librarian") {
+            let priorTopic: { domain: string; subject: string; aspect?: string } | undefined;
+            try {
+              const parsed = JSON.parse(prior.record_json) as {
+                topic?: { domain: string; subject: string; aspect?: string };
+              };
+              priorTopic = parsed.topic;
+            } catch {
+              priorTopic = undefined;
+            }
+            enforceLibrarianTopic(role, priorTopic);
+          }
           const result = await updateMemory(store, {
             id: String(args.id),
             ...(args.body !== undefined ? { body: String(args.body) } : {}),

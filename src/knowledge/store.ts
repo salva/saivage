@@ -23,6 +23,7 @@ import { LifecycleStatusSchema, type AuditOp } from "./types.js";
 export type KnowledgeErrorCode =
   | "UNAUTHORIZED_ROLE"
   | "UNAUTHORIZED_SCOPE"
+  | "UNAUTHORIZED_TOPIC"
   | "NOT_FOUND"
   | "EMPTY_REASON"
   | "INVALID_SCOPE_REF"
