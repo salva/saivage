@@ -11,7 +11,13 @@
 import type { ConventionRule } from "./conventions.js";
 import type { RolePromptName } from "./prompt-keys.js";
 
-export type ToolFilterKind = "planner" | "worker" | "reviewer" | "inspector" | "chat";
+export type ToolFilterKind =
+  | "planner"
+  | "worker"
+  | "reviewer"
+  | "inspector"
+  | "chat"
+  | "librarian";
 
 /**
  * Per-role metadata used by `WorkerAgent.createWorker` and `buildInitialMessage`
@@ -337,6 +343,31 @@ export const ROSTER = [
     displayName: "Chat",
     summary:
       "The user-facing surface. Answers user questions about project state, relays user direction and investigation requests to the Planner via notes, and pushes notifications about significant events. Does not write project files or dispatch workers.",
+    workerInit: null,
+  },
+  {
+    role: "librarian",
+    worker: false,
+    stageScoped: false,
+    // dispatchTool and dispatchableBy are populated in F03(B02) together with
+    // RUN_LIBRARIAN_SCHEMA in src/agents/base.ts. Keeping null here in F03(B01)
+    // avoids the dispatcher's "Missing dispatch schema" load-time check.
+    dispatchTool: null,
+    dispatchableBy: [],
+    toolFilter: "librarian",
+    abortPriority: 8,
+    selfCheckFrequency: 20,
+    convention: {
+      writeTerritory: [".saivage/memory/project/"],
+      excludeTerritory: ["src/", "research/"],
+      description: "Librarian curates project-scoped rag memories only.",
+    },
+    defaultModelKey: "orchestrator",
+    displayName: "Librarian",
+    summary:
+      "Curates the RAG knowledge surface. Investigates retrieval gaps and drift, " +
+      "records policies and incident memories under topic.domain='rag', does not " +
+      "write skills or non-rag memories.",
     workerInit: null,
   },
 ] as const satisfies readonly RosterEntry[];

@@ -304,6 +304,14 @@ This means the Manager maintains its full conversation context throughout the st
 - User can configure notification filters (opt-out of categories, severity thresholds).
 - All dialogues are **persisted to disk** so that the Chat agent maintains conversation continuity across user sessions. Chat logs are gitignored and not accessible to other agents — they exist for user-facing context only.
 
+### 2.11 Librarian
+
+**Purpose:** Bounded steward of unprotected RAG collections. Investigates retrieval gaps and drift; registers, ingests, queries, prunes, and diagnoses datasets; records policy and incident memories under `topic.domain="rag"`.
+
+**Lifecycle:** One-shot, on demand. Dispatched by the Planner or the Manager via `run_librarian`; returns a markdown report (not a `TaskReport`). Defined in `SPEC/2026-05/rag-agent-integration/F03-librarian-agent/`.
+
+**Scope of Action:** No plan mutation, no source-file editing, no `run_command`, no skill writes, no protected-dataset mutation. Writes only project-scope memories under `topic.domain="rag"` and `topic.subject ∈ {policy, secret-incidents, drift-incidents}`.
+
 ---
 
 ## 3. Communication Protocol

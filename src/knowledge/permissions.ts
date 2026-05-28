@@ -217,6 +217,28 @@ const MATRIX: Record<KnowledgeAgentRole, Record<string, AccessCell>> = {
     "search-skill": "Y",
     "search-memory": "Y",
   },
+  // The full Librarian row (read/list/search = Y, create/update memory = Y†,
+  // everything else = "-") is installed by F03(B04). This stub keeps the
+  // exhaustive `Record<KnowledgeAgentRole, ...>` typecheck happy after
+  // F03(B01) added "librarian" to `KnowledgeAgentRoleSchema`.
+  librarian: {
+    "create-skill": "-",
+    "create-memory": "-",
+    "update-skill": "-",
+    "update-memory": "-",
+    "supersede-skill": "-",
+    "supersede-memory": "-",
+    "archive-skill": "-",
+    "archive-memory": "-",
+    "delete-skill": "-",
+    "delete-memory": "-",
+    "read-skill": "-",
+    "read-memory": "-",
+    "list-skill": "-",
+    "list-memory": "-",
+    "search-skill": "-",
+    "search-memory": "-",
+  },
 };
 
 function cellFor(role: KnowledgeAgentRole, op: KnowledgeOp, kind: KnowledgeKind): AccessCell {

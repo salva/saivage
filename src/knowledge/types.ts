@@ -25,6 +25,7 @@ export const KnowledgeAgentRoleSchema = z.enum([
   "designer",
   "critic",
   "chat",
+  "librarian",
 ]);
 export type KnowledgeAgentRole = z.infer<typeof KnowledgeAgentRoleSchema>;
 

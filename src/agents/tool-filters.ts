@@ -37,6 +37,10 @@ const TOOL_FILTERS: Record<ToolFilterKind, (name: string) => boolean> = {
     READ_ONLY_TOOLS.has(n) || n === "run_command" || n === READ_STASH || WEB_TOOLS.has(n),
   chat: (n) =>
     READ_ONLY_TOOLS.has(n) || n === READ_STASH || WEB_TOOLS.has(n) || n === "create_note",
+  // The librarian allow-list is populated in F03(B02); kept as a closed deny
+  // here so the `Record<ToolFilterKind, ...>` stays exhaustive after the
+  // ToolFilterKind union gained "librarian" in F03(B01).
+  librarian: () => false,
 };
 
 export function applyToolFilter(

@@ -45,6 +45,7 @@ describe("ROSTER — declarative source of truth", () => {
       "critic",
       "inspector",
       "chat",
+      "librarian",
     ]);
   });
 
@@ -60,6 +61,7 @@ describe("ROSTER — declarative source of truth", () => {
       "critic",
       "inspector",
       "chat",
+      "librarian",
     ]);
     expect([...WORKER_ROLES]).toEqual([
       "coder",
@@ -236,7 +238,7 @@ describe("ROSTER — worker init", () => {
   });
 
   it("non-worker roles have workerInit: null", () => {
-    for (const role of ["planner", "manager", "inspector", "chat"] as const) {
+    for (const role of ["planner", "manager", "inspector", "chat", "librarian"] as const) {
       expect(getRoster(role).workerInit).toBeNull();
     }
   });

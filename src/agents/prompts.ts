@@ -27,6 +27,7 @@ const PROMPT_KEY_TO_ROLE: Record<RolePromptName, AgentRole> = {
   critic: "critic",
   inspector: "inspector",
   chat: "chat",
+  librarian: "librarian",
 };
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -104,6 +105,7 @@ export const ROLE_PROMPT_NAMES: readonly RolePromptName[] = [
   "critic",
   "inspector",
   "chat",
+  "librarian",
 ];
 
 /**

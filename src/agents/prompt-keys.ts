@@ -16,4 +16,5 @@ export type RolePromptName =
   | "designer"
   | "critic"
   | "inspector"
-  | "chat";
+  | "chat"
+  | "librarian";
