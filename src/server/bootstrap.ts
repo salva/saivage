@@ -429,6 +429,7 @@ export function createChildSpawner(
 
       case "librarian": {
         const librarianInput = input as import("../agents/librarian.js").LibrarianInput;
+        runtime.ragService.adminRoles.add("librarian");
         agent = await LibrarianAgent.create(ctx, librarianInput, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
           onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
