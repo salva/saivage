@@ -1,39 +1,34 @@
 /**
- * Saivage — Knowledge lifecycle helpers (M2).
+ * Saivage — Knowledge lifecycle operations (post F01 B04).
  *
- * Composite operations on top of `store.ts` primitives. The MCP handler
- * adapters in `src/mcp/knowledgeSkills.ts` and `knowledgeMemory.ts`
- * remain thin per-tool dispatchers; this module owns the shared
- * lifecycle mechanics so both kinds share one engine.
+ * The lifecycle layer now sits on top of the SQLite sidecar
+ * (`sidecar.ts` + `sidecar-queries.ts`). The legacy JSON-tree layout
+ * (`<saivage>/skills/<scope>/records/*.json` + `audit.jsonl`) is gone.
  *
- * Source: SPEC/v2/skills-memory/01-DESIGN.md §C.3 (transaction order),
- * §B.4 (on-disk layout), §B.5 (supersession scope-pair table), §D.3
- * (search scoring).
+ * Source: SPEC/v2/skills-memory/01-DESIGN.md §A.5 (transaction order),
+ * §B.5 (supersession scope-pair table), §D.3 (search scoring).
+ *
+ * Each mutation follows the §A.5 template:
+ *   1. `requireRuntimeLock` (writer-only);
+ *   2. validate (`assertReason`, `assertNoSecrets`, `assertNotBlockedPath`);
+ *   3. build row + audit row in memory;
+ *   4. `store.sidecar.inTransaction(() => { collisionCheck; mutate; })`;
+ *   5. best-effort `store.reingestKind(kind)`; on failure log + bail
+ *      (the row already carries `pending_reingest = 1` so the next
+ *      successful reingest catches up).
  */
 
-import { rename, unlink, writeFile, mkdir, readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { z } from "zod";
-
-import { pathExists } from "../store/documents.js";
+import { join } from "node:path";
 
 import {
   KnowledgeStoreError,
-  appendAuditEntry,
-  assertNotBlockedPath,
+  assertNoSecrets,
   assertReason,
-  detectSecrets,
-  rebuildIndex,
-  unlinkRecordIfExists,
-  writeRecordAtomic,
-  type IndexSummary,
 } from "./store.js";
 import {
-  AuditEntrySchema,
   MemoryRecordSchema,
   SkillRecordSchema,
-  type AuditEntry,
   type AuditOp,
   type KnowledgeAgentRole,
   type KnowledgeRecord,
@@ -42,194 +37,79 @@ import {
   type SkillRecord,
 } from "./types.js";
 import {
+  activeRecordsByScope,
+  archiveScope as archiveScopeMut,
+  deleteRecord,
+  findActiveMemoryIdByTopic,
+  findActiveSkillIdByName,
+  getRecord,
+  insertAudit,
+  listRecordsByStatus,
+  loadAllActiveRowsForEager,
+  markSuperseded,
+  putRecord,
+  updateRecord,
+} from "./sidecar-queries.js";
+import type { KnowledgeStore } from "./init.js";
+import type { AuditEntry as SidecarAudit, RecordRow, SidecarHandle } from "./sidecar.js";
+import { openSidecar } from "./sidecar.js";
+import { isBlockedPath } from "../security/secrets.js";
+import { assertRuntimeLockHeld } from "../runtime/runtime-lock.js";
+import {
   canonicalizeTokens,
   redactForRead,
   scoreMemoryForSearch,
   scoreSkillForSearch,
 } from "./loader.js";
-import { isBlockedPath } from "../security/secrets.js";
-import { assertRuntimeLockHeld } from "../runtime/runtime-lock.js";
+import { log } from "../log.js";
 
-const IndexFileSchema = z.object({ entries: z.array(z.any()) }) as z.ZodType<{
-  entries: IndexSummary[];
-}>;
 const BODY_SNIPPET_MAX = 500;
 const SEARCH_SNIPPET_WINDOW = 200;
-const SENTINEL_ID = "00000000-0000-4000-8000-000000000000";
-
-const scopeLifecycleLocks = new Map<string, Promise<void>>();
-const supersedeLocks = new Map<string, Promise<void>>();
-
-function requireRuntimeLock(saivageRoot: string): void {
-  try {
-    assertRuntimeLockHeld(saivageRoot);
-  } catch (err) {
-    throw new KnowledgeStoreError("NO_RUNTIME_LOCK", err instanceof Error ? err.message : String(err));
-  }
-}
-
-async function withChainLock<T>(
-  map: Map<string, Promise<void>>,
-  key: string,
-  fn: () => Promise<T>,
-): Promise<T> {
-  const prev = map.get(key) ?? Promise.resolve();
-  let release!: () => void;
-  const next = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const chain = prev.catch(() => undefined).then(() => next);
-  map.set(key, chain);
-  await prev.catch(() => undefined);
-  try {
-    return await fn();
-  } finally {
-    release();
-    if (map.get(key) === chain) map.delete(key);
-  }
-}
-
-function withScopeLifecycleLock<T>(
-  kind: "skill" | "memory",
-  scope: KnowledgeScope,
-  scopeRef: string | undefined,
-  fn: () => Promise<T>,
-): Promise<T> {
-  return withChainLock(scopeLifecycleLocks, `${kind}:${scope}:${scopeRef ?? "_"}`, fn);
-}
-
-function withSupersedeLock<T>(oldId: string, fn: () => Promise<T>): Promise<T> {
-  return withChainLock(supersedeLocks, oldId, fn);
-}
 
 export interface AuthorAgent {
   role: KnowledgeAgentRole;
   agent_id: string;
 }
 
-export function scopeDir(
-  saivageRoot: string,
-  kind: "skill" | "memory",
-  scope: KnowledgeScope,
-  scope_ref?: string,
-): string {
-  const kindDir = kind === "skill" ? "skills" : "memory";
-  if (scope === "project") return join(saivageRoot, kindDir, "project");
-  if (scope === "stage") {
-    if (!scope_ref) throw new KnowledgeStoreError("INVALID_SCOPE_REF", "scope=stage requires scope_ref");
-    return join(saivageRoot, kindDir, "stages", scope_ref);
-  }
-  if (!scope_ref) throw new KnowledgeStoreError("INVALID_SCOPE_REF", "scope=session requires scope_ref");
-  return join(saivageRoot, kindDir, "sessions", scope_ref);
+// ─── Helpers ──────────────────────────────────────────────────────────────
+
+function saivageRootOf(store: KnowledgeStore): string {
+  return join(store.projectRoot, ".saivage");
 }
 
-const auditPath = (dir: string): string => join(dir, "audit.jsonl");
-
-async function ensureDir(p: string): Promise<void> {
-  await mkdir(p, { recursive: true });
-}
-
-async function pathExistsSafe(p: string): Promise<boolean> {
-  return pathExists(p);
-}
-
-function buildAudit(
-  recordId: string,
-  op: AuditOp,
-  outcome: "ok" | "rejected",
-  author: AuthorAgent,
-  reason: string,
-  extra: Partial<AuditEntry> = {},
-): AuditEntry {
-  return AuditEntrySchema.parse({
-    ts: new Date().toISOString(),
-    record_id: recordId,
-    op,
-    outcome,
-    author_agent: author,
-    reason,
-    ...extra,
-  });
-}
-
-async function writeAuditSafe(dir: string, entry: AuditEntry): Promise<void> {
-  await ensureDir(dir);
-  await appendAuditEntry(auditPath(dir), entry);
-}
-
-async function safeRebuild<S extends z.ZodTypeAny>(dir: string, schema: S): Promise<void> {
-  try { await rebuildIndex(dir, schema, IndexFileSchema); } catch { /* design §C.3 step-4: next loader rebuilds */ }
-}
-
-type ParseFn<T> = (data: unknown) => T;
-
-async function collectRecords<T extends KnowledgeRecord>(
-  dir: string,
-  parse: ParseFn<T>,
-  out: T[],
-): Promise<void> {
-  const recordsDir = join(dir, "records");
-  if (!(await pathExistsSafe(recordsDir))) return;
-  for (const name of (await readdir(recordsDir)).sort()) {
-    if (!name.endsWith(".json")) continue;
-    try {
-      const parsed = JSON.parse(await readFile(join(recordsDir, name), "utf-8"));
-      out.push(parse(parsed));
-    } catch { /* skip malformed */ }
+function requireRuntimeLock(saivageRoot: string): void {
+  try {
+    assertRuntimeLockHeld(saivageRoot);
+  } catch (err) {
+    throw new KnowledgeStoreError(
+      "NO_RUNTIME_LOCK",
+      err instanceof Error ? err.message : String(err),
+    );
   }
 }
 
-async function collectScopeActiveRecords<T extends KnowledgeRecord>(dir: string, parse: ParseFn<T>): Promise<T[]> {
-  const out: T[] = [];
-  await collectRecords(dir, parse, out);
-  return out.filter((r) => r.status === "active");
+function nowIso(): string {
+  return new Date().toISOString();
 }
 
-export async function listAllRecords<T extends KnowledgeRecord>(
-  saivageRoot: string,
-  kind: "skill" | "memory",
-  parse: ParseFn<T>,
-): Promise<T[]> {
-  const out: T[] = [];
-  const kindDir = kind === "skill" ? "skills" : "memory";
-  const roots = [
-    join(saivageRoot, kindDir, "project"),
-    join(saivageRoot, kindDir, "stages"),
-    join(saivageRoot, kindDir, "sessions"),
-  ];
-  for (const root of roots) {
-    if (!(await pathExistsSafe(root))) continue;
-    if (root.endsWith("/project")) {
-      await collectRecords(root, parse, out);
-      continue;
-    }
-    for (const sub of await readdir(root)) {
-      await collectRecords(join(root, sub), parse, out);
-    }
+function assertScopeRef(scope: KnowledgeScope, scopeRef: string | undefined): void {
+  if (scope === "project") return;
+  if (typeof scopeRef !== "string" || scopeRef.length === 0) {
+    throw new KnowledgeStoreError(
+      "INVALID_SCOPE_REF",
+      "scope=" + scope + " requires scope_ref",
+    );
   }
-  return out;
 }
 
-const parseSkill: ParseFn<SkillRecord> = (d) => SkillRecordSchema.parse(d);
-const parseMemory: ParseFn<MemoryRecord> = (d) => MemoryRecordSchema.parse(d);
-
-export function walkSupersedeChain<T extends KnowledgeRecord>(
-  records: ReadonlyArray<T>,
-  start: T,
-): T {
-  const byId = new Map(records.map((r) => [r.id, r]));
-  let cur: T = start;
-  const seen = new Set<string>([cur.id]);
-  while (cur.superseded_by) {
-    const next = byId.get(cur.superseded_by);
-    if (!next || seen.has(next.id)) return cur;
-    seen.add(next.id);
-    cur = next;
-  }
-  return cur;
+function topicKey(t: { domain: string; subject: string; aspect?: string }): string {
+  return t.domain + "\u0001" + t.subject + "\u0001" + (t.aspect ?? "");
 }
 
-function isAllowedSupersedeScopePair(oldScope: KnowledgeScope, newScope: KnowledgeScope): boolean {
+function isAllowedSupersedeScopePair(
+  oldScope: KnowledgeScope,
+  newScope: KnowledgeScope,
+): boolean {
   if (oldScope === "project") return newScope === "project";
   if (oldScope === "stage") return newScope === "project" || newScope === "stage";
   if (oldScope === "session") return newScope === "project" || newScope === "session";
@@ -242,8 +122,49 @@ function assertBodyHasNoBlockedPath(body: string, field = "body"): void {
     if (token.length === 0) continue;
     if (!token.includes("/") && !token.startsWith(".env")) continue;
     if (isBlockedPath(token)) {
-      throw new KnowledgeStoreError("BLOCKED_PATH", `${field} contains blocked path: ${token}`);
+      throw new KnowledgeStoreError(
+        "BLOCKED_PATH",
+        field + " contains blocked path: " + token,
+      );
     }
+  }
+}
+
+function rowToSkill(row: RecordRow): SkillRecord {
+  return SkillRecordSchema.parse(JSON.parse(row.record_json));
+}
+
+function rowToMemory(row: RecordRow): MemoryRecord {
+  return MemoryRecordSchema.parse(JSON.parse(row.record_json));
+}
+
+function buildAudit(
+  recordId: string,
+  op: AuditOp,
+  author: AuthorAgent,
+  reason: string,
+  before: unknown,
+  after: unknown,
+): SidecarAudit {
+  return {
+    record_id: recordId,
+    ts: nowIso(),
+    op,
+    actor_role: author.role,
+    actor_agent_id: author.agent_id,
+    before_json: before === undefined ? null : JSON.stringify(before),
+    after_json: after === undefined ? null : JSON.stringify({ ...(after as Record<string, unknown>), reason }),
+  };
+}
+
+async function reingestBestEffort(store: KnowledgeStore, kind: "skill" | "memory"): Promise<void> {
+  try {
+    await store.reingestKind(kind);
+  } catch (err) {
+    log.warn(
+      "knowledge.rag-reingest-failed " +
+        JSON.stringify({ kind, err: (err as Error).message }),
+    );
   }
 }
 
@@ -264,55 +185,71 @@ export interface CreateSkillInput {
 }
 
 export async function createSkill(
-  saivageRoot: string,
+  store: KnowledgeStore,
   input: CreateSkillInput,
   author: AuthorAgent,
 ): Promise<{ id: string; status: "active" }> {
-  requireRuntimeLock(saivageRoot);
+  requireRuntimeLock(saivageRootOf(store));
   const reason = assertReason(input.reason);
-  return withScopeLifecycleLock("skill", input.scope, input.scope_ref, async () => {
-    const dir = scopeDir(saivageRoot, "skill", input.scope, input.scope_ref);
-    await ensureDir(join(dir, "records"));
-    const existing = await collectScopeActiveRecords(dir, parseSkill);
-    if (existing.some((r) => r.name === input.name)) {
-      await writeAuditSafe(dir, buildAudit(SENTINEL_ID, "create", "rejected", author, reason, { error_code: "NAME_COLLISION" }));
-      throw new KnowledgeStoreError("NAME_COLLISION", `skill name '${input.name}' already active in scope`);
-    }
-    const bodyScan = detectSecrets({ body: input.body, reason });
-    if (bodyScan.matches.length > 0) {
-      await writeAuditSafe(dir, buildAudit(SENTINEL_ID, "create", "rejected", author, reason, { error_code: "SECRET_DETECTED" }));
-      throw new KnowledgeStoreError("SECRET_DETECTED", `secret in: ${[...new Set(bodyScan.matches.map((m) => m.field))].join(", ")}`);
-    }
-    assertBodyHasNoBlockedPath(input.body, "body");
-    const id = randomUUID();
-    const now = new Date().toISOString();
-    const bodyPath = `records/${id}.md`;
-    const record: SkillRecord = SkillRecordSchema.parse({
-      id,
-      kind: "skill",
-      scope: input.scope,
-      status: "active",
-      created_at: now,
-      updated_at: now,
-      author_agent: author,
-      name: input.name,
-      description: input.description,
-      triggers: input.triggers ?? [],
-      target_agents: input.target_agents ?? [],
-      origin: "project",
-      body_path: bodyPath,
-      relates_to: [],
-      survive_compaction: input.survive_compaction ?? false,
-      ...(input.scope_ref ? { scope_ref: input.scope_ref } : {}),
-      ...(input.expires_at ? { expires_at: input.expires_at } : {}),
-      ...(input.ttl_ms ? { ttl_ms: input.ttl_ms } : {}),
-    });
-    await writeFile(join(dir, bodyPath), input.body, "utf-8");
-    await writeRecordAtomic(dir, id, SkillRecordSchema, record);
-    await writeAuditSafe(dir, buildAudit(id, "create", "ok", author, reason, { next_status: "active" }));
-    await safeRebuild(dir, SkillRecordSchema);
-    return { id, status: "active" };
+  assertScopeRef(input.scope, input.scope_ref);
+  assertNoSecrets({ body: input.body, reason, description: input.description });
+  assertBodyHasNoBlockedPath(input.body, "body");
+
+  const id = randomUUID();
+  const now = nowIso();
+  const record: SkillRecord = SkillRecordSchema.parse({
+    id,
+    kind: "skill",
+    scope: input.scope,
+    status: "active",
+    created_at: now,
+    updated_at: now,
+    author_agent: author,
+    name: input.name,
+    description: input.description,
+    triggers: input.triggers ?? [],
+    target_agents: input.target_agents ?? [],
+    origin: "project",
+    relates_to: [],
+    survive_compaction: input.survive_compaction ?? false,
+    ...(input.scope_ref ? { scope_ref: input.scope_ref } : {}),
+    ...(input.expires_at ? { expires_at: input.expires_at } : {}),
+    ...(input.ttl_ms ? { ttl_ms: input.ttl_ms } : {}),
   });
+  const row: RecordRow = {
+    id,
+    kind: "skill",
+    scope: input.scope,
+    scope_ref: input.scope_ref ?? null,
+    status: "active",
+    origin: "project",
+    record_json: JSON.stringify(record),
+    body: input.body,
+    created_at: now,
+    updated_at: now,
+    supersedes: null,
+    superseded_by: null,
+    pending_reingest: 1,
+  };
+  const audit = buildAudit(id, "create", author, reason, null, { status: "active" });
+
+  store.sidecar.inTransaction(() => {
+    const dup = findActiveSkillIdByName(
+      store.sidecar,
+      input.scope,
+      input.scope_ref ?? null,
+      input.name,
+    );
+    if (dup !== undefined) {
+      throw new KnowledgeStoreError(
+        "NAME_COLLISION",
+        "skill name '" + input.name + "' already active in scope",
+      );
+    }
+    putRecord(store.sidecar, row, { kind: "skill", name: input.name }, audit);
+  });
+  await reingestBestEffort(store, "skill");
+  return { id, status: "active" };
 }
 
 export interface UpdateSkillInput {
@@ -327,74 +264,121 @@ export interface UpdateSkillInput {
 }
 
 export async function updateSkill(
-  saivageRoot: string,
+  store: KnowledgeStore,
   input: UpdateSkillInput,
   author: AuthorAgent,
 ): Promise<{ id: string; updated_at: string }> {
-  requireRuntimeLock(saivageRoot);
+  requireRuntimeLock(saivageRootOf(store));
   const reason = assertReason(input.reason);
-  const existing = await findSkillById(saivageRoot, input.id);
-  if (!existing) throw new KnowledgeStoreError("NOT_FOUND", `skill ${input.id} not found`);
-  const { dir, record } = existing;
   if (input.body !== undefined) {
-    const scan = detectSecrets({ body: input.body });
-    if (scan.matches.length > 0) {
-      await writeAuditSafe(dir, buildAudit(input.id, "update", "rejected", author, reason, { error_code: "SECRET_DETECTED" }));
-      throw new KnowledgeStoreError("SECRET_DETECTED", "secret in: body");
-    }
+    assertNoSecrets({ body: input.body });
     assertBodyHasNoBlockedPath(input.body, "body");
   }
-  const now = new Date().toISOString();
-  const updated: SkillRecord = SkillRecordSchema.parse({
-    ...record,
-    description: input.description ?? record.description,
-    triggers: input.triggers ?? record.triggers,
-    target_agents: input.target_agents ?? record.target_agents,
-    ...(input.expires_at !== undefined ? { expires_at: input.expires_at } : {}),
-    ...(input.ttl_ms !== undefined ? { ttl_ms: input.ttl_ms } : {}),
-    updated_at: now,
+  if (input.description !== undefined) {
+    assertNoSecrets({ description: input.description });
+  }
+
+  const now = nowIso();
+  let outId = input.id;
+  store.sidecar.inTransaction(() => {
+    const existing = getRecord(store.sidecar, input.id);
+    if (!existing || existing.kind !== "skill") {
+      throw new KnowledgeStoreError("NOT_FOUND", "skill " + input.id + " not found");
+    }
+    const prior = rowToSkill(existing);
+    const updated: SkillRecord = SkillRecordSchema.parse({
+      ...prior,
+      description: input.description ?? prior.description,
+      triggers: input.triggers ?? prior.triggers,
+      target_agents: input.target_agents ?? prior.target_agents,
+      ...(input.expires_at !== undefined ? { expires_at: input.expires_at } : {}),
+      ...(input.ttl_ms !== undefined ? { ttl_ms: input.ttl_ms } : {}),
+      updated_at: now,
+    });
+    const row: RecordRow = {
+      ...existing,
+      status: existing.status,
+      record_json: JSON.stringify(updated),
+      body: input.body ?? existing.body,
+      updated_at: now,
+      pending_reingest: 1,
+    };
+    const audit = buildAudit(
+      input.id,
+      "update",
+      author,
+      reason,
+      { record: prior },
+      { record: updated },
+    );
+    updateRecord(store.sidecar, row, audit);
+    outId = updated.id;
   });
-  if (input.body !== undefined) await writeFile(join(dir, updated.body_path), input.body, "utf-8");
-  await writeRecordAtomic(dir, updated.id, SkillRecordSchema, updated);
-  await writeAuditSafe(dir, buildAudit(updated.id, "update", "ok", author, reason));
-  await safeRebuild(dir, SkillRecordSchema);
-  return { id: updated.id, updated_at: now };
+  await reingestBestEffort(store, "skill");
+  return { id: outId, updated_at: now };
 }
 
 export async function archiveSkill(
-  saivageRoot: string,
+  store: KnowledgeStore,
   id: string,
   reasonRaw: string,
   author: AuthorAgent,
 ): Promise<{ id: string; status: "archived" }> {
-  requireRuntimeLock(saivageRoot);
+  requireRuntimeLock(saivageRootOf(store));
   const reason = assertReason(reasonRaw);
-  const found = await findSkillById(saivageRoot, id);
-  if (!found) throw new KnowledgeStoreError("NOT_FOUND", `skill ${id} not found`);
-  const { dir, record } = found;
-  const updated = SkillRecordSchema.parse({ ...record, status: "archived", updated_at: new Date().toISOString() });
-  await writeRecordAtomic(dir, updated.id, SkillRecordSchema, updated);
-  await writeAuditSafe(dir, buildAudit(updated.id, "archive", "ok", author, reason, { prev_status: record.status, next_status: "archived" }));
-  await safeRebuild(dir, SkillRecordSchema);
+  const now = nowIso();
+  store.sidecar.inTransaction(() => {
+    const existing = getRecord(store.sidecar, id);
+    if (!existing || existing.kind !== "skill") {
+      throw new KnowledgeStoreError("NOT_FOUND", "skill " + id + " not found");
+    }
+    const prior = rowToSkill(existing);
+    const updated = SkillRecordSchema.parse({ ...prior, status: "archived", updated_at: now });
+    const row: RecordRow = {
+      ...existing,
+      status: "archived",
+      record_json: JSON.stringify(updated),
+      updated_at: now,
+      pending_reingest: 1,
+    };
+    const audit = buildAudit(
+      id,
+      "archive",
+      author,
+      reason,
+      { status: prior.status },
+      { status: "archived" },
+    );
+    updateRecord(store.sidecar, row, audit);
+  });
+  await reingestBestEffort(store, "skill");
   return { id, status: "archived" };
 }
 
 export async function deleteSkill(
-  saivageRoot: string,
+  store: KnowledgeStore,
   id: string,
   reasonRaw: string,
   author: AuthorAgent,
 ): Promise<{ id: string }> {
-  requireRuntimeLock(saivageRoot);
+  requireRuntimeLock(saivageRootOf(store));
   const reason = assertReason(reasonRaw);
-  const found = await findSkillById(saivageRoot, id);
-  if (!found) throw new KnowledgeStoreError("NOT_FOUND", `skill ${id} not found`);
-  const { dir, record } = found;
-  await unlinkRecordIfExists(dir, id);
-  const bodyAbs = join(dir, record.body_path);
-  if (await pathExistsSafe(bodyAbs)) { try { await unlink(bodyAbs); } catch { /* */ } }
-  await writeAuditSafe(dir, buildAudit(id, "delete", "ok", author, reason, { prev_status: record.status }));
-  await safeRebuild(dir, SkillRecordSchema);
+  store.sidecar.inTransaction(() => {
+    const existing = getRecord(store.sidecar, id);
+    if (!existing || existing.kind !== "skill") {
+      throw new KnowledgeStoreError("NOT_FOUND", "skill " + id + " not found");
+    }
+    const audit = buildAudit(
+      id,
+      "delete",
+      author,
+      reason,
+      { status: existing.status },
+      { status: "deleted" },
+    );
+    deleteRecord(store.sidecar, id, audit);
+  });
+  await reingestBestEffort(store, "skill");
   return { id };
 }
 
@@ -405,36 +389,35 @@ export interface SupersedeSkillInput {
 }
 
 export async function supersedeSkill(
-  saivageRoot: string,
+  store: KnowledgeStore,
   input: SupersedeSkillInput,
   author: AuthorAgent,
 ): Promise<{ new_id: string; old_id: string }> {
-  requireRuntimeLock(saivageRoot);
+  requireRuntimeLock(saivageRootOf(store));
   const reason = assertReason(input.reason);
-  const preFound = await findSkillById(saivageRoot, input.old_id);
-  if (!preFound) throw new KnowledgeStoreError("NOT_FOUND", `skill ${input.old_id} not found`);
-  return withSupersedeLock(preFound.record.id, async () => {
-    const oldFound = await findSkillById(saivageRoot, input.old_id);
-    if (!oldFound) throw new KnowledgeStoreError("NOT_FOUND", `skill ${input.old_id} not found`);
-    if (!isAllowedSupersedeScopePair(oldFound.record.scope, input.new_record.scope)) {
-      await writeAuditSafe(oldFound.dir, buildAudit(input.old_id, "supersede", "rejected", author, reason, { error_code: "INVALID_SUPERSEDE_SCOPE" }));
-      throw new KnowledgeStoreError("INVALID_SUPERSEDE_SCOPE", `supersede ${oldFound.record.scope}→${input.new_record.scope} not allowed`);
+  assertScopeRef(input.new_record.scope, input.new_record.scope_ref);
+  assertNoSecrets({ body: input.new_record.body, reason, description: input.new_record.description });
+  assertBodyHasNoBlockedPath(input.new_record.body, "body");
+
+  const newId = randomUUID();
+  const now = nowIso();
+  store.sidecar.inTransaction(() => {
+    const oldRow = getRecord(store.sidecar, input.old_id);
+    if (!oldRow || oldRow.kind !== "skill") {
+      throw new KnowledgeStoreError("NOT_FOUND", "skill " + input.old_id + " not found");
     }
-    if (oldFound.record.status !== "active") {
-      await writeAuditSafe(oldFound.dir, buildAudit(input.old_id, "supersede", "rejected", author, reason, { error_code: "INVALID_SUPERSEDE_TARGET" }));
-      throw new KnowledgeStoreError("INVALID_SUPERSEDE_TARGET", `target ${input.old_id} is not active (status=${oldFound.record.status})`);
+    if (!isAllowedSupersedeScopePair(oldRow.scope as KnowledgeScope, input.new_record.scope)) {
+      throw new KnowledgeStoreError(
+        "INVALID_SUPERSEDE_SCOPE",
+        "supersede " + oldRow.scope + "\u2192" + input.new_record.scope + " not allowed",
+      );
     }
-    const bodyScan = detectSecrets({ body: input.new_record.body, reason });
-    if (bodyScan.matches.length > 0) {
-      await writeAuditSafe(oldFound.dir, buildAudit(SENTINEL_ID, "supersede", "rejected", author, reason, { error_code: "SECRET_DETECTED" }));
-      throw new KnowledgeStoreError("SECRET_DETECTED", `secret in: ${[...new Set(bodyScan.matches.map((m) => m.field))].join(", ")}`);
+    if (oldRow.status !== "active") {
+      throw new KnowledgeStoreError(
+        "INVALID_SUPERSEDE_TARGET",
+        "target " + input.old_id + " is not active (status=" + oldRow.status + ")",
+      );
     }
-    assertBodyHasNoBlockedPath(input.new_record.body, "body");
-    const newId = randomUUID();
-    const now = new Date().toISOString();
-    const newDir = scopeDir(saivageRoot, "skill", input.new_record.scope, input.new_record.scope_ref);
-    await ensureDir(join(newDir, "records"));
-    const newBodyPath = `records/${newId}.md`;
     const newRecord: SkillRecord = SkillRecordSchema.parse({
       id: newId,
       kind: "skill",
@@ -448,7 +431,6 @@ export async function supersedeSkill(
       triggers: input.new_record.triggers ?? [],
       target_agents: input.new_record.target_agents ?? [],
       origin: "project",
-      body_path: newBodyPath,
       relates_to: [],
       survive_compaction: input.new_record.survive_compaction ?? false,
       supersedes: input.old_id,
@@ -456,35 +438,74 @@ export async function supersedeSkill(
       ...(input.new_record.expires_at ? { expires_at: input.new_record.expires_at } : {}),
       ...(input.new_record.ttl_ms ? { ttl_ms: input.new_record.ttl_ms } : {}),
     });
-    await writeFile(join(newDir, newBodyPath), input.new_record.body, "utf-8");
-    await writeRecordAtomic(newDir, newId, SkillRecordSchema, newRecord);
-    try {
-      const updatedOld = SkillRecordSchema.parse({
-        ...oldFound.record,
-        status: "superseded",
-        superseded_by: newId,
-        updated_at: now,
-      });
-      await writeRecordAtomic(oldFound.dir, oldFound.record.id, SkillRecordSchema, updatedOld);
-    } catch (err) {
-      await unlinkRecordIfExists(newDir, newId);
-      try { await unlink(join(newDir, newBodyPath)); } catch { /* */ }
-      await writeAuditSafe(newDir, buildAudit(newId, "supersede", "rejected", author, reason, { error_code: "INVALID_SUPERSEDE_TARGET" }));
-      throw err;
-    }
-    await writeAuditSafe(newDir, buildAudit(newId, "supersede", "ok", author, `${reason} (old_id=${input.old_id})`, { next_status: "active" }));
-    await safeRebuild(newDir, SkillRecordSchema);
-    if (oldFound.dir !== newDir) await safeRebuild(oldFound.dir, SkillRecordSchema);
-    return { new_id: newId, old_id: input.old_id };
+    const newRow: RecordRow = {
+      id: newId,
+      kind: "skill",
+      scope: input.new_record.scope,
+      scope_ref: input.new_record.scope_ref ?? null,
+      status: "active",
+      origin: "project",
+      record_json: JSON.stringify(newRecord),
+      body: input.new_record.body,
+      created_at: now,
+      updated_at: now,
+      supersedes: input.old_id,
+      superseded_by: null,
+      pending_reingest: 1,
+    };
+    putRecord(
+      store.sidecar,
+      newRow,
+      { kind: "skill", name: input.new_record.name },
+      buildAudit(
+        newId,
+        "supersede",
+        author,
+        reason + " (old_id=" + input.old_id + ")",
+        null,
+        { status: "active", supersedes: input.old_id },
+      ),
+    );
+    markSuperseded(
+      store.sidecar,
+      input.old_id,
+      newId,
+      now,
+      buildAudit(
+        input.old_id,
+        "supersede",
+        author,
+        reason + " (new_id=" + newId + ")",
+        { status: "active" },
+        { status: "superseded", superseded_by: newId },
+      ),
+    );
   });
+  await reingestBestEffort(store, "skill");
+  return { new_id: newId, old_id: input.old_id };
 }
 
-async function findSkillById(saivageRoot: string, id: string): Promise<{ dir: string; record: SkillRecord } | null> {
-  const all = await listAllRecords(saivageRoot, "skill", parseSkill);
-  for (const r of all) {
-    if (r.id === id) return { dir: scopeDir(saivageRoot, "skill", r.scope, r.scope_ref), record: r };
-  }
-  return null;
+export async function findSkillById(
+  store: KnowledgeStore,
+  id: string,
+): Promise<{ record: SkillRecord; body: string } | null> {
+  const row = getRecord(store.sidecar, id);
+  if (!row || row.kind !== "skill") return null;
+  return { record: rowToSkill(row), body: row.body };
+}
+
+export async function readSkillById(
+  store: KnowledgeStore,
+  id: string,
+): Promise<{ record: SkillRecord; body: string; redacted_spans: number }> {
+  const found = await findSkillById(store, id);
+  if (!found) throw new KnowledgeStoreError("NOT_FOUND", "skill " + id + " not found");
+  const redacted = redactForRead(found.body);
+  return {
+    record: { ...found.record, description: redactForRead(found.record.description).text },
+    body: redacted.text,
+    redacted_spans: redacted.redacted_spans,
+  };
 }
 
 // ─── Memory lifecycle ─────────────────────────────────────────────────────
@@ -501,62 +522,77 @@ export interface CreateMemoryInput {
   survive_compaction?: boolean;
   source_ref?: { kind: "inspection" | "task_report" | "stage_summary"; id: string };
   reason: string;
-  body_path?: string;
-}
-
-function topicKey(t: { domain: string; subject: string; aspect?: string }): string {
-  return `${t.domain}/${t.subject}/${t.aspect ?? ""}`;
 }
 
 export async function createMemory(
-  saivageRoot: string,
+  store: KnowledgeStore,
   input: CreateMemoryInput,
   author: AuthorAgent,
 ): Promise<{ id: string; status: "active" }> {
-  requireRuntimeLock(saivageRoot);
+  requireRuntimeLock(saivageRootOf(store));
   const reason = assertReason(input.reason);
-  return withScopeLifecycleLock("memory", input.scope, input.scope_ref, async () => {
-    const dir = scopeDir(saivageRoot, "memory", input.scope, input.scope_ref);
-    await ensureDir(join(dir, "records"));
-    if (input.body_path !== undefined) assertNotBlockedPath(input.body_path, "body_path");
-    assertBodyHasNoBlockedPath(input.body, "body");
-    const existing = await collectScopeActiveRecords(dir, parseMemory);
-    const key = topicKey(input.topic);
-    if (existing.some((r) => topicKey(r.topic) === key)) {
-      await writeAuditSafe(dir, buildAudit(SENTINEL_ID, "create", "rejected", author, reason, { error_code: "TOPIC_COLLISION" }));
-      throw new KnowledgeStoreError("TOPIC_COLLISION", `topic ${key} already active in scope`);
-    }
-    const reasonScan = detectSecrets({ reason });
-    if (reasonScan.matches.length > 0) {
-      await writeAuditSafe(dir, buildAudit(SENTINEL_ID, "create", "rejected", author, reason, { error_code: "SECRET_DETECTED" }));
-      throw new KnowledgeStoreError("SECRET_DETECTED", "secret in: reason");
-    }
-    const id = randomUUID();
-    const now = new Date().toISOString();
-    const record: MemoryRecord = MemoryRecordSchema.parse({
-      id,
-      kind: "memory",
-      scope: input.scope,
-      status: "active",
-      created_at: now,
-      updated_at: now,
-      author_agent: author,
-      topic: input.topic,
-      keys: input.keys ?? [],
-      target_agents: input.target_agents ?? [],
-      body: input.body,
-      relates_to: [],
-      survive_compaction: input.survive_compaction ?? false,
-      ...(input.source_ref ? { source_ref: input.source_ref } : {}),
-      ...(input.scope_ref ? { scope_ref: input.scope_ref } : {}),
-      ...(input.expires_at ? { expires_at: input.expires_at } : {}),
-      ...(input.ttl_ms ? { ttl_ms: input.ttl_ms } : {}),
-    });
-    await writeRecordAtomic(dir, id, MemoryRecordSchema, record);
-    await writeAuditSafe(dir, buildAudit(id, "create", "ok", author, reason, { next_status: "active" }));
-    await safeRebuild(dir, MemoryRecordSchema);
-    return { id, status: "active" };
+  assertScopeRef(input.scope, input.scope_ref);
+  assertNoSecrets({ body: input.body, reason });
+  assertBodyHasNoBlockedPath(input.body, "body");
+
+  const id = randomUUID();
+  const now = nowIso();
+  const record: MemoryRecord = MemoryRecordSchema.parse({
+    id,
+    kind: "memory",
+    scope: input.scope,
+    status: "active",
+    created_at: now,
+    updated_at: now,
+    author_agent: author,
+    topic: input.topic,
+    keys: input.keys ?? [],
+    target_agents: input.target_agents ?? [],
+    body: input.body,
+    relates_to: [],
+    survive_compaction: input.survive_compaction ?? false,
+    ...(input.source_ref ? { source_ref: input.source_ref } : {}),
+    ...(input.scope_ref ? { scope_ref: input.scope_ref } : {}),
+    ...(input.expires_at ? { expires_at: input.expires_at } : {}),
+    ...(input.ttl_ms ? { ttl_ms: input.ttl_ms } : {}),
   });
+  const row: RecordRow = {
+    id,
+    kind: "memory",
+    scope: input.scope,
+    scope_ref: input.scope_ref ?? null,
+    status: "active",
+    origin: "project",
+    record_json: JSON.stringify(record),
+    body: input.body,
+    created_at: now,
+    updated_at: now,
+    supersedes: null,
+    superseded_by: null,
+    pending_reingest: 1,
+  };
+  const key = topicKey(input.topic);
+  const audit = buildAudit(id, "create", author, reason, null, { status: "active" });
+
+  store.sidecar.inTransaction(() => {
+    const dup = findActiveMemoryIdByTopic(
+      store.sidecar,
+      input.scope,
+      input.scope_ref ?? null,
+      key,
+    );
+    if (dup !== undefined) {
+      throw new KnowledgeStoreError(
+        "TOPIC_COLLISION",
+        "topic " + input.topic.domain + "/" + input.topic.subject +
+          (input.topic.aspect ? "/" + input.topic.aspect : "") +
+          " already active in scope",
+      );
+    }
+    putRecord(store.sidecar, row, { kind: "memory", topic: key }, audit);
+  });
+  await reingestBestEffort(store, "memory");
+  return { id, status: "active" };
 }
 
 export interface UpdateMemoryInput {
@@ -570,64 +606,116 @@ export interface UpdateMemoryInput {
 }
 
 export async function updateMemory(
-  saivageRoot: string,
+  store: KnowledgeStore,
   input: UpdateMemoryInput,
   author: AuthorAgent,
 ): Promise<{ id: string; updated_at: string }> {
-  requireRuntimeLock(saivageRoot);
+  requireRuntimeLock(saivageRootOf(store));
   const reason = assertReason(input.reason);
-  const existing = await findMemoryById(saivageRoot, input.id);
-  if (!existing) throw new KnowledgeStoreError("NOT_FOUND", `memory ${input.id} not found`);
-  const { dir, record } = existing;
-  if (input.body !== undefined) assertBodyHasNoBlockedPath(input.body, "body");
-  const now = new Date().toISOString();
-  const updated: MemoryRecord = MemoryRecordSchema.parse({
-    ...record,
-    body: input.body ?? record.body,
-    keys: input.keys ?? record.keys,
-    target_agents: input.target_agents ?? record.target_agents,
-    ...(input.expires_at !== undefined ? { expires_at: input.expires_at } : {}),
-    ...(input.ttl_ms !== undefined ? { ttl_ms: input.ttl_ms } : {}),
-    updated_at: now,
+  if (input.body !== undefined) {
+    assertNoSecrets({ body: input.body });
+    assertBodyHasNoBlockedPath(input.body, "body");
+  }
+  const now = nowIso();
+  let outId = input.id;
+  store.sidecar.inTransaction(() => {
+    const existing = getRecord(store.sidecar, input.id);
+    if (!existing || existing.kind !== "memory") {
+      throw new KnowledgeStoreError("NOT_FOUND", "memory " + input.id + " not found");
+    }
+    const prior = rowToMemory(existing);
+    const updated: MemoryRecord = MemoryRecordSchema.parse({
+      ...prior,
+      body: input.body ?? prior.body,
+      keys: input.keys ?? prior.keys,
+      target_agents: input.target_agents ?? prior.target_agents,
+      ...(input.expires_at !== undefined ? { expires_at: input.expires_at } : {}),
+      ...(input.ttl_ms !== undefined ? { ttl_ms: input.ttl_ms } : {}),
+      updated_at: now,
+    });
+    const row: RecordRow = {
+      ...existing,
+      record_json: JSON.stringify(updated),
+      body: input.body ?? existing.body,
+      updated_at: now,
+      pending_reingest: 1,
+    };
+    const audit = buildAudit(
+      input.id,
+      "update",
+      author,
+      reason,
+      { record: prior },
+      { record: updated },
+    );
+    updateRecord(store.sidecar, row, audit);
+    outId = updated.id;
   });
-  await writeRecordAtomic(dir, updated.id, MemoryRecordSchema, updated);
-  await writeAuditSafe(dir, buildAudit(updated.id, "update", "ok", author, reason));
-  await safeRebuild(dir, MemoryRecordSchema);
-  return { id: updated.id, updated_at: now };
+  await reingestBestEffort(store, "memory");
+  return { id: outId, updated_at: now };
 }
 
 export async function archiveMemory(
-  saivageRoot: string,
+  store: KnowledgeStore,
   id: string,
   reasonRaw: string,
   author: AuthorAgent,
 ): Promise<{ id: string; status: "archived" }> {
-  requireRuntimeLock(saivageRoot);
+  requireRuntimeLock(saivageRootOf(store));
   const reason = assertReason(reasonRaw);
-  const found = await findMemoryById(saivageRoot, id);
-  if (!found) throw new KnowledgeStoreError("NOT_FOUND", `memory ${id} not found`);
-  const { dir, record } = found;
-  const updated = MemoryRecordSchema.parse({ ...record, status: "archived", updated_at: new Date().toISOString() });
-  await writeRecordAtomic(dir, updated.id, MemoryRecordSchema, updated);
-  await writeAuditSafe(dir, buildAudit(updated.id, "archive", "ok", author, reason, { prev_status: record.status, next_status: "archived" }));
-  await safeRebuild(dir, MemoryRecordSchema);
+  const now = nowIso();
+  store.sidecar.inTransaction(() => {
+    const existing = getRecord(store.sidecar, id);
+    if (!existing || existing.kind !== "memory") {
+      throw new KnowledgeStoreError("NOT_FOUND", "memory " + id + " not found");
+    }
+    const prior = rowToMemory(existing);
+    const updated = MemoryRecordSchema.parse({ ...prior, status: "archived", updated_at: now });
+    const row: RecordRow = {
+      ...existing,
+      status: "archived",
+      record_json: JSON.stringify(updated),
+      updated_at: now,
+      pending_reingest: 1,
+    };
+    const audit = buildAudit(
+      id,
+      "archive",
+      author,
+      reason,
+      { status: prior.status },
+      { status: "archived" },
+    );
+    updateRecord(store.sidecar, row, audit);
+  });
+  await reingestBestEffort(store, "memory");
   return { id, status: "archived" };
 }
 
 export async function deleteMemory(
-  saivageRoot: string,
+  store: KnowledgeStore,
   id: string,
   reasonRaw: string,
   author: AuthorAgent,
 ): Promise<{ id: string }> {
-  requireRuntimeLock(saivageRoot);
+  requireRuntimeLock(saivageRootOf(store));
   const reason = assertReason(reasonRaw);
-  const found = await findMemoryById(saivageRoot, id);
-  if (!found) throw new KnowledgeStoreError("NOT_FOUND", `memory ${id} not found`);
-  const { dir, record } = found;
-  await unlinkRecordIfExists(dir, id);
-  await writeAuditSafe(dir, buildAudit(id, "delete", "ok", author, reason, { prev_status: record.status }));
-  await safeRebuild(dir, MemoryRecordSchema);
+  store.sidecar.inTransaction(() => {
+    const existing = getRecord(store.sidecar, id);
+    if (!existing || existing.kind !== "memory") {
+      throw new KnowledgeStoreError("NOT_FOUND", "memory " + id + " not found");
+    }
+    const audit = buildAudit(
+      id,
+      "delete",
+      author,
+      reason,
+      { status: existing.status },
+      { status: "deleted" },
+    );
+    deleteRecord(store.sidecar, id, audit);
+  });
+  await reingestBestEffort(store, "memory");
   return { id };
 }
 
@@ -638,30 +726,35 @@ export interface SupersedeMemoryInput {
 }
 
 export async function supersedeMemory(
-  saivageRoot: string,
+  store: KnowledgeStore,
   input: SupersedeMemoryInput,
   author: AuthorAgent,
 ): Promise<{ new_id: string; old_id: string }> {
-  requireRuntimeLock(saivageRoot);
+  requireRuntimeLock(saivageRootOf(store));
   const reason = assertReason(input.reason);
-  const preFound = await findMemoryById(saivageRoot, input.old_id);
-  if (!preFound) throw new KnowledgeStoreError("NOT_FOUND", `memory ${input.old_id} not found`);
-  return withSupersedeLock(preFound.record.id, async () => {
-    const oldFound = await findMemoryById(saivageRoot, input.old_id);
-    if (!oldFound) throw new KnowledgeStoreError("NOT_FOUND", `memory ${input.old_id} not found`);
-    if (!isAllowedSupersedeScopePair(oldFound.record.scope, input.new_record.scope)) {
-      await writeAuditSafe(oldFound.dir, buildAudit(input.old_id, "supersede", "rejected", author, reason, { error_code: "INVALID_SUPERSEDE_SCOPE" }));
-      throw new KnowledgeStoreError("INVALID_SUPERSEDE_SCOPE", `supersede ${oldFound.record.scope}→${input.new_record.scope} not allowed`);
+  assertScopeRef(input.new_record.scope, input.new_record.scope_ref);
+  assertNoSecrets({ body: input.new_record.body, reason });
+  assertBodyHasNoBlockedPath(input.new_record.body, "body");
+
+  const newId = randomUUID();
+  const now = nowIso();
+  store.sidecar.inTransaction(() => {
+    const oldRow = getRecord(store.sidecar, input.old_id);
+    if (!oldRow || oldRow.kind !== "memory") {
+      throw new KnowledgeStoreError("NOT_FOUND", "memory " + input.old_id + " not found");
     }
-    if (oldFound.record.status !== "active") {
-      await writeAuditSafe(oldFound.dir, buildAudit(input.old_id, "supersede", "rejected", author, reason, { error_code: "INVALID_SUPERSEDE_TARGET" }));
-      throw new KnowledgeStoreError("INVALID_SUPERSEDE_TARGET", `target ${input.old_id} is not active (status=${oldFound.record.status})`);
+    if (!isAllowedSupersedeScopePair(oldRow.scope as KnowledgeScope, input.new_record.scope)) {
+      throw new KnowledgeStoreError(
+        "INVALID_SUPERSEDE_SCOPE",
+        "supersede " + oldRow.scope + "\u2192" + input.new_record.scope + " not allowed",
+      );
     }
-    assertBodyHasNoBlockedPath(input.new_record.body, "body");
-    const newId = randomUUID();
-    const now = new Date().toISOString();
-    const newDir = scopeDir(saivageRoot, "memory", input.new_record.scope, input.new_record.scope_ref);
-    await ensureDir(join(newDir, "records"));
+    if (oldRow.status !== "active") {
+      throw new KnowledgeStoreError(
+        "INVALID_SUPERSEDE_TARGET",
+        "target " + input.old_id + " is not active (status=" + oldRow.status + ")",
+      );
+    }
     const newRecord: MemoryRecord = MemoryRecordSchema.parse({
       id: newId,
       kind: "memory",
@@ -682,79 +775,125 @@ export async function supersedeMemory(
       ...(input.new_record.expires_at ? { expires_at: input.new_record.expires_at } : {}),
       ...(input.new_record.ttl_ms ? { ttl_ms: input.new_record.ttl_ms } : {}),
     });
-    await writeRecordAtomic(newDir, newId, MemoryRecordSchema, newRecord);
-    try {
-      const updatedOld = MemoryRecordSchema.parse({
-        ...oldFound.record,
-        status: "superseded",
-        superseded_by: newId,
-        updated_at: now,
-      });
-      await writeRecordAtomic(oldFound.dir, oldFound.record.id, MemoryRecordSchema, updatedOld);
-    } catch (err) {
-      await unlinkRecordIfExists(newDir, newId);
-      await writeAuditSafe(newDir, buildAudit(newId, "supersede", "rejected", author, reason, { error_code: "INVALID_SUPERSEDE_TARGET" }));
-      throw err;
-    }
-    await writeAuditSafe(newDir, buildAudit(newId, "supersede", "ok", author, `${reason} (old_id=${input.old_id})`, { next_status: "active" }));
-    await safeRebuild(newDir, MemoryRecordSchema);
-    if (oldFound.dir !== newDir) await safeRebuild(oldFound.dir, MemoryRecordSchema);
-    return { new_id: newId, old_id: input.old_id };
+    const newRow: RecordRow = {
+      id: newId,
+      kind: "memory",
+      scope: input.new_record.scope,
+      scope_ref: input.new_record.scope_ref ?? null,
+      status: "active",
+      origin: "project",
+      record_json: JSON.stringify(newRecord),
+      body: input.new_record.body,
+      created_at: now,
+      updated_at: now,
+      supersedes: input.old_id,
+      superseded_by: null,
+      pending_reingest: 1,
+    };
+    putRecord(
+      store.sidecar,
+      newRow,
+      { kind: "memory", topic: topicKey(input.new_record.topic) },
+      buildAudit(
+        newId,
+        "supersede",
+        author,
+        reason + " (old_id=" + input.old_id + ")",
+        null,
+        { status: "active", supersedes: input.old_id },
+      ),
+    );
+    markSuperseded(
+      store.sidecar,
+      input.old_id,
+      newId,
+      now,
+      buildAudit(
+        input.old_id,
+        "supersede",
+        author,
+        reason + " (new_id=" + newId + ")",
+        { status: "active" },
+        { status: "superseded", superseded_by: newId },
+      ),
+    );
   });
+  await reingestBestEffort(store, "memory");
+  return { new_id: newId, old_id: input.old_id };
 }
 
-async function findMemoryById(saivageRoot: string, id: string): Promise<{ dir: string; record: MemoryRecord } | null> {
-  const all = await listAllRecords(saivageRoot, "memory", parseMemory);
-  for (const r of all) {
-    if (r.id === id) return { dir: scopeDir(saivageRoot, "memory", r.scope, r.scope_ref), record: r };
-  }
-  return null;
-}
-
-// ─── Read / list / search ─────────────────────────────────────────────────
-
-export async function readSkillById(
-  saivageRoot: string,
+export async function findMemoryById(
+  store: KnowledgeStore,
   id: string,
-): Promise<{ record: SkillRecord; body: string; redacted_spans: number }> {
-  const found = await findSkillById(saivageRoot, id);
-  if (!found) throw new KnowledgeStoreError("NOT_FOUND", `skill ${id} not found`);
-  const bodyAbs = join(found.dir, found.record.body_path);
-  if (!(await pathExistsSafe(bodyAbs))) throw new KnowledgeStoreError("BODY_PATH_BROKEN", `body file missing for ${id}`);
-  const raw = await readFile(bodyAbs, "utf-8");
-  const redacted = redactForRead(raw);
-  return {
-    record: { ...found.record, description: redactForRead(found.record.description).text },
-    body: redacted.text,
-    redacted_spans: redacted.redacted_spans,
-  };
+): Promise<{ record: MemoryRecord; body: string } | null> {
+  const row = getRecord(store.sidecar, id);
+  if (!row || row.kind !== "memory") return null;
+  return { record: rowToMemory(row), body: row.body };
 }
 
 export async function getMemory(
-  saivageRoot: string,
+  store: KnowledgeStore,
   query: { id?: string; topic?: { domain: string; subject: string; aspect?: string } },
 ): Promise<(MemoryRecord & { redacted_spans: number }) | null> {
-  const all = await listAllRecords(saivageRoot, "memory", parseMemory);
-  let start: MemoryRecord | undefined;
+  let row: RecordRow | undefined;
   if (query.id) {
-    start = all.find((r) => r.id === query.id);
+    row = getRecord(store.sidecar, query.id);
+    if (!row || row.kind !== "memory") return null;
   } else if (query.topic) {
     const key = topicKey(query.topic);
     const order: KnowledgeScope[] = ["session", "stage", "project"];
-    for (const scope of order) {
-      const cand = all.filter((r) => r.scope === scope && topicKey(r.topic) === key);
-      if (cand.length > 0) {
-        start = cand.find((r) => r.status === "active") ?? cand[0];
-        break;
+    outer: for (const scope of order) {
+      const rows = store.sidecar.db
+        .prepare(
+          "SELECT r.* FROM record r JOIN record_memory m ON m.id = r.id" +
+            " WHERE r.kind = 'memory' AND r.status = 'active' AND r.scope = ? AND m.topic = ?",
+        )
+        .all(scope, key) as RecordRow[];
+      if (rows.length > 0) {
+        row = rows[0];
+        break outer;
       }
     }
+    if (!row) return null;
+  } else {
+    return null;
   }
-  if (!start) return null;
-  const head = walkSupersedeChain(all, start);
-  if (head.status !== "active") return null;
+  const head = walkSupersedeChainRow(store.sidecar, row);
+  if (!head || head.status !== "active") return null;
+  const rec = rowToMemory(head);
   const redacted = redactForRead(head.body);
-  return { ...head, body: redacted.text, redacted_spans: redacted.redacted_spans };
+  return { ...rec, body: redacted.text, redacted_spans: redacted.redacted_spans };
 }
+
+function walkSupersedeChainRow(sidecar: SidecarHandle, start: RecordRow): RecordRow | null {
+  let cur: RecordRow = start;
+  const seen = new Set<string>([cur.id]);
+  while (cur.superseded_by) {
+    const next = getRecord(sidecar, cur.superseded_by);
+    if (!next || seen.has(next.id)) return cur;
+    seen.add(next.id);
+    cur = next;
+  }
+  return cur;
+}
+
+export function walkSupersedeChain<T extends KnowledgeRecord>(
+  records: ReadonlyArray<T>,
+  start: T,
+): T {
+  const byId = new Map(records.map((r) => [r.id, r]));
+  let cur: T = start;
+  const seen = new Set<string>([cur.id]);
+  while (cur.superseded_by) {
+    const next = byId.get(cur.superseded_by);
+    if (!next || seen.has(next.id)) return cur;
+    seen.add(next.id);
+    cur = next;
+  }
+  return cur;
+}
+
+// ─── Read / list / search ─────────────────────────────────────────────────
 
 export interface ListSkillsFilter {
   scope?: KnowledgeScope;
@@ -763,12 +902,16 @@ export interface ListSkillsFilter {
   include_superseded?: boolean;
 }
 
-export async function listSkills(saivageRoot: string, filter: ListSkillsFilter = {}): Promise<Array<{
+export async function listSkills(
+  store: KnowledgeStore,
+  filter: ListSkillsFilter = {},
+): Promise<Array<{
   id: string; name: string; scope: KnowledgeScope; scope_ref?: string; status: string; updated_at: string;
   triggers: string[]; target_agents: KnowledgeAgentRole[]; survive_compaction: boolean; description: string;
 }>> {
-  const all = await listAllRecords(saivageRoot, "skill", parseSkill);
-  return all
+  const rows = allSkillRows(store.sidecar);
+  return rows
+    .map((r) => rowToSkill(r))
     .filter((r) => {
       if (filter.scope && r.scope !== filter.scope) return false;
       if (filter.target_agent && r.target_agents.length > 0 && !r.target_agents.includes(filter.target_agent)) return false;
@@ -798,15 +941,19 @@ export interface ListMemoriesFilter {
   older_than_days?: number;
 }
 
-export async function listMemories(saivageRoot: string, filter: ListMemoriesFilter = {}): Promise<Array<{
-  id: string; topic: MemoryRecord["topic"]; scope: KnowledgeScope; scope_ref?: string; status: string; updated_at: string;
-  keys: string[]; target_agents: KnowledgeAgentRole[]; source_ref?: MemoryRecord["source_ref"];
+export async function listMemories(
+  store: KnowledgeStore,
+  filter: ListMemoriesFilter = {},
+): Promise<Array<{
+  id: string; topic: MemoryRecord["topic"]; scope: KnowledgeScope; scope_ref?: string; status: string;
+  updated_at: string; keys: string[]; target_agents: KnowledgeAgentRole[]; source_ref?: MemoryRecord["source_ref"];
 }>> {
-  const all = await listAllRecords(saivageRoot, "memory", parseMemory);
+  const rows = allMemoryRows(store.sidecar);
   const olderCutoff = filter.older_than_days !== undefined
-    ? Date.now() - filter.older_than_days * 86400_000
+    ? Date.now() - filter.older_than_days * 86_400_000
     : undefined;
-  return all
+  return rows
+    .map((r) => rowToMemory(r))
     .filter((r) => {
       if (filter.scope && r.scope !== filter.scope) return false;
       if (filter.topic_domain && r.topic.domain !== filter.topic_domain) return false;
@@ -836,64 +983,98 @@ export interface SearchHit {
 }
 
 export async function searchSkills(
-  saivageRoot: string,
+  store: KnowledgeStore,
   query: string,
   opts: { scope?: KnowledgeScope; limit?: number } = {},
 ): Promise<SearchHit[]> {
   const tokens = canonicalizeTokens(query);
   if (tokens.length === 0) return [];
-  const all = (await listAllRecords(saivageRoot, "skill", parseSkill))
-    .filter((r) => r.status === "active")
-    .filter((r) => !opts.scope || r.scope === opts.scope);
-  const hits: Array<{ r: SkillRecord; score: number; snippet: string }> = [];
-  for (const r of all) {
-    const dir = scopeDir(saivageRoot, "skill", r.scope, r.scope_ref);
-    const bodyAbs = join(dir, r.body_path);
-    let body = "";
-    if (await pathExistsSafe(bodyAbs)) body = await readFile(bodyAbs, "utf-8");
-    const snippet = body.slice(0, BODY_SNIPPET_MAX);
+  const rows = allActiveSkillRows(store.sidecar).filter((r) => !opts.scope || r.scope === opts.scope);
+  const hits: Array<{ id: string; score: number; updated_at: string; snippet: string }> = [];
+  for (const row of rows) {
+    const rec = rowToSkill(row);
+    const snippet = row.body.slice(0, BODY_SNIPPET_MAX);
     const score = scoreSkillForSearch(tokens, {
-      id: r.id, name: r.name, description: r.description, triggers: r.triggers,
-      body_snippet: snippet, updated_at: r.updated_at,
+      id: rec.id,
+      name: rec.name,
+      description: rec.description,
+      triggers: rec.triggers,
+      body_snippet: snippet,
+      updated_at: rec.updated_at,
     });
     if (score === 0) continue;
-    hits.push({ r, score, snippet: buildSearchSnippet(snippet, tokens) });
+    hits.push({ id: rec.id, score, updated_at: rec.updated_at, snippet: buildSearchSnippet(snippet, tokens) });
   }
-  hits.sort((a, b) => b.score - a.score || (a.r.updated_at < b.r.updated_at ? 1 : -1) || a.r.id.localeCompare(b.r.id));
+  hits.sort((a, b) =>
+    b.score - a.score || (a.updated_at < b.updated_at ? 1 : -1) || a.id.localeCompare(b.id),
+  );
   const limit = opts.limit ?? 10;
   return hits.slice(0, limit).map((h) => ({
-    id: h.r.id,
+    id: h.id,
     score: h.score,
     snippet: redactForRead(h.snippet).text,
   }));
 }
 
 export async function searchMemories(
-  saivageRoot: string,
+  store: KnowledgeStore,
   query: string,
   opts: { scope?: KnowledgeScope; limit?: number } = {},
 ): Promise<SearchHit[]> {
   const tokens = canonicalizeTokens(query);
   if (tokens.length === 0) return [];
-  const all = (await listAllRecords(saivageRoot, "memory", parseMemory))
-    .filter((r) => r.status === "active")
-    .filter((r) => !opts.scope || r.scope === opts.scope);
-  const hits: Array<{ r: MemoryRecord; score: number; snippet: string }> = [];
-  for (const r of all) {
-    const snippet = r.body.slice(0, BODY_SNIPPET_MAX);
+  const rows = allActiveMemoryRows(store.sidecar).filter((r) => !opts.scope || r.scope === opts.scope);
+  const hits: Array<{ id: string; score: number; updated_at: string; snippet: string }> = [];
+  for (const row of rows) {
+    const rec = rowToMemory(row);
+    const snippet = row.body.slice(0, BODY_SNIPPET_MAX);
     const score = scoreMemoryForSearch(tokens, {
-      id: r.id, topic: r.topic, keys: r.keys, body_snippet: snippet, updated_at: r.updated_at,
+      id: rec.id,
+      topic: rec.topic,
+      keys: rec.keys,
+      body_snippet: snippet,
+      updated_at: rec.updated_at,
     });
     if (score === 0) continue;
-    hits.push({ r, score, snippet: buildSearchSnippet(snippet, tokens) });
+    hits.push({ id: rec.id, score, updated_at: rec.updated_at, snippet: buildSearchSnippet(snippet, tokens) });
   }
-  hits.sort((a, b) => b.score - a.score || (a.r.updated_at < b.r.updated_at ? 1 : -1) || a.r.id.localeCompare(b.r.id));
+  hits.sort((a, b) =>
+    b.score - a.score || (a.updated_at < b.updated_at ? 1 : -1) || a.id.localeCompare(b.id),
+  );
   const limit = opts.limit ?? 10;
   return hits.slice(0, limit).map((h) => ({
-    id: h.r.id,
+    id: h.id,
     score: h.score,
     snippet: redactForRead(h.snippet).text,
   }));
+}
+
+function allSkillRows(sidecar: SidecarHandle): RecordRow[] {
+  return sidecar.db.prepare("SELECT * FROM record WHERE kind = 'skill'").all() as RecordRow[];
+}
+
+function allMemoryRows(sidecar: SidecarHandle): RecordRow[] {
+  return sidecar.db.prepare("SELECT * FROM record WHERE kind = 'memory'").all() as RecordRow[];
+}
+
+function allActiveSkillRows(sidecar: SidecarHandle): RecordRow[] {
+  return sidecar.db
+    .prepare("SELECT * FROM record WHERE kind = 'skill' AND status = 'active'")
+    .all() as RecordRow[];
+}
+
+function allActiveMemoryRows(sidecar: SidecarHandle): RecordRow[] {
+  return sidecar.db
+    .prepare("SELECT * FROM record WHERE kind = 'memory' AND status = 'active'")
+    .all() as RecordRow[];
+}
+
+export async function listAllRecords<T extends KnowledgeRecord>(
+  store: KnowledgeStore,
+  kind: "skill" | "memory",
+): Promise<T[]> {
+  const rows = kind === "skill" ? allSkillRows(store.sidecar) : allMemoryRows(store.sidecar);
+  return rows.map((r) => (kind === "skill" ? rowToSkill(r) : rowToMemory(r))) as T[];
 }
 
 function buildSearchSnippet(text: string, tokens: readonly string[]): string {
@@ -910,108 +1091,98 @@ function buildSearchSnippet(text: string, tokens: readonly string[]): string {
   return text.slice(0, SEARCH_SNIPPET_WINDOW);
 }
 
-// ─── Stage / Session archival hooks (WI-11, design §B.4 + §F) ──────────────
+// ─── Stage / Session archival hooks (design §B.4 + §F) ────────────────────
 
 /** Synthetic author used when the runtime auto-archives at lifecycle events. */
 const SYSTEM_AUTHOR: AuthorAgent = { role: "manager", agent_id: "system" };
 
-interface ScopeArchiveResult {
+export interface ScopeArchiveResult {
   archivedSkills: string[];
   archivedMemories: string[];
 }
 
-async function archiveScope(
+/**
+ * Archive every active skill + memory record under
+ * `(scope=stage, scope_ref=stageId)`. Opens its own sidecar handle so
+ * callers (chat agent, plan-server) need not hold a `KnowledgeStore`
+ * reference yet (will be threaded in B07).
+ *
+ * Idempotent: a second call when no active records remain is a no-op.
+ * Reingest is deferred to the next mutation / divergence sweep: the
+ * archived rows already carry `pending_reingest = 1`.
+ */
+export async function archiveStage(
+  projectRoot: string,
+  stageId: string,
+): Promise<ScopeArchiveResult> {
+  return archiveScopeForProject(projectRoot, "stage", stageId);
+}
+
+/**
+ * Same as {@link archiveStage} but for `(scope=session, scope_ref=channelId)`.
+ */
+export async function archiveSession(
+  projectRoot: string,
+  channelId: string,
+): Promise<ScopeArchiveResult> {
+  return archiveScopeForProject(projectRoot, "session", channelId);
+}
+
+async function archiveScopeForProject(
   projectRoot: string,
   scope: Exclude<KnowledgeScope, "project">,
   scopeRef: string,
 ): Promise<ScopeArchiveResult> {
   const saivageRoot = join(projectRoot, ".saivage");
   requireRuntimeLock(saivageRoot);
-  const result: ScopeArchiveResult = { archivedSkills: [], archivedMemories: [] };
-
-  await withScopeLifecycleLock("skill", scope, scopeRef, () =>
-    archiveOneKind(saivageRoot, "skill", SkillRecordSchema, parseSkill, scope, scopeRef, result.archivedSkills),
-  );
-  await withScopeLifecycleLock("memory", scope, scopeRef, () =>
-    archiveOneKind(saivageRoot, "memory", MemoryRecordSchema, parseMemory, scope, scopeRef, result.archivedMemories),
-  );
-
-  return result;
-}
-
-async function archiveOneKind<T extends KnowledgeRecord>(
-  saivageRoot: string,
-  kind: "skill" | "memory",
-  schema: z.ZodTypeAny,
-  parse: ParseFn<T>,
-  scope: Exclude<KnowledgeScope, "project">,
-  scopeRef: string,
-  bucket: string[],
-): Promise<void> {
-  const dir = scopeDir(saivageRoot, kind, scope, scopeRef);
-  if (!(await pathExistsSafe(dir))) return;
-  const records = await collectScopeActiveRecords(dir, parse);
-  if (records.length === 0) return;
-
-  const recordsDir = join(dir, "records");
-  const archiveRecordsDir = join(dir, "archive", "records");
-  await ensureDir(archiveRecordsDir);
-
-  const now = new Date().toISOString();
-  for (const rec of records) {
-    const archived = schema.parse({
-      ...rec,
-      status: "archived",
-      updated_at: now,
-    }) as T;
-    await writeFile(
-      join(archiveRecordsDir, `${archived.id}.json`),
-      JSON.stringify(archived, null, 2),
-      "utf-8",
-    );
-    const bodyRel = (archived as { body_path?: string }).body_path;
-    if (bodyRel && typeof bodyRel === "string") {
-      const liveBody = join(dir, bodyRel);
-      const archivedBody = join(dir, "archive", bodyRel);
-      if (await pathExistsSafe(liveBody)) {
-        await ensureDir(join(archivedBody, ".."));
-        try { await rename(liveBody, archivedBody); } catch { /* best-effort */ }
+  const sidecar = await openSidecar(projectRoot);
+  const ts = nowIso();
+  try {
+    let archivedSkills: string[] = [];
+    let archivedMemories: string[] = [];
+    sidecar.inTransaction(() => {
+      archivedSkills = archiveScopeMut(
+        sidecar,
+        "skill",
+        scope,
+        scopeRef,
+        SYSTEM_AUTHOR.role,
+        SYSTEM_AUTHOR.agent_id,
+        scope + " " + scopeRef + " archived",
+        ts,
+      );
+      archivedMemories = archiveScopeMut(
+        sidecar,
+        "memory",
+        scope,
+        scopeRef,
+        SYSTEM_AUTHOR.role,
+        SYSTEM_AUTHOR.agent_id,
+        scope + " " + scopeRef + " archived",
+        ts,
+      );
+      // Sync record_json.status with the column we just bumped so eager
+      // loaders / search reads stay consistent without a reingest.
+      for (const id of [...archivedSkills, ...archivedMemories]) {
+        const row = getRecord(sidecar, id);
+        if (!row) continue;
+        try {
+          const parsed = JSON.parse(row.record_json) as Record<string, unknown>;
+          parsed.status = "archived";
+          parsed.updated_at = ts;
+          sidecar.db
+            .prepare("UPDATE record SET record_json = ? WHERE id = ?")
+            .run(JSON.stringify(parsed), id);
+        } catch {
+          // Leave malformed rows alone; divergence sweep will report.
+        }
       }
-    }
-    const liveRecord = join(recordsDir, `${archived.id}.json`);
-    if (await pathExistsSafe(liveRecord)) {
-      try { await unlink(liveRecord); } catch { /* best-effort */ }
-    }
-    await writeAuditSafe(
-      dir,
-      buildAudit(archived.id, "archive", "ok", SYSTEM_AUTHOR, `${scope} ${scopeRef} archived`, {
-        prev_status: rec.status,
-        next_status: "archived",
-      }),
-    );
-    bucket.push(archived.id);
+    });
+    return { archivedSkills, archivedMemories };
+  } finally {
+    sidecar.close();
   }
-
-  await safeRebuild(dir, schema);
 }
 
-/**
- * Archive every active skill + memory under
- * `<projectRoot>/.saivage/{skills,memory}/stages/<stageId>/`. Idempotent:
- * a second call when no active records remain is a no-op. Records are
- * moved into a sibling `archive/` subtree so subsequent
- * `resolveEagerRecords` calls for the next stage do not see them
- * (FR-9).
- */
-export async function archiveStage(projectRoot: string, stageId: string): Promise<ScopeArchiveResult> {
-  return archiveScope(projectRoot, "stage", stageId);
-}
-
-/**
- * Same as {@link archiveStage} but for session-scoped knowledge under
- * `<projectRoot>/.saivage/{skills,memory}/sessions/<channelId>/`.
- * Called from `ChatAgent` at the channel-close log point.
- */
-export async function archiveSession(projectRoot: string, channelId: string): Promise<ScopeArchiveResult> {
-  return archiveScope(projectRoot, "session", channelId);
-}
+// Re-export sidecar query helpers that tests / callers conveniently want.
+export { listRecordsByStatus, activeRecordsByScope, loadAllActiveRowsForEager, insertAudit };

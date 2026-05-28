@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createMemory } from "../knowledge/lifecycle.js";
 import type { AuthorAgent } from "../knowledge/lifecycle.js";
+import { makeTestStore } from "../knowledge/_testfixtures/store.js";
 import { initProjectTree } from "../store/project.js";
 import {
   acquireRuntimeLock,
@@ -91,12 +92,17 @@ describe("runtime.lock ownership", () => {
   });
 
   it("knowledge lifecycle writers fail without a runtime lock", async () => {
-    await expect(
-      createMemory(
-        saivageDir,
-        { topic: { domain: "runtime", subject: "lock" }, body: "body", scope: "project", reason: "seed" },
-        AUTHOR,
-      ),
-    ).rejects.toMatchObject({ code: "NO_RUNTIME_LOCK" });
+    const store = await makeTestStore(projectRoot);
+    try {
+      await expect(
+        createMemory(
+          store,
+          { topic: { domain: "runtime", subject: "lock" }, body: "body", scope: "project", reason: "seed" },
+          AUTHOR,
+        ),
+      ).rejects.toMatchObject({ code: "NO_RUNTIME_LOCK" });
+    } finally {
+      store.sidecar.close();
+    }
   });
 });

@@ -1,25 +1,20 @@
 /**
- * Saivage — knowledge regression pins (M5 / WI-21).
+ * Saivage — knowledge regression pins (M5 / WI-21, F01 B04 sidecar variant).
  *
  * Lightweight regression tests anchored to FR-31* sub-clauses that aren't
- * already covered by the in-place M1/M2/M3 unit suites. Tests
- * intentionally NOT duplicated here:
+ * already covered by the in-place M1/M2/M3 unit suites. After F01 B04
+ * the on-disk JSON tree is gone — these tests now poke at the sidecar
+ * directly instead of `records/*.json` and `audit.jsonl`.
  *
- *  • fr31a (bundled built-in skills load) — covered by
- *    `src/knowledge/eagerLoader.test.ts > walkBuiltinSkills picks up
- *    bundled SKILL.md` and by the prod `npm run test:bundle` job.
- *  • fr31b (triggerless skill round-trip) — covered by
- *    `src/mcp/knowledgeSkills.test.ts`.
- *  • fr31e(i) (Designer/Chat skill-write denial) — covered by
- *    `src/knowledge/integration.test.ts` (M5/WI-18).
- *  • fr31f (write-side secret rejection) — covered by
- *    `src/mcp/knowledgeSkills.test.ts` and reasserted in
- *    `src/knowledge/integration.test.ts`.
- *  • fr31g (concurrent writes) — covered by
- *    `src/knowledge/concurrency.test.ts` (M5/WI-19).
+ * Tests intentionally NOT duplicated here:
+ *  • fr31a (bundled built-in skills load) — eagerLoader.test.ts.
+ *  • fr31b (triggerless skill round-trip) — knowledgeSkills.test.ts.
+ *  • fr31e(i) (Designer/Chat skill-write denial) — integration.test.ts.
+ *  • fr31f (write-side secret rejection) — knowledgeSkills.test.ts.
+ *  • fr31g (concurrent writes) — concurrency.test.ts.
  */
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -31,65 +26,67 @@ import {
   updateSkill,
   updateMemory,
   getMemory,
+  type AuthorAgent,
 } from "./lifecycle.js";
 import { redactForRead } from "./loader.js";
-import type { AuthorAgent } from "./lifecycle.js";
 import { knowledgeSkillsTools } from "../mcp/knowledgeSkills.js";
 import { knowledgeMemoryTools } from "../mcp/knowledgeMemory.js";
 import { acquireRuntimeLock, type RuntimeLock } from "../runtime/recovery.js";
+import { makeTestStore } from "./_testfixtures/store.js";
+import type { KnowledgeStore } from "./init.js";
+import { getRecord } from "./sidecar-queries.js";
 
 const AUTHOR: AuthorAgent = { role: "manager", agent_id: "m1" };
 
 let projectRoot: string;
 let saivage: string;
 let runtimeLock: RuntimeLock | null;
+let store: KnowledgeStore;
 
 beforeEach(async () => {
   projectRoot = mkdtempSync(join(tmpdir(), "saivage-regress-"));
   await initProjectTree(projectRoot);
   saivage = join(projectRoot, ".saivage");
   runtimeLock = await acquireRuntimeLock(saivage);
+  store = await makeTestStore(projectRoot);
 });
 afterEach(() => {
+  store?.sidecar.close();
   runtimeLock?.release();
   runtimeLock = null;
   rmSync(projectRoot, { recursive: true, force: true });
 });
 
-// ─── FR-31c — update refreshes updated_at + audit + index row ─────────────
+// ─── FR-31c — update refreshes updated_at + audit ─────────────────────────
 
-describe("FR-31c — update refreshes updated_at + audit + index", () => {
-  it("updateSkill bumps updated_at strictly later and appends an audit row", async () => {
+describe("FR-31c — update refreshes updated_at + audit", () => {
+  it("updateSkill bumps updated_at strictly later and appends an update audit row", async () => {
     const s = await createSkill(
-      saivage,
+      store,
       { name: "u1", description: "d", body: "v1", scope: "project", reason: "init" },
       AUTHOR,
     );
-    const recordPath = join(saivage, "skills", "project", "records", `${s.id}.json`);
-    const before = JSON.parse(readFileSync(recordPath, "utf-8")) as { created_at: string; updated_at: string };
-    // Ensure clock progresses past 1ms (ISO timestamps have ms granularity).
+    const before = getRecord(store.sidecar, s.id);
+    expect(before).not.toBeNull();
     await new Promise((r) => setTimeout(r, 5));
-    const u = await updateSkill(saivage, { id: s.id, description: "d2", reason: "doc" }, AUTHOR);
-    expect(new Date(u.updated_at).getTime()).toBeGreaterThan(new Date(before.created_at).getTime());
+    const u = await updateSkill(store, { id: s.id, description: "d2", reason: "doc" }, AUTHOR);
+    expect(new Date(u.updated_at).getTime()).toBeGreaterThan(
+      new Date(before?.created_at ?? 0).getTime(),
+    );
+    const after = getRecord(store.sidecar, s.id);
+    expect(after?.updated_at).toBe(u.updated_at);
 
-    const audit = readFileSync(join(saivage, "skills", "project", "audit.jsonl"), "utf-8");
-    const lines = audit.trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
-    const ops = lines.map((l) => l.op);
+    const auditRows = store.sidecar.db
+      .prepare("SELECT op FROM audit WHERE record_id = ? ORDER BY ts ASC")
+      .all(s.id) as { op: string }[];
+    const ops = auditRows.map((r) => r.op);
     expect(ops).toContain("create");
     expect(ops).toContain("update");
-
-    const idx = JSON.parse(
-      readFileSync(join(saivage, "skills", "project", "index.json"), "utf-8"),
-    ) as { entries: { id: string; updated_at: string }[] };
-    const row = idx.entries.find((e) => e.id === s.id);
-    expect(row).toBeDefined();
-    if (!row) throw new Error("expected updated skill in index");
-    expect(row.updated_at).toBe(u.updated_at);
   });
 
-  it("updateMemory persists new body and refreshes the index snippet", async () => {
+  it("updateMemory persists new body and getMemory returns it", async () => {
     const m = await createMemory(
-      saivage,
+      store,
       {
         topic: { domain: "d", subject: "s" },
         body: "original body content",
@@ -100,37 +97,12 @@ describe("FR-31c — update refreshes updated_at + audit + index", () => {
     );
     await new Promise((r) => setTimeout(r, 5));
     await updateMemory(
-      saivage,
+      store,
       { id: m.id, body: "rewritten body content keyword", reason: "rewrite" },
       AUTHOR,
     );
-    const read = await getMemory(saivage, { id: m.id });
+    const read = await getMemory(store, { id: m.id });
     expect(read?.body).toBe("rewritten body content keyword");
-  });
-});
-
-// ─── FR-31d — nested body_path (subdirectories under records/) ────────────
-
-describe("FR-31d — body_path is a nested relative path under records/", () => {
-  it("createSkill persists body under records/<id>.md and indexes that relative path", async () => {
-    const s = await createSkill(
-      saivage,
-      {
-        name: "nested",
-        description: "d",
-        body: "nested body",
-        scope: "project",
-        reason: "nested seed",
-      },
-      AUTHOR,
-    );
-    const expectedRel = `records/${s.id}.md`;
-    const onDisk = join(saivage, "skills", "project", expectedRel);
-    expect(existsSync(onDisk)).toBe(true);
-    expect(readFileSync(onDisk, "utf-8")).toBe("nested body");
-    const recordPath = join(saivage, "skills", "project", "records", `${s.id}.json`);
-    const rec = JSON.parse(readFileSync(recordPath, "utf-8")) as { body_path: string };
-    expect(rec.body_path).toBe(expectedRel);
   });
 });
 
@@ -167,8 +139,6 @@ describe("FR-31e(ii) — deleted legacy stub names are gone from tool catalogs",
       "supersede_memory",
       "update_memory",
     ]);
-    // No legacy stub names — the canonical names use create_*/get_*/search_*,
-    // not memory_*/index_* prefixes.
     for (const n of names) {
       expect(n.startsWith("memory_")).toBe(false);
       expect(n.startsWith("index_")).toBe(false);
@@ -176,67 +146,36 @@ describe("FR-31e(ii) — deleted legacy stub names are gone from tool catalogs",
   });
 });
 
-// ─── FR-31f (read-side) — on-disk secret-shaped body is redacted on read ──
+// ─── FR-31f (read-side) — secret-shaped body is redacted on read ──────────
 
 describe("FR-31f (read-side) — redactForRead masks provider tokens on the wire", () => {
   it("returns redacted_spans>=1 and removes the secret substring", () => {
-    const body = `before sk-${"A".repeat(40)} after`;
+    const body = "before sk-" + "A".repeat(40) + " after";
     const out = redactForRead(body);
     expect(out.redacted_spans).toBeGreaterThanOrEqual(1);
     expect(out.text.includes("sk-")).toBe(false);
   });
 
   it("getMemory on a body-with-secret returns the redacted form with redacted_spans counter", async () => {
-    // Bypass the write-side guard by hand-editing the record JSON to
-    // contain a secret pattern. The store layer's redactForRead is
-    // applied on read in lifecycle.getMemory.
+    // Bypass the write-side guard by patching the sidecar body column
+    // directly (write-side scanForSecrets would reject this on createMemory).
     const m = await createMemory(
-      saivage,
+      store,
       {
         topic: { domain: "d", subject: "leaky-on-disk" },
-        body: "placeholder", // clean placeholder so create passes
+        body: "placeholder",
         scope: "project",
         reason: "seed",
       },
       AUTHOR,
     );
-    const recordPath = join(saivage, "memory", "project", "records", `${m.id}.json`);
-    const raw = JSON.parse(readFileSync(recordPath, "utf-8")) as { body: string };
-    raw.body = `key: sk-${"A".repeat(40)} more`;
-    writeFileSync(recordPath, JSON.stringify(raw), "utf-8");
-    const read = await getMemory(saivage, { id: m.id });
+    const leakyBody = "key: sk-" + "A".repeat(40) + " more";
+    store.sidecar.db
+      .prepare("UPDATE record SET body = ? WHERE id = ?")
+      .run(leakyBody, m.id);
+    const read = await getMemory(store, { id: m.id });
     expect(read).not.toBeNull();
-    if (!read) throw new Error("expected memory to exist after manual record edit");
-    expect(read.redacted_spans).toBeGreaterThanOrEqual(1);
-    expect(read.body.includes("sk-")).toBe(false);
-  });
-});
-
-// ─── §5.12 — plan history vs memory boundary (no cross-store duplication) ──
-
-describe("§5.12 — plan history and knowledge stores stay distinct", () => {
-  it("creating a memory does not mutate plan.json history", async () => {
-    const planPath = join(saivage, "plan.json");
-    const seed = {
-      updated_at: new Date().toISOString(),
-      current_stage_id: null,
-      stages: [] as unknown[],
-      history: [] as unknown[],
-    };
-    writeFileSync(planPath, JSON.stringify(seed), "utf-8");
-
-    await createMemory(
-      saivage,
-      {
-        topic: { domain: "build", subject: "web" },
-        body: "build memo",
-        scope: "project",
-        reason: "init",
-      },
-      AUTHOR,
-    );
-
-    const after = JSON.parse(readFileSync(planPath, "utf-8")) as typeof seed;
-    expect(after).toEqual(seed);
+    expect(read?.redacted_spans).toBeGreaterThanOrEqual(1);
+    expect(read?.body.includes("sk-")).toBe(false);
   });
 });

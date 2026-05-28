@@ -26,6 +26,8 @@ import {
 import { ChatAgent } from "../agents/chat.js";
 import { loadAllRolePrompts } from "../agents/prompts.js";
 import { listSkills, readSkillById, listMemories, getMemory } from "../knowledge/lifecycle.js";
+import { openSidecar } from "../knowledge/sidecar.js";
+import type { KnowledgeStore } from "../knowledge/init.js";
 import { chatSessionId, agentId } from "../ids.js";
 import { WebSocketChannel } from "../channels/websocket.js";
 import { log } from "../log.js";
@@ -63,6 +65,22 @@ function historyView(doc: PlanDocument | null): PlanHistoryView | null {
 export interface ServerOptions {
   port: number;
   host: string;
+}
+
+/**
+ * Open a minimal read-only KnowledgeStore over the project's sidecar for
+ * synchronous debug endpoints. Callers MUST close `store.sidecar` after use.
+ * Write-side helpers must not be invoked on this stub (no rag wiring).
+ */
+async function openReadonlyKnowledgeStore(projectRoot: string): Promise<KnowledgeStore> {
+  const sidecar = await openSidecar(projectRoot);
+  return {
+    sidecar,
+    ragManager: undefined as unknown as KnowledgeStore["ragManager"],
+    ragDatasets: [],
+    projectRoot,
+    reingestKind: async () => { /* no-op for read paths */ },
+  };
 }
 
 export function registerNotesRoutes(
@@ -617,49 +635,65 @@ export async function startServer(
   });
 
   app.get("/api/debug/skills", async () => {
+    let store: KnowledgeStore | null = null;
     try {
-      const skills = await listSkills(runtime.project.saivageDir, {
+      store = await openReadonlyKnowledgeStore(runtime.project.projectRoot);
+      const skills = await listSkills(store, {
         include_archived: true,
         include_superseded: true,
       });
       return { skills };
     } catch (err) {
       return { skills: [], error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      store?.sidecar.close();
     }
   });
 
   app.get<{ Params: { id: string } }>("/api/debug/skills/:id", async (req, reply) => {
+    let store: KnowledgeStore | null = null;
     try {
-      const result = await readSkillById(runtime.project.saivageDir, req.params.id);
+      store = await openReadonlyKnowledgeStore(runtime.project.projectRoot);
+      const result = await readSkillById(store, req.params.id);
       return result;
     } catch (err) {
       reply.code(404);
       return { error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      store?.sidecar.close();
     }
   });
 
   app.get("/api/debug/memories", async () => {
+    let store: KnowledgeStore | null = null;
     try {
-      const memories = await listMemories(runtime.project.saivageDir, {
+      store = await openReadonlyKnowledgeStore(runtime.project.projectRoot);
+      const memories = await listMemories(store, {
         include_archived: true,
       });
       return { memories };
     } catch (err) {
       return { memories: [], error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      store?.sidecar.close();
     }
   });
 
   app.get<{ Params: { id: string } }>("/api/debug/memories/:id", async (req, reply) => {
+    let store: KnowledgeStore | null = null;
     try {
-      const result = await getMemory(runtime.project.saivageDir, { id: req.params.id });
+      store = await openReadonlyKnowledgeStore(runtime.project.projectRoot);
+      const result = await getMemory(store, { id: req.params.id });
       if (!result) {
         reply.code(404);
-        return { error: `memory ${req.params.id} not found or not active` };
+        return { error: "memory " + req.params.id + " not found or not active" };
       }
       return result;
     } catch (err) {
       reply.code(404);
       return { error: err instanceof Error ? err.message : String(err) };
+    } finally {
+      store?.sidecar.close();
     }
   });
 

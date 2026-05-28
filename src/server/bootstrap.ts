@@ -167,6 +167,7 @@ export async function bootstrap(
     enabled: config.rag.enabled,
     projectRoot: project.projectRoot,
   };
+  // TODO(F01 B07): construct KnowledgeStore here and pass via { knowledge }
   registerBuiltinServices(mcpRuntime, config.mcp, config.security, { rag: ragService });
   await startConfiguredMcpServers(mcpRuntime, config);
   mcpRuntime.startMonitoring();

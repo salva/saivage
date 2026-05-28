@@ -1,5 +1,15 @@
+/**
+ * Archive lifecycle on the SQLite sidecar (F01 B04 variant of WI-11).
+ *
+ * `archiveStage` / `archiveSession` open the sidecar themselves (they
+ * are invoked from the chat/plan layer with just the projectRoot) and
+ * still gate on the runtime lock. After they run, the affected
+ * `(scope, scope_ref)` records should be flipped to `status='archived'`
+ * with a matching audit entry; idempotent re-invocations should be a
+ * no-op.
+ */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,25 +17,31 @@ import {
   createMemory,
   archiveStage,
   archiveSession,
+  type AuthorAgent,
 } from "./lifecycle.js";
 import { initProjectTree } from "../store/project.js";
 import { acquireRuntimeLock, type RuntimeLock } from "../runtime/recovery.js";
-import type { AuthorAgent } from "./lifecycle.js";
+import { makeTestStore } from "./_testfixtures/store.js";
+import type { KnowledgeStore } from "./init.js";
+import { getRecord, activeRecordsByScope } from "./sidecar-queries.js";
 
 const AUTHOR: AuthorAgent = { role: "coder", agent_id: "agent-test" };
 
-describe("archiveStage / archiveSession (WI-11)", () => {
+describe("archiveStage / archiveSession (WI-11, sidecar)", () => {
   let projectRoot: string;
   let saivage: string;
   let runtimeLock: RuntimeLock | null;
+  let store: KnowledgeStore;
 
   beforeEach(async () => {
     projectRoot = mkdtempSync(join(tmpdir(), "wi11-"));
     await initProjectTree(projectRoot);
     saivage = join(projectRoot, ".saivage");
     runtimeLock = await acquireRuntimeLock(saivage);
+    store = await makeTestStore(projectRoot);
   });
   afterEach(() => {
+    store?.sidecar.close();
     runtimeLock?.release();
     runtimeLock = null;
     rmSync(projectRoot, { recursive: true, force: true });
@@ -43,9 +59,9 @@ describe("archiveStage / archiveSession (WI-11)", () => {
     await expect(archiveSession(projectRoot, "chan-1")).rejects.toMatchObject({ code: "NO_RUNTIME_LOCK" });
   });
 
-  it("moves active stage-scoped skill+memory into archive/ and updates status", async () => {
+  it("flips active stage-scoped skill+memory to archived in the sidecar", async () => {
     const skill = await createSkill(
-      saivage,
+      store,
       {
         name: "stage-skill",
         description: "d",
@@ -57,7 +73,7 @@ describe("archiveStage / archiveSession (WI-11)", () => {
       AUTHOR,
     );
     const mem = await createMemory(
-      saivage,
+      store,
       {
         body: "stage memory body",
         topic: { domain: "d", subject: "s" },
@@ -68,37 +84,29 @@ describe("archiveStage / archiveSession (WI-11)", () => {
       AUTHOR,
     );
 
+    // archiveStage opens its own sidecar; close ours first so SQLite
+    // doesn't trip the WAL writer.
+    store.sidecar.close();
     const res = await archiveStage(projectRoot, "stage-1");
+    store = await makeTestStore(projectRoot);
+
     expect(res.archivedSkills).toContain(skill.id);
     expect(res.archivedMemories).toContain(mem.id);
 
-    // Records moved out of live records dir.
-    const liveSkillRecords = join(saivage, "skills", "stages", "stage-1", "records");
-    const liveMemRecords = join(saivage, "memory", "stages", "stage-1", "records");
-    expect(existsSync(liveSkillRecords) ? readdirSync(liveSkillRecords) : []).toEqual([]);
-    expect(existsSync(liveMemRecords) ? readdirSync(liveMemRecords) : []).toEqual([]);
+    expect(activeRecordsByScope(store.sidecar, "skill", "stage", "stage-1")).toEqual([]);
+    expect(activeRecordsByScope(store.sidecar, "memory", "stage", "stage-1")).toEqual([]);
+    expect(getRecord(store.sidecar, skill.id)?.status).toBe("archived");
+    expect(getRecord(store.sidecar, mem.id)?.status).toBe("archived");
 
-    // Archived copy exists with status archived.
-    const archivedJson = JSON.parse(
-      readFileSync(
-        join(saivage, "skills", "stages", "stage-1", "archive", "records", `${skill.id}.json`),
-        "utf-8",
-      ),
-    );
-    expect(archivedJson.status).toBe("archived");
-
-    // Audit appended.
-    const audit = readFileSync(
-      join(saivage, "skills", "stages", "stage-1", "audit.jsonl"),
-      "utf-8",
-    );
-    expect(audit).toContain('"op":"archive"');
-    expect(audit).toContain(skill.id);
+    const auditOps = store.sidecar.db
+      .prepare("SELECT op FROM audit WHERE record_id = ? ORDER BY ts ASC")
+      .all(skill.id) as { op: string }[];
+    expect(auditOps.map((r) => r.op)).toContain("archive");
   });
 
   it("is idempotent: second invocation is a no-op", async () => {
     await createSkill(
-      saivage,
+      store,
       {
         name: "s2",
         description: "d",
@@ -109,16 +117,18 @@ describe("archiveStage / archiveSession (WI-11)", () => {
       },
       AUTHOR,
     );
+    store.sidecar.close();
     const first = await archiveStage(projectRoot, "s2");
     expect(first.archivedSkills.length).toBe(1);
     const second = await archiveStage(projectRoot, "s2");
     expect(second.archivedSkills).toEqual([]);
     expect(second.archivedMemories).toEqual([]);
+    store = await makeTestStore(projectRoot);
   });
 
   it("archiveSession archives session-scoped records", async () => {
     const skill = await createSkill(
-      saivage,
+      store,
       {
         name: "sess-skill",
         description: "d",
@@ -129,10 +139,11 @@ describe("archiveStage / archiveSession (WI-11)", () => {
       },
       AUTHOR,
     );
+    store.sidecar.close();
     const res = await archiveSession(projectRoot, "chan-1");
+    store = await makeTestStore(projectRoot);
     expect(res.archivedSkills).toContain(skill.id);
-    const live = join(saivage, "skills", "sessions", "chan-1", "records");
-    expect(existsSync(live) ? readdirSync(live) : []).toEqual([]);
+    expect(activeRecordsByScope(store.sidecar, "skill", "session", "chan-1")).toEqual([]);
   });
 
   it("non-existent scope dir is a clean no-op", async () => {

@@ -18,6 +18,7 @@ import type { ToolEntry } from "./types.js";
 import type { InProcessToolHandler } from "./runtime.js";
 import { canCall } from "../knowledge/permissions.js";
 import { KnowledgeStoreError } from "../knowledge/store.js";
+import type { KnowledgeStore } from "../knowledge/init.js";
 import {
   archiveSkill,
   createSkill,
@@ -161,10 +162,6 @@ function authorOf(ctx: { role: string; agentId: string }): AuthorAgent {
   return { role: resolveRole(ctx.role), agent_id: ctx.agentId };
 }
 
-function saivageRoot(projectRoot: string): string {
-  return `${projectRoot}/.saivage`;
-}
-
 function ok(content: unknown) { return { content, isError: false }; }
 function err(code: string, message: string) {
   return { content: { error: { code, message } }, isError: true };
@@ -172,111 +169,113 @@ function err(code: string, message: string) {
 
 function gateRole(role: KnowledgeAgentRole, op: "create" | "read" | "supersede" | "archive" | "search") {
   if (!canCall(role, op, "skill")) {
-    throw new KnowledgeStoreError("UNAUTHORIZED_ROLE", `role=${role} cannot ${op} skill`);
+    throw new KnowledgeStoreError("UNAUTHORIZED_ROLE", "role=" + role + " cannot " + op + " skill");
   }
 }
 
-export const knowledgeSkillsHandler: InProcessToolHandler = async (toolName, args, ctx) => {
-  if (!validateCtx(ctx)) {
-    return err("UNAUTHORIZED_ROLE", "ToolCallContext required for knowledge ops");
-  }
-  const role = resolveRole(ctx.role);
-  const root = saivageRoot(ctx.projectRoot);
-  const author = authorOf(ctx);
-  try {
-    switch (toolName) {
-      case "create_skill": {
-        gateRole(role, "create");
-        const result = await createSkill(root, {
-          name: String(args.name),
-          description: String(args.description),
-          body: String(args.body),
-          triggers: (args.triggers as string[] | undefined) ?? [],
-          target_agents: (args.target_agents as KnowledgeAgentRole[] | undefined) ?? [],
-          scope: args.scope as KnowledgeScope,
-          ...(args.scope_ref !== undefined ? { scope_ref: String(args.scope_ref) } : {}),
-          ...(args.expires_at !== undefined ? { expires_at: String(args.expires_at) } : {}),
-          ...(args.ttl_ms !== undefined ? { ttl_ms: Number(args.ttl_ms) } : {}),
-          ...(args.survive_compaction !== undefined ? { survive_compaction: Boolean(args.survive_compaction) } : {}),
-          reason: String(args.reason),
-        }, author);
-        return ok(result);
-      }
-      case "update_skill": {
-        gateRole(role, "create"); // update follows create per §F
-        const result = await updateSkill(root, {
-          id: String(args.id),
-          ...(args.body !== undefined ? { body: String(args.body) } : {}),
-          ...(args.description !== undefined ? { description: String(args.description) } : {}),
-          ...(args.triggers !== undefined ? { triggers: args.triggers as string[] } : {}),
-          ...(args.target_agents !== undefined ? { target_agents: args.target_agents as KnowledgeAgentRole[] } : {}),
-          ...(args.expires_at !== undefined ? { expires_at: String(args.expires_at) } : {}),
-          ...(args.ttl_ms !== undefined ? { ttl_ms: Number(args.ttl_ms) } : {}),
-          reason: String(args.reason),
-        }, author);
-        return ok(result);
-      }
-      case "supersede_skill": {
-        gateRole(role, "supersede");
-        const nr = (args.new_record ?? {}) as Record<string, unknown>;
-        const result = await supersedeSkill(root, {
-          old_id: String(args.old_id),
-          new_record: {
-            name: String(nr.name),
-            description: String(nr.description),
-            body: String(nr.body),
-            triggers: (nr.triggers as string[] | undefined) ?? [],
-            target_agents: (nr.target_agents as KnowledgeAgentRole[] | undefined) ?? [],
-            scope: nr.scope as KnowledgeScope,
-            ...(nr.scope_ref !== undefined ? { scope_ref: String(nr.scope_ref) } : {}),
-            ...(nr.expires_at !== undefined ? { expires_at: String(nr.expires_at) } : {}),
-            ...(nr.ttl_ms !== undefined ? { ttl_ms: Number(nr.ttl_ms) } : {}),
-            ...(nr.survive_compaction !== undefined ? { survive_compaction: Boolean(nr.survive_compaction) } : {}),
+export function makeKnowledgeSkillsHandler(store: KnowledgeStore): InProcessToolHandler {
+  return async (toolName, args, ctx) => {
+    if (!validateCtx(ctx)) {
+      return err("UNAUTHORIZED_ROLE", "ToolCallContext required for knowledge ops");
+    }
+    const role = resolveRole(ctx.role);
+    const author = authorOf(ctx);
+    try {
+      switch (toolName) {
+        case "create_skill": {
+          gateRole(role, "create");
+          const result = await createSkill(store, {
+            name: String(args.name),
+            description: String(args.description),
+            body: String(args.body),
+            triggers: (args.triggers as string[] | undefined) ?? [],
+            target_agents: (args.target_agents as KnowledgeAgentRole[] | undefined) ?? [],
+            scope: args.scope as KnowledgeScope,
+            ...(args.scope_ref !== undefined ? { scope_ref: String(args.scope_ref) } : {}),
+            ...(args.expires_at !== undefined ? { expires_at: String(args.expires_at) } : {}),
+            ...(args.ttl_ms !== undefined ? { ttl_ms: Number(args.ttl_ms) } : {}),
+            ...(args.survive_compaction !== undefined ? { survive_compaction: Boolean(args.survive_compaction) } : {}),
             reason: String(args.reason),
-          },
-          reason: String(args.reason),
-        }, author);
-        return ok(result);
+          }, author);
+          return ok(result);
+        }
+        case "update_skill": {
+          gateRole(role, "create"); // update follows create per §F
+          const result = await updateSkill(store, {
+            id: String(args.id),
+            ...(args.body !== undefined ? { body: String(args.body) } : {}),
+            ...(args.description !== undefined ? { description: String(args.description) } : {}),
+            ...(args.triggers !== undefined ? { triggers: args.triggers as string[] } : {}),
+            ...(args.target_agents !== undefined ? { target_agents: args.target_agents as KnowledgeAgentRole[] } : {}),
+            ...(args.expires_at !== undefined ? { expires_at: String(args.expires_at) } : {}),
+            ...(args.ttl_ms !== undefined ? { ttl_ms: Number(args.ttl_ms) } : {}),
+            reason: String(args.reason),
+          }, author);
+          return ok(result);
+        }
+        case "supersede_skill": {
+          gateRole(role, "supersede");
+          const nr = (args.new_record ?? {}) as Record<string, unknown>;
+          const result = await supersedeSkill(store, {
+            old_id: String(args.old_id),
+            new_record: {
+              name: String(nr.name),
+              description: String(nr.description),
+              body: String(nr.body),
+              triggers: (nr.triggers as string[] | undefined) ?? [],
+              target_agents: (nr.target_agents as KnowledgeAgentRole[] | undefined) ?? [],
+              scope: nr.scope as KnowledgeScope,
+              ...(nr.scope_ref !== undefined ? { scope_ref: String(nr.scope_ref) } : {}),
+              ...(nr.expires_at !== undefined ? { expires_at: String(nr.expires_at) } : {}),
+              ...(nr.ttl_ms !== undefined ? { ttl_ms: Number(nr.ttl_ms) } : {}),
+              ...(nr.survive_compaction !== undefined ? { survive_compaction: Boolean(nr.survive_compaction) } : {}),
+              reason: String(args.reason),
+            },
+            reason: String(args.reason),
+          }, author);
+          return ok(result);
+        }
+        case "archive_skill": {
+          gateRole(role, "archive");
+          return ok(await archiveSkill(store, String(args.id), String(args.reason), author));
+        }
+        case "delete_skill": {
+          gateRole(role, "archive"); // delete follows archive per §F
+          return ok(await deleteSkill(store, String(args.id), String(args.reason), author));
+        }
+        case "list_skills": {
+          gateRole(role, "read");
+          return ok({
+            skills: await listSkills(store, {
+              ...(args.scope !== undefined ? { scope: args.scope as KnowledgeScope } : {}),
+              ...(args.target_agent !== undefined ? { target_agent: args.target_agent as KnowledgeAgentRole } : {}),
+              ...(args.include_archived !== undefined ? { include_archived: Boolean(args.include_archived) } : {}),
+              ...(args.include_superseded !== undefined ? { include_superseded: Boolean(args.include_superseded) } : {}),
+            }),
+          });
+        }
+        case "read_skill": {
+          gateRole(role, "read");
+          return ok(await readSkillById(store, String(args.id)));
+        }
+        case "search_skills": {
+          gateRole(role, "search");
+          return ok({
+            hits: await searchSkills(store, String(args.query), {
+              ...(args.scope !== undefined ? { scope: args.scope as KnowledgeScope } : {}),
+              ...(args.limit !== undefined ? { limit: Number(args.limit) } : {}),
+            }),
+          });
+        }
+        default:
+          return err("UNKNOWN_TOOL", "unknown skills tool: " + toolName);
       }
-      case "archive_skill": {
-        gateRole(role, "archive");
-        return ok(await archiveSkill(root, String(args.id), String(args.reason), author));
+    } catch (e) {
+      if (e instanceof KnowledgeStoreError) {
+        return err(e.code, e.message);
       }
-      case "delete_skill": {
-        gateRole(role, "archive"); // delete follows archive per §F
-        return ok(await deleteSkill(root, String(args.id), String(args.reason), author));
-      }
-      case "list_skills": {
-        gateRole(role, "read");
-        return ok({
-          skills: await listSkills(root, {
-            ...(args.scope !== undefined ? { scope: args.scope as KnowledgeScope } : {}),
-            ...(args.target_agent !== undefined ? { target_agent: args.target_agent as KnowledgeAgentRole } : {}),
-            ...(args.include_archived !== undefined ? { include_archived: Boolean(args.include_archived) } : {}),
-            ...(args.include_superseded !== undefined ? { include_superseded: Boolean(args.include_superseded) } : {}),
-          }),
-        });
-      }
-      case "read_skill": {
-        gateRole(role, "read");
-        return ok(await readSkillById(root, String(args.id)));
-      }
-      case "search_skills": {
-        gateRole(role, "search");
-        return ok({
-          hits: await searchSkills(root, String(args.query), {
-            ...(args.scope !== undefined ? { scope: args.scope as KnowledgeScope } : {}),
-            ...(args.limit !== undefined ? { limit: Number(args.limit) } : {}),
-          }),
-        });
-      }
-      default:
-        return err("UNKNOWN_TOOL", `unknown skills tool: ${toolName}`);
+      return err("INTERNAL", e instanceof Error ? e.message : String(e));
     }
-  } catch (e) {
-    if (e instanceof KnowledgeStoreError) {
-      return err(e.code, e.message);
-    }
-    return err("INTERNAL", e instanceof Error ? e.message : String(e));
-  }
-};
+  };
+}
+

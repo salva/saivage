@@ -9,8 +9,8 @@
 
 import type { McpRuntime, InProcessToolHandler } from "./runtime.js";
 import type { ToolEntry } from "./types.js";
-import { knowledgeSkillsTools, knowledgeSkillsHandler } from "./knowledgeSkills.js";
-import { knowledgeMemoryTools, knowledgeMemoryHandler } from "./knowledgeMemory.js";
+import { knowledgeSkillsTools, makeKnowledgeSkillsHandler } from "./knowledgeSkills.js";
+import { knowledgeMemoryTools, makeKnowledgeMemoryHandler } from "./knowledgeMemory.js";
 
 import { createWriteStream } from "node:fs";
 import { writeFile, mkdir, readdir, stat, open, opendir } from "node:fs/promises";
@@ -1966,8 +1966,10 @@ export function registerBuiltinServices(
   mcpRuntime.registerInProcess("shell", shellTools, shellHandler);
   mcpRuntime.registerInProcess("data", dataTools, dataHandler);
   mcpRuntime.registerInProcess("git", gitTools, gitHandler);
-  mcpRuntime.registerInProcess("skills", knowledgeSkillsTools, knowledgeSkillsHandler);
-  mcpRuntime.registerInProcess("memory", knowledgeMemoryTools, knowledgeMemoryHandler);
+  if (options.knowledge) {
+    mcpRuntime.registerInProcess("skills", knowledgeSkillsTools, makeKnowledgeSkillsHandler(options.knowledge));
+    mcpRuntime.registerInProcess("memory", knowledgeMemoryTools, makeKnowledgeMemoryHandler(options.knowledge));
+  }
 
   // Stubs — services that need external dependencies not yet integrated
   mcpRuntime.registerInProcess("web", webTools, stubHandler("web"), { available: false });

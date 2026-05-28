@@ -13,6 +13,8 @@ import {
 } from "./eagerLoader.js";
 import { resolveEagerRecords } from "./loader.js";
 import type { SkillRecord } from "./types.js";
+import { makeTestStore } from "./_testfixtures/store.js";
+import type { KnowledgeStore } from "./init.js";
 
 function makeFixtureBuiltinSkill(root: string, name: string, frontmatter: string, body: string): void {
   const dir = join(root, name);
@@ -30,22 +32,24 @@ function skillNames(candidates: Awaited<ReturnType<typeof loadAllCandidates>>): 
 describe("eagerLoader (WI-13)", () => {
   let projectRoot: string;
   let runtimeLock: RuntimeLock | null;
+  let store: KnowledgeStore;
 
   beforeEach(async () => {
     projectRoot = mkdtempSync(join(tmpdir(), "wi13-"));
     await initProjectTree(projectRoot);
     runtimeLock = await acquireRuntimeLock(join(projectRoot, ".saivage"));
+    store = await makeTestStore(projectRoot);
   });
   afterEach(() => {
+    store?.sidecar.close();
     runtimeLock?.release();
     runtimeLock = null;
     rmSync(projectRoot, { recursive: true, force: true });
   });
 
   it("loads project-scope skills and memories as candidates", async () => {
-    const saivage = join(projectRoot, ".saivage");
     await createSkill(
-      saivage,
+      store,
       {
         name: "coder-skill",
         description: "trigger-matched skill",
@@ -58,7 +62,7 @@ describe("eagerLoader (WI-13)", () => {
       { role: "manager", agent_id: "test" },
     );
     await createMemory(
-      saivage,
+      store,
       {
         topic: { domain: "build", subject: "web", aspect: "command" },
         body: "Memory body for coder",
@@ -75,9 +79,8 @@ describe("eagerLoader (WI-13)", () => {
   });
 
   it("formatEagerBlock emits the §D.6 header and END marker", async () => {
-    const saivage = join(projectRoot, ".saivage");
     await createSkill(
-      saivage,
+      store,
       {
         name: "always-on",
         description: "survivor",

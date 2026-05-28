@@ -7,10 +7,9 @@
  * or budgeting decisions live here.
  */
 
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { pathExists } from "../store/documents.js";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   BuiltinSkillFrontmatterSchema,
@@ -27,6 +26,8 @@ import {
   type EagerResolution,
   type ResolveContext,
 } from "./loader.js";
+import { openSidecar } from "./sidecar.js";
+import { loadAllActiveRowsForEager } from "./sidecar-queries.js";
 
 export interface RawCandidate {
   record: SkillRecord | MemoryRecord;
@@ -34,55 +35,29 @@ export interface RawCandidate {
   origin?: "builtin" | "project";
 }
 
-async function collectRecordsFromDir<T extends SkillRecord | MemoryRecord>(
-  dir: string,
-  schema: z.ZodTypeAny,
-  origin: "builtin" | "project",
+async function walkSidecarRecords(
+  projectRoot: string,
   out: RawCandidate[],
 ): Promise<void> {
-  const recordsDir = join(dir, "records");
-  if (!(await pathExists(recordsDir))) return;
-  const names = (await readdir(recordsDir)).sort();
-  for (const name of names) {
-    if (!name.endsWith(".json")) continue;
-    try {
-      const raw = JSON.parse(await readFile(join(recordsDir, name), "utf-8"));
-      const rec = schema.parse(raw) as T;
-      if (rec.status !== "active") continue;
-      let body = "";
-      if (rec.kind === "skill") {
-        const skill = rec as SkillRecord;
-        if (skill.body_path) {
-          const bodyAbs = join(dir, skill.body_path);
-          if (await pathExists(bodyAbs)) body = await readFile(bodyAbs, "utf-8");
-        }
-      } else {
-        body = (rec as MemoryRecord).body;
-      }
-      out.push({ record: rec, body, origin });
-    } catch { /* skip malformed */ }
-  }
-}
-
-async function walkScopeTree(
-  root: string,
-  schema: z.ZodTypeAny,
-  out: RawCandidate[],
-): Promise<void> {
-  if (!(await pathExists(root))) return;
-  // <root>/{project, stages/<id>, sessions/<id>}
-  const projectDir = join(root, "project");
-  if (await pathExists(projectDir)) await collectRecordsFromDir(projectDir, schema, "project", out);
-  for (const sub of ["stages", "sessions"]) {
-    const subRoot = join(root, sub);
-    if (!(await pathExists(subRoot))) continue;
-    for (const id of await readdir(subRoot)) {
-      const dir = join(subRoot, id);
+  const sidecar = await openSidecar(projectRoot);
+  try {
+    const rows = loadAllActiveRowsForEager(sidecar);
+    for (const row of rows) {
       try {
-        if (!(await stat(dir)).isDirectory()) continue;
-      } catch { continue; }
-      await collectRecordsFromDir(dir, schema, "project", out);
+        const raw = JSON.parse(row.record_json) as { kind?: string };
+        if (raw.kind === "skill") {
+          const rec = SkillRecordSchema.parse(raw);
+          if (rec.status !== "active") continue;
+          out.push({ record: rec, body: row.body, origin: row.origin });
+        } else if (raw.kind === "memory") {
+          const rec = MemoryRecordSchema.parse(raw);
+          if (rec.status !== "active") continue;
+          out.push({ record: rec, body: row.body, origin: row.origin });
+        }
+      } catch { /* skip malformed */ }
     }
+  } finally {
+    sidecar.close();
   }
 }
 
@@ -195,7 +170,7 @@ export async function walkBuiltinSkills(builtinRoot: string, out: RawCandidate[]
 
     const now = new Date(0).toISOString();
     const rec: SkillRecord = SkillRecordSchema.parse({
-      id: randomUUID(),
+      id: "builtin:" + topic,
       kind: "skill",
       scope: "project",
       status: "active",
@@ -207,7 +182,6 @@ export async function walkBuiltinSkills(builtinRoot: string, out: RawCandidate[]
       triggers: frontmatter.triggers,
       target_agents: frontmatter.target_agents,
       origin: "builtin",
-      body_path: skillPath,
       relates_to: [],
       survive_compaction: frontmatter.survive_compaction,
     });
@@ -237,10 +211,8 @@ export async function loadAllCandidates(
   projectRoot: string,
   builtinRoot: string = defaultBuiltinSkillsRoot(),
 ): Promise<RawCandidate[]> {
-  const saivage = join(projectRoot, ".saivage");
   const out: RawCandidate[] = [];
-  await walkScopeTree(join(saivage, "skills"), SkillRecordSchema, out);
-  await walkScopeTree(join(saivage, "memory"), MemoryRecordSchema, out);
+  await walkSidecarRecords(projectRoot, out);
   await walkBuiltinSkills(builtinRoot, out);
   return out;
 }

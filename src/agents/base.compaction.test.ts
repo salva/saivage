@@ -12,6 +12,7 @@ import type { AgentContext, AgentRole, InputChannel } from "./types.js";
 import type { ChatRequest, ChatResponse, Message } from "../providers/types.js";
 import { initProjectTree } from "../store/project.js";
 import { createSkill } from "../knowledge/lifecycle.js";
+import { makeTestStore } from "../knowledge/_testfixtures/store.js";
 import { readDoc } from "../store/documents.js";
 import { RuntimeStateSchema } from "../types.js";
 import { RuntimeTracker, acquireRuntimeLock, type RuntimeLock } from "../runtime/recovery.js";
@@ -110,20 +111,25 @@ function makeContext(
 
 describe("BaseAgent compaction integration (WI-14)", () => {
   it("§E.1 — appends survivor reinjection block after compaction", async () => {
-    await createSkill(
-      join(tmpDir, ".saivage"),
-      {
-        name: "always-on-survivor",
-        description: "must survive compaction",
-        body: "Always-on body",
-        scope: "project",
-        triggers: ["coding"],
-        target_agents: ["coder"],
-        survive_compaction: true,
-        reason: "wi-14 survivor seed",
-      },
-      { role: "manager", agent_id: "test" },
-    );
+    const store = await makeTestStore(tmpDir);
+    try {
+      await createSkill(
+        store,
+        {
+          name: "always-on-survivor",
+          description: "must survive compaction",
+          body: "Always-on body",
+          scope: "project",
+          triggers: ["coding"],
+          target_agents: ["coder"],
+          survive_compaction: true,
+          reason: "wi-14 survivor seed",
+        },
+        { role: "manager", agent_id: "test" },
+      );
+    } finally {
+      store.sidecar.close();
+    }
 
     const agent = new TestAgent(
       makeContext("coder", async () => ({

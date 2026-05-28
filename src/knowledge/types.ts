@@ -57,6 +57,17 @@ export const AuditOpSchema = z.enum([
 ]);
 export type AuditOp = z.infer<typeof AuditOpSchema>;
 
+/**
+ * F01 — Record id schema: a v4 UUID OR a stable `builtin:<slug>` id.
+ * Built-in skills shipped with Saivage carry deterministic ids so they
+ * remain stable across boots; project-authored records always use UUIDs.
+ */
+export const RecordIdSchema = z.union([
+  z.string().uuid(),
+  z.string().regex(/^builtin:[a-z0-9][a-z0-9._-]*$/),
+]);
+export type RecordId = z.infer<typeof RecordIdSchema>;
+
 const AuthorAgentSchema = z.object({
   role: KnowledgeAgentRoleSchema,
   agent_id: z.string().min(1),
@@ -73,7 +84,7 @@ const SourceProvenanceSchema = z.object({
  * records carry a scope_ref (design §B.1 refinement).
  */
 const RecordBaseShape = {
-  id: z.string().uuid(),
+  id: RecordIdSchema,
   kind: z.enum(["skill", "memory"]),
   scope: KnowledgeScopeSchema,
   status: LifecycleStatusSchema,
@@ -84,9 +95,9 @@ const RecordBaseShape = {
   scope_ref: z.string().min(1).optional(),
   expires_at: z.string().datetime().optional(),
   ttl_ms: z.number().int().positive().optional(),
-  supersedes: z.string().uuid().optional(),
-  superseded_by: z.string().uuid().optional(),
-  relates_to: z.array(z.string().uuid()).max(16).default([]),
+  supersedes: RecordIdSchema.optional(),
+  superseded_by: RecordIdSchema.optional(),
+  relates_to: z.array(RecordIdSchema).max(16).default([]),
   survive_compaction: z.boolean().default(false),
 } as const;
 
@@ -111,7 +122,6 @@ export const SkillRecordSchema = z
     description: z.string(),
     triggers: z.array(z.string()).default([]),
     target_agents: z.array(KnowledgeAgentRoleSchema).default([]),
-    body_path: z.string().min(1),
   })
   .refine(scopeRefRefinement, scopeRefRefinementMsg);
 export type SkillRecord = z.infer<typeof SkillRecordSchema>;
@@ -157,10 +167,10 @@ export const MemoryRecordSchema = z
   .refine(scopeRefRefinement, scopeRefRefinementMsg);
 export type MemoryRecord = z.infer<typeof MemoryRecordSchema>;
 
-/** One JSONL line per write attempt (incl. rejections); design §B.1 AuditEntry. */
+/** One audit row per lifecycle event; design §B.1 AuditEntry. */
 export const AuditEntrySchema = z.object({
   ts: z.string().datetime(),
-  record_id: z.string().uuid(),
+  record_id: RecordIdSchema,
   op: AuditOpSchema,
   outcome: z.enum(["ok", "rejected"]).default("ok"),
   error_code: z.string().optional(),
