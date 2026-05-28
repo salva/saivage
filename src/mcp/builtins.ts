@@ -279,6 +279,8 @@ type DownloadOutcome =
 interface BuiltinServicesOptions {
   webSearchEndpoint?: string;
   rag?: import("../server/rag/service.js").RagService;
+  /** F01 B03 — knowledge façade; when present handlers will use it. */
+  knowledge?: import("../knowledge/init.js").KnowledgeStore;
 }
 
 async function downloadUrl(
