@@ -19,6 +19,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { promisify } from "node:util";
 import { log } from "../log.js";
+import { RAG_TOOL_DEFINITIONS, makeRagHandler } from "../server/rag/handler.js";
 import {
   createSecretEnvNamePredicate,
   DEFAULT_CREDENTIAL_LEXEMES,
@@ -277,6 +278,7 @@ type DownloadOutcome =
 
 interface BuiltinServicesOptions {
   webSearchEndpoint?: string;
+  rag?: import("../server/rag/service.js").RagService;
 }
 
 async function downloadUrl(
@@ -1970,5 +1972,15 @@ export function registerBuiltinServices(
   mcpRuntime.registerInProcess("index", indexTools, stubHandler("index"), { available: false });
   mcpRuntime.registerInProcess("lock", lockTools, stubHandler("lock"), { available: false });
 
-  log.info("[builtins] 7 built-in services registered (6 active, 3 stubs)");
+  if (options.rag) {
+    mcpRuntime.registerInProcess(
+      "rag",
+      RAG_TOOL_DEFINITIONS,
+      makeRagHandler(options.rag),
+      { available: true },
+    );
+    log.info("[builtins] 8 built-in services registered (7 active, 3 stubs)");
+  } else {
+    log.info("[builtins] 7 built-in services registered (6 active, 3 stubs)");
+  }
 }
