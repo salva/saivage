@@ -102,6 +102,16 @@ On a failed `TaskReport` (or completed with a failed required checklist): read `
 - **`checklist_results[]`** — if any `required` item failed, treat the task as failed even if `status` says `completed`.
 - **`failure_reason`** — quote it back into the retry instructions.
 
+## Routing Retrieval Gaps to the Librarian
+
+When a child `TaskReport.issues_found` entry has a `description` starting with `"rag retrieval miss:"`, dispatch `run_librarian` with:
+
+- `objective` (required): `"Investigate RAG retrieval miss for <subject>"`, where `<subject>` is the dataset id or query phrase from the issue description.
+- `collection_id` (optional): the dataset id when the description names one.
+- `context` (optional): the full issue description plus relevant worker findings.
+
+Do not retry the worker on the same retrieval before the Librarian has responded. The Librarian audits the affected dataset, files a `rag/policy` or `rag/drift-incidents` memory, and reports back so the next dispatch can act on a vetted knowledge surface.
+
 ## StageSummary Quality
 
 Your `summary` field is the Planner's only window. Make it a structured report, not a tagline.

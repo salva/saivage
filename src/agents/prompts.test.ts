@@ -65,4 +65,11 @@ describe("loadRolePrompt", () => {
     }
     expect(offenders).toEqual([]);
   });
+
+  it("manager prompt documents the rag retrieval-miss → run_librarian routing rule", () => {
+    const text = loadRolePrompt("manager");
+    expect(text).toContain("run_librarian");
+    expect(text).toContain("objective");
+    expect(text).toContain('"rag retrieval miss:"');
+  });
 });
