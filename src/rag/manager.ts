@@ -120,7 +120,7 @@ export async function createRagManager(opts: RagManagerOptions): Promise<RagMana
     return openDataset(config);
   }
 
-  return {
+  const manager: RagManager = {
     enabled: true,
 
     async list() {
@@ -184,6 +184,11 @@ export async function createRagManager(opts: RagManagerOptions): Promise<RagMana
       cache.clear();
     },
   };
+  // F01 B02 — install the private boot-recovery lookup. Returns the
+  // cached `Dataset` only; recovery never triggers an open.
+  const { installInternalLookup } = await import("./internal/datasetAccess.js");
+  installInternalLookup(manager, (id) => cache.get(id));
+  return manager;
 }
 
 // Re-export the projectRoot helper so callers can render the on-disk path
