@@ -38,6 +38,7 @@ import {
 } from "./types.js";
 import {
   activeRecordsByScope,
+  activeIdsForScope,
   archiveScope as archiveScopeMut,
   deleteRecord,
   findActiveMemoryIdByTopic,
@@ -55,16 +56,10 @@ import type { AuditEntry as SidecarAudit, RecordRow, SidecarHandle } from "./sid
 import { openSidecar } from "./sidecar.js";
 import { isBlockedPath } from "../security/secrets.js";
 import { assertRuntimeLockHeld } from "../runtime/runtime-lock.js";
-import {
-  canonicalizeTokens,
-  redactForRead,
-  scoreMemoryForSearch,
-  scoreSkillForSearch,
-} from "./loader.js";
+import { redactForRead } from "./loader.js";
 import { log } from "../log.js";
 
 const BODY_SNIPPET_MAX = 500;
-const SEARCH_SNIPPET_WINDOW = 200;
 
 export interface AuthorAgent {
   role: KnowledgeAgentRole;
@@ -979,74 +974,152 @@ export async function listMemories(
 export interface SearchHit {
   id: string;
   score: number;
-  snippet: string;
+  kind: "skill" | "memory";
+  scope: KnowledgeScope;
+  scope_ref?: string;
+  title?: string;
+  snippet?: string;
+}
+
+export interface SearchKnowledgeInput {
+  q: string;
+  topK?: number;
+}
+
+export interface SearchKnowledgeCtx {
+  stageId?: string;
+  channelId?: string;
+}
+
+const SEARCH_TOPK_DEFAULT = 8;
+const SEARCH_TOPK_MAX = 50;
+
+function clampTopK(n: number | undefined): number {
+  const k = n ?? SEARCH_TOPK_DEFAULT;
+  if (!Number.isFinite(k)) return SEARCH_TOPK_DEFAULT;
+  return Math.max(1, Math.min(SEARCH_TOPK_MAX, Math.floor(k)));
+}
+
+function visibleScopeIds(
+  store: KnowledgeStore,
+  kind: "skill" | "memory",
+  ctx: SearchKnowledgeCtx,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const id of activeIdsForScope(store.sidecar, kind, "project")) ids.add(id);
+  if (ctx.stageId !== undefined) {
+    for (const id of activeIdsForScope(store.sidecar, kind, "stage", ctx.stageId)) ids.add(id);
+  }
+  if (ctx.channelId !== undefined) {
+    for (const id of activeIdsForScope(store.sidecar, kind, "session", ctx.channelId)) ids.add(id);
+  }
+  return ids;
+}
+
+function recordIdFromChunkPath(p: string): string | null {
+  // Chunk metadata.path is "<kind>:<id>.md" — see sidecar-queries.toIngestItem.
+  const m = /^(?:skill|memory):(.+)\.md$/.exec(p);
+  return m ? m[1] : null;
+}
+
+async function ragSearch(
+  store: KnowledgeStore,
+  datasetId: string,
+  q: string,
+  topK: number,
+  visibleIds: Set<string>,
+): Promise<Array<{ recordId: string; score: number; snippet: string }>> {
+  const idList = Array.from(visibleIds);
+  const paths = idList.map((id) =>
+    datasetId === "knowledge.skills" ? `skill:${id}.md` : `memory:${id}.md`,
+  );
+  let hits;
+  try {
+    hits = await store.ragManager.query(datasetId, q, {
+      topK,
+      filter: { in: { path: paths } },
+    });
+  } catch (err) {
+    throw new KnowledgeStoreError(
+      "KNOWLEDGE_RAG_UNAVAILABLE",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+  // Dedupe by record id (multiple chunks per record share a path); keep
+  // best score and the snippet associated with that best chunk.
+  const best = new Map<string, { score: number; snippet: string }>();
+  for (const h of hits) {
+    const rid = recordIdFromChunkPath(h.metadata.path);
+    if (!rid) continue;
+    const prior = best.get(rid);
+    if (!prior || h.score > prior.score) {
+      best.set(rid, { score: h.score, snippet: h.text });
+    }
+  }
+  return Array.from(best.entries())
+    .map(([recordId, v]) => ({ recordId, score: v.score, snippet: v.snippet }))
+    .sort((a, b) => b.score - a.score);
 }
 
 export async function searchSkills(
   store: KnowledgeStore,
-  query: string,
-  opts: { scope?: KnowledgeScope; limit?: number } = {},
-): Promise<SearchHit[]> {
-  const tokens = canonicalizeTokens(query);
-  if (tokens.length === 0) return [];
-  const rows = allActiveSkillRows(store.sidecar).filter((r) => !opts.scope || r.scope === opts.scope);
-  const hits: Array<{ id: string; score: number; updated_at: string; snippet: string }> = [];
-  for (const row of rows) {
+  input: SearchKnowledgeInput,
+  ctx: SearchKnowledgeCtx = {},
+): Promise<{ hits: SearchHit[] }> {
+  const topK = clampTopK(input.topK);
+  const visible = visibleScopeIds(store, "skill", ctx);
+  if (visible.size === 0) return { hits: [] };
+  const ranked = await ragSearch(store, "knowledge.skills", input.q, topK, visible);
+  const out: SearchHit[] = [];
+  for (const r of ranked) {
+    if (!visible.has(r.recordId)) continue;
+    const row = getRecord(store.sidecar, r.recordId);
+    if (!row || row.kind !== "skill" || row.status !== "active") continue;
     const rec = rowToSkill(row);
-    const snippet = row.body.slice(0, BODY_SNIPPET_MAX);
-    const score = scoreSkillForSearch(tokens, {
+    out.push({
       id: rec.id,
-      name: rec.name,
-      description: rec.description,
-      triggers: rec.triggers,
-      body_snippet: snippet,
-      updated_at: rec.updated_at,
+      score: r.score,
+      kind: "skill",
+      scope: rec.scope,
+      ...(rec.scope_ref !== undefined ? { scope_ref: rec.scope_ref } : {}),
+      title: rec.name,
+      snippet: redactForRead(r.snippet.slice(0, BODY_SNIPPET_MAX)).text,
     });
-    if (score === 0) continue;
-    hits.push({ id: rec.id, score, updated_at: rec.updated_at, snippet: buildSearchSnippet(snippet, tokens) });
+    if (out.length >= topK) break;
   }
-  hits.sort((a, b) =>
-    b.score - a.score || (a.updated_at < b.updated_at ? 1 : -1) || a.id.localeCompare(b.id),
-  );
-  const limit = opts.limit ?? 10;
-  return hits.slice(0, limit).map((h) => ({
-    id: h.id,
-    score: h.score,
-    snippet: redactForRead(h.snippet).text,
-  }));
+  return { hits: out };
 }
 
 export async function searchMemories(
   store: KnowledgeStore,
-  query: string,
-  opts: { scope?: KnowledgeScope; limit?: number } = {},
-): Promise<SearchHit[]> {
-  const tokens = canonicalizeTokens(query);
-  if (tokens.length === 0) return [];
-  const rows = allActiveMemoryRows(store.sidecar).filter((r) => !opts.scope || r.scope === opts.scope);
-  const hits: Array<{ id: string; score: number; updated_at: string; snippet: string }> = [];
-  for (const row of rows) {
+  input: SearchKnowledgeInput,
+  ctx: SearchKnowledgeCtx = {},
+): Promise<{ hits: SearchHit[] }> {
+  const topK = clampTopK(input.topK);
+  const visible = visibleScopeIds(store, "memory", ctx);
+  if (visible.size === 0) return { hits: [] };
+  const ranked = await ragSearch(store, "knowledge.memory", input.q, topK, visible);
+  const out: SearchHit[] = [];
+  for (const r of ranked) {
+    if (!visible.has(r.recordId)) continue;
+    const row = getRecord(store.sidecar, r.recordId);
+    if (!row || row.kind !== "memory" || row.status !== "active") continue;
     const rec = rowToMemory(row);
-    const snippet = row.body.slice(0, BODY_SNIPPET_MAX);
-    const score = scoreMemoryForSearch(tokens, {
+    const title = rec.topic.aspect
+      ? `${rec.topic.domain}/${rec.topic.subject}/${rec.topic.aspect}`
+      : `${rec.topic.domain}/${rec.topic.subject}`;
+    out.push({
       id: rec.id,
-      topic: rec.topic,
-      keys: rec.keys,
-      body_snippet: snippet,
-      updated_at: rec.updated_at,
+      score: r.score,
+      kind: "memory",
+      scope: rec.scope,
+      ...(rec.scope_ref !== undefined ? { scope_ref: rec.scope_ref } : {}),
+      title,
+      snippet: redactForRead(r.snippet.slice(0, BODY_SNIPPET_MAX)).text,
     });
-    if (score === 0) continue;
-    hits.push({ id: rec.id, score, updated_at: rec.updated_at, snippet: buildSearchSnippet(snippet, tokens) });
+    if (out.length >= topK) break;
   }
-  hits.sort((a, b) =>
-    b.score - a.score || (a.updated_at < b.updated_at ? 1 : -1) || a.id.localeCompare(b.id),
-  );
-  const limit = opts.limit ?? 10;
-  return hits.slice(0, limit).map((h) => ({
-    id: h.id,
-    score: h.score,
-    snippet: redactForRead(h.snippet).text,
-  }));
+  return { hits: out };
 }
 
 function allSkillRows(sidecar: SidecarHandle): RecordRow[] {
@@ -1057,38 +1130,12 @@ function allMemoryRows(sidecar: SidecarHandle): RecordRow[] {
   return sidecar.db.prepare("SELECT * FROM record WHERE kind = 'memory'").all() as RecordRow[];
 }
 
-function allActiveSkillRows(sidecar: SidecarHandle): RecordRow[] {
-  return sidecar.db
-    .prepare("SELECT * FROM record WHERE kind = 'skill' AND status = 'active'")
-    .all() as RecordRow[];
-}
-
-function allActiveMemoryRows(sidecar: SidecarHandle): RecordRow[] {
-  return sidecar.db
-    .prepare("SELECT * FROM record WHERE kind = 'memory' AND status = 'active'")
-    .all() as RecordRow[];
-}
-
 export async function listAllRecords<T extends KnowledgeRecord>(
   store: KnowledgeStore,
   kind: "skill" | "memory",
 ): Promise<T[]> {
   const rows = kind === "skill" ? allSkillRows(store.sidecar) : allMemoryRows(store.sidecar);
   return rows.map((r) => (kind === "skill" ? rowToSkill(r) : rowToMemory(r))) as T[];
-}
-
-function buildSearchSnippet(text: string, tokens: readonly string[]): string {
-  const lower = text.toLowerCase();
-  for (const t of tokens) {
-    const idx = lower.indexOf(t);
-    if (idx >= 0) {
-      const half = Math.floor(SEARCH_SNIPPET_WINDOW / 2);
-      const start = Math.max(0, idx - half);
-      const end = Math.min(text.length, idx + half);
-      return text.slice(start, end);
-    }
-  }
-  return text.slice(0, SEARCH_SNIPPET_WINDOW);
 }
 
 // ─── Stage / Session archival hooks (design §B.4 + §F) ────────────────────

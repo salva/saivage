@@ -260,12 +260,17 @@ export function makeKnowledgeSkillsHandler(store: KnowledgeStore): InProcessTool
         }
         case "search_skills": {
           gateRole(role, "search");
-          return ok({
-            hits: await searchSkills(store, String(args.query), {
-              ...(args.scope !== undefined ? { scope: args.scope as KnowledgeScope } : {}),
-              ...(args.limit !== undefined ? { limit: Number(args.limit) } : {}),
-            }),
-          });
+          return ok(await searchSkills(
+            store,
+            {
+              q: String(args.query),
+              ...(args.limit !== undefined ? { topK: Number(args.limit) } : {}),
+            },
+            {
+              ...(ctx.stageId !== undefined ? { stageId: ctx.stageId } : {}),
+              ...(ctx.channelId !== undefined ? { channelId: ctx.channelId } : {}),
+            },
+          ));
         }
         default:
           return err("UNKNOWN_TOOL", "unknown skills tool: " + toolName);

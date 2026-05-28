@@ -35,7 +35,8 @@ export type KnowledgeErrorCode =
   | "NO_RUNTIME_LOCK"
   | "OVERSIZED_SURVIVOR"
   | "INVALID_BUILTIN_NAME"
-  | "KNOWLEDGE_MIGRATION_REQUIRED";
+  | "KNOWLEDGE_MIGRATION_REQUIRED"
+  | "KNOWLEDGE_RAG_UNAVAILABLE";
 
 export class KnowledgeStoreError extends Error {
   constructor(

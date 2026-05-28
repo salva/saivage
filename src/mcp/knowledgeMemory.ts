@@ -292,12 +292,17 @@ export function makeKnowledgeMemoryHandler(store: KnowledgeStore): InProcessTool
         }
         case "search_memories": {
           gateRole(role, "search");
-          return ok({
-            hits: await searchMemories(store, String(args.query), {
-              ...(args.scope !== undefined ? { scope: args.scope as KnowledgeScope } : {}),
-              ...(args.limit !== undefined ? { limit: Number(args.limit) } : {}),
-            }),
-          });
+          return ok(await searchMemories(
+            store,
+            {
+              q: String(args.query),
+              ...(args.limit !== undefined ? { topK: Number(args.limit) } : {}),
+            },
+            {
+              ...(ctx.stageId !== undefined ? { stageId: ctx.stageId } : {}),
+              ...(ctx.channelId !== undefined ? { channelId: ctx.channelId } : {}),
+            },
+          ));
         }
         default:
           return err("UNKNOWN_TOOL", "unknown memory tool: " + toolName);

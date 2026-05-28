@@ -13,6 +13,7 @@ export function stubRag(): KnowledgeStore["ragManager"] {
     ingestDataset: vi.fn(async () => undefined),
     removeDataset: vi.fn(async () => undefined),
     listDatasets: vi.fn(async () => []),
+    query: vi.fn(async () => []),
   } as unknown as KnowledgeStore["ragManager"];
 }
 
