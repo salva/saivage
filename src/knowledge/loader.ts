@@ -245,7 +245,7 @@ export function resolveEagerRecords(
     if (r.status !== "active") continue;
     if (r.target_agents.length > 0 && !r.target_agents.includes(ctx.agentRole)) continue;
 
-    let score = 0;
+    let score: number;
     if (r.kind === "skill") {
       score = scoreSkillTriggers(r.triggers, ctx);
       if (score === 0 && !r.survive_compaction) continue; // triggerless non-survivor → drop
