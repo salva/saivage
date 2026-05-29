@@ -10,6 +10,7 @@ import { resolve } from "node:path";
 import { bootstrap, runPlanner, type SaivageRuntime } from "./bootstrap.js";
 import type { ToolCallContext } from "../mcp/toolContext.js";
 import type { AgentRole } from "../agents/types.js";
+import { formatAgentResultReason } from "../agents/types.js";
 
 export type { SaivageRuntime } from "./bootstrap.js";
 
@@ -73,7 +74,7 @@ export async function startAction(projectPath?: string): Promise<void> {
         console.log("Plan completed successfully.");
         break;
       case "failure":
-        console.error(`Plan failed: ${result.reason}`);
+        console.error(`Plan failed: ${formatAgentResultReason(result.reason)}`);
         process.exitCode = 1;
         break;
       case "abort":

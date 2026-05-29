@@ -40,6 +40,7 @@ import { InspectorAgent } from "../agents/inspector.js";
 import { LibrarianAgent } from "../agents/librarian.js";
 import { WorkerAgent } from "../agents/worker.js";
 import type { AgentContext, AgentResult, Agent } from "../agents/types.js";
+import { formatAgentResultReason } from "../agents/types.js";
 import { assertExhaustive, getRoster } from "../agents/roster.js";
 import type { AgentState } from "../types.js";
 import type { ServiceEntry } from "../mcp/types.js";
@@ -312,6 +313,61 @@ export async function bootstrap(
 }
 
 /**
+ * Stage-dispatch gate (Fix 1, see SPEC/plan-persistence-fix/02-architecture.md
+ * §2). Validates that a `run_manager` dispatch is admissible against
+ * `plan.json` BEFORE constructing a ManagerAgent or mutating tracker state.
+ *
+ * Returns a structured `StructuredFailureReason` ({ code, error }) when the
+ * dispatch must be rejected, or `null` when it is admissible. The caller
+ * surfaces a rejection as `{ kind: "failure", reason }` so the planner's
+ * tool-call turn receives a normal failed tool result (not an exception)
+ * and the Fix 3 PLAN-MUTATION CONTRACT prompt can teach it to self-correct.
+ *
+ * Reuses PlanService error codes verbatim: PLAN_NOT_FOUND, STAGE_NOT_FOUND,
+ * STAGE_MISMATCH (new), VALIDATION_ERROR.
+ */
+async function assertStageDispatchable(
+  planService: PlanService,
+  dispatchedStageId: string | undefined,
+): Promise<import("../agents/types.js").StructuredFailureReason | null> {
+  if (!dispatchedStageId || dispatchedStageId.trim() === "") {
+    return { code: "VALIDATION_ERROR", error: "run_manager requires stage.id" };
+  }
+  const plan = await planService.plan_get();
+  if ("code" in plan) {
+    return { code: plan.code, error: plan.error };
+  }
+  const lookup = await planService.plan_get_stage(dispatchedStageId);
+  if ("code" in lookup) {
+    // STAGE_NOT_FOUND from plan_get_stage means not in active or history.
+    return {
+      code: "STAGE_NOT_FOUND",
+      error:
+        `Stage '${dispatchedStageId}' is not in plan.stages; ` +
+        `call plan_add_stage(stage) and plan_set_current('${dispatchedStageId}') before run_manager.`,
+    };
+  }
+  if (lookup.source === "history") {
+    return {
+      code: "STAGE_MISMATCH",
+      error:
+        `Stage '${dispatchedStageId}' is already in plan.history; ` +
+        `call plan_add_stage with a new id and plan_set_current before run_manager.`,
+    };
+  }
+  if (plan.current_stage_id !== dispatchedStageId) {
+    return {
+      code: "STAGE_MISMATCH",
+      error:
+        `Stage '${dispatchedStageId}' is not the current stage ` +
+        `(plan.current_stage_id=${plan.current_stage_id === null ? "null" : `'${plan.current_stage_id}'`}); ` +
+        `call plan_set_current('${dispatchedStageId}') before run_manager.`,
+    };
+  }
+  return null;
+}
+
+/**
  * Create the child spawner factory for the agent hierarchy.
  * This is the function that wires Planner → Manager → Coder/Researcher.
  */
@@ -373,6 +429,17 @@ export function createChildSpawner(
     switch (role) {
       case "manager": {
         const managerInput = input as import("../agents/types.js").ManagerInput;
+        const gateFailure = await assertStageDispatchable(
+          runtime.planService,
+          managerInput.stage?.id,
+        );
+        if (gateFailure) {
+          log.warn(
+            `[dispatch-gate] rejected run_manager(${managerInput.stage?.id ?? "?"}): ` +
+              `${gateFailure.code} ${gateFailure.error}`,
+          );
+          return { kind: "failure", reason: gateFailure };
+        }
         const managerSpawner = createChildSpawner(runtime);
         ctx.stageId = managerInput.stage?.id;
         agent = await ManagerAgent.create(ctx, managerInput, managerSpawner, {
@@ -866,7 +933,7 @@ async function publishAgentResult(
         await eventBus.publish({
           type: "stage_failed",
           stage_id: stageId,
-          summary: result.reason,
+          summary: formatAgentResultReason(result.reason),
         });
       }
       break;

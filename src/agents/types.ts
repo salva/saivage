@@ -17,12 +17,31 @@ import type { NoteManager } from "../runtime/notes.js";
 import type { AgentRole } from "./roster.js";
 export type { AgentRole };
 
+/**
+ * Structured failure payload carried by AgentResult of kind 'failure'.
+ * Mirrors the PlanError shape from src/mcp/plan-server.ts so the
+ * dispatcher gate (see src/server/bootstrap.ts createChildSpawner)
+ * can surface plan-precondition rejections to the planner without
+ * losing the error code.
+ */
+export interface StructuredFailureReason {
+  code: string;
+  error: string;
+}
+
 /** Result of an agent's execution. */
 export type AgentResult =
   | { kind: "success"; data: unknown }
-  | { kind: "failure"; reason: string; partial?: unknown }
+  | { kind: "failure"; reason: string | StructuredFailureReason; partial?: unknown }
   | { kind: "escalation"; escalation: Escalation }
   | { kind: "abort"; reason: string; partial?: unknown };
+
+/** Serialise an AgentResult.reason (string or structured) to a flat string. */
+export function formatAgentResultReason(
+  reason: string | StructuredFailureReason,
+): string {
+  return typeof reason === "string" ? reason : `${reason.code}: ${reason.error}`;
+}
 
 /** Context passed to every agent on creation. */
 export interface AgentContext {

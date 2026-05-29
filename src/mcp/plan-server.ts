@@ -49,6 +49,7 @@ export type PlanErrorCode =
   | "PLAN_NOT_FOUND"
   | "STAGE_NOT_FOUND"
   | "STAGE_EXISTS"
+  | "STAGE_MISMATCH"
   | "VALIDATION_ERROR"
   | "IO_ERROR";
 

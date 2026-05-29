@@ -133,6 +133,7 @@ describe("G50 /api/notes routes", () => {
       "src/runtime/runtime.test.ts",
       "src/server/bootstrap.test.ts",
       "src/server/bootstrap.ts",
+      "src/server/dispatcher-gate.test.ts",
       "src/server/server.notes.test.ts",
       "src/server/telegram-bot.test.ts",
     ]);
