@@ -61,6 +61,12 @@ function planError(code: PlanErrorCode, message: string): PlanError {
   return { code, error: message };
 }
 
+/** Internal factory exported for the admin backfill script (see
+ * src/scripts/backfill-plan-history.ts). NOT for general use. */
+export function makePlanError(code: PlanErrorCode, message: string): PlanError {
+  return planError(code, message);
+}
+
 /**
  * Plan MCP Service — manages plan.json, including embedded history.
  * All operations are atomic (tmp + rename).
@@ -309,6 +315,46 @@ export class PlanService {
     }
 
     return { completed_stage: structuredClone(completedStage), plan: structuredClone(this.activeView(nextDoc)) };
+  }
+
+  /**
+   * Admin-only: append a synthesised CompletedStage directly to history.
+   * NOT exposed as an MCP tool (absent from PLAN_WRITER_TOOLS and
+   * getToolSchemas()); intended exclusively for the offline backfill
+   * script at src/scripts/backfill-plan-history.ts. Writes via writeDoc so
+   * the atomic tmp+rename guarantee and in-memory cache invalidation still
+   * apply. See SPEC/plan-persistence-fix/02-architecture.md §3.1 and
+   * 03-plan.md §4.2.
+   */
+  async plan_append_history(
+    stage: CompletedStage,
+  ): Promise<{ history_len: number } | PlanError> {
+    if (!this.doc) return planError("PLAN_NOT_FOUND", "plan.json does not exist.");
+    try {
+      CompletedStageSchema.parse(stage);
+    } catch (err) {
+      return planError(
+        "VALIDATION_ERROR",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    if (this.doc.stages.some((s) => s.id === stage.id)) {
+      return planError(
+        "STAGE_EXISTS",
+        `Stage '${stage.id}' is in active plan.stages; refusing to append to history.`,
+      );
+    }
+    if (this.doc.history.some((s) => s.id === stage.id)) {
+      return planError(
+        "STAGE_EXISTS",
+        `Stage '${stage.id}' already in history; refusing to duplicate.`,
+      );
+    }
+    const nextDoc = structuredClone(this.doc);
+    nextDoc.history.push(stage);
+    nextDoc.updated_at = new Date().toISOString();
+    await this.writeDoc(nextDoc);
+    return { history_len: nextDoc.history.length };
   }
 
   /** plan_get_history — Read the plan history. */

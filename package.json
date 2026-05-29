@@ -19,6 +19,7 @@
     "test:bundle": "npm run build && vitest run -t 'walkBuiltinSkills picks up bundled SKILL.md'",
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
+    "backfill-history": "tsx src/scripts/backfill-plan-history.ts",
     "docs:api": "typedoc && node docs/.vitepress/scripts/sanitize-typedoc.mjs",
     "docs:dev": "npm run docs:api && vitepress dev docs",
     "docs:build": "npm run docs:api && vitepress build docs",
