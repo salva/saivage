@@ -573,29 +573,44 @@ export async function runPlanner(
   }
 }
 
-const RECOVERY_PROMPT =
+export const RECOVERY_PROMPT =
   `SYSTEM RECOVERY: The planner session ended without completing all objectives. ` +
   `You have been automatically restarted. You MUST:\n\n` +
   `1. Call plan_get() to read the current plan state.\n` +
-  `2. Call plan_get_history() to see what stages have completed, failed, or escalated.\n` +
+  `2. Call plan_get_history() to see what stages have completed, failed, or escalated.\n\n` +
+  `PLAN-MUTATION CONTRACT (mandatory before any run_manager call):\n` +
+  `  a. The stage must exist in plan.stages (use plan_add_stage if new).\n` +
+  `  b. plan.current_stage_id must equal the stage id (use plan_set_current).\n` +
+  `  c. Only then call run_manager(stage).\n` +
+  `  d. When the manager returns, call plan_complete_stage with the result.\n` +
+  `If run_manager rejects with STAGE_NOT_FOUND, STAGE_MISMATCH, or PLAN_NOT_FOUND,\n` +
+  `the dispatcher is telling you a precondition tool was skipped. Call the missing\n` +
+  `tool and retry the SAME stage — do not invent a different stage and do not escalate.\n\n` +
   `3. Assess what work remains to achieve ALL project objectives.\n` +
   `4. If escalated stages exist, analyze WHY they failed and create corrective stages.\n` +
-  `5. Call plan_set_current() on the next stage and dispatch it with run_manager().\n\n` +
+  `5. Following the contract above, call plan_add_stage (if the stage is new) then plan_set_current() on the next stage and dispatch it with run_manager().\n\n` +
   `DO NOT call plan_done unless ALL objectives are truly achieved with evidence from successful stages. ` +
   `If stages have escalated or failed, the objectives are NOT complete — you must fix the issues and retry.`;
 
-const CONTINUOUS_IMPROVEMENT_PROMPT =
+export const CONTINUOUS_IMPROVEMENT_PROMPT =
   `SYSTEM CONTINUOUS IMPROVEMENT: The configured project objectives appear complete, but Saivage is running in continuous-improvement mode. ` +
   `Do not stop just because the active plan is empty. You MUST keep improving the target project while preserving its objectives and constraints. ` +
   `The next stage must be driven by the project's stated mission, not by generic repository tidying.\n\n` +
+  `PLAN-MUTATION CONTRACT (mandatory before any run_manager call):\n` +
+  `  1) plan_add_stage(stage)        // register the stage in plan.json\n` +
+  `  2) plan_set_current(stage.id)   // mark it active; stamps started_at\n` +
+  `  3) run_manager(stage)           // dispatch — dispatcher enforces 1 & 2\n` +
+  `  4) plan_complete_stage(...)     // move to history with the result\n` +
+  `Skipping any of (1)-(2) causes run_manager to reject with STAGE_NOT_FOUND or\n` +
+  `STAGE_MISMATCH. On rejection, run the missing tool and retry the SAME stage.\n\n` +
   `On this cycle:\n` +
   `1. Call plan_get() and plan_get_history() to confirm the current state.\n` +
   `2. Re-read the project objectives and recent results to identify the next highest-value objective-aligned experiment or blocker.\n` +
   `3. If the project is an ML/research project, first assess whether the dataset is large, complete, high-quality, and auditable enough for model work. If not, prioritize data acquisition, repair, provenance, quality reporting, and snapshot freezing before additional model tuning.\n` +
   `4. Once the data foundation is credible, prefer a research -> data/features -> implementation -> evaluation -> comparison cycle: find a promising model/data idea, implement a bounded experiment, retrieve required data, run honest evaluation, update the leaderboard/reporting, and compare against prior models.\n` +
   `5. Only create maintenance, QA, documentation, or hardening stages when they directly unblock or improve the reliability of the objective-aligned experiment loop.\n` +
-  `6. Because plan.json already exists in continuous-improvement cycles, DO NOT call plan_init(). Create at least one concrete, bounded next stage with plan_add_stage() or plan_set_stages().\n` +
-  `7. Dispatch the next stage with run_manager().\n\n` +
+  `6. Because plan.json already exists in continuous-improvement cycles, DO NOT call plan_init(). Create at least one concrete, bounded next stage with plan_add_stage() (preferred for single-stage additions; plan_set_stages is also acceptable).\n` +
+  `7. Following the contract above, call plan_set_current(stage.id) and then run_manager(stage).\n\n` +
   `Only call plan_done if continuous-improvement mode has been disabled by runtime configuration or shutdown is requested.`;
 
 function buildRestartPrompt(request: PlannerRestartRequest): string {
