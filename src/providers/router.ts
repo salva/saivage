@@ -191,6 +191,37 @@ export class ModelRouter {
     this.modelEquivalents = mergeEquivalenceIndexes(manualEquivs, discovered);
   }
 
+  /**
+   * Warm provider model caches so synchronous capability lookups
+   * (modelCapabilities → getMaxContextTokens) work before the first chat()
+   * call. Providers whose listModels() is async (e.g. copilot) only populate
+   * their metadata cache on first fetch; without this warmup the planner
+   * and chat WS handler throw "no context window" at startup.
+   *
+   * Must be called AFTER inspectUsageAtStartup() — that method may call
+   * setApiKey() on copilot which resets the modelsCache to null.
+   */
+  async warmupProviderCaches(): Promise<void> {
+    // Use the router's own listModels(name) — it resolves OAuth credentials
+    // and calls provider.setApiKey() before fetching, so the cache populates
+    // on the provider instance that subsequent getProviderForRequest() will
+    // return. Calling provider.listModels() directly bypasses OAuth and
+    // hits providers with an empty apiKey, returning [] and leaving caches
+    // empty (which then causes "no context window" at first chat).
+    const providerNames = [...this.providers.keys()].filter((name) => !name.includes("#"));
+    for (const name of providerNames) {
+      const provider = this.providers.get(name);
+      if (!provider?.listModels) continue;
+      try {
+        const models = await this.listModels(name);
+        log.info(`[router] warmup ${name}: ${models.length} models`);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.warn(`[router] warmup: ${name}.listModels() failed: ${msg}`);
+      }
+    }
+  }
+
   private async initProviders(_config: SaivageConfig): Promise<void> {
     for (const descriptor of PROVIDER_DESCRIPTORS) {
       const cfg = this.providerConfigs[descriptor.name];

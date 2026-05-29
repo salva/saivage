@@ -149,6 +149,11 @@ export async function bootstrap(
   const router = new ModelRouter(config);
   await router.init();
   await router.inspectUsageAtStartup();
+  // Warm provider model caches AFTER usage inspection: inspectUsageAtStartup
+  // may call setApiKey() on providers (which resets caches like copilot's
+  // modelsCache). Warming after ensures synchronous capability lookups
+  // (router.getMaxContextTokens) succeed at planner / chat WS startup.
+  await router.warmupProviderCaches();
   log.info(`[v2] Providers: ${router.listProviders().join(", ")}`);
 
   // 4. Initialize MCP runtime + builtin services
