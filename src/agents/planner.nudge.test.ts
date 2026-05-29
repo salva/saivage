@@ -180,9 +180,10 @@ function assistantTextEquals(m: { role: string; content: unknown }, target: stri
   if (m.role !== "assistant") return false;
   if (typeof m.content === "string") return m.content === target;
   if (Array.isArray(m.content)) {
-    const textBlocks = (m.content as any[])
-      .filter((b: any) => b?.type === "text")
-      .map((b: any) => b.text ?? "");
+    const blocks = m.content as Array<{ type: string; text?: string }>;
+    const textBlocks = blocks
+      .filter((b) => b?.type === "text")
+      .map((b) => b.text ?? "");
     return textBlocks.join("") === target;
   }
   return false;
@@ -191,9 +192,10 @@ function assistantTextEquals(m: { role: string; content: unknown }, target: stri
 function messageText(m: { content: unknown }): string {
   if (typeof m.content === "string") return m.content;
   if (Array.isArray(m.content)) {
-    return (m.content as any[])
-      .filter((b: any) => b?.type === "text")
-      .map((b: any) => b.text ?? "")
+    const blocks = m.content as Array<{ type: string; text?: string }>;
+    return blocks
+      .filter((b) => b?.type === "text")
+      .map((b) => b.text ?? "")
       .join("");
   }
   return "";
@@ -342,7 +344,7 @@ describe("PlannerAgent plan_done terminal protocol", () => {
     expect(result.kind).toBe("success");
     expect(router.calls).toHaveLength(2);
 
-    const msgs = router.calls[1].messages as any[];
+    const msgs = router.calls[1].messages as Array<{ role: string; content: unknown }>;
     const count = msgs.filter((m) =>
       assistantTextEquals(m, "I have nothing else to do."),
     ).length;

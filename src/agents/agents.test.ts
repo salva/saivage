@@ -213,16 +213,17 @@ describe("ReviewerAgent", () => {
       if (m.role !== "assistant") return false;
       if (typeof m.content === "string") return m.content === target;
       if (Array.isArray(m.content)) {
-        const textBlocks = (m.content as any[])
-          .filter((b: any) => b?.type === "text")
-          .map((b: any) => b.text ?? "");
+        const blocks = m.content as Array<{ type: string; text?: string }>;
+        const textBlocks = blocks
+          .filter((b) => b?.type === "text")
+          .map((b) => b.text ?? "");
         return textBlocks.join("") === target;
       }
       return false;
     };
 
     // Messages snapshotted on call 3 = state after review 1 finished.
-    const msgs = calls[2].messages as any[];
+    const msgs = calls[2].messages as Array<{ role: string; content: unknown }>;
     const count = msgs.filter((m) => assistantTextEquals(m, "REVIEW DONE")).length;
     expect(count).toBe(1);
   });

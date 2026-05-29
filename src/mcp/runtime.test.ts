@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { McpRuntime } from "./runtime.js";
+import { McpRuntime, type McpRuntimeOptions } from "./runtime.js";
 import type { ServiceEntry } from "./types.js";
+import type { SaivageConfig } from "../config.js";
 
 function makeEntry(name = "broken"): ServiceEntry {
   return {
@@ -33,7 +34,7 @@ describe("McpRuntime external service cooldown", () => {
           maxDownloadBytes: 250 * 1024 * 1024,
           maxFileReadBytes: 200_000,
         },
-      } as any,
+      } as unknown as SaivageConfig,
       {
         now: () => now,
         crashFailureThreshold: 3,
@@ -48,7 +49,7 @@ describe("McpRuntime external service cooldown", () => {
           disconnect: async () => undefined,
           getTools: () => [],
           callTool: async () => ({ content: [], isError: false }),
-        } as any),
+        } as unknown as ReturnType<NonNullable<McpRuntimeOptions["clientFactory"]>>),
       },
     );
 
@@ -80,7 +81,7 @@ describe("McpRuntime external service cooldown", () => {
         maxDownloadBytes: 250 * 1024 * 1024,
         maxFileReadBytes: 200_000,
       },
-    } as any);
+    } as unknown as SaivageConfig);
     await expect(runtime.startService("ghost")).rejects.toThrow(/config\.mcpServers/);
   });
 });

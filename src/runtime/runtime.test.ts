@@ -45,6 +45,16 @@ import { RuntimeSupervisor } from "./supervisor.js";
 import { log } from "../log.js";
 import type { SaivageConfig } from "../config.js";
 import { waitForRecoveryDelay } from "../server/bootstrap.js";
+import type { SupervisorRuntimeContext } from "./supervisor.js";
+import type { ChatRequest } from "../providers/types.js";
+
+type FakeAgent = { role: string; cancel: () => void };
+type PlanLike = {
+  stages: Array<{ id?: string; started_at?: string; [key: string]: unknown }>;
+  current_stage_id?: string | null;
+  source?: string;
+  code?: string;
+};
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -109,9 +119,9 @@ function deferred<T>(): {
 describe("RuntimeSupervisor", () => {
   it("uses a no-tool log-only model request and does not cancel before threshold", async () => {
     log.warn("supervisor test synthetic retry loop warning");
-    const requests: any[] = [];
+    const requests: Array<ChatRequest & { modelSpec: string }> = [];
     const router = {
-      chat: vi.fn(async (request: any) => {
+      chat: vi.fn(async (request: ChatRequest & { modelSpec: string }) => {
         requests.push(request);
         return {
           content: JSON.stringify({ stuck: true, confidence: 0.9, reason: "retry loop", evidence: ["warning"] }),
@@ -122,10 +132,10 @@ describe("RuntimeSupervisor", () => {
       }),
     };
     const cancel = vi.fn();
-    const agentRegistry = new Map<string, any>([
+    const agentRegistry = new Map<string, FakeAgent>([
       ["coder-1", { role: "coder", cancel }],
     ]);
-    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry }, "github-copilot/gpt-5.4");
+    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router, agentRegistry } as unknown as SupervisorRuntimeContext, "github-copilot/gpt-5.4");
 
     await supervisor.checkOnce();
     await supervisor.checkOnce();
@@ -150,11 +160,11 @@ describe("RuntimeSupervisor", () => {
     };
     const managerCancel = vi.fn();
     const coderCancel = vi.fn();
-    const agentRegistry = new Map<string, any>([
+    const agentRegistry = new Map<string, FakeAgent>([
       ["manager-1", { role: "manager", cancel: managerCancel }],
       ["coder-1", { role: "coder", cancel: coderCancel }],
     ]);
-    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry }, "github-copilot/gpt-5.4");
+    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router, agentRegistry } as unknown as SupervisorRuntimeContext, "github-copilot/gpt-5.4");
 
     await supervisor.checkOnce();
     await supervisor.checkOnce();
@@ -175,10 +185,10 @@ describe("RuntimeSupervisor", () => {
       })),
     };
     const cancel = vi.fn();
-    const agentRegistry = new Map<string, any>([
+    const agentRegistry = new Map<string, FakeAgent>([
       ["coder-1", { role: "coder", cancel }],
     ]);
-    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry }, "github-copilot/gpt-5.4");
+    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router, agentRegistry } as unknown as SupervisorRuntimeContext, "github-copilot/gpt-5.4");
 
     await supervisor.checkOnce();
     await supervisor.checkOnce();
@@ -204,10 +214,10 @@ describe("RuntimeSupervisor", () => {
       })),
     };
     const cancel = vi.fn();
-    const agentRegistry = new Map<string, any>([
+    const agentRegistry = new Map<string, FakeAgent>([
       ["coder-1", { role: "coder", cancel }],
     ]);
-    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry }, "github-copilot/gpt-5.4");
+    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router, agentRegistry } as unknown as SupervisorRuntimeContext, "github-copilot/gpt-5.4");
 
     await supervisor.checkOnce();
     await supervisor.checkOnce();
@@ -232,10 +242,10 @@ describe("RuntimeSupervisor", () => {
       })),
     };
     const cancel = vi.fn();
-    const agentRegistry = new Map<string, any>([
+    const agentRegistry = new Map<string, FakeAgent>([
       ["coder-1", { role: "coder", cancel }],
     ]);
-    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry }, "github-copilot/gpt-5.4");
+    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router, agentRegistry } as unknown as SupervisorRuntimeContext, "github-copilot/gpt-5.4");
 
     await supervisor.checkOnce();
     await supervisor.checkOnce();
@@ -247,7 +257,7 @@ describe("RuntimeSupervisor", () => {
   it("aborts roles in roster priority order and never aborts non-abortable roles", async () => {
     const order = ["reviewer", "critic", "data_agent", "coder", "researcher", "designer", "manager"] as const;
     const cancels = Object.fromEntries(order.map((r) => [r, vi.fn()]));
-    const agentRegistry = new Map<string, any>(
+    const agentRegistry = new Map<string, FakeAgent>(
       order.map((role) => [`${role}-1`, { role, cancel: cancels[role] }]),
     );
     const nonAbortable = ["planner", "inspector", "chat"] as const;
@@ -263,7 +273,7 @@ describe("RuntimeSupervisor", () => {
         usage: { inputTokens: 1, outputTokens: 1 },
       })),
     };
-    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry }, "github-copilot/gpt-5.4");
+    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router, agentRegistry } as unknown as SupervisorRuntimeContext, "github-copilot/gpt-5.4");
 
     for (const role of order) {
       cancels[role].mockClear();
@@ -290,7 +300,7 @@ describe("RuntimeSupervisor", () => {
   it("never aborts chat or planner because both are non-abortable in the roster", async () => {
     const planner = { role: "planner", cancel: vi.fn() };
     const chat = { role: "chat", cancel: vi.fn() };
-    const agentRegistry = new Map<string, any>();
+    const agentRegistry = new Map<string, FakeAgent>();
     agentRegistry.set("chat-1", chat);
     agentRegistry.set("planner-1", planner);
 
@@ -302,7 +312,7 @@ describe("RuntimeSupervisor", () => {
         usage: { inputTokens: 1, outputTokens: 1 },
       })),
     };
-    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router: router as any, agentRegistry }, "github-copilot/gpt-5.4");
+    const supervisor = new RuntimeSupervisor(makeSupervisorConfig(), { router, agentRegistry } as unknown as SupervisorRuntimeContext, "github-copilot/gpt-5.4");
 
     for (let i = 0; i < 9; i++) {
       await supervisor.checkOnce();
@@ -372,7 +382,7 @@ describe("PlanService", () => {
       },
     ]);
     expect(result).not.toHaveProperty("code");
-    expect((result as any).stages).toHaveLength(1);
+    expect((result as PlanLike).stages).toHaveLength(1);
   });
 
   it("plan_init rejects if plan already exists", async () => {
@@ -395,7 +405,7 @@ describe("PlanService", () => {
     ]);
     const plan = await planService.plan_get();
     expect(plan).not.toHaveProperty("code");
-    expect((plan as any).stages).toHaveLength(1);
+    expect((plan as PlanLike).stages).toHaveLength(1);
   });
 
   it("plan_get returns error when not initialized", async () => {
@@ -422,12 +432,12 @@ describe("PlanService", () => {
     try {
       const result = await planService.plan_set_current("stg-1");
       expect(result).not.toHaveProperty("code");
-      expect((result as any).current_stage_id).toBe("stg-1");
-      expect((result as any).stages[0].started_at).toBe(startedAt.toISOString());
+      expect((result as PlanLike).current_stage_id).toBe("stg-1");
+      expect((result as PlanLike).stages[0].started_at).toBe(startedAt.toISOString());
 
       vi.setSystemTime(new Date("2026-01-01T01:00:00.000Z"));
       const second = await planService.plan_set_current("stg-1");
-      expect((second as any).stages[0].started_at).toBe(startedAt.toISOString());
+      expect((second as PlanLike).stages[0].started_at).toBe(startedAt.toISOString());
     } finally {
       vi.useRealTimers();
     }
@@ -451,7 +461,7 @@ describe("PlanService", () => {
       tags: [],
     });
     expect(result).not.toHaveProperty("code");
-    expect((result as any).stages).toHaveLength(1);
+    expect((result as PlanLike).stages).toHaveLength(1);
   });
 
   it("plan_add_stage rejects duplicate ID", async () => {
@@ -492,7 +502,7 @@ describe("PlanService", () => {
     ]);
     const result = await planService.plan_remove_stage("stg-1");
     expect(result).not.toHaveProperty("code");
-    expect((result as any).stages).toHaveLength(0);
+    expect((result as PlanLike).stages).toHaveLength(0);
   });
 
   it("plan_complete_stage moves to history", async () => {
@@ -524,7 +534,7 @@ describe("PlanService", () => {
       });
 
       expect(result).not.toHaveProperty("code");
-      const res = result as { completed_stage: any; plan: any };
+      const res = result as { completed_stage: { id: string; started_at: string; completed_at: string }; plan: PlanLike };
       expect(res.completed_stage.id).toBe("stg-1");
       expect(res.completed_stage.started_at).toBe(startedAt.toISOString());
       expect(res.completed_stage.completed_at).toBe(completedAt.toISOString());
@@ -532,8 +542,8 @@ describe("PlanService", () => {
       expect(res.plan.current_stage_id).toBeNull();
 
       const history = await planService.plan_get_history();
-      expect((history as any).stages).toHaveLength(1);
-      expect((history as any).stages[0].started_at).toBe(startedAt.toISOString());
+      expect((history as PlanLike).stages).toHaveLength(1);
+      expect((history as PlanLike).stages[0].started_at).toBe(startedAt.toISOString());
     } finally {
       vi.useRealTimers();
     }
@@ -609,10 +619,10 @@ describe("PlanService", () => {
         "stg-b",
       );
       expect(result).not.toHaveProperty("code");
-      expect((result as any).stages).toHaveLength(2);
-      expect((result as any).current_stage_id).toBe("stg-b");
-      expect((result as any).stages.find((s: any) => s.id === "stg-a").started_at).toBe(firstStart.toISOString());
-      expect((result as any).stages.find((s: any) => s.id === "stg-b").started_at).toBe(secondStart.toISOString());
+      expect((result as PlanLike).stages).toHaveLength(2);
+      expect((result as PlanLike).current_stage_id).toBe("stg-b");
+      expect((result as PlanLike).stages.find((s: { id: string }) => s.id === "stg-a").started_at).toBe(firstStart.toISOString());
+      expect((result as PlanLike).stages.find((s: { id: string }) => s.id === "stg-b").started_at).toBe(secondStart.toISOString());
     } finally {
       vi.useRealTimers();
     }
@@ -632,7 +642,7 @@ describe("PlanService", () => {
     ]);
 
     const active = await planService.plan_get_stage("stg-1");
-    expect((active as any).source).toBe("active");
+    expect((active as PlanLike).source).toBe("active");
 
     await planService.plan_set_current("stg-1");
     await planService.plan_complete_stage({
@@ -643,14 +653,14 @@ describe("PlanService", () => {
     });
 
     const fromHistory = await planService.plan_get_stage("stg-1");
-    expect((fromHistory as any).source).toBe("history");
+    expect((fromHistory as PlanLike).source).toBe("history");
   });
 
   it("handleToolCall routes correctly", async () => {
     await planService.plan_init([]);
     const result = await planService.handleToolCall("plan_get", {});
     expect(result.isError).toBe(false);
-    expect((result.content as any).stages).toEqual([]);
+    expect((result.content as PlanLike).stages).toEqual([]);
   });
 
   it("plan_done with a valid reason returns ok", async () => {
@@ -727,7 +737,7 @@ describe("PlanService", () => {
     ], "stg-next");
 
     const history = await planService.plan_get_history();
-    expect((history as any).stages.map((stage: any) => stage.id)).toEqual(["stg-done"]);
+    expect((history as PlanLike).stages.map((stage: { id: string }) => stage.id)).toEqual(["stg-done"]);
   });
 
   it("plan_commit commits only the single plan document", async () => {
@@ -774,7 +784,7 @@ describe("PlanService", () => {
     const addResult = await add;
 
     expect(addResult.isError).toBe(false);
-    expect((await planService.plan_get() as any).stages.map((s: any) => s.id)).toEqual(["stg-after-commit"]);
+    expect((await planService.plan_get() as PlanLike).stages.map((s: { id: string }) => s.id)).toEqual(["stg-after-commit"]);
   });
 
   // ─── F34: in-memory cache ──────────────────────────────────────────────
@@ -793,9 +803,9 @@ describe("PlanService", () => {
       },
     ];
     await planService.plan_set_stages(stages, "stg-a");
-    const out = (await planService.plan_get()) as any;
+    const out = (await planService.plan_get()) as PlanLike;
     expect(out.current_stage_id).toBe("stg-a");
-    expect(out.stages.map((s: any) => s.id)).toEqual(["stg-a"]);
+    expect(out.stages.map((s: { id: string }) => s.id)).toEqual(["stg-a"]);
   });
 
   it("F34: plan_get returns a clone — mutating it does not affect cache", async () => {
@@ -810,11 +820,11 @@ describe("PlanService", () => {
         tags: [],
       },
     ]);
-    const first = (await planService.plan_get()) as any;
+    const first = (await planService.plan_get()) as PlanLike;
     first.stages.push({ id: "stg-injected" });
     first.current_stage_id = "stg-injected";
-    const second = (await planService.plan_get()) as any;
-    expect(second.stages.map((s: any) => s.id)).toEqual(["stg-a"]);
+    const second = (await planService.plan_get()) as PlanLike;
+    expect(second.stages.map((s: { id: string }) => s.id)).toEqual(["stg-a"]);
     expect(second.current_stage_id).toBe(null);
   });
 
@@ -831,7 +841,7 @@ describe("PlanService", () => {
 
     const get = await planService.handleToolCall("plan_get", {});
     expect(get.isError).toBe(false);
-    expect((get.content as any).stages).toEqual([]);
+    expect((get.content as PlanLike).stages).toEqual([]);
 
     await Promise.resolve();
     expect(commitSettled).toBe(false);
@@ -853,9 +863,9 @@ describe("PlanService", () => {
 
   it("F34: plan_init rejects when cache is already populated (no disk check)", async () => {
     const first = await planService.plan_init();
-    expect((first as any).code).toBeUndefined();
+    expect((first as PlanLike).code).toBeUndefined();
     const second = await planService.plan_init();
-    expect((second as any).code).toBe("STAGE_EXISTS");
+    expect((second as PlanLike).code).toBe("STAGE_EXISTS");
   });
 });
 

@@ -27,7 +27,7 @@ export class InspectorAgent extends BaseAgent implements Agent {
     input: InspectorInput,
     config?: Partial<BaseAgentConfig>,
   ): Promise<InspectorAgent> {
-    const request = normalizeInspectionRequest(input.request);
+    const request = normalizeInspectionRequest(input.request as unknown as Record<string, unknown>);
     const normalized: InspectorInput = { request };
     const initialMessage = await buildInspectorMessage(ctx, normalized);
     const eagerSkillBlock = await buildEagerBlock(
@@ -89,14 +89,14 @@ export class InspectorAgent extends BaseAgent implements Agent {
 }
 
 /** Normalize an inspection request that may have missing fields from LLM output. */
-function normalizeInspectionRequest(raw: any): import("../types.js").InspectionRequest {
+function normalizeInspectionRequest(raw: Record<string, unknown>): import("../types.js").InspectionRequest {
   return {
-    id: raw.id ?? "unknown",
-    scope: raw.scope ?? raw.description ?? "(no scope)",
-    questions: Array.isArray(raw.questions) ? raw.questions : [],
-    requested_at: raw.requested_at ?? new Date().toISOString(),
-    requested_by: raw.requested_by ?? "planner",
-    chat_channel: raw.chat_channel,
+    id: (raw.id as string | undefined) ?? "unknown",
+    scope: (raw.scope as string | undefined) ?? (raw.description as string | undefined) ?? "(no scope)",
+    questions: Array.isArray(raw.questions) ? (raw.questions as string[]) : [],
+    requested_at: (raw.requested_at as string | undefined) ?? new Date().toISOString(),
+    requested_by: (raw.requested_by as import("../types.js").InspectionRequest["requested_by"] | undefined) ?? "planner",
+    chat_channel: raw.chat_channel as import("../types.js").InspectionRequest["chat_channel"],
   };
 }
 

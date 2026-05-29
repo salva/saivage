@@ -31,7 +31,7 @@ export class ManagerAgent extends BaseAgent implements Agent {
     childSpawner: ChildSpawner,
     config?: Partial<BaseAgentConfig>,
   ): Promise<ManagerAgent> {
-    const stage = normalizeStage(input.stage);
+    const stage = normalizeStage(input.stage as unknown as Record<string, unknown>);
     const normalized: ManagerInput = { stage };
     const initialMessage = await buildManagerMessage(ctx, normalized);
     const eagerSkillBlock = await buildEagerBlock(
@@ -116,15 +116,15 @@ export class ManagerAgent extends BaseAgent implements Agent {
 }
 
 /** Normalize a stage object that may have missing fields from LLM output. */
-function normalizeStage(raw: any): Stage {
+function normalizeStage(raw: Record<string, unknown>): Stage {
   return {
-    id: raw.id ?? "unknown",
-    objective: raw.objective ?? raw.description ?? "(no objective)",
-    starting_points: raw.starting_points ?? [],
-    expected_outcomes: raw.expected_outcomes ?? [],
-    acceptance_criteria: raw.acceptance_criteria ?? [],
-    references: raw.references ?? [],
-    tags: raw.tags ?? [],
+    id: (raw.id as string | undefined) ?? "unknown",
+    objective: (raw.objective as string | undefined) ?? (raw.description as string | undefined) ?? "(no objective)",
+    starting_points: (raw.starting_points as Stage["starting_points"]) ?? [],
+    expected_outcomes: (raw.expected_outcomes as Stage["expected_outcomes"]) ?? [],
+    acceptance_criteria: (raw.acceptance_criteria as Stage["acceptance_criteria"]) ?? [],
+    references: (raw.references as Stage["references"]) ?? [],
+    tags: (raw.tags as Stage["tags"]) ?? [],
   };
 }
 

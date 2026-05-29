@@ -23,19 +23,16 @@ class TestAgent extends BaseAgent {
     this.replaceMessages(msgs, timestamp);
   }
   public diagnose(kind: Parameters<BaseAgent["addDiagnostic" extends keyof BaseAgent ? never : never]>[0] | string, content: string): void {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (this as any).addDiagnostic(kind, content);
+    (this as unknown as { addDiagnostic: (k: unknown, c: string) => void }).addDiagnostic(kind, content);
   }
   public async run(): Promise<ChatResponse> {
     return this.callLLM();
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   protected override get transientCap(): number {
-    return (this as any)._transientCap ?? 500;
+    return (this as unknown as { _transientCap?: number })._transientCap ?? 500;
   }
   public setTransientCap(n: number): void {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (this as any)._transientCap = n;
+    (this as unknown as { _transientCap?: number })._transientCap = n;
   }
 }
 

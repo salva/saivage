@@ -126,7 +126,7 @@ export abstract class WorkerAgent extends BaseAgent implements Agent {
     initialMessage: string,
     config?: Partial<BaseAgentConfig>,
   ) {
-    const task = normalizeTask(input.task, role);
+    const task = normalizeTask(input.task as unknown as Record<string, unknown>, role);
     const normalized: WorkerInput = { ...input, task };
     const meta = getWorkerInitMeta(role);
     super(ctx, {
@@ -163,7 +163,7 @@ export abstract class WorkerAgent extends BaseAgent implements Agent {
   }
 
   async run(): Promise<AgentResult> {
-    this.input = { ...this.input, task: normalizeTask(this.input.task, this.workerRole) };
+    this.input = { ...this.input, task: normalizeTask(this.input.task as unknown as Record<string, unknown>, this.workerRole) };
     if (this.turnCount > 0) {
       const followUp = await buildInitialMessage(this.ctx, this.input, this.workerRole, {
         headingSuffix: ` — Follow-up ${this.turnCount + 1}`,

@@ -35,14 +35,14 @@ export const ROLE_TO_TASK_TYPE: Record<WorkerRole, Task["type"]> = {
 };
 
 /** Normalize a task object that may have alternate field names from LLM output. */
-export function normalizeTask(raw: any, role: WorkerRole): Task {
+export function normalizeTask(raw: Record<string, unknown>, role: WorkerRole): Task {
   const descriptionParts = [
-    raw.description ?? raw.objective ?? "(no description)",
+    (raw.description as string | undefined) ?? (raw.objective as string | undefined) ?? "(no description)",
   ];
   if (Array.isArray(raw.files) && raw.files.length > 0) {
     descriptionParts.push(
-      `Suggested files or starting points:\n${raw.files
-        .map((file: string) => `- ${file}`)
+      `Suggested files or starting points:\n${(raw.files as string[])
+        .map((file) => `- ${file}`)
         .join("\n")}`,
     );
   }
@@ -53,23 +53,23 @@ export function normalizeTask(raw: any, role: WorkerRole): Task {
   }
 
   return {
-    id: raw.id ?? "unknown",
-    type: raw.type ?? ROLE_TO_TASK_TYPE[role],
-    assigned_to: raw.assigned_to ?? role,
+    id: (raw.id as string | undefined) ?? "unknown",
+    type: (raw.type as Task["type"] | undefined) ?? ROLE_TO_TASK_TYPE[role],
+    assigned_to: (raw.assigned_to as Task["assigned_to"] | undefined) ?? role,
     description: descriptionParts.join("\n\n"),
     checklist: Array.isArray(raw.checklist)
-      ? raw.checklist
+      ? (raw.checklist as Task["checklist"])
       : Array.isArray(raw.acceptance_criteria)
-        ? raw.acceptance_criteria.map((c: string) => ({
+        ? (raw.acceptance_criteria as string[]).map((c) => ({
             description: c,
             required: true,
           }))
         : [],
-    dependencies: raw.dependencies ?? [],
-    status: raw.status ?? "pending",
-    tags: raw.tags ?? [],
-    attempt: raw.attempt ?? 1,
-    max_attempts: raw.max_attempts ?? 3,
+    dependencies: (raw.dependencies as Task["dependencies"]) ?? [],
+    status: (raw.status as Task["status"]) ?? "pending",
+    tags: (raw.tags as Task["tags"]) ?? [],
+    attempt: (raw.attempt as number | undefined) ?? 1,
+    max_attempts: (raw.max_attempts as number | undefined) ?? 3,
   };
 }
 

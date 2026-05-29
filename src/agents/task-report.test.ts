@@ -19,7 +19,7 @@ function makeInput(role: WorkerRole): WorkerInput {
   return {
     stageId: "stage-1",
     task: normalizeTask({ id: "t1", description: "x" }, role),
-    ctx: undefined as any,
+    ctx: undefined as unknown as WorkerInput["ctx"],
   } as WorkerInput;
 }
 

@@ -75,14 +75,14 @@ describe("WebSocketChannel", () => {
   it("sendEvent throws on drifting shapes and writes nothing", () => {
     const { ws, ch } = channel();
 
-    expect(() => ch.sendEvent({ type: "toolCall" } as any)).toThrow();
+    expect(() => ch.sendEvent({ type: "toolCall" } as unknown as Parameters<typeof ch.sendEvent>[0])).toThrow();
     expect(ws.sent).toHaveLength(0);
   });
 
   it("sendEvent rejects extra fields", () => {
     const { ws, ch } = channel();
 
-    expect(() => ch.sendEvent({ type: "session", sessionId: "abc", extra: 1 } as any)).toThrow();
+    expect(() => ch.sendEvent({ type: "session", sessionId: "abc", extra: 1 } as unknown as Parameters<typeof ch.sendEvent>[0])).toThrow();
     expect(ws.sent).toHaveLength(0);
   });
 });

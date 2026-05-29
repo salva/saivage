@@ -13,9 +13,10 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { McpRuntime } from "./runtime.js";
+import { McpRuntime, type McpRuntimeOptions } from "./runtime.js";
 import { defaultAuthor, withContext, type ToolCallContext } from "./toolContext.js";
 import type { ToolEntry } from "./types.js";
+import type { SaivageConfig } from "../config.js";
 
 const ctx: ToolCallContext = {
   role: "coder",
@@ -43,7 +44,7 @@ function makeRuntime(): McpRuntime {
         maxDownloadBytes: 250 * 1024 * 1024,
         maxFileReadBytes: 200_000,
       },
-    } as any,
+    } as unknown as SaivageConfig,
     {
       now: () => 0,
       crashFailureThreshold: 99,
@@ -56,7 +57,7 @@ function makeRuntime(): McpRuntime {
           disconnect: async () => undefined,
           getTools: () => [],
           callTool: async () => ({ content: [], isError: false }),
-        }) as any,
+        }) as unknown as ReturnType<NonNullable<McpRuntimeOptions["clientFactory"]>>,
     },
   );
 }

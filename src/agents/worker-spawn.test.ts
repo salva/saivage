@@ -21,7 +21,7 @@ describe("createChildSpawner worker dispatch", () => {
     const root = mkdtempSync(join(tmpdir(), "saivage-worker-spawn-"));
     try {
       const runtime = makeRuntime(root);
-      const runLoop = vi.spyOn(WorkerAgent.prototype as any, "runLoop").mockResolvedValue({
+      const runLoop = vi.spyOn(WorkerAgent.prototype as unknown as Record<string, () => unknown>, "runLoop").mockResolvedValue({
         text: JSON.stringify(makeTaskReport("coder")),
         finishReason: "end_turn",
       });
@@ -35,7 +35,7 @@ describe("createChildSpawner worker dispatch", () => {
       expect(result.kind).toBe("success");
       expect(runLoop).toHaveBeenCalledOnce();
       expect(runtime.agentRegistry.lastSet).toBeInstanceOf(CoderAgent);
-      expect((runtime.agentRegistry.lastSet as any).input.task.type).toBe("code");
+      expect((runtime.agentRegistry.lastSet as unknown as { input: { task: { type: string } } }).input.task.type).toBe("code");
       expect(runtime.tracker.activityIds).toContain((runtime.agentRegistry.lastSet as BaseAgent).id);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -46,7 +46,7 @@ describe("createChildSpawner worker dispatch", () => {
     const root = mkdtempSync(join(tmpdir(), "saivage-worker-spawn-"));
     try {
       const runtime = makeRuntime(root);
-      vi.spyOn(WorkerAgent.prototype as any, "runLoop").mockResolvedValue({
+      vi.spyOn(WorkerAgent.prototype as unknown as Record<string, () => unknown>, "runLoop").mockResolvedValue({
         text: JSON.stringify(makeTaskReport("reviewer")),
         finishReason: "end_turn",
       });
@@ -74,7 +74,7 @@ describe("createChildSpawner worker dispatch", () => {
     const root = mkdtempSync(join(tmpdir(), "saivage-worker-spawn-"));
     try {
       const runtime = makeRuntime(root);
-      vi.spyOn(WorkerAgent.prototype as any, "runLoop").mockResolvedValue({
+      vi.spyOn(WorkerAgent.prototype as unknown as Record<string, () => unknown>, "runLoop").mockResolvedValue({
         text: JSON.stringify(makeTaskReport(role)),
         finishReason: "end_turn",
       });
@@ -86,7 +86,7 @@ describe("createChildSpawner worker dispatch", () => {
       const secondAgent = runtime.agentRegistry.lastSet as WorkerAgent;
 
       expect(secondAgent).toBe(firstAgent);
-      expect((secondAgent as any).turnCount).toBe(2);
+      expect((secondAgent as unknown as { turnCount: number }).turnCount).toBe(2);
       const snapshot = secondAgent.getConversationSnapshot();
       expect(snapshot.some((entry) => entry.content.includes(banner))).toBe(true);
     } finally {
