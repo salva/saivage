@@ -4,7 +4,7 @@
  * Max compactions per conversation (default: 3).
  */
 
-import type { Message, ContentBlock, ToolSchema } from "../providers/types.js";
+import type { Message, ToolSchema } from "../providers/types.js";
 import type { ModelRouter } from "../providers/router.js";
 import { log } from "../log.js";
 

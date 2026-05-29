@@ -37,7 +37,8 @@ function getUrls(domain: string) {
 export function getBaseUrlFromToken(token: string): string | null {
   const match = token.match(/proxy-ep=([^;]+)/);
   if (!match) return null;
-  const proxyHost = match[1]!;
+  const proxyHost = match[1];
+  if (!proxyHost) return null;
   const apiHost = proxyHost.replace(/^proxy\./, "api.");
   return `https://${apiHost}`;
 }
@@ -71,7 +72,7 @@ async function startDeviceFlow(domain: string, headers: Record<string, string>):
     headers: {
       Accept: "application/json",
       "Content-Type": "application/x-www-form-urlencoded",
-      "User-Agent": headers["User-Agent"]!,
+      "User-Agent": headers["User-Agent"] ?? "",
     },
     body: new URLSearchParams({
       client_id: clientId,
@@ -127,7 +128,7 @@ async function pollForAccessToken(
       headers: {
         Accept: "application/json",
         "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": headers["User-Agent"]!,
+        "User-Agent": headers["User-Agent"] ?? "",
       },
       body: new URLSearchParams({
         client_id: clientId,

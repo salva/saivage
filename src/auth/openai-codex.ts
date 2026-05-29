@@ -25,7 +25,9 @@ function decodeJwt(token: string): Record<string, unknown> | null {
   try {
     const parts = token.split(".");
     if (parts.length !== 3) return null;
-    return JSON.parse(atob(parts[1]!));
+    const payload = parts[1];
+    if (!payload) return null;
+    return JSON.parse(atob(payload));
   } catch {
     return null;
   }

@@ -5,7 +5,7 @@
  * resume-on-each.
  */
 
-import type { Message, ContentBlock, ToolCallResult, ChatResponse, ToolSchema } from "../providers/types.js";
+import type { ToolCallResult } from "../providers/types.js";
 import { ProviderError } from "../providers/error.js";
 import type { AgentContext, AgentResult } from "../agents/types.js";
 import { ROSTER, isConcurrencyLimitedDispatch, type DispatchableRole } from "../agents/roster.js";

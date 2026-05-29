@@ -52,7 +52,9 @@ describe("ModelRouter github-copilot header wiring", () => {
       return s.startsWith("https://api.example.test/") && s.includes("/v1/messages");
     });
     expect(calls.length).toBeGreaterThan(0);
-    const headers = new Headers(calls[0]![1]!.headers as HeadersInit);
+    const firstCall = calls[0];
+    if (!firstCall || !firstCall[1]) throw new Error("expected fetch call");
+    const headers = new Headers(firstCall[1].headers as HeadersInit);
     expect(headers.get("Editor-Version")).toBe("vscode/9.99.0");
     expect(headers.get("User-Agent")).toBe("GitHubCopilotChat/9.99.0");
     expect(headers.get("Copilot-Integration-Id")).toBe("vscode-chat");

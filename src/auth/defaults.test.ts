@@ -40,7 +40,7 @@ afterEach(() => {
     createdRoot = null;
   }
   for (const [k, v] of Object.entries(savedEnv)) {
-    if (v === undefined) delete process.env[k];
+    if (v === undefined) Reflect.deleteProperty(process.env, k);
     else process.env[k] = v;
   }
 });

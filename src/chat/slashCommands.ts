@@ -42,7 +42,7 @@ export function parseSlashCommand(text: string): ParsedCommand | null {
   // /skills ...
   const skillsMatch = /^\/skills\s+(list|show)(?:\s+(.+))?$/i.exec(trimmed);
   if (skillsMatch) {
-    const sub = skillsMatch[1]!.toLowerCase();
+    const sub = (skillsMatch[1] ?? "").toLowerCase();
     const arg = (skillsMatch[2] ?? "").trim();
     if (sub === "list") return { kind: "skills_list" };
     if (sub === "show") {
@@ -54,7 +54,7 @@ export function parseSlashCommand(text: string): ParsedCommand | null {
   // /memories ...
   const memoriesMatch = /^\/memories\s+(list|show|search)(?:\s+(.+))?$/i.exec(trimmed);
   if (memoriesMatch) {
-    const sub = memoriesMatch[1]!.toLowerCase();
+    const sub = (memoriesMatch[1] ?? "").toLowerCase();
     const arg = (memoriesMatch[2] ?? "").trim();
     if (sub === "list") return { kind: "memories_list" };
     if (sub === "show") {
@@ -70,13 +70,13 @@ export function parseSlashCommand(text: string): ParsedCommand | null {
   // /remember <text>
   const rememberMatch = /^\/remember\s+(.+)$/i.exec(trimmed);
   if (rememberMatch) {
-    return { kind: "remember", text: rememberMatch[1]!.trim() };
+    return { kind: "remember", text: (rememberMatch[1] ?? "").trim() };
   }
 
   // /forget <id>
   const forgetMatch = /^\/forget\s+(.+)$/i.exec(trimmed);
   if (forgetMatch) {
-    return { kind: "forget", id: forgetMatch[1]!.trim() };
+    return { kind: "forget", id: (forgetMatch[1] ?? "").trim() };
   }
 
   return null;
@@ -129,8 +129,8 @@ export async function runSlashCommand(parsed: ParsedCommand, deps: SlashCommandD
 function parseTopic(arg: string): { domain: string; subject: string; aspect?: string } {
   // Accept "domain/subject" or "domain/subject/aspect".
   const parts = arg.split("/").map((s) => s.trim()).filter(Boolean);
-  if (parts.length >= 3) return { domain: parts[0]!, subject: parts[1]!, aspect: parts[2]! };
-  if (parts.length === 2) return { domain: parts[0]!, subject: parts[1]! };
+  if (parts.length >= 3) return { domain: parts[0] ?? "", subject: parts[1] ?? "", aspect: parts[2] ?? "" };
+  if (parts.length === 2) return { domain: parts[0] ?? "", subject: parts[1] ?? "" };
   return { domain: "general", subject: arg };
 }
 

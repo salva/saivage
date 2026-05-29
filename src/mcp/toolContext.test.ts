@@ -77,10 +77,10 @@ describe("ToolCallContext propagation", () => {
     await runtime.callTool("probe-svc", "probe", {}, ctx);
 
     expect(seen).toBeDefined();
-    expect(seen!.role).toBe("coder");
-    expect(seen!.agentId).toBe("coder-7");
-    expect(seen!.stageId).toBe("stg-A");
-    expect(seen!.projectRoot).toBe("/tmp/proj");
+    expect(seen?.role).toBe("coder");
+    expect(seen?.agentId).toBe("coder-7");
+    expect(seen?.stageId).toBe("stg-A");
+    expect(seen?.projectRoot).toBe("/tmp/proj");
   });
 
   it("forwards undefined ctx when caller omits it (legacy handlers)", async () => {
@@ -121,9 +121,9 @@ describe("ToolCallContext propagation", () => {
     };
     await runtime.callTool("probe-svc", "probe", {}, chatCtx);
 
-    expect(seen!.channelId).toBe("web");
-    expect(seen!.sessionId).toBe("sess-42");
-    expect(seen!.stageId).toBeUndefined();
+    expect(seen?.channelId).toBe("web");
+    expect(seen?.sessionId).toBe("sess-42");
+    expect(seen?.stageId).toBeUndefined();
   });
 });
 

@@ -169,7 +169,7 @@ describe("validateModelCoverage", () => {
 describe("production-source sweep (F04 step 11)", () => {
   it("contains no hardcoded model identifiers outside test files", () => {
     const repo = resolve(__dirname, "..");
-    let stdout = "";
+    let stdout: string;
     try {
       stdout = execSync(
         `rg -l 'github-copilot/gpt-5\\.|anthropic/claude-sonnet-4-|openai-codex/gpt-5\\.3-codex' src/ --type ts || true`,

@@ -6,10 +6,7 @@
 import type {
   Stage,
   Task,
-  TaskReport,
-  StageSummary,
   InspectionRequest,
-  InspectionReport,
   Escalation,
 } from "../types.js";
 import type { ProjectContext } from "../store/project.js";

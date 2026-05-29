@@ -50,7 +50,7 @@ beforeEach(() => {
   previousEnv.clear();
   for (const key of ENV_KEYS) {
     previousEnv.set(key, process.env[key]);
-    delete process.env[key];
+    Reflect.deleteProperty(process.env, key);
   }
 });
 
@@ -58,7 +58,7 @@ afterEach(async () => {
   process.exitCode = undefined;
   for (const key of ENV_KEYS) {
     const value = previousEnv.get(key);
-    if (value === undefined) delete process.env[key];
+    if (value === undefined) Reflect.deleteProperty(process.env, key);
     else process.env[key] = value;
   }
   vi.restoreAllMocks();

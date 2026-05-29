@@ -33,15 +33,15 @@ export interface RedactResult {
  */
 const PROVIDER_RULES: ReadonlyArray<{ kind: string; pattern: RegExp }> = [
   // OpenAI-style API keys: sk-… with ≥ 20 chars after the prefix.
-  { kind: "openai_key", pattern: /sk-[A-Za-z0-9_\-]{20,}/g },
+  { kind: "openai_key", pattern: /sk-[A-Za-z0-9_-]{20,}/g },
   // GitHub PAT / OAuth tokens.
   { kind: "github_token", pattern: /gh[pousr]_[A-Za-z0-9]{20,}/g },
   // Google OAuth refresh tokens.
-  { kind: "google_oauth", pattern: /ya29\.[A-Za-z0-9_\-]{20,}/g },
+  { kind: "google_oauth", pattern: /ya29\.[A-Za-z0-9_-]{20,}/g },
   // AWS Access Key ID.
   { kind: "aws_access_key_id", pattern: /AKIA[0-9A-Z]{16}/g },
   // JWT triples (header.payload.signature) where each segment is base64url ≥ 8 chars.
-  { kind: "jwt", pattern: /\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b/g },
+  { kind: "jwt", pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g },
 ];
 
 /**

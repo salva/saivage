@@ -199,7 +199,8 @@ export class CopilotProvider extends BaseProvider {
   }
 
   private async chatResponses(request: ChatRequest): Promise<ChatResponse> {
-    if (!this.openaiClient) throw new Error("Copilot provider not configured");
+    const client = this.openaiClient;
+    if (!client) throw new Error("Copilot provider not configured");
 
     const input = this.convertMessagesResponses(request);
     const tools = request.tools?.map((tool) => ({
@@ -211,7 +212,7 @@ export class CopilotProvider extends BaseProvider {
 
     const response = await (async () => {
       try {
-        return await this.openaiClient!.responses.create({
+        return await client.responses.create({
           model: request.model,
           instructions: request.system || undefined,
           input,
@@ -262,7 +263,8 @@ export class CopilotProvider extends BaseProvider {
   // ── OpenAI-compatible path ────────────────────────────
 
   private async chatOpenAI(request: ChatRequest): Promise<ChatResponse> {
-    if (!this.openaiClient) throw new Error("Copilot provider not configured");
+    const client = this.openaiClient;
+    if (!client) throw new Error("Copilot provider not configured");
 
     const messages = this.convertMessagesOpenAI(request);
     const tools = request.tools?.map((t) => this.convertToolOpenAI(t));
@@ -270,7 +272,7 @@ export class CopilotProvider extends BaseProvider {
     const tokenLimitKey = request.model.startsWith("gpt-5") ? "max_completion_tokens" : "max_tokens";
     const response = await (async () => {
       try {
-        return await this.openaiClient!.chat.completions.create({
+        return await client.chat.completions.create({
           model: request.model,
           messages,
           [tokenLimitKey]: request.maxTokens ?? 8192,
@@ -323,15 +325,19 @@ export class CopilotProvider extends BaseProvider {
         const blocks = m.content as ContentBlock[];
         if (m.role === "assistant") {
           const text = blocks.filter((b) => b.type === "text").map((b) => b.text ?? "").join("");
-          const tc = blocks.filter((b) => b.type === "tool_use").map((b) => ({
-            id: b.id!, type: "function" as const,
-            function: { name: b.name!, arguments: JSON.stringify(b.input) },
-          }));
+          const tc = blocks.filter((b) => b.type === "tool_use").map((b) => {
+            if (!b.id || !b.name) throw new Error("tool_use block missing id/name");
+            return {
+              id: b.id, type: "function" as const,
+              function: { name: b.name, arguments: JSON.stringify(b.input) },
+            };
+          });
           result.push({ role: "assistant", content: text || null, ...(tc.length > 0 ? { tool_calls: tc } : {}) });
         } else if (m.role === "user") {
           for (const b of blocks) {
             if (b.type === "tool_result") {
-              result.push({ role: "tool", tool_call_id: b.tool_use_id!, content: b.content ?? "" });
+              if (!b.tool_use_id) throw new Error("tool_result block missing tool_use_id");
+              result.push({ role: "tool", tool_call_id: b.tool_use_id, content: b.content ?? "" });
             } else {
               result.push({ role: "user", content: b.text ?? "" });
             }
@@ -412,14 +418,15 @@ export class CopilotProvider extends BaseProvider {
   // ── Anthropic Messages path ───────────────────────────
 
   private async chatAnthropic(request: ChatRequest): Promise<ChatResponse> {
-    if (!this.anthropicClient) throw new Error("Copilot provider not configured");
+    const client = this.anthropicClient;
+    if (!client) throw new Error("Copilot provider not configured");
 
     const messages = this.convertMessagesAnthropic(request.messages);
     const tools = request.tools?.map((t) => this.convertToolAnthropic(t));
 
     const response = await (async () => {
       try {
-        return await this.anthropicClient!.messages.create({
+        return await client.messages.create({
           model: request.model,
           max_tokens: request.maxTokens ?? 8192,
           system: request.system,
@@ -462,10 +469,14 @@ export class CopilotProvider extends BaseProvider {
         return { role: m.role as "user" | "assistant", content: m.content };
       }
       const blocks = (m.content as ContentBlock[]).map((b) => {
-        if (b.type === "tool_use") return { type: "tool_use" as const, id: b.id!, name: b.name!, input: b.input! };
+        if (b.type === "tool_use") {
+          if (!b.id || !b.name) throw new Error("tool_use block missing id/name");
+          return { type: "tool_use" as const, id: b.id, name: b.name, input: b.input ?? {} };
+        }
         if (b.type === "tool_result") {
+          if (!b.tool_use_id) throw new Error("tool_result block missing tool_use_id");
           return {
-            type: "tool_result" as const, tool_use_id: b.tool_use_id!,
+            type: "tool_result" as const, tool_use_id: b.tool_use_id,
             content: b.content ?? "", ...(b.is_error ? { is_error: true } : {}),
           };
         }

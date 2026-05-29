@@ -31,7 +31,9 @@ describe("CopilotProvider", () => {
     expect(response.content).toBe("ok");
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    const [input, init] = fetchMock.mock.calls[0]!;
+    const firstCall = fetchMock.mock.calls[0];
+    if (!firstCall) throw new Error("expected fetch call");
+    const [input, init] = firstCall;
     expect(String(input)).toBe("https://api.example.test/v1/messages");
 
     const headers = new Headers(init?.headers);
@@ -59,7 +61,9 @@ describe("CopilotProvider", () => {
       messages: [{ role: "user", content: "hi" }],
     });
 
-    const headers = new Headers(fetchMock.mock.calls[0]![1]!.headers as HeadersInit);
+    const c1 = fetchMock.mock.calls[0];
+    if (!c1 || !c1[1]) throw new Error("expected fetch call");
+    const headers = new Headers(c1[1].headers as HeadersInit);
     expect(headers.get("User-Agent")).toMatch(/^GitHubCopilotChat\//);
     expect(headers.get("Editor-Version")).toMatch(/^vscode\//);
     expect(headers.get("Editor-Plugin-Version")).toMatch(/^copilot-chat\//);
@@ -89,7 +93,9 @@ describe("CopilotProvider", () => {
       messages: [{ role: "user", content: "hi" }],
     });
 
-    const headers = new Headers(fetchMock.mock.calls[0]![1]!.headers as HeadersInit);
+    const c2 = fetchMock.mock.calls[0];
+    if (!c2 || !c2[1]) throw new Error("expected fetch call");
+    const headers = new Headers(c2[1].headers as HeadersInit);
     expect(headers.get("Editor-Version")).toBe("vscode/9.99.0");
     expect(headers.get("User-Agent")).toBe("GitHubCopilotChat/9.99.0");
     expect(headers.get("Copilot-Integration-Id")).toBe("vscode-chat");

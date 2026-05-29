@@ -41,7 +41,11 @@ export function validateStageId(contract: Contract, stageId: string): StageIdVal
     });
   }
 
-  const only = matches[0]!;
+  const [only] = matches;
+  if (!only) {
+    // unreachable: matches.length === 1 here
+    throw new Error("unreachable: empty matches");
+  }
   if (!only.newStagesAllowed) {
     return Object.freeze({
       topic: null,

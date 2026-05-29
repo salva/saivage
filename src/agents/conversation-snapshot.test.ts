@@ -248,7 +248,9 @@ describe("BaseAgent.getConversationSnapshot — compaction", () => {
   it("diagnostic emitted before compaction keeps its roundId after compaction re-keys messages", () => {
     const agent = makeAgent(async () => ({ content: "", toolCalls: [], finishReason: "end_turn", usage: { inputTokens: 0, outputTokens: 0 } }));
     agent.push({ role: "assistant", content: "a1" }, "2024-01-01T00:00:01.000Z");
-    const assistantRound = agent.getConversationSnapshot().find((e) => e.role === "assistant")!.roundId;
+    const assistantEntry = agent.getConversationSnapshot().find((e) => e.role === "assistant");
+    if (!assistantEntry) throw new Error("expected assistant entry");
+    const assistantRound = assistantEntry.roundId;
     agent.diagnose("model_issue", "pre-compact diag");
 
     agent.replace([{ role: "user", content: "summary" }], "2024-01-01T00:01:00.000Z");

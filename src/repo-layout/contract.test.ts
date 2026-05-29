@@ -52,7 +52,8 @@ describe("loadContract", () => {
     const result = loadContract(dir);
     expect(result.present).toBe(true);
     expect(result.error).toBeUndefined();
-    const c = result.contract!;
+    const c = result.contract;
+    if (!c) throw new Error("expected contract");
     expect(c.version).toBe(1);
     expect(c.topics.map((t) => t.name).sort()).toEqual(["alpha", "beta", "gamma"]);
     expect(c.allowedTopLevelDirs.has("out")).toBe(true);
@@ -90,7 +91,7 @@ describe("loadContract", () => {
       version: 1,
       topics: { x: { artifact_dir: "out/x", stage_id_re: "^x_" } },
     });
-    expect(c.topics[0]!.newStagesAllowed).toBe(true);
+    expect(c.topics[0]?.newStagesAllowed).toBe(true);
   });
 });
 

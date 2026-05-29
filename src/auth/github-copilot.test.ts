@@ -15,8 +15,11 @@ describe("refreshGitHubCopilotToken header override", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledOnce();
-    const [, init] = fetchMock.mock.calls[0]!;
-    const headers = new Headers(init!.headers as HeadersInit);
+    const call = fetchMock.mock.calls[0];
+    if (!call) throw new Error("expected fetch call");
+    const [, init] = call;
+    if (!init) throw new Error("expected init");
+    const headers = new Headers(init.headers as HeadersInit);
     expect(headers.get("Editor-Version")).toBe("vscode/9.99.0");
     expect(headers.get("User-Agent")).toBe("GitHubCopilotChat/9.99.0");
     expect(headers.get("Copilot-Integration-Id")).toBe("vscode-chat");

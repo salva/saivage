@@ -172,9 +172,10 @@ export class PiAiProvider extends BaseProvider {
         if (m.role === "user") {
           for (const b of blocks) {
             if (b.type === "tool_result") {
+              if (!b.tool_use_id) throw new Error("tool_result block missing tool_use_id");
               messages.push(
                 toolResultMsg(
-                  b.tool_use_id!,
+                  b.tool_use_id,
                   b.content ?? "",
                   b.is_error ?? false,
                 ),
@@ -198,12 +199,13 @@ export class PiAiProvider extends BaseProvider {
                 });
               }
             } else if (b.type === "tool_use") {
+              if (!b.id || !b.name) throw new Error("tool_use block missing id/name");
               // ContentBlock.input is unknown by design (provider-agnostic);
               // pi-ai's ToolCall.arguments is Record<string, unknown>.
               content.push({
                 type: "toolCall",
-                id: b.id!,
-                name: b.name!,
+                id: b.id,
+                name: b.name,
                 arguments: b.input as Record<string, unknown>,
               });
             }

@@ -37,8 +37,9 @@ describe("McpRuntime.listAllToolsForApi (WI-12)", () => {
     const stub = out.find((t) => t.name === "stub_op");
     expect(alpha).toMatchObject({ service: "alpha", available: true });
     expect(stub).toMatchObject({ service: "stub", available: false });
+    if (!alpha) throw new Error("expected alpha tool");
     // projection shape
-    expect(Object.keys(alpha!).sort()).toEqual(
+    expect(Object.keys(alpha).sort()).toEqual(
       ["available", "description", "inputSchema", "name", "service"].sort(),
     );
   });

@@ -6,7 +6,6 @@ import type {
   ChatResponse,
   ToolCallResult,
   ToolSchema,
-  Message,
   ContentBlock,
   ModelCapabilities,
 } from "./types.js";
@@ -118,11 +117,14 @@ export class OpenAIProvider extends BaseProvider {
             .join("");
           const toolCalls = blocks
             .filter((b) => b.type === "tool_use")
-            .map((b) => ({
-              id: b.id!,
-              type: "function" as const,
-              function: { name: b.name!, arguments: JSON.stringify(b.input) },
-            }));
+            .map((b) => {
+              if (!b.id || !b.name) throw new Error("tool_use block missing id/name");
+              return {
+                id: b.id,
+                type: "function" as const,
+                function: { name: b.name, arguments: JSON.stringify(b.input) },
+              };
+            });
           result.push({
             role: "assistant",
             content: text || null,
@@ -132,9 +134,10 @@ export class OpenAIProvider extends BaseProvider {
           // Tool results
           for (const b of blocks) {
             if (b.type === "tool_result") {
+              if (!b.tool_use_id) throw new Error("tool_result block missing tool_use_id");
               result.push({
                 role: "tool",
-                tool_call_id: b.tool_use_id!,
+                tool_call_id: b.tool_use_id,
                 content: b.content ?? "",
               });
             } else {

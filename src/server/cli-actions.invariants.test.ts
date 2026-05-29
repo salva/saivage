@@ -95,11 +95,13 @@ describe("G48 bootstrap/shutdown invariants", () => {
     const sites = findCalls(src, "bootstrap");
 
     expect(sites, "expected exactly one bootstrap() call in cli-actions.ts").toHaveLength(1);
-    const site = sites[0]!;
+    const site = sites[0];
+    if (!site) throw new Error("expected site");
     expect(site.fn, "bootstrap() must be inside a function").toBeDefined();
-    expect(functionName(site.fn!)).toBe("withRuntime");
+    if (!site.fn) throw new Error("expected enclosing function");
+    expect(functionName(site.fn)).toBe("withRuntime");
     expect(
-      countCallsInFunction(site.fn!, "shutdown"),
+      countCallsInFunction(site.fn, "shutdown"),
       "bootstrap() in withRuntime must be paired with shutdown() in the same function",
     ).toBeGreaterThanOrEqual(1);
   });
@@ -109,16 +111,18 @@ describe("G48 bootstrap/shutdown invariants", () => {
     const sites = findCalls(src, "bootstrap");
 
     expect(sites, "expected exactly one bootstrap() call in cli.ts").toHaveLength(1);
-    const site = sites[0]!;
+    const site = sites[0];
+    if (!site) throw new Error("expected site");
     expect(site.fn, "bootstrap() must be inside the serve action").toBeDefined();
+    if (!site.fn) throw new Error("expected enclosing function");
 
     const enclosingSlice = src.text.slice(
-      Math.max(0, site.fn!.pos - 250),
-      Math.min(src.text.length, site.fn!.end + 50),
+      Math.max(0, site.fn.pos - 250),
+      Math.min(src.text.length, site.fn.end + 50),
     );
     expect(enclosingSlice).toMatch(/\.command\(\s*"serve\b/);
     expect(
-      countCallsInFunction(site.fn!, "shutdown"),
+      countCallsInFunction(site.fn, "shutdown"),
       "serve action bootstrap() must be paired with shutdown() in the same action scope",
     ).toBeGreaterThanOrEqual(1);
   });

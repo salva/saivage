@@ -89,7 +89,7 @@ describe("Conventions", () => {
   it("getConvention returns rule for known role", () => {
     const rule = getConvention("coder");
     expect(rule).not.toBeNull();
-    expect(rule!.writeTerritory).toContain("src/");
+    expect(rule?.writeTerritory).toContain("src/");
   });
 });
 
@@ -230,8 +230,8 @@ describe("ReviewerAgent", () => {
 
 describe("ChatAgent", () => {
   it("serializes incoming user messages for one session", async () => {
-    const firstResponse = deferred<void>();
-    const firstRouterCall = deferred<void>();
+    const firstResponse = deferred<undefined>();
+    const firstRouterCall = deferred<undefined>();
     const routerCalls: ChatRequest[] = [];
     const router = {
       getMaxContextTokens: () => 200_000,
@@ -279,7 +279,7 @@ describe("ChatAgent", () => {
   });
 
   it("rejects chat messages when the session queue is full", async () => {
-    const firstResponse = deferred<void>();
+    const firstResponse = deferred<undefined>();
     const routerCalls: ChatRequest[] = [];
     const router = {
       getMaxContextTokens: () => 200_000,
@@ -697,7 +697,7 @@ class TestChatChannel implements ChatChannel {
   sent: string[] = [];
   private messageHandler?: (message: string) => void | Promise<void>;
   private closeHandler?: () => void;
-  private handlerReady = deferred<void>();
+  private handlerReady = deferred<undefined>();
 
   send(message: string): void {
     this.sent.push(message);
@@ -709,7 +709,7 @@ class TestChatChannel implements ChatChannel {
 
   onMessage(handler: (message: string) => void | Promise<void>): void {
     this.messageHandler = handler;
-    this.handlerReady.resolve();
+    this.handlerReady.resolve(undefined);
   }
 
   onClose(handler: () => void): void {

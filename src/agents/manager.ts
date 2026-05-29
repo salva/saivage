@@ -5,7 +5,6 @@
  * writes StageSummary.
  */
 
-import { join } from "node:path";
 import { BaseAgent, type BaseAgentConfig } from "./base.js";
 import type {
   AgentContext,
@@ -13,7 +12,7 @@ import type {
   ManagerInput,
   Agent,
 } from "./types.js";
-import { StageSummarySchema, type Task, type TaskList, type TaskReport, type StageSummary, type Stage, type Escalation } from "../types.js";
+import { StageSummarySchema, type StageSummary, type Stage } from "../types.js";
 import { parseLlmJsonAs } from "../parse-llm-json.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
 import { log } from "../log.js";

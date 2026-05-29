@@ -111,6 +111,7 @@ export function parseContract(raw: unknown): Contract {
     } catch (e) {
       throw new Error(
         `repo-layout contract: topic '${name}' stage_id_re is not a valid regex: ${(e as Error).message}`,
+        { cause: e },
       );
     }
     const newStagesAllowed = raw.new_stages_allowed === undefined ? true : !!raw.new_stages_allowed;

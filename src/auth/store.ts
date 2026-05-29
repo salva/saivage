@@ -161,7 +161,7 @@ async function withProfilesLock<T>(fn: () => Promise<T>): Promise<T> {
       if (!isErrnoCode(err, "EEXIST")) throw err;
       if (await tryReclaimStaleLock(path)) continue;
       if (Date.now() - startedWaiting > LOCK_TIMEOUT_MS) {
-        throw new Error(`[auth] timed out acquiring ${path}`);
+        throw new Error(`[auth] timed out acquiring ${path}`, { cause: err });
       }
       await sleep(delay);
       delay = Math.min(Math.floor(delay * LOCK_BACKOFF_MULT), LOCK_MAX_DELAY_MS);
@@ -276,7 +276,7 @@ export async function removeProfiles(
   await mutateProfiles((s) => {
     for (const [k, p] of Object.entries(s.profiles)) {
       if (predicate(k, p)) {
-        delete s.profiles[k];
+        Reflect.deleteProperty(s.profiles, k);
         removed += 1;
       }
     }

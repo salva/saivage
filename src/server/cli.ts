@@ -123,7 +123,7 @@ program
   .option("-u, --urgent", "Make the note urgent (aborts current work)")
   .action(async (projectPath: string, messageParts: string[], opts) => {
     const { resolve, join } = await import("node:path");
-    const { discoverProject, loadProject } = await import("../store/project.js");
+    const { loadProject } = await import("../store/project.js");
     const { writeDoc, ensureDir } = await import("../store/documents.js");
     const { noteId } = await import("../ids.js");
     const { UserNoteSchema } = await import("../types.js");
@@ -481,7 +481,14 @@ program
       process.exitCode = 2;
       return;
     }
-    const v = validateStageId(result.contract!, stageId);
+    if (!result.contract) {
+      console.error(
+        JSON.stringify({ status: "error", reason: "contract_missing" }),
+      );
+      process.exitCode = 2;
+      return;
+    }
+    const v = validateStageId(result.contract, stageId);
     const payload = {
       status: v.topic ? "accepted" : "rejected",
       stage_id: stageId,
