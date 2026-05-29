@@ -14,6 +14,41 @@ import type {
 import { getGitHubCopilotBaseUrl } from "../auth/github-copilot.js";
 import { responsesFunctionCallItemId } from "./responses-ids.js";
 import { resolveCopilotHeaders } from "./copilot-client-headers.js";
+import { log } from "../log.js";
+
+/**
+ * Parse the JSON `arguments` string of a tool call returned by the Copilot
+ * backend. The model occasionally truncates this string when it hits the
+ * output-token limit (response.status === "incomplete" / finish_reason ===
+ * "length"), and very rarely emits malformed JSON even on a complete
+ * response. Both cases used to throw "Unterminated string in JSON at
+ * position N" out of `JSON.parse`, which classifyProviderError surfaced as a
+ * provider failure → the router cooled down the model for 15s and failed
+ * over to a credential-less fallback, producing "OpenAI API key is required"
+ * errors that masked the real cause.
+ *
+ * Treat parse failures as a soft error: return `null` so the caller can
+ * decide (typically: drop the broken tool call and report finishReason
+ * "max_tokens" so the agent retries with a smaller payload).
+ */
+function tryParseToolArguments(
+  rawArgs: string | undefined,
+  context: { model: string; toolName: string; callId?: string },
+): Record<string, unknown> | null {
+  const raw = rawArgs ?? "";
+  if (raw === "") return {};
+  try {
+    return JSON.parse(raw) as Record<string, unknown>;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn(
+      `[copilot] truncated/malformed tool-call arguments for ${context.toolName} ` +
+      `(model=${context.model}${context.callId ? `, call=${context.callId}` : ""}, ` +
+      `bytes=${raw.length}): ${msg}`,
+    );
+    return null;
+  }
+}
 
 type ResponsesInputItem =
   | { role: "user"; content: Array<{ type: "input_text"; text: string }> }
@@ -229,13 +264,23 @@ export class CopilotProvider extends BaseProvider {
 
     let content = response.output_text ?? "";
     const toolCalls: ToolCallResult[] = [];
+    let droppedTruncatedToolCall = false;
 
     for (const item of response.output ?? []) {
       if (item.type === "function_call") {
+        const input = tryParseToolArguments(item.arguments, {
+          model: request.model,
+          toolName: item.name,
+          callId: item.call_id,
+        });
+        if (input === null) {
+          droppedTruncatedToolCall = true;
+          continue;
+        }
         toolCalls.push({
           id: item.call_id,
           name: item.name,
-          input: JSON.parse(item.arguments || "{}"),
+          input,
         });
       } else if (item.type === "message" && !content) {
         content = item.content
@@ -247,7 +292,7 @@ export class CopilotProvider extends BaseProvider {
 
     let finishReason: ChatResponse["finishReason"] = "end_turn";
     if (toolCalls.length > 0) finishReason = "tool_use";
-    else if (response.status === "incomplete") finishReason = "max_tokens";
+    else if (response.status === "incomplete" || droppedTruncatedToolCall) finishReason = "max_tokens";
 
     return {
       content,
@@ -291,17 +336,29 @@ export class CopilotProvider extends BaseProvider {
     if (!choice) throw new Error("No choices returned");
 
     const content = choice.message.content ?? "";
-    const toolCalls: ToolCallResult[] = (choice.message.tool_calls ?? [])
-      .filter((tc) => tc.type === "function")
-      .map((tc) => ({
+    let droppedTruncatedToolCall = false;
+    const toolCalls: ToolCallResult[] = [];
+    for (const tc of choice.message.tool_calls ?? []) {
+      if (tc.type !== "function") continue;
+      const input = tryParseToolArguments(tc.function.arguments, {
+        model: request.model,
+        toolName: tc.function.name,
+        callId: tc.id,
+      });
+      if (input === null) {
+        droppedTruncatedToolCall = true;
+        continue;
+      }
+      toolCalls.push({
         id: tc.id,
         name: tc.function.name,
-        input: JSON.parse(tc.function.arguments),
-      }));
+        input,
+      });
+    }
 
     let finishReason: ChatResponse["finishReason"] = "end_turn";
-    if (choice.finish_reason === "tool_calls") finishReason = "tool_use";
-    else if (choice.finish_reason === "length") finishReason = "max_tokens";
+    if (choice.finish_reason === "tool_calls" && toolCalls.length > 0) finishReason = "tool_use";
+    else if (choice.finish_reason === "length" || droppedTruncatedToolCall) finishReason = "max_tokens";
 
     return {
       content,
