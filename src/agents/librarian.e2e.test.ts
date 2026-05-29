@@ -127,7 +127,7 @@ function makeRagService(projectRoot: string): RagService {
     manager: {} as RagService["manager"],
     datasets: [],
     watchStatus: new Map(),
-    adminRoles: new Set(),
+    adminRoles: new Set(["librarian"]),
     control: { busy: false },
     enabled: true,
     projectRoot,
@@ -137,6 +137,7 @@ function makeRagService(projectRoot: string): RagService {
 let tmpDir: string;
 let runtimeLock: RuntimeLock | null = null;
 let store: KnowledgeStore | null = null;
+let tracker: RuntimeTracker | null = null;
 
 beforeEach(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), "librarian-e2e-"));
@@ -144,7 +145,12 @@ beforeEach(async () => {
   runtimeLock = await acquireRuntimeLock(join(tmpDir, ".saivage"));
 });
 
-afterEach(() => {
+afterEach(async () => {
+  if (tracker) {
+    tracker.freeze("test");
+    await tracker.waitForIdle();
+    tracker = null;
+  }
   store?.sidecar.close();
   store = null;
   runtimeLock?.release();
@@ -202,7 +208,7 @@ async function setupRuntime(script: ScriptStep[]): Promise<E2ESetup> {
 
   const router = makeScriptedRouter(script);
   const noteManager = new NoteManager(join(saivageDir, "notes"));
-  const tracker = new RuntimeTracker(project.paths.runtimeState);
+  tracker = new RuntimeTracker(project.paths.runtimeState);
   const agentRegistry = new Map<string, import("../agents/base.js").BaseAgent>();
   const ragService = makeRagService(tmpDir);
 
@@ -286,7 +292,9 @@ describe("LibrarianAgent — end-to-end via createChildSpawner (F03 B07)", () =>
       await setupRuntime(script);
     const spawner = createChildSpawner(runtime);
 
-    expect(ragService.adminRoles.has("librarian")).toBe(false);
+    // adminRoles is statically seeded at bootstrap; the dispatcher does
+    // not mutate it.
+    expect(ragService.adminRoles.has("librarian")).toBe(true);
 
     const result = await spawner(
       "librarian",
@@ -295,8 +303,6 @@ describe("LibrarianAgent — end-to-end via createChildSpawner (F03 B07)", () =>
     );
 
     expect(result.kind).toBe("success");
-    // F02 admin-roles wiring.
-    expect(ragService.adminRoles.has("librarian")).toBe(true);
     // RAG stub saw the expected tool calls.
     expect(ragCalls).toContain("rag_list");
     expect(ragCalls).toContain("rag_stats");

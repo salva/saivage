@@ -165,7 +165,9 @@ export async function bootstrap(
     manager: ragManager,
     datasets: ragDatasets,
     watchStatus: new Map(),
-    adminRoles: new Set(),
+    // Static admin-role membership derived from the roster: the librarian is
+    // the only non-operator role with admin access to RAG tools.
+    adminRoles: new Set(["librarian"]),
     control: { busy: false },
     enabled: config.rag.enabled,
     projectRoot: project.projectRoot,
@@ -429,7 +431,6 @@ export function createChildSpawner(
 
       case "librarian": {
         const librarianInput = input as import("../agents/librarian.js").LibrarianInput;
-        runtime.ragService.adminRoles.add("librarian");
         agent = await LibrarianAgent.create(ctx, librarianInput, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
           onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),

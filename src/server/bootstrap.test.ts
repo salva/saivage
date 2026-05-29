@@ -8,26 +8,31 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createChildSpawner, type SaivageRuntime } from "./bootstrap.js";
 import { RuntimeTracker } from "../runtime/recovery.js";
 import { NoteManager } from "../runtime/notes.js";
-import { ensureDir } from "../store/documents.js";
 import { getDispatchToolsFor } from "../agents/roster.js";
 import type { AgentContext } from "../agents/types.js";
 import type { ChatResponse } from "../providers/types.js";
 import type { RagService } from "./rag/service.js";
 
 let tmpDir: string;
+let activeTracker: RuntimeTracker | null = null;
 
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "saivage-bootstrap-test-"));
 });
 
-afterEach(() => {
+afterEach(async () => {
+  if (activeTracker) {
+    activeTracker.freeze("test");
+    await activeTracker.waitForIdle();
+    activeTracker = null;
+  }
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -35,9 +40,9 @@ function makeRuntime(opts: {
   ragService: RagService;
 }): { runtime: SaivageRuntime; parentCtx: AgentContext } {
   const saivageDir = join(tmpDir, ".saivage");
-  ensureDir(saivageDir);
-  ensureDir(join(saivageDir, "skills"));
-  ensureDir(join(saivageDir, "tmp", "state"));
+  mkdirSync(saivageDir, { recursive: true });
+  mkdirSync(join(saivageDir, "skills"), { recursive: true });
+  mkdirSync(join(saivageDir, "tmp", "state"), { recursive: true });
 
   const router = {
     getMaxContextTokens: () => 200_000,
@@ -83,6 +88,7 @@ function makeRuntime(opts: {
 
   const noteManager = new NoteManager(join(saivageDir, "notes"));
   const tracker = new RuntimeTracker(project.paths.runtimeState);
+  activeTracker = tracker;
   const agentRegistry = new Map<string, import("../agents/base.js").BaseAgent>();
 
   const routing = {
@@ -134,7 +140,8 @@ function makeRagService(): RagService {
     manager: {} as RagService["manager"],
     datasets: [],
     watchStatus: new Map(),
-    adminRoles: new Set(),
+    // Mirror the static seeding bootstrap.ts performs at construction.
+    adminRoles: new Set(["librarian"]),
     control: { busy: false },
     enabled: true,
     projectRoot: tmpDir,
@@ -142,12 +149,13 @@ function makeRagService(): RagService {
 }
 
 describe("createChildSpawner — librarian branch", () => {
-  it("planner dispatch of run_librarian adds librarian to ragService.adminRoles", async () => {
+  it("planner dispatch of run_librarian succeeds with librarian in ragService.adminRoles", async () => {
     const ragService = makeRagService();
     const { runtime, parentCtx } = makeRuntime({ ragService });
     const spawner = createChildSpawner(runtime);
 
-    expect(ragService.adminRoles.has("librarian")).toBe(false);
+    // adminRoles is statically seeded at bootstrap construction.
+    expect(ragService.adminRoles.has("librarian")).toBe(true);
 
     const result = await spawner(
       "librarian",
@@ -159,12 +167,12 @@ describe("createChildSpawner — librarian branch", () => {
     expect(result.kind).toBe("success");
   });
 
-  it("manager dispatch of run_librarian adds librarian to ragService.adminRoles", async () => {
+  it("manager dispatch of run_librarian succeeds with librarian in ragService.adminRoles", async () => {
     const ragService = makeRagService();
     const { runtime, parentCtx } = makeRuntime({ ragService });
     const spawner = createChildSpawner(runtime);
 
-    expect(ragService.adminRoles.has("librarian")).toBe(false);
+    expect(ragService.adminRoles.has("librarian")).toBe(true);
 
     const result = await spawner(
       "librarian",
