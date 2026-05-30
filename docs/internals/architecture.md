@@ -344,7 +344,8 @@ See [knowledge/store](./knowledge/store).
   that can mutate files. The benefit is fewer accidental collisions; the cost
   is that filesystem and shell tools still belong in a sandboxed project.
 4. **One dispatch per worker role per batch.** Enforced by the Dispatcher.
-5. **Single Inspector at a time.** FIFO queueing.
+5. **Inspector and Librarian are non-worker dispatch roles.** They are spawned
+  per dispatch and are not part of the worker-role duplicate-dispatch gate.
 6. **Volatile vs. permanent state.** Anything under `.saivage/tmp/` is
    recoverable from the durable state above it.
 
