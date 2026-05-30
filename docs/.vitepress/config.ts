@@ -124,6 +124,7 @@ export default withMermaid(defineConfig({
           text: "Runtime Core",
           collapsed: false,
           items: [
+            { text: "Runtime Details", link: "/internals/runtime/details" },
             { text: "Dispatcher & Suspend/Resume", link: "/internals/runtime/dispatcher" },
             { text: "Compaction", link: "/internals/runtime/compaction" },
             { text: "Self-Check & Loop Detection", link: "/internals/runtime/self-check" },
