@@ -55,9 +55,9 @@ the Planner through `create_note()`:
    running work.
 - Questions can be answered directly without writing a note.
 
-Slash commands provide deterministic note actions: `/note <msg>`, `/note!
-<msg>`, `/notep <msg>`, and `/replan [reason]`. Planner restart is explicit:
-use `/restart-planner <reason>`.
+Slash commands provide deterministic note actions: `/note MESSAGE`, `/note!
+MESSAGE`, `/notep MESSAGE`, and `/replan [REASON]`. Planner restart is
+explicit: use `/restart-planner REASON`.
 
 ## Behavior on the Planner side
 
@@ -80,8 +80,8 @@ When `urgent: true`, the note is tagged as high priority in the Planner's next
 injected note block. It does not cancel the active Planner, Manager, or worker
 chain, and it does not run a git reset.
 
-To interrupt the current Planner turn from chat, use `/restart-planner
-<reason>`. The runtime cancels that Planner turn and starts a fresh Planner from
+To interrupt the current Planner turn from chat, use `/restart-planner REASON`.
+The runtime cancels that Planner turn and starts a fresh Planner from
 persisted state; worker-chain abort/recovery is a separate runtime path.
 
 ## Permanent notes & objectives
