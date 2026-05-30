@@ -17,29 +17,37 @@ saivage/
 │   ├── mcp/                    # MCP runtime, registry, in-process services
 │   ├── auth/                   # OAuth flows and token store
 │   ├── routing/                # ModelRoutingResolver
-│   ├── channels/               # cli / oneshot / websocket / telegram
+│   ├── channels/               # websocket + telegram channel transports
+│   ├── chat/                   # local and knowledge slash commands
 │   ├── server/                 # bootstrap, fastify server, cli, telegram bot
 │   ├── store/                  # project context + JSON document store
-│   ├── skills/                 # skill loader (trigger matching)
+│   ├── knowledge/              # skill/memory store, lifecycle, eager loader
+│   ├── rag/                    # RAG registry, ingestion, query, watcher, store
+│   ├── repo-layout/            # target project layout contract helpers
+│   ├── scripts/                # maintenance/backfill scripts
+│   ├── testing/                # repository test scanners/helpers
 │   ├── security/               # secret env scrubbing
 │   └── events/                 # in-process event bus
 ├── web/                        # Vite + Vue dashboard (built into web/dist)
 ├── deploy/                     # LXC create/provision scripts + Makefile
+├── prompts/                    # role prompts loaded at runtime
 ├── skills/                     # built-in skill catalogue
-├── SPECS/v2/                   # board specifications & analysis
-├── tests/ (under src/**.test.ts) — vitest
+├── tests/                      # top-level integration/e2e tests (currently RAG)
+├── docs/                       # VitePress docs + generated TypeDoc markdown
+├── src/**/*.test.ts            # colocated vitest suites
 ├── tsconfig.json
-├── tsup.config.ts              # bundler config (CJS + ESM dist)
+├── tsup.config.ts              # ESM CLI bundle config
 ├── vitest.config.ts
 └── package.json
 ```
 
 ## Public surface
 
-The `src/index.ts` barrel re-exports the **stable public API**: types
-(`ProjectConfig`, `Plan`, `Stage`, `Task`, …), the `bootstrap` /
-`runPlanner` / `startServer` entry points, and the agent classes. This is
-the file consumed by [TypeDoc](/api/) when generating the API reference.
+The `src/index.ts` barrel re-exports the public API: types (`ProjectConfig`,
+`PlanDocument`, `Stage`, `Task`, …), document-store helpers, id generators,
+the `bootstrap` / `runPlanner` / `startServer` entry points, and the agent
+classes. This is the file consumed by [TypeDoc](/api/) when generating the API
+reference.
 
 ## Entry points
 
@@ -51,14 +59,15 @@ the file consumed by [TypeDoc](/api/) when generating the API reference.
 
 ## Tests
 
-Test files are colocated as `<file>.test.ts`. Run with `npm test` (vitest).
+Most test files are colocated as `<file>.test.ts`; top-level integration tests
+live under `tests/` (currently `tests/rag/`). Run with `npm test` (vitest).
 The test runner mocks the LLM router; tests do not call real providers.
 See [Testing](./testing).
 
 ## Build outputs
 
-- `dist/` — server bundle (esbuild via tsup) + `.d.ts` files for library
-  consumers.
+- `dist/` — ESM CLI/server bundle from tsup, plus copied `dist/skills/` and
+  `dist/prompts/` runtime assets.
 - `web/dist/` — static assets served by the daemon.
 - `docs/.vitepress/dist/` — VitePress site (this documentation).
 - `docs/api/` — TypeDoc-generated markdown (regenerated on each docs build).
