@@ -7,7 +7,7 @@ and plan history. It is the only path through which the Planner mutates
 plan state, which keeps the on-disk view always consistent with the
 Planner's mental model.
 
-**Transport:** stdio (in-process via `McpRuntime`).
+**Transport:** in-process handler registered on `McpRuntime`.
 
 ## Why MCP and not direct file I/O?
 
@@ -20,11 +20,12 @@ Putting plan mutations behind a tool surface lets us:
 
 ## Concurrency model
 
-Only the Planner holds plan-mutation tools. The Manager and Inspector see
-read-only variants. The Plan service implements **serialized writes**:
-each mutation updates the in-memory `PlanDocument`, validates it against
-`PlanDocumentSchema`, and writes atomically (temp + rename). Read tools
-bypass the writer queue and return a cloned snapshot.
+Agent-facing Plan tools are advertised to the Planner only. The Plan
+service itself does not perform role checks; it implements **serialized
+writes** for every tool in `PLAN_WRITER_TOOLS`. Each mutation updates the
+in-memory `PlanDocument`, validates it against `PlanDocumentSchema`, and
+writes atomically (temp + rename). Read tools bypass the writer queue and
+return a cloned snapshot.
 
 If multiple write requests arrive in flight (it can happen during parallel
 dispatch), they are queued in arrival order.
@@ -161,6 +162,10 @@ Commits only `plan.json`. Returns the commit SHA.
 Signal verified project completion. Read-only marker the Planner emits
 when objectives are met.
 
+- **Input:** `reason` (string, required) — why the configured objectives
+  are complete, with evidence.
+- **Output:** `{ ok: true }`
+
 ## Error handling
 
 All tools return errors as `{ "code": "<ERROR_CODE>", "error": "<message>" }`
@@ -171,6 +176,10 @@ with `isError: true`. Error codes:
 - `STAGE_EXISTS` — stage ID already exists (for `plan_add_stage`)
 - `VALIDATION_ERROR` — input fails schema validation
 - `IO_ERROR` — file read/write failure
+
+`STAGE_MISMATCH` is part of the exported `PlanErrorCode` union for
+dispatcher gates around `run_manager`; normal Plan service tool methods do
+not emit it directly.
 
 ## Stage validation
 
@@ -207,9 +216,10 @@ the stage; `tags` drive skill auto-attachment.
 type StageResult = "completed" | "failed" | "escalated" | "aborted";
 ```
 
-`plan_complete_stage(id, result, summary)` constructs a `CompletedStage`
-record from the stored start time plus the completion timestamp and any
-escalation context, then appends to embedded history.
+`plan_complete_stage(stage_id, result, summary, actual_outcomes, ...)`
+constructs a `CompletedStage` record from the stored start time plus the
+completion timestamp and any escalation or abort context, then appends to
+embedded history.
 
 ## Atomicity
 
