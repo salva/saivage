@@ -34,7 +34,7 @@ Tabs, in the order rendered by
   [web/src/App.vue L234-L240](web/src/App.vue#L234-L240).
 - **Plan** ([web/src/components/PlanView.vue](web/src/components/PlanView.vue)) —
   active plan, per-stage detail, history.
-- **Agents** ([web/src/components/AgentsView.vue](web/src/components/AgentsView.vue)) —
+- **Agents** ([web/src/components/agents/AgentsView.vue](web/src/components/agents/AgentsView.vue)) —
   running agent roster with conversation drill-down via
   [src/server/server.ts L183](src/server/server.ts#L183).
 - **Files** ([web/src/components/FilesView.vue](web/src/components/FilesView.vue)) —
@@ -44,9 +44,9 @@ Tabs, in the order rendered by
   Also the home of the notes inbox (list, acknowledge, delete) at
   [web/src/components/FilesView.vue L89-L173](web/src/components/FilesView.vue#L89-L173).
 - **Debug** ([web/src/components/DebugView.vue](web/src/components/DebugView.vue)) —
-  `/api/debug/state`, `/api/debug/errors`, and `/api/debug/timeline`
-  snapshots; the only three endpoints fetched by
-  [web/src/components/DebugView.vue L23-L60](web/src/components/DebugView.vue#L23-L60).
+  `/api/debug/state`, `/api/debug/errors`, `/api/debug/timeline`,
+  `/api/debug/prompts`, `/api/debug/skills`, and `/api/debug/memories`
+  snapshots.
 
 The chat panel lives only on the Dashboard tab; switching away from
 Dashboard hides it (the WebSocket stays connected so streamed events
@@ -82,6 +82,11 @@ under `/api/` except `/health` and `/ws`.
 | `GET` | `/api/files/content?root=&path=` | File contents (UTF-8); truncated at 1 MiB with `truncated: true`. | [server.ts L428](src/server/server.ts#L428) |
 | `GET` | `/api/debug/state` | Raw runtime state, plan, history, project config, saivage.json. | [server.ts L477](src/server/server.ts#L477) |
 | `GET` | `/api/debug/errors` | Aggregated stage/task failures sorted by timestamp. | [server.ts L502](src/server/server.ts#L502) |
+| `GET` | `/api/debug/prompts` | Active prompt files grouped by role/shared prompt. | [server.ts L610](src/server/server.ts#L610) |
+| `GET` | `/api/debug/skills` | Active skill summaries from the knowledge sidecar. | [server.ts L619](src/server/server.ts#L619) |
+| `GET` | `/api/debug/skills/:id` | One skill record and body. | [server.ts L631](src/server/server.ts#L631) |
+| `GET` | `/api/debug/memories` | Active memory summaries from the knowledge sidecar. | [server.ts L640](src/server/server.ts#L640) |
+| `GET` | `/api/debug/memories/:id` | One memory record and body. | [server.ts L651](src/server/server.ts#L651) |
 | `GET` | `/api/debug/timeline` | Stage start/complete + task completion events. | [server.ts L598](src/server/server.ts#L598) |
 | `GET` | `/ws` | WebSocket — see next section. | [server.ts L662](src/server/server.ts#L662) |
 
@@ -106,9 +111,9 @@ Client → server frames (handled by `WebSocketChannel`):
 
 | Input | Behaviour |
 |---|---|
-| `{ "type": "message", "content": "<text>" }` | `content` is unwrapped and forwarded to the chat agent. Used by [web/src/components/ChatWindow.vue L157](web/src/components/ChatWindow.vue#L157). |
-| Any other JSON | Stringified payload is treated as raw user text. |
-| Any non-JSON text | Treated as raw user text. |
+| `{ "type": "message", "content": "TEXT" }` | `content` is unwrapped and forwarded to the chat agent. Used by [web/src/components/ChatWindow.vue L157](web/src/components/ChatWindow.vue#L157). |
+| `{ "type": "error", "reason": "...", "raw": "..." }` | Logged as a client-reported schema violation. |
+| Malformed JSON or any other schema | The server logs the parse error and closes the socket with code `1003` (`schema-violation`). |
 
 Handler reference:
 [src/channels/websocket.ts L17-L28](src/channels/websocket.ts#L17-L28).
