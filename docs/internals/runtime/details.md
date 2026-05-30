@@ -29,7 +29,9 @@ Each agent runs as a standard LLM conversation loop:
    - If it's a **local tool** (filesystem, shell, git MCP, plan MCP):
      execute immediately, collect result.
    - If it's an **agent-dispatch tool** (`run_manager`, `run_coder`,
-     `run_researcher`, `run_inspector`): spawn child agent (see §1.2).
+     `run_researcher`, `run_data_agent`, `run_reviewer`, `run_designer`,
+     `run_critic`, `run_inspector`, `run_librarian`): spawn child agent
+     (see §1.2).
 4. Inject all tool results (keyed by `tool_use_id`) back into the
    conversation.
 5. Continue the loop from step 1.
@@ -38,9 +40,9 @@ Each agent runs as a standard LLM conversation loop:
 
 When an agent issues a tool call that dispatches a child agent:
 
-1. **Save parent state:** the full message history up to and including the
-   current assistant response (with its tool-call blocks). This is the
-   *suspension point*.
+1. **Save parent state:** the parent `BaseAgent` keeps its message history
+   in memory up to and including the current assistant response (with its
+   tool-call blocks). This is the *suspension point*.
 2. **Spawn child agent:** create a new LLM conversation for the child.
    Pass the task / stage / request as the child's initial context.
 3. **Parent is suspended:** no further LLM calls for the parent until the
@@ -54,15 +56,15 @@ When an agent issues a tool call that dispatches a child agent:
    history at the suspension point. Continue the parent's conversation
    loop.
 
-**What is persisted on suspension:**
+**What is retained on suspension:**
 
-- Full message history (all turns, including system prompt).
-- List of pending tool calls from the current assistant response (with
-  their `tool_use_id`s).
+- Full in-memory message history.
+- Current assistant-response tool calls and `tool_use_id`s are already part of that message history.
 - Agent metadata (type, id, current task / stage info).
 
-This is stored in-memory while the child runs. On crash, the runtime
-reconstructs from disk state (see §8).
+This is retained in memory while the child runs. On crash, the runtime
+reconstructs durable stage and task state from disk (see §8); suspended
+conversation turns are not separately persisted.
 
 ### 1.3 Parallel agent dispatch
 
@@ -73,69 +75,69 @@ same response):
 1. **Both children are spawned concurrently** — each in its own LLM
    conversation.
 2. **Parent is suspended.**
-3. **Resume on each completion:** when the *first* child completes, its
-   tool result is injected into the parent's conversation, and the parent
-   resumes. The parent can process the result, issue new tool calls
-   (including more dispatches), or wait.
-4. When the *second* child completes, its result is injected and the
-   parent resumes again.
-5. The runtime tracks which `tool_use_id`s are still pending. The parent's
-   conversation loop continues normally — it receives each result as it
-   arrives.
+3. **Resume after the batch completes:** the Dispatcher awaits the allowed
+   child promises together and injects one tool-result message containing
+   all completed child results.
+4. The parent's conversation loop continues normally from that single
+   resumed turn.
 
 **Constraints:**
 
-- Maximum 1 Coder + 1 Researcher running concurrently per Manager
-  (**enforced by the runtime**, not just convention).
-- If the LLM emits more than one `run_coder()` or more than one
-  `run_researcher()` in a single response, the runtime rejects the excess
-  calls with an error result. Only the first of each type is dispatched.
+- Maximum 1 dispatch per worker role in a single batch (**enforced by the
+  runtime**, not just convention). Worker roles currently include Coder,
+  Researcher, Data Agent, Reviewer, Designer, and Critic.
+- If the LLM emits duplicate dispatches for the same worker role in one
+  response, the runtime rejects the excess calls with an error result.
+  Only the first of each role is dispatched.
 
 ### 1.4 Mixed tool calls
 
 When an LLM response contains both local tools and agent dispatches:
 
-1. Execute all **local tools immediately** — collect results.
+1. Execute all **local tools immediately** and sequentially — collect
+   results.
 2. Spawn all **agent-dispatch tools concurrently**.
-3. Inject local tool results immediately. For agent dispatches, inject
-   each result as it arrives.
-4. Resume the parent's LLM conversation after all local results are
-   ready. Agent-dispatch results arrive asynchronously as children
-   complete.
+3. After the allowed child dispatches finish, inject one tool-result
+   message containing the local results, duplicate-dispatch rejections,
+   and child results.
+4. Resume the parent's LLM conversation from that combined result batch.
 
 ## 2. LLM call failure handling
 
 ### 2.1 Retry strategy
 
-All LLM API calls use exponential backoff with jitter:
+LLM API retries use exponential backoff:
 
 | Parameter       | Default              | Notes                                 |
 |-----------------|----------------------|---------------------------------------|
 | `initial_delay` | 30000 ms             | Retry backoff starting delay          |
 | `max_delay`     | 1200000 ms (20 min)  | Retry backoff ceiling                 |
 | `multiplier`    | 1.5                  | Exponential backoff factor            |
-| `jitter`        | ±20%                 | —                                     |
 
 **Retryable errors** (retry automatically, invisible to agents):
 
 - HTTP 429 (rate limit)
-- HTTP 500, 502, 503, 529 (server errors)
+- HTTP 408 and 5xx server errors
 - Network timeouts
 - Connection resets
+
+**Repairable request-shape errors** (compact and retry immediately):
+
+- Context window exceeded / HTTP 413
+- Orphaned tool-result errors from a provider rejecting the message shape
 
 **Non-retryable errors** (surface as agent failure):
 
 - HTTP 400 (bad request — indicates a prompt issue)
 - HTTP 401 / 403 (auth — requires operator intervention)
-- Context window exceeded (requires compaction or task splitting)
 
-Retries continue **indefinitely** for retryable errors — there is no
-maximum retry duration. The backoff starts at 30 seconds, multiplies by
-1.5 on each attempt, and caps at 20 minutes. This ensures Saivage never
-gives up during provider outages; the operator must manually stop the
-system if desired. Self-check and compaction cannot fire during a stuck
-request (they trigger only between completed tool-call rounds), but the
-system will resume normally once the provider recovers.
+Retries continue with a cap for non-throttling transient failures. The
+backoff starts at 30 seconds, multiplies by 1.5 on each attempt, and caps
+at 20 minutes. Provider throttling does not count toward the non-throttle
+retry cap; other transient failures terminate the agent after 500
+non-throttling attempts (`BaseAgent.transientCap`). Context-overflow and
+orphaned-tool-result errors trigger compaction and an immediate retry
+instead of backoff.
 
 ### 2.2 Invalid tool calls
 
@@ -156,11 +158,14 @@ its parent.
 
 ### 2.3 Provider failover
 
-If a provider becomes persistently unavailable (5+ consecutive retryable
-errors within 2 minutes), and a `failover` provider is configured in
-`SaivageConfig`, the runtime switches to the failover provider for the
-remainder of the current agent's conversation. The switch is logged. On
-next agent invocation, the primary provider is tried first again.
+Provider failover is handled by `ModelRouter` per chat request. It builds
+a candidate chain from the requested model, configured `failover` entries,
+model equivalents, and provider/account priorities. Failed retryable
+candidates are put on an exponential cooldown (15 seconds × 1.5, capped at
+10 minutes) while the router tries the next candidate. When a non-primary
+candidate succeeds after the primary was attempted, the router uses a
+sticky failover and retries the primary after a separate cooldown (30
+seconds × 1.5, capped at 20 minutes).
 
 ## 3. Context compaction timing
 
@@ -187,8 +192,9 @@ Default `threshold_pct`: 80%. Configurable per agent role in
    "Summarize this conversation for continuation. Include: your role,
    current objective, key decisions made, outstanding work, and references
    to disk state you should re-read."
-3. Replace the full message history with:
-   `[system_prompt, compaction_summary_message]`.
+3. Replace the message history with a single user-role compaction summary;
+   the system prompt remains the static `router.chat` system prompt supplied
+   separately by `BaseAgent`.
 4. Continue the conversation loop from this compressed state.
 
 **Survivor reinjection.** After `compactConversation` returns and
@@ -196,22 +202,21 @@ Default `threshold_pct`: 80%. Configurable per agent role in
 loader for every `active` record with `scope == "project"` AND
 `survive_compaction == true` (both skills and memories), and appends a
 single user-role `--- SURVIVING KNOWLEDGE ---` block to the new message
-list. Records that exceed the survivor hard ceiling (4096 tokens
-post-summarization) are quarantined but their ids are listed in the block
-header (`oversized_survivors: [...]`) so the agent can still reach them
-via `read_skill` / `get_memory`. Stage- and session-scoped records do
-**not** survive. `compaction.ts` itself is intentionally **unchanged** —
-it remains a pure history-to-summary function with no MCP / no store
-access; the integration lives in `BaseAgent`.
+list. Records whose survivor summaries exceed the survivor hard ceiling
+(4096 estimated tokens) are omitted by the loader before the block is
+built. Stage- and session-scoped records do **not** survive.
+`compaction.ts` itself is intentionally **unchanged** — it remains a pure
+history-to-summary function with no MCP / no store access; the integration
+lives in `BaseAgent`.
 
 **Planner pre-compaction memory nudge.** When `shouldCompact(state)`
 returns true AND the agent's role is `planner`, `BaseAgent` injects ONE
 pre-compaction user-role message asking the Planner to call
-`create_memory(scope="project", survive_compaction=true)` for any durable
-lessons before the conversation history is discarded. The Planner's
-writes then go through the **normal MCP loop** — there is no synthesized
-`compaction_persist_memory` tool. The nudge loop is capped at 5 turns;
-compaction proceeds either way. Non-Planner agents skip the nudge.
+`create_memory` / `create_skill` for any durable knowledge that must
+survive compaction. The Planner's writes then go through the **normal MCP
+loop** — there is no synthesized `compaction_persist_memory` tool. The
+nudge loop is capped at 5 turns; compaction proceeds either way.
+Non-Planner agents skip the nudge.
 
 ### 3.3 State reconstruction after compaction
 
@@ -229,14 +234,14 @@ from disk:
 The compaction summary explicitly instructs the agent to re-read state —
 this is part of the summary template, not left to the LLM's judgment.
 
-## 4. Self-check injection
+## 4. Self-check helper
 
 ### 4.1 Counter
 
-The runtime maintains an in-memory counter of **tool-call rounds** per
-agent conversation. A round = one LLM response that contains tool calls,
-regardless of how many tool calls it contains (parallel calls count as 1
-round).
+`src/runtime/self-check.ts` defines an in-memory counter of **tool-call
+rounds** per agent conversation. A round = one LLM response that contains
+tool calls, regardless of how many tool calls it contains (parallel calls
+count as 1 round).
 
 | Agent      | Default frequency (N) |
 |------------|----------------------|
@@ -244,41 +249,42 @@ round).
 | Manager    | 20                   |
 | Coder      | 15                   |
 | Researcher | 15                   |
+| Data Agent | 15                   |
+| Reviewer   | 15                   |
+| Designer   | 15                   |
+| Critic     | 15                   |
 | Inspector  | 15                   |
+| Chat       | 0                    |
+| Librarian  | 20                   |
 
-Configurable per agent role in `ProjectConfig`.
+The defaults are derived from `ROSTER.selfCheckFrequency`. The current
+`BaseAgent` loop does not instantiate `SelfCheckState` or inject
+`selfCheckMessage`; live stuck handling comes from compaction limits,
+invalid-response limits, planner nudges, and the Supervisor.
 
 ### 4.2 Injection mechanism
 
-When the counter reaches N:
+The helper's intended injection behavior is:
 
 1. Reset the counter to 0.
-2. Before the next LLM call, prepend a **system message** to the
-   conversation:
+2. Before the next LLM call, inject this progress prompt:
    > "Self-check: You have completed N tool-call rounds. Briefly assess:
    > are you making progress toward the objective, or are you stuck in a
    > loop? If stuck, finish with a failure result. If making progress,
    > continue."
-3. The LLM's response is processed normally. If it declares itself stuck
-   or returns a failure result, the runtime treats the agent as failed.
-4. If the agent continues normally, the counter resets and the cycle
-   repeats.
+3. Process the LLM's response normally.
 
 ### 4.3 Stuck detection
 
-The runtime does **not** try to parse the LLM's self-assessment for
-keywords. Instead:
+Because the helper is not wired into `BaseAgent`, the runtime does **not**
+parse an LLM self-assessment for keywords. Live stuck handling is instead:
 
-- If the agent's next action after self-check is to **return a final
-  result** (success or failure), the self-check worked.
-- If the agent continues making tool calls, it has decided it's making
-  progress — the runtime trusts this.
-- The self-check is a prompt injection that nudges the LLM to
-  self-assess. It is not a hard kill mechanism. If an agent truly loops,
-  it will eventually hit context limits → compaction → and after repeated
-  compactions with no progress, it will exceed a maximum compaction count
-  (default: 3 compactions per conversation) and be terminated with a
-  failure result.
+- Context limits trigger compaction; repeated compactions, fallback
+  exhaustion, or an oversized atomic tool round terminate the agent.
+- The Supervisor can cancel an abortable active agent after repeated stuck
+  verdicts.
+- Planner text-only turns are nudged up to 15 times before recovery
+  restarts the Planner.
 
 ### 4.4 Maximum compactions
 
@@ -464,12 +470,12 @@ The runtime maintains an in-process event bus. Events are published when:
 
 | Event                  | Published by | Contains              |
 |------------------------|-------------|----------------------|
-| `stage_completed`      | Runtime     | stage_id, summary     |
-| `stage_failed`         | Runtime     | stage_id, summary     |
-| `escalation`           | Runtime     | stage_id, escalation  |
-| `task_failed`          | Runtime     | stage_id, task_id     |
-| `inspector_complete`   | Runtime     | report_id, summary    |
-| `plan_updated`         | Runtime     | plan snapshot         |
+| `stage_completed`      | Runtime     | `stage_id`, `summary` |
+| `stage_failed`         | Runtime     | `stage_id`, `summary` |
+| `escalation`           | Runtime     | `stage_id`, `summary` |
+| `task_failed`          | Runtime     | `stage_id`, `task_id`, `summary` |
+| `inspector_complete`   | Runtime     | `report_id`, `summary` |
+| `plan_updated`         | Runtime     | `summary`             |
 
 See [runtime/events](./events) for the bus implementation.
 
@@ -478,7 +484,7 @@ See [runtime/events](./events) for the bus implementation.
 Each Chat agent subscribes to the event bus on startup. When an event
 arrives:
 
-1. Check the user's notification filter (from `ProjectConfig`).
+1. Check the user's notification filter (from `SaivageConfig.notifications.filters`).
 2. If the event passes the filter, format a concise notification message.
 3. Push via the channel's transport (Telegram bot API, WebSocket).
 
