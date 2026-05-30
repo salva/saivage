@@ -15,19 +15,20 @@ slice is still validated but no datasets are instantiated.
 }
 ```
 
-`SaivageConfigSchema` uses `.strict()`, so unknown keys at any level fail
-validation. Field defaults are filled by Zod at parse time; operators may
-omit any field marked "default below".
+`SaivageConfigSchema` uses `.strict()` at the top level, so unknown top-level
+keys fail validation. Nested objects that are not explicitly strict use Zod's
+default object behavior. Field defaults are filled by Zod at parse time;
+operators may omit any field marked "default below".
 
 ## Per-dataset shape
 
 ```jsonc
 {
   "id": "project-docs",          // unique within a project; matches dir name
-  "source": { ... },             // RagSource union (see "Sources" below)
+  "source": "doc",               // "skill" | "memory" | "doc" | "code"
   "provider": {
     "kind": "openai",
-    "model": "text-embedding-3-large", // literal allow-list
+    "model": "text-embedding-3-small", // literal allow-list
     "dim": 1536                  // 256 | 512 | 1024 | 1536; default 1536
   },
   "store": {
@@ -38,7 +39,7 @@ omit any field marked "default below".
     "chunkSize": 1500,           // optional
     "overlap": 0.15              // optional, 0..0.5
   },
-  "exclusions": [],              // optional extra glob blocklist; default []
+  "exclusions": [],              // parsed/stored, not applied by ingest today
   "sources": [],                 // F01 B12 — list of SourceRoot; default []
   "watch": false                 // F01 B12 — see "Watcher" below; default false
 }
@@ -83,9 +84,11 @@ zero-argument `dataset.reconcile()` should sweep. Each entry:
 }
 ```
 
-`sources` is independent of the existing `RagSource` field, which selects
-the input shape for `ingest()` (filesystem walk vs. record stream).
-`sources` is what the watcher uses; `RagSource` is what manual ingests use.
+`sources` is independent of the `source` field. `source` labels the dataset
+and emitted chunk metadata (`skill`, `memory`, `doc`, or `code`), while
+`IngestInput.kind` selects filesystem walk vs. record stream for a specific
+ingest call. `sources` is what the watcher and zero-argument
+`dataset.reconcile()` use.
 
 ## Watcher (F01 B12)
 
@@ -103,14 +106,17 @@ The watcher is armed by `dataset.watch()` and stopped by
 
 ## Exclusions interaction
 
-Three exclusion sets stack, in order of application:
+Three exclusion sets are applied by the current ingest/watch paths:
 
 1. The dataset-wide secret guard (`shouldSkipPath` + `scanChunk`).
-2. The operator-supplied `exclusions` array (project-wide globs).
-3. The watcher-only `BUILD_CACHE_EXCLUSIONS`
+2. The per-ingest or per-source `exclude` array (`ingest({ kind: "fs" })` or
+  `SourceRoot.exclude`).
+3. The watcher/reconcile `BUILD_CACHE_EXCLUSIONS`
    (`node_modules`, `dist`, `build`, `.git`, `.saivage`, `coverage`,
    `__pycache__`, `.venv`, …).
 
+The dataset-level `exclusions` field is parsed into `DatasetConfig` but is not
+read by the current `Dataset.ingest()`, watcher, or reconcile implementation.
 The build/cache list is intentionally not applied to non-watcher ingests:
 operators who manually call `dataset.ingest({ kind: "fs", root, exclude })`
 remain in control of those globs.
