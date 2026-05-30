@@ -16,29 +16,35 @@ Every `intervalMs` (default 20 minutes):
 2. Build a prompt summarizing recent agent activity.
 3. Call a (typically cheaper) model with that prompt and ask:
    *"Is the agent making progress? Yes / no, with confidence and reason."*
-4. Append the verdict to the runtime's verdict ring buffer.
+4. Update the in-memory consecutive-stuck counter and log the verdict.
 
 After `consecutiveStuckVerdicts` (default 3) consecutive *stuck* verdicts
 the Supervisor:
 
-- Picks the deepest active worker by `ROLE_ABORT_PRIORITY`
-  (`reviewer → data_agent → coder → researcher → manager`).
-- Calls `runtime.abort(supervisorReason)` to trigger the [Abort](./abort-recovery)
-  flow.
-- Logs a verdict `"forced_abort"`. If after `FORCE_CANCEL_DELAY_MS`
-  (10 min) the agent hasn't terminated, it re-issues the abort.
+- Picks the active registered agent with the lowest roster abort priority:
+  Reviewer, Critic, Data Agent, Coder, Researcher, Designer, Manager,
+  then Librarian. Planner, Inspector, and Chat are not abortable by the
+  Supervisor.
+- Calls `cancel()` on that agent; see [Abort & Recovery](./abort-recovery)
+  for the cancellation mapping.
+- If after `forceCancelDelayMs` (default 10 min) the agent remains
+  registered, it calls `cancel()` again.
 
 ### Configuration
 
 ```jsonc
 "supervisor": {
   "enabled": true,
-  "model":   "github-copilot/gpt-5.4",
+  "model":   "provider/model",
   "intervalMs": 1200000,
   "consecutiveStuckVerdicts": 3,
-  "logLines": 400
+  "logLines": 400,
+  "forceCancelDelayMs": 600000
 }
 ```
+
+When `enabled` is true, a supervisor model must be configured either via
+`supervisor.model` or project routing for the `supervisor` role.
 
 ### When to disable
 
@@ -55,8 +61,8 @@ Handoff serializes a structured reason and a snapshot of relevant state.
 
 | File | Written by | Read by |
 |------|------------|---------|
-| `.saivage/tmp/state/shutdown-request.json` | `request-shutdown` CLI / API | Daemon's signal handler. |
-| `.saivage/tmp/state/shutdown-summary.json` | Daemon during shutdown | Recovery on next startup. |
+| `.saivage/tmp/state/shutdown-request.json` | `request-shutdown` CLI / API | `writeShutdownSummary()` during daemon shutdown. |
+| `.saivage/tmp/state/shutdown-summary.json` | Daemon during shutdown | `consumeShutdownHandoff()` on next startup. |
 
 ### Lifecycle
 
@@ -68,8 +74,9 @@ sequenceDiagram
   participant Plan as Next Planner
 
   Op->>CLI: saivage request-shutdown … --reason "schema migration tomorrow"
-  CLI->>Daemon: write shutdown-request.json
-  Daemon->>Daemon: drain agents, write summary
+  CLI->>Daemon: write shutdown-request.json for the next shutdown
+  Op->>Daemon: stop process through the normal serve shutdown path
+  Daemon->>Daemon: write summary during runtime.shutdown()
   Daemon-->>Op: exit
   Note over Daemon: time passes
   Op->>Daemon: saivage serve
@@ -88,6 +95,7 @@ saivage request-shutdown ./project --reason "Switching providers tomorrow"
 saivage request-shutdown ./project --reason-stdin <<<"reason"
 ```
 
-The daemon's signal handler watches for the request file and initiates
-graceful shutdown — agents finish their current tool round, write their
-summaries, and exit cleanly.
+`request-shutdown` records the reason; it does not signal or stop the
+daemon by itself. The serve process writes the summary when its normal
+shutdown path calls `runtime.shutdown()`, and that summary is consumed on
+the next startup as a Planner directive.
