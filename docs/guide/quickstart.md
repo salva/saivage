@@ -28,15 +28,18 @@ UI under `web/dist/`.
 
 ## 2. Authenticate with a provider
 
+Provider auth is project-scoped. The command accepts an optional project path;
+run it after Step 3 for the target project you just initialized, or pass an
+existing project path.
+
 ```bash
-node dist/cli.js login        # interactive picker
-# or specify a provider:
-node dist/cli.js login github-copilot
-node dist/cli.js login openai-codex
+node dist/cli.js login ~/playground --provider github-copilot
+node dist/cli.js login ~/playground --provider openai-codex
 ```
 
-Tokens are saved under `<project>/.saivage/auth-profiles.json` (or
-`~/.saivage/` if no project is in scope at login time).
+Tokens are saved under `<project>/.saivage/auth-profiles.json`. If no project
+is in scope at login time, the auth store resolves from the current working
+directory rather than from a global `~/.saivage` directory.
 
 See [LLM Providers & Auth](./providers) for details on each flow.
 
@@ -85,7 +88,7 @@ Open <http://localhost:8080> in a browser.
   conversations, and live event stream.
 - **CLI status**: `node ~/saivage/dist/cli.js status ~/playground`.
 - **Send a note**: `node ~/saivage/dist/cli.js note ~/playground "Use Vitest, not Jest"`.
-- **Urgent abort & replan**: add `--urgent` to the `note` command.
+- **High-priority note**: add `--urgent` to the `note` command.
 
 For a complete operational reference see the [CLI](./cli) and
 [Web Dashboard](./web-ui) pages.
