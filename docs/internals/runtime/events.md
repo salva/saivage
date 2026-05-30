@@ -16,14 +16,12 @@ interface SystemEvent {
     | "escalation"
     | "task_failed"
     | "inspector_complete"
-    | "plan_updated"
-    | "supervisor_verdict"
-    | "agent_started"
-    | "agent_completed"
-    | "abort_triggered";
-  severity: "info" | "warning" | "error";
-  payload: Record<string, unknown>;
-  timestamp: string;
+    | "plan_updated";
+  stage_id?: string;
+  task_id?: string;
+  report_id?: string;
+  summary: string;
+  timestamp?: string;
 }
 ```
 
@@ -37,7 +35,8 @@ import { EventBus } from "saivage";
 
 const bus = new EventBus();
 const off = bus.subscribe(
-  (evt) => console.log(evt.type, evt.payload),
+  "example-subscription",
+  (evt) => console.log(evt.type, evt.summary),
   { minSeverity: "warning", allowedTypes: ["escalation"] },
 );
 off(); // unsubscribe
@@ -55,20 +54,28 @@ interface EventFilter {
 }
 ```
 
-`minSeverity` defaults to `info` (everything passes). `allowedTypes`
-defaults to undefined (everything passes).
+`minSeverity` defaults to `info` (everything passes). The event object has
+no severity field; `EventBus` maps each event type through its internal
+`EVENT_SEVERITY` table. `allowedTypes` defaults to undefined (everything
+passes).
 
-The web UI subscribes with the project config's
-`notifications.filters` so the dashboard's event panel reflects what the
-user asked to see.
+WebSocket and Telegram Chat agents subscribe with
+`SaivageConfig.notifications.filters` so user-facing notifications respect
+the configured severity/type filters.
 
 ## Producers
 
-The Dispatcher emits `agent_started` / `agent_completed`. The Manager
-emits `task_failed`. The Planner emits `stage_completed` /
-`stage_failed` / `escalation` / `plan_updated`. The Inspector emits
-`inspector_complete`. The Abort handler emits `abort_triggered`.
+Current publishers are:
 
-Producers do not block on subscribers — handlers are awaited but errors
-inside handlers are caught and logged so a single misbehaving listener
-cannot stall the runtime.
+- `publishAgentResult()` in `src/server/bootstrap.ts` emits
+  `stage_completed`, `stage_failed`, `escalation`, and
+  `inspector_complete` for Manager / Inspector results.
+- The recovery loop and chat local commands emit `plan_updated` for
+  Planner restarts, recovery restarts, continuous-improvement restarts,
+  and explicit restart requests.
+- `task_failed` remains in the schema/filter set and is formatted by Chat,
+  but no runtime publisher currently emits it.
+
+Producers wait for subscriber delivery promises to settle, but each
+handler is bounded by a 5s timeout and errors are caught and logged so a
+single misbehaving listener cannot stall the runtime indefinitely.
