@@ -1,6 +1,7 @@
 # Planner
 
-[`src/agents/planner.ts`](https://github.com/salva/saivage/blob/main/src/agents/planner.ts)
+[`src/agents/planner.ts`](https://github.com/salva/saivage/blob/main/src/agents/planner.ts),
+[`prompts/planner.md`](https://github.com/salva/saivage/blob/main/prompts/planner.md)
 
 The Planner is the **top-level long-lived agent**. It runs from `bootstrap()`
 until the project objectives are met (or the daemon shuts down).
@@ -17,14 +18,16 @@ run. It is the top-level agent — all other agents are invoked by the Planner
 **suspended** while subordinate agents run and **resumed** when their tool
 calls return.
 
-- **Spawned:** by `runPlanner(runtime)` (CLI `start` and the server's
-  background loop).
+- **Spawned:** CLI `start` calls `runPlanner(runtime)`; server mode calls
+  `runPlannerWithRecovery(runtime)`, which repeatedly starts Planner runs.
 - **Suspended:** while a child (`run_manager`, `run_inspector`,
   `run_librarian`) is running.
 - **Resumed:** when a child returns; new notes injected as a system message.
 - **Compacted:** when context exceeds threshold; the plan MCP service is the
   authoritative state store, so compaction is safe.
-- **Terminated:** only on plan completion, fatal failure, or shutdown.
+- **Run exits:** on `plan_done`, abort/cancel, max compactions, LLM/runtime
+  error, or the 15-nudge stall guard. `runPlannerWithRecovery()` decides
+  whether to restart the Planner after that run exits.
 
 When the conversation context grows too large (many stages completed), the
 Planner performs a **context compaction**: it summarizes the conversation so
@@ -63,7 +66,7 @@ The Planner mutates the plan via the Plan MCP service.
 Mutation tools used: `plan_init(stages)` on first run; `plan_set_stages`,
 `plan_add_stage`, `plan_remove_stage`, `plan_set_current` for incremental
 updates; `plan_complete_stage(stage_id, result, summary)` when a Manager
-returns. The runtime writes `plan.json` atomically.
+returns. The Plan MCP service writes `plan.json` atomically.
 
 ## Execution model
 
@@ -80,10 +83,11 @@ returns. The runtime writes `plan.json` atomically.
 6. At any point, can call `run_inspector(request)` as a tool for deep analysis.
 
 User notes arriving while the Planner is suspended are queued and **injected as
-additional context** when the Planner next resumes. If a user note requests
-immediate replanning (via `urgent` flag), the runtime **aborts** the active
-agent chain and resumes the Planner immediately (see
-[abort & recovery](../runtime/abort-recovery)).
+additional context** when the Planner next resumes. The `urgent` flag marks a
+note high-priority; it does not interrupt running work by itself. Explicit
+Planner restart requests (`/replan` through `PlannerControl`) abort the current
+Planner run and queue a restart directive. See
+[abort & recovery](../runtime/abort-recovery).
 
 ## Behaviors
 
@@ -119,7 +123,8 @@ agent chain and resumes the Planner immediately (see
 | Dispatch | `run_manager`, `run_inspector`, `run_librarian` |
 | Filesystem | `read_file`, `list_dir`, `search_files` |
 | Git | `git_status`, `git_log`, `git_diff` |
-| Memory | `create_memory`, `search_memories`, etc. |
+| Knowledge read | `list_skills`, `read_skill` |
+| Stash | `read_stash` |
 
 The Planner never writes project source code directly; mutations go through
 the Manager.
@@ -127,12 +132,14 @@ the Manager.
 ## Result types
 
 ```ts
-type RunPlanResult =
-  | { kind: "success" }
-  | { kind: "failure", reason: string }
-  | { kind: "abort", reason: string }
-  | { kind: "escalation" };
+type PlannerPlanDone = {
+  kind: "success";
+  data: { completion: "plan_done"; summary: string };
+};
 ```
 
-`runPlanner()` resolves with one of these and the CLI maps them to exit codes
-(see [CLI](/guide/cli)).
+Other exits use the shared `AgentResult` failure, abort, or escalation shapes.
+`runPlanner()` resolves with `AgentResult`; `runPlannerWithRecovery()` restarts
+after non-terminal exits and, in continuous-improvement mode, after
+`plan_done`. CLI `start` maps the returned kind to exit codes (see
+[CLI](/guide/cli)).
