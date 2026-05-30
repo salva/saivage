@@ -2,11 +2,12 @@
 
 ## Logs
 
-Saivage uses a structured logger (`src/log.ts`) that writes to:
+Saivage uses a structured logger (`src/log.ts`) that writes formatted entries
+to stdout/stderr and keeps the most recent entries in an in-memory buffer for
+runtime checks such as the supervisor.
 
-- **stdout** — text format suitable for `journalctl`/`docker logs`.
-- **`<project>/.saivage/tmp/logs/saivage.log`** — JSON Lines format
-  (one event per line).
+Agent tool calls can also write full command stdout/stderr to project-local log
+files when the caller passes `stdout_path` or `stderr_path` to `run_command`.
 
 For the LXC deployment use the helper:
 
@@ -19,18 +20,20 @@ Which is `journalctl -u saivage -f` inside the container.
 ## Live state
 
 - **Web dashboard** (`/`) — the canonical observability surface.
+- **`GET /health`** — liveness, project name, and runtime status.
 - **`GET /api/state`** — JSON snapshot.
-- **`GET /api/debug/timeline`** — recent runtime events (agent dispatches,
-  compactions, aborts).
+- **`GET /api/debug/state`** — runtime, active plan, plan history, and loaded
+  project/runtime configuration.
+- **`GET /api/debug/timeline`** — timeline derived from plan history and task
+  reports.
 - **`GET /api/debug/errors`** — recent error log.
-- **`GET /api/providers`** — provider health, rate-limit headers, current
-  active model assignments.
+- **`GET /api/providers`** — registered providers and their available models.
 
 ## CLI snapshots
 
 ```bash
 saivage status /path/to/project        # plan + stage + PID
-saivage models /path/to/project        # resolved model per role
+saivage models /path/to/project        # registered providers + models
 ```
 
 ## Event categories
@@ -51,23 +54,15 @@ channels (`web`, `telegram`).
 
 ## Supervisor verdicts
 
-The supervisor (`src/runtime/supervisor.ts`) periodically reviews a tail of
-the log file and asks an LLM whether the system is making progress. After
-N consecutive *stuck* verdicts it triggers an abort. Verdicts are logged
-under category `supervisor_verdict`.
+The supervisor (`src/runtime/supervisor.ts`) periodically reviews recent
+in-memory log entries and asks an LLM whether the system is making progress.
+After `consecutiveStuckVerdicts` consecutive *stuck* verdicts, it cancels the
+lowest-priority abortable running agent. Verdicts and cancellations are written
+as `[supervisor]` logger entries.
 
 ## Rotating logs
 
-Saivage does not rotate `saivage.log` itself. On the LXC deployment use
-`logrotate`:
-
-```
-/home/youruser/myproject/.saivage/tmp/logs/saivage.log {
-    daily
-    rotate 7
-    compress
-    missingok
-    copytruncate
-    notifempty
-}
-```
+The daemon logger does not create a project-local rotating log file. In the LXC
+deployment, service output goes through `journald`; configure retention there or
+capture command-specific tool output with `stdout_path` / `stderr_path` when a
+stage needs durable logs.
