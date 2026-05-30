@@ -3,6 +3,7 @@
 [`src/agents/coder.ts`](https://github.com/salva/saivage/blob/main/src/agents/coder.ts)
 · [`src/agents/researcher.ts`](https://github.com/salva/saivage/blob/main/src/agents/researcher.ts)
 · [`src/agents/data-agent.ts`](https://github.com/salva/saivage/blob/main/src/agents/data-agent.ts)
+· [`src/agents/worker.ts`](https://github.com/salva/saivage/blob/main/src/agents/worker.ts)
 
 The Coder, Researcher, and Data Agent are **one-shot worker agents**. The
 Manager spawns one (sometimes two or three of distinct roles in parallel) per
@@ -10,11 +11,12 @@ task, and they terminate as soon as they return their `TaskReport`.
 
 ## Shared properties
 
-- Same `WorkerInput` shape: `{ task, stageContext }`.
+- Same `WorkerInput` shape: `{ task, stageId }`.
 - Same return type `TaskReport`.
-- Same tool catalog: filesystem, shell, git, web (when available), memory,
-  index. The three roles differ in their **system prompts** and
-  **conventions**, not in their permissions.
+- Same roster tool filter (`worker`): Plan tools plus `create_skill` and
+  `update_skill` are filtered out; filesystem, shell, data/web, git, RAG, and
+  knowledge tools then pass through service-level ACLs. The roles differ in
+  their **system prompts**, **conventions**, and knowledge ACL outcomes.
 
 ## Coder
 
@@ -112,23 +114,32 @@ stages.
 ```ts
 interface TaskReport {
   task_id: string;
+  stage_id: string;
+  agent: "coder" | "researcher" | "data_agent" | "reviewer" | "designer" | "critic";
   status: "completed" | "failed";
   summary: string;
+  checklist_results: ChecklistResult[];
   files_modified: string[];
+  files_created: string[];
   tests_added: string[];
-  issues_found: string[];
+  tests_run: TestResult[];
+  commits: string[];
+  issues_found: Issue[];
+  output_truncated?: boolean;
   failure_reason?: string;
-  checklist?: ChecklistResult[];
+  started_at: string;
   completed_at: string;
+  duration_ms: number;
 }
 ```
 
-The Manager evaluates `status` and `checklist` to decide retry vs. escalation.
+The Manager evaluates `status`, `checklist_results`, `issues_found`, and
+`failure_reason` to decide retry vs. escalation.
 
 ## Commit conventions
 
-Workers commit their own changes via `git_commit(files, message, task_id)`.
-Commit messages follow:
+Workers commit their own changes via MCP git. The worker initial message tells
+them to use a task-id prefix when they modify files:
 
 ```
 [<task_id>] <one-line summary>
@@ -136,15 +147,15 @@ Commit messages follow:
 <longer details, optional>
 ```
 
-The Manager does **not** commit. The Planner only commits `.saivage/` state
-mutations (plan, history) when those are not already committed by the plan
-MCP service.
+The Manager may commit task-list and summary files. The Planner commits plan
+state through the Plan MCP service when it calls `plan_commit()`.
 
 ## Crash recovery
 
-A worker crash (process killed mid-task) leaves `tasks.json` with the task in
-`in-progress` status. On restart the Recovery module resets it to `pending`;
-the Manager will redispatch on resume.
+A worker crash (process killed mid-task) can leave `tasks.json` with the task
+in `in-progress` or `aborted` status. On restart the Recovery module resets
+interrupted tasks without reports to `pending`; the stage can then be
+redispatched from recovered disk state.
 
 Because workers commit incrementally and report after committing, partial work
 is recoverable from `git log`. The Manager's retry loop is responsible for
