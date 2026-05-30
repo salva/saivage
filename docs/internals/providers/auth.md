@@ -13,29 +13,33 @@ Saivage supports two credential models:
 
 `src/auth/store.ts` exposes:
 
-- `loadProfiles()` / `saveProfile(profile)` — JSON read/write.
+- `loadProfiles()` / `saveProfile(key, profile)` / `saveProfiles(store)` — JSON read/write.
 - `getOAuthApiKey(providerId, { profileKey? })` — returns a usable bearer
   token, refreshing if necessary.
 - `hasOAuthCredentials(providerId)` — used by the router to decide whether
   to register the provider.
+- `hasOAuthProfile(key, providerId?)` — checks a named profile.
 - `getProfileByKey(key)` — explicit lookup.
 
-A profile's `key` is `"<provider>/<account-label>"` (e.g.
-`"github-copilot/me@example.com"`). Multiple profiles per provider are
-allowed and selectable through [routing](/guide/routing).
+A profile's default key is `"<provider>-<accountId>"` when the OAuth flow
+returns an account id, or `"<provider>-default"` otherwise. Operators can
+override it with `saivage login --profile <name>`. Multiple profiles per
+provider are allowed and selectable through [routing](/guide/routing).
 
 ## Stored fields
 
 ```ts
 interface OAuthCredentials {
-  providerId: string;       // "github-copilot" | "anthropic" | "openai-codex"
-  accessToken: string;
-  refreshToken?: string;
-  expiresAt?: number;       // epoch ms
-  scope?: string;
-  metadata?: Record<string, unknown>;
+  access: string;
+  refresh: string;
+  expires: number;          // epoch ms
+  accountId?: string;
+  email?: string;
 }
 ```
+
+Persisted profiles add `type: "oauth"` and `provider` alongside those token
+fields.
 
 The store is a single JSON file: keep it readable only by the daemon user.
 
@@ -64,9 +68,10 @@ PKCE-protected.
 ```ts
 interface OAuthProviderDef {
   id: string;
-  label: string;
-  login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials>;
-  refresh?(creds: OAuthCredentials): Promise<OAuthCredentials>;
+  name: string;
+  login(callbacks: OAuthLoginCallbacks, options?: OAuthProviderOptions): Promise<OAuthCredentials>;
+  refreshToken(creds: OAuthCredentials, options?: OAuthProviderOptions): Promise<OAuthCredentials>;
+  getApiKey(creds: OAuthCredentials): string;
 }
 ```
 
@@ -75,14 +80,14 @@ picker will surface it automatically.
 
 ## Refresh
 
-The router calls `getOAuthApiKey(...)` before each request. If the token
-is expired (`expiresAt < now`) and `refresh()` is implemented, a refresh
-is attempted in-line. On refresh failure the router treats the request as
-a normal authentication error (which usually triggers failover).
+The router calls `getOAuthApiKey(...)` before each request. If the token is
+expired (`expires < now`), `refreshToken()` is attempted in-line. On refresh
+failure, `getOAuthApiKey(...)` returns `null`; the provider call then proceeds
+without a fresh bearer and is classified through the normal provider error
+path.
 
 ## Scoping to a project
 
-Profiles live in `~/.saivage/auth-profiles.json` by default but can be
-scoped to a project (`<project>/.saivage/auth-profiles.json`) by setting
-`SAIVAGE_ROOT` to the project's `.saivage/` directory. Useful for
-isolating client A's API keys from client B's.
+Profiles live in `<project>/.saivage/auth-profiles.json` under the resolved
+project root. `SAIVAGE_ROOT` can point directly at a project's `.saivage/`
+directory when the process needs an explicit store location.
