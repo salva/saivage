@@ -48,14 +48,24 @@ saivage serve ./myproject
 
 Default port `8080` (override in `saivage.json`'s `server` section).
 
+| Flag | Description |
+|------|-------------|
+| `-p, --port <port>` | Override the configured port. |
+| `-H, --host <host>` | Override the configured bind host. |
+
 ### `status [project-path]`
 
 Print the current plan, current stage, runtime status, and PID.
 
 ### `models [project-path]`
 
-Print, per role, the resolved provider/model and the source of the decision
-(routing vs runtime-default vs hardcoded-default).
+List registered providers and their available models. When `[project-path]` is
+provided or discoverable from `cwd`, the command loads that project's runtime
+configuration before initializing providers.
+
+| Flag | Description |
+|------|-------------|
+| `--provider <provider>` | Only list models for one provider. |
 
 ### `note <project-path> <message…>`
 
@@ -69,15 +79,20 @@ saivage note ./myproject "Stop everything and refactor X" --urgent
 | Flag | Effect |
 |------|--------|
 | `-p, --permanent` | Treat as a lasting objective tweak. |
-| `-u, --urgent` | Abort the active agent chain and replan immediately. |
+| `-u, --urgent` | Mark as high priority for the Planner's next turn. |
 
 ### `inspect <project-path> <scope>`
 
 Dispatch the Inspector agent synchronously and print its report on stdout.
 
 ```bash
-saivage inspect ./myproject "review test coverage"
+saivage inspect ./myproject "review test coverage" \
+  --question "Which modules lack tests?"
 ```
+
+| Flag | Description |
+|------|-------------|
+| `-q, --question <questions...>` | Questions for the Inspector to investigate. |
 
 ### `request-shutdown <project-path>`
 
@@ -95,14 +110,33 @@ receives this reason as context — useful for graceful operator intervention.
 OAuth-login to a provider. With no provider, prompts interactively.
 
 ```bash
-saivage login github-copilot
-saivage login anthropic
-saivage login openai-codex
+saivage login ./myproject --provider github-copilot
+saivage login ./myproject --provider anthropic
+saivage login ./myproject --provider openai-codex
 ```
+
+| Flag | Description |
+|------|-------------|
+| `--provider <provider>` | OAuth provider ID (default `openai-codex`). |
+| `--profile <profile>` | Named auth profile key to save credentials under. |
 
 ### `logout [project-path]`
 
 Remove a stored OAuth profile.
+
+| Flag | Description |
+|------|-------------|
+| `--provider <provider>` | Remove credentials for a provider. |
+| `--profile <profile>` | Remove one exact auth profile key. |
+
+### `validate-stage-id <stage-id>`
+
+Resolve a stage id against the target project's `.saivage/repo-layout.json`
+contract. Prints JSON with `accepted`, `rejected`, `skipped`, or `error` status.
+
+| Flag | Description |
+|------|-------------|
+| `-p, --project <project-path>` | Project root (default `cwd`). |
 
 ## Exit codes
 
