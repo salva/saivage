@@ -33,7 +33,8 @@ state and durable on-disk state.
 3. **Crash-recoverable.** A restart can reconstruct execution position from
    disk state. The supervisor loop catches stuck agents.
 4. **Multi-provider routing.** Failover between GitHub Copilot, Anthropic,
-   OpenAI, OpenAI Codex, Ollama, llama.cpp, OpenRouter, and pi-ai.
+   OpenAI, OpenAI Codex, OpenCode, OpenCode Go, Ollama, llama.cpp, and
+   NVIDIA NIM.
 5. **Convention over enforcement.** All agents have full filesystem access;
    territorial conventions (Coder = project code, Researcher = `research/`)
    prevent collisions without runtime permission checks.
