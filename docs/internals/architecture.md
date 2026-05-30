@@ -22,10 +22,10 @@ until the objectives are met or the user redirects.
 - **Tool-call invocation:** agents communicate exclusively through LLM tool
   calls. A parent calls a child as a tool, suspends, receives the result when
   the child finishes. No message queues, no shared memory.
-- **Convention over enforcement:** all agents (except Chat) have full
-  filesystem access. Territorial conventions (Coder writes project code,
-  Researcher writes under `research/`) prevent collisions without runtime
-  permission checks.
+- **Role-scoped tools plus conventions:** each role receives only the tools
+  exposed by its tool filter, while territorial conventions still guide where
+  mutable roles write (Coder writes project code, Researcher writes under
+  `research/`, Librarian writes RAG memories).
 - **Crash recoverability:** the system can restart at any point and
   reconstruct its state from disk.
 - **Progressive escalation:** failures cascade upward (Worker → Manager →
@@ -86,8 +86,6 @@ graph TB
     CLI --> PL
     CT -->|create_note| PL
     CW -->|create_note| PL
-    CT & CW -->|run_inspector| IN
-
     PL -->|run_manager| MG
     PL -->|run_inspector| IN
     MG -->|run_coder| CD
@@ -142,11 +140,11 @@ conversation.
 - Parent agents are suspended in-memory (full message history + pending
   tool-call IDs). On crash, this is lost, but disk state is authoritative.
 - The Dispatcher supports **resume-on-each** for parallel child dispatch: when
-  the Manager issues both `run_coder()` and `run_researcher()` in one LLM
-  response, both children run concurrently and the Manager resumes
-  independently as each returns. The runtime enforces a maximum of **1 Coder
-  + 1 Researcher** concurrently — excess dispatch calls of the same type are
-  rejected with an error result.
+  the Manager issues multiple worker dispatches in one LLM response, children
+  run concurrently and the Manager resumes independently as each returns. The
+  runtime permits at most one dispatch per worker role in a single batch
+  (Coder, Researcher, Data Agent, Reviewer, Designer, Critic); duplicate
+  dispatch calls for the same worker role are rejected with an error result.
 
 See [runtime/details](./runtime/details) for full suspend/resume mechanics,
 compaction timing, self-check injection, and failure handling.
@@ -200,17 +198,20 @@ The Provider Router manages all LLM API communication. It is a **singleton**.
 - **Model selection:** for each agent role, select the model from
   configuration. Precedence: `ProjectConfig.model_overrides[role]` →
   `SaivageConfig.providers[name].models[role]` → most capable available.
-- **Retry with backoff:** all retryable errors (HTTP 429, 5xx, timeouts) are
-  retried with exponential backoff (30s starting delay, ×1.5 multiplier,
-  ±20% jitter, capped at 20 min per attempt). Retries continue
-  **indefinitely** — there is no maximum retry duration; the system never
-  gives up during provider outages. Provider failover may resolve the
-  issue before the operator notices. See
-  [runtime/details](./runtime/details) §2 for the full retry contract.
-- **Provider failover:** if a provider fails 5+ consecutive times within 2
-  minutes, switch to the configured failover provider. Try the primary again
-  on the next agent invocation.
-- **Request timeout:** configurable per provider (default: 120s).
+- **Candidate health and failover:** retryable provider errors (HTTP 429,
+  5xx, timeouts, provider-specific transient codes) mark the current
+  provider/model/account candidate unhealthy and the router moves to the next
+  healthy candidate in the equivalent-model and failover chain.
+- **Agent-level backoff:** when all candidates fail transiently, `BaseAgent`
+  backs off at 30s ×1.5 capped at 20 min. Throttling retries do not count
+  against the non-throttling retry cap; non-throttling transient failures
+  surface after 500 attempts.
+- **Primary retry window:** when a fallback succeeds after the primary was
+  attempted, the router sticks to that fallback until the primary retry window
+  opens again (30s ×1.5, capped at 20 min).
+- **Request timeout:** each provider call is bounded by
+  `PROVIDER_REQUEST_TIMEOUT_MS`, currently 300s; there is no per-provider
+  timeout override.
 
 **Non-retryable errors** (surfaced as agent failure): HTTP 400 (bad request),
 HTTP 401/403 (auth failure), context window exceeded.
@@ -226,26 +227,30 @@ tool-call handling.
 
 ### 2.4 MCP service runtime
 
-The MCP Service Runtime manages the lifecycle of MCP service child processes.
+The MCP Service Runtime manages the service registry: in-process built-ins and
+configured external MCP server processes.
 
 **Responsibilities:**
 
-- **Lazy startup:** services are started on first tool call, not at boot.
-- **Health monitoring:** periodic health checks. Dead services are restarted
-  automatically.
-- **Idle shutdown:** services unused for a configurable period are stopped to
-  free resources.
-- **Crash recovery:** tracks crash count per service. Restarts on next tool
-  call.
-- **In-process services:** the agent-dispatch tools (`run_manager`,
-  `run_coder`, etc.) are registered as in-process handlers — no subprocess
-  overhead.
-- **Tool routing:** `callTool(service, tool, args)` routes to the correct
-  service, starting it if needed.
+- **Bootstrap registration:** built-in services are registered in-process
+  during bootstrap. Configured external MCP servers connect during bootstrap
+  only when `autostart` is true and the entry is not disabled.
+- **Health monitoring:** periodic health checks apply to running external
+  services. Dead services are restarted when `restartOnCrash` is enabled.
+- **Idle shutdown:** running external services unused for a configurable
+  period are stopped to free resources.
+- **Crash recovery:** repeated external service startup failures enter a
+  cooldown window before later calls can try again.
+- **Synthetic dispatch tools:** agent-dispatch tools (`run_manager`,
+  `run_coder`, etc.) are generated from the roster and intercepted by the
+  Dispatcher; they are not external MCP subprocesses.
+- **Tool routing:** `callTool(service, tool, args)` routes to an in-process
+  handler or an already-running external client.
 
-**Services available:** filesystem, shell, git, web, plan, skills, memory,
-index. Services communicate via stdio using the MCP SDK protocol. Full tool
-schemas and access matrix in [mcp/services](./mcp/services).
+**Services available:** filesystem, shell, data, git, skills, memory, plan,
+notes, RAG, plus unavailable web/index/lock stubs. External MCP services use
+the configured MCP transport; built-ins are in-process. Full tool schemas and
+access matrix in [mcp/services](./mcp/services).
 
 ### 2.5 Event bus & notification system
 
@@ -334,11 +339,11 @@ See [knowledge/store](./knowledge/store).
 2. **Communication via tool calls.** No message queues. A parent invokes a
    child as an LLM tool call; the child's `AgentResult` is returned as the
    tool result. This is implemented by the [Dispatcher](./runtime/dispatcher).
-3. **Conventions, not enforcement.** All agents have full filesystem and
-   shell access; they self-restrict. The benefit is fewer permission rabbit
-   holes; the cost is that you must run inside a sandbox.
-4. **One Coder + one Researcher in flight per Manager.** Enforced by the
-   Dispatcher.
+3. **Tool filters plus conventions.** Role-level tool filters constrain each
+  agent's visible tools; convention rules define write territory for roles
+  that can mutate files. The benefit is fewer accidental collisions; the cost
+  is that filesystem and shell tools still belong in a sandboxed project.
+4. **One dispatch per worker role per batch.** Enforced by the Dispatcher.
 5. **Single Inspector at a time.** FIFO queueing.
 6. **Volatile vs. permanent state.** Anything under `.saivage/tmp/` is
    recoverable from the durable state above it.
@@ -552,14 +557,14 @@ graph TB
 
 | Shared resource | Protection mechanism |
 |----------------|---------------------|
-| Git repository | Serialized through Git MCP (one call at a time) |
+| Git repository | Mutated through explicit Git MCP tools with per-call file scoping |
 | `plan.json` | Serialized through Plan MCP (one call at a time) |
 | File writes | Atomic temp-file + rename |
 | Agent territories | Convention-based (Coder=project code, Researcher=research/) |
 
-The **1 Coder + 1 Researcher** limit is enforced by the runtime, not just by
-convention. If the LLM emits duplicate dispatch calls of the same type, the
-excess calls are rejected.
+The one-worker-per-role batch limit is enforced by the runtime, not just by
+convention. If the LLM emits duplicate dispatch calls for the same worker role,
+the excess calls are rejected.
 
 ## 9. Persistence & recovery
 
@@ -637,7 +642,7 @@ graph TB
 
 | Failure | Recovery mechanism |
 |---------|-------------------|
-| LLM API timeout / 5xx | Exponential backoff, bounded by max retry duration |
+| LLM API timeout / 5xx | Candidate failover plus agent-level exponential backoff; non-throttling failures surface after 500 attempts |
 | LLM API 400 (bad request) | Agent returns failure to parent |
 | LLM provider persistently down | Failover to backup provider |
 | Invalid tool call from LLM | Error result returned to LLM (self-corrects); 3 consecutive failures → agent failure |
