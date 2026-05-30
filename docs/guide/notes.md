@@ -28,11 +28,12 @@ A note has these fields (`UserNoteSchema` in `src/types.ts`):
 |-------|------|-------------|
 | `id` | string | Unique note id. |
 | `channel` | string | Origin (`web`, `telegram`, `cli`). |
-| `session_id` | string | Originating chat session, if any. |
+| `session_id` | string | Originating chat session (`cli` for CLI-created notes). |
 | `content` | string | Free-form text. |
 | `created_at` | ISO timestamp | |
 | `permanent` | boolean | Persists across replans (lightweight objective tweak). |
-| `urgent` | boolean | Aborts the active agent chain and replans immediately. |
+| `urgent` | boolean | Marks the note high priority for the next Planner turn. |
+| `acknowledged_at` | ISO timestamp? | Set after the Planner consumes the note. |
 
 ## Sending notes
 
@@ -46,15 +47,17 @@ saivage note ./myproject "Stop everything; the prod schema changed" --urgent
 
 ### Web UI / Telegram
 
-Type a message into the chat box. The Chat agent decides whether and how
-to convert it into a note:
+Type a message into the chat box. Actionable free-text direction is relayed to
+the Planner through `create_note()`:
 
-- A simple instruction → an immediate note via `create_note()`.
-- A question → answered directly without writing a note.
-- An "abort" or "stop" → `create_note()` with `urgent: true`.
+- Direction changes become permanent notes.
+- High-priority direction can set `urgent: true`; this does not interrupt
+   running work.
+- Questions can be answered directly without writing a note.
 
-You can also explicitly request *"create an urgent permanent note: …"* —
-the Chat agent's tool grammar supports both flags.
+Slash commands provide deterministic note actions: `/note <msg>`, `/note!
+<msg>`, `/notep <msg>`, and `/replan [reason]`. Planner restart is explicit:
+use `/restart-planner <reason>`.
 
 ## Behavior on the Planner side
 
@@ -71,18 +74,15 @@ by the runtime: volatile notes are deleted after the Planner makes a planning
 move; permanent notes are kept and re-injected on each resume so they remain
 in scope.
 
-## Urgent notes & abort
+## Urgent Notes & Planner Restart
 
-When `urgent: true`:
+When `urgent: true`, the note is tagged as high priority in the Planner's next
+injected note block. It does not cancel the active Planner, Manager, or worker
+chain, and it does not run a git reset.
 
-1. The runtime sets the abort flag.
-2. The currently running agent chain (Manager → Coder/Researcher) is
-   terminated bottom-up at the next safe point.
-3. `git checkout -- .` is run inside the project to reset tracked
-   modifications. Untracked files are preserved.
-4. The Planner is resumed with the abort context plus the urgent note.
-
-See [Abort & Recovery](/internals/abort-recovery) for full mechanics.
+To interrupt the current Planner turn from chat, use `/restart-planner
+<reason>`. The runtime cancels that Planner turn and starts a fresh Planner from
+persisted state; worker-chain abort/recovery is a separate runtime path.
 
 ## Permanent notes & objectives
 
