@@ -14,7 +14,7 @@ home directory.
 
 | Requirement | Minimum | Notes |
 |-------------|---------|-------|
-| Node.js     | 20.x    | 24.x recommended; install via nvm or NodeSource |
+| Node.js     | 24.x    | Install via nvm or NodeSource |
 | Git         | 2.34+   | Used by the git MCP service for commits |
 | OS          | Linux / macOS | Windows is untested |
 | RAM         | 2 GB free | LLM streaming is non-trivial when many agents run |
@@ -58,18 +58,18 @@ Alternatively, run the bundled file directly with `node dist/cli.js`.
 
 ## Set up the runtime config (optional)
 
-A global `~/.saivage/saivage.json` (created automatically on first run with
-sensible defaults) lets you configure providers, model overrides, ports, and
-MCP server registrations:
+A project-local `.saivage/saivage.json` (created by `saivage init`) lets you
+configure providers, model overrides, ports, and MCP server registrations. For
+a shared daemon config, set `SAIVAGE_ROOT` and place `saivage.json` there:
 
 ```jsonc
 {
   "server": { "port": 8080, "host": "0.0.0.0" },
   "models": {
-    "planner": "github-copilot/claude-sonnet-4",
-    "manager": "github-copilot/claude-sonnet-4",
+    "orchestrator": "github-copilot/claude-sonnet-4",
     "coder":   "github-copilot/gpt-4o-mini",
     "researcher": "github-copilot/gpt-4o-mini",
+    "default": "github-copilot/gpt-4o-mini",
     "chat":    "github-copilot/gpt-4o-mini"
   },
   "failover": {
