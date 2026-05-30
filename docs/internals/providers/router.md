@@ -15,11 +15,12 @@ registers any for which configuration or OAuth credentials are present:
 ```
 github-copilot · anthropic · openai · openai-codex
 opencode · opencode-go
-ollama · llamacpp · openrouter · pi-ai
+ollama · llamacpp · nvidia-nim
 ```
 
 Each registration creates a concrete `ModelProvider` instance and binds it
-to the runtime config (`apiKey`, `baseUrl`, accounts).
+to the runtime config (`apiKey`, `baseUrl`, headers, accounts, and provider
+metadata such as priority/model lists).
 
 ## Resolution (per LLM call)
 
@@ -32,10 +33,8 @@ flowchart TD
     D -- yes --> F[Resolve API key OAuth or static]
     F --> G[Provider.chat]
     G -- 200 --> H[Return]
-    G -- 4xx/5xx --> I{Retryable?}
-    I -- yes --> J[Backoff exp. 1s→60s ±20%]
-    J --> G
-    I -- no --> K[Mark model unhealthy]
+    G -- non-retryable --> I[Throw]
+    G -- transient/throttling --> K[Mark model unhealthy]
     K --> E
     E --> L{Models exhausted?}
     L -- no --> D
@@ -45,15 +44,17 @@ flowchart TD
 
 ## Retry
 
-Retryable errors:
+Retryable candidate failures:
 
 - HTTP 429 with `Retry-After` (honored).
 - HTTP 5xx.
 - Network/timeout errors.
 - Provider-specific transient codes (mapped per provider).
 
-Backoff is exponential with ±20% jitter; cap is 60 seconds. The total
-wait is bounded by `PROVIDER_REQUEST_TIMEOUT_MS` (5 min default per call).
+The router does not sleep and retry the same candidate inside one `chat()`
+call. It classifies provider errors, throws non-retryable/context-overflow
+errors immediately, and otherwise disables the failing provider/model/account
+candidate before moving to the next candidate in the failover chain.
 
 ## Failover
 
@@ -63,10 +64,11 @@ wait is bounded by `PROVIDER_REQUEST_TIMEOUT_MS` (5 min default per call).
 }
 ```
 
-When a primary provider produces 5+ consecutive failures within 2 min the
-router rotates the active provider for that role. On the next request the
-primary is tried again — failover is sticky-per-error, not sticky-per-
-session.
+Failover is expanded from the requested model spec, model equivalents, and
+configured failover entries. If a fallback succeeds after the primary was
+attempted, the router sticks to that fallback until the primary retry window
+opens again. The retry window starts at 30 s, grows by 1.5x, and caps at
+20 min.
 
 ## Per-model health
 
@@ -79,29 +81,31 @@ interface ModelHealth {
 ```
 
 A model is skipped while `Date.now() < disabledUntil`. The router prefers
-healthy models from `preferred_models` (set by [routing](/guide/routing))
-before falling back to the first available.
+healthy candidates from the configured model assignment, equivalent models,
+and failover chain before reporting that all candidates failed.
 
 ## Request timeout
 
-Per-provider, defaults to 120 s; overridable in `providers.<id>.timeoutMs`.
+Each provider call is bounded by `PROVIDER_REQUEST_TIMEOUT_MS`, currently
+300 s. There is no per-provider `timeoutMs` override in the runtime config.
 
 ## Rate-limit visibility
 
-Providers update a `RateLimitStatus` blob after each call (limit,
-remaining, reset). The router exposes it under
-`/api/providers` for the dashboard.
+Providers expose a `RateLimitStatus` snapshot through the `ModelProvider`
+interface. The router checks that snapshot before calls and caches broader
+usage snapshots at startup for provider/account ordering. The
+`/api/providers` endpoint currently returns provider names and model lists.
 
 ## Telemetry
 
-Every LLM call is logged via `recordLlmCall()` to the structured logger:
-provider, model, role, token usage, latency, success flag. The dashboard
-aggregates these.
+Every LLM call passes through a lightweight `recordLlmCall()` hook around the
+provider boundary. It records latency/token/error metadata for the runtime log
+path, but there is no separate telemetry store or dashboard aggregation layer.
 
 ## Adding a provider
 
 1. Implement `ModelProvider` (`src/providers/types.ts`).
-2. Add the id to `initProviders()`'s `knownProviders` array.
-3. Implement `createProvider()` + (if applicable) OAuth glue.
+2. Add a descriptor to `PROVIDER_DESCRIPTORS`.
+3. Implement descriptor creation/registration rules plus any OAuth glue.
 4. Document the user-facing `provider/model` strings in
    [Providers](/guide/providers).
