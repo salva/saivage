@@ -11,22 +11,23 @@ respects per-model health backoff.
 | `github-copilot`  | OAuth (device-code flow) | Default. Hosts many models including Claude, GPT-5.x, o-series. |
 | `anthropic`       | OAuth or `apiKey`        | Direct Anthropic API. |
 | `openai`          | `apiKey`                 | Direct OpenAI API. |
-| `openai-codex`    | OAuth (PKCE)             | Codex CLI compatible. |
-| `openrouter`      | `apiKey`                 | Aggregator. |
-| `pi-ai`           | (varies)                 | `@mariozechner/pi-ai` adapter. |
+| `openai-codex`    | OAuth (PKCE) or `apiKey` | Codex CLI compatible. |
+| `opencode`        | `apiKey`                 | `@mariozechner/pi-ai` adapter. |
+| `opencode-go`     | `apiKey`                 | `@mariozechner/pi-ai` adapter. |
+| `nvidia-nim`      | `apiKey`                 | NVIDIA NIM OpenAI-compatible API. |
 | `ollama`          | none                     | Local; `baseUrl` defaults to `http://localhost:11434`. |
 | `llamacpp`        | none                     | Local llama.cpp HTTP server. |
 
 A model can be configured as a provider-independent model id, e.g.
-`kimi-k2.6`, or as a legacy `provider/model` string, e.g.
+`kimi-k2.6`, or as a `provider/model` string, e.g.
 `github-copilot/claude-sonnet-4` or `anthropic/claude-3-5-sonnet-20241022`.
 Provider-independent model ids are matched against provider and account
 `models` declarations at runtime.
 
 ## Where credentials live
 
-- **OAuth tokens**: `~/.saivage/auth-profiles.json` (or
-  `<project>/.saivage/auth-profiles.json` when scoped to a project). Managed
+- **OAuth tokens**: `<project>/.saivage/auth-profiles.json` or
+  `${SAIVAGE_ROOT}/auth-profiles.json` when `SAIVAGE_ROOT` is set. Managed
   by [`src/auth/store.ts`](https://github.com/salva/saivage/blob/main/src/auth/store.ts).
 - **API keys**: in `saivage.json` under `providers.<id>.apiKey`. Strings
   support `${ENV_VAR}` interpolation, so you can keep secrets in env files.
@@ -35,17 +36,17 @@ Provider-independent model ids are matched against provider and account
 ## Logging in
 
 ```bash
-saivage login                  # interactive picker (run inside the daemon host)
-saivage login github-copilot
-saivage login openai-codex
-saivage login anthropic
+saivage login /path/to/project --provider github-copilot
+saivage login /path/to/project --provider openai-codex
+saivage login /path/to/project --provider anthropic
 ```
 
 The flow opens a device-code URL on stdout (Copilot) or starts a local
 PKCE callback server (Codex / Anthropic) and stores tokens on success.
 
 ```bash
-saivage logout                 # remove a stored profile
+saivage logout /path/to/project --provider github-copilot
+saivage logout /path/to/project --profile github-copilot-me@example.com
 ```
 
 Token refresh is performed lazily on each LLM request — the router calls
@@ -56,12 +57,13 @@ Token refresh is performed lazily on each LLM request — the router calls
 Resolution precedence (most specific wins):
 
 1. `ProjectConfig.routing` profiles (see [Routing](./routing))
-2. `RuntimeConfig.models[<role>]`
+2. The runtime model key for the role (`orchestrator`, `coder`, `researcher`,
+   `data_agent`, `reviewer`, `designer`, `critic`, or `chat`)
 3. `RuntimeConfig.models.default`
-4. The provider's "most capable" registered model.
 
 A role string is one of `planner`, `manager`, `coder`, `researcher`,
-`reviewer`, `inspector`, `chat`, `data_agent`.
+`data_agent`, `reviewer`, `designer`, `critic`, `inspector`, `chat`, or
+`librarian`.
 
 Role assignments may be ordered model lists:
 
@@ -113,7 +115,16 @@ let you bind a request to a specific OAuth profile or API key:
 }
 ```
 
-You can then reference an account in routing: `provider:github-copilot@personal`.
+You can then pin that account in routing:
+
+```jsonc
+"routing": {
+  "roles": {
+    "coder": { "model": "github-copilot/gpt-5.5", "account": "personal" }
+  }
+}
+```
+
 If no account is pinned, Saivage tries eligible accounts by priority.
 
 ## Failover
@@ -131,9 +142,10 @@ for the same model before it advances to the next configured model.
 
 ## Rate limiting
 
-429 responses with `Retry-After` are honored. The router exposes a
-`RateLimitStatus` snapshot per provider via the `/api/state` endpoint —
-displayed in the web dashboard as the "providers" panel.
+429 responses are classified as throttling. The router skips providers whose
+`getRateLimitStatus()` reports `limited` and otherwise applies the normal
+per-`provider/account/model` cooldown (`15s`, then ×1.5 up to `10m`) before
+trying the next eligible candidate.
 
 ## Adding a new provider
 
@@ -143,5 +155,5 @@ displayed in the web dashboard as the "providers" panel.
 3. (Optional) add a built-in OAuth flow under `src/auth/`.
 4. Document the new `provider/model` strings here.
 
-See the [Provider Router](/internals/provider-router) page for the full
+See the [Provider Router](/internals/providers/router) page for the full
 algorithm and types.
