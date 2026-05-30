@@ -1,10 +1,13 @@
 # Data types & schemas
 
 [`src/types.ts`](https://github.com/salva/saivage/blob/main/src/types.ts) is
-the single source of truth for every JSON document Saivage persists. Each
-shape is declared as a Zod schema and the TypeScript type is derived from it
-via `z.infer`. Schemas are used both at write time (validation before atomic
-write) and at read time (parsing).
+the source of truth for Saivage's project/runtime JSON documents. Knowledge
+record schemas live in
+[`src/knowledge/types.ts`](https://github.com/salva/saivage/blob/main/src/knowledge/types.ts)
+and are stored in the SQLite sidecar. Each shape is declared as a Zod schema
+and the TypeScript type is derived from it via `z.infer`. Schemas are used
+both at write time (validation before atomic write) and at read time
+(parsing).
 
 All schemas below use TypeScript notation. Optional fields are marked with
 `?`. Timestamps are ISO 8601 strings. IDs follow the
@@ -24,8 +27,12 @@ All schemas below use TypeScript notation. Optional fields are marked with
 | `RuntimeStateSchema` | `<project>/.saivage/tmp/state/runtime.json` |
 | `ShutdownRequestSchema` | `<project>/.saivage/tmp/state/shutdown-request.json` |
 | `ShutdownSummarySchema` | `<project>/.saivage/tmp/state/shutdown-summary.json` |
-| `SkillEntrySchema` / `SkillIndexSchema` | `<skills-dir>/index.json` |
+| `TelegramSubscriptionsSchema` | `<project>/.saivage/telegram-subscriptions.json` |
 | `ChatLogSchema` | `<project>/.saivage/tmp/chats/<channel>/<sessionId>.json` |
+
+Knowledge records (`SkillRecordSchema`, `MemoryRecordSchema`, and
+`AuditEntrySchema`) are defined in `src/knowledge/types.ts` and stored in
+`.saivage/knowledge/store.sqlite`, not as `index.json` trees.
 
 ## 1. Runtime config (`SaivageConfig`)
 
@@ -50,18 +57,10 @@ contract.
 interface ProjectConfig {
   project_name: string;
   objectives: string[];              // high-level project goals
-  provider: string;                  // which global provider to use
-  model_overrides?: {                // per-role model overrides (optional)
-    [role: string]: string;
-  };
-  notifications: {
-    channels: ("telegram" | "web")[];  // default: ["telegram"]
-    filters: {
-      min_severity: "info" | "warning" | "error";
-      categories: ("stage_completed" | "stage_failed" | "escalation" |
-                   "task_failed" | "inspector_complete" | "plan_updated")[];
-                                     // empty = all categories
-    };
+  routing?: {
+    default_profile?: string;
+    profiles: Record<string, RoutingRule>;
+    roles: Record<string, string | RoutingRule>;
   };
   skills: {
     max_per_agent: number;           // loading budget per agent invocation (default: 5)
@@ -72,6 +71,17 @@ interface ProjectConfig {
       max_compactions?: number;           // max compactions before forced termination (default: 3)
     };
   };
+}
+
+interface RoutingRule {
+  profile?: string;
+  model?: string;
+  auth_profile?: string;
+  account?: string;
+  preferred_models: string[];
+  allowed_models?: string[];
+  preferred_accounts: string[];
+  allowed_accounts?: string[];
 }
 ```
 
@@ -150,8 +160,8 @@ interface TaskList {
 
 interface Task {
   id: string;
-  type: "code" | "research" | "test" | "document";
-  assigned_to: "coder" | "researcher" | "data_agent" | "reviewer";
+  type: "code" | "research" | "data" | "review" | "test" | "document" | "design" | "critique";
+  assigned_to: "coder" | "researcher" | "data_agent" | "reviewer" | "designer" | "critic";
   description: string;               // detailed work description
   checklist: ChecklistItem[];
   dependencies: string[];            // task IDs that must complete first
@@ -173,13 +183,13 @@ interface ChecklistItem {
 
 **Path:** `<project>/.saivage/stages/<stage-id>/reports/<task-id>.json`
 
-Written by Coder, Researcher, Data Agent, or Reviewer after executing a task.
+Written by a worker after executing a task.
 
 ```typescript
 interface TaskReport {
   task_id: string;
   stage_id: string;
-  agent: "coder" | "researcher" | "data_agent" | "reviewer";
+  agent: "coder" | "researcher" | "data_agent" | "reviewer" | "designer" | "critic";
   status: "completed" | "failed";
   summary: string;                   // what was done
   checklist_results: ChecklistResult[];
@@ -211,8 +221,11 @@ interface TestResult {
 interface Issue {
   severity: "info" | "warning" | "error";
   description: string;
-  file?: string;
-  suggestion?: string;
+  file?: string | null;
+  line?: number | null;
+  error_output?: string | null;
+  root_cause?: string | null;
+  suggestion?: string | null;
 }
 ```
 
@@ -263,7 +276,7 @@ interface UserNote {
   content: string;                   // the user's input/direction
   created_at: string;
   permanent: boolean;                // true = persist across replans; false = delete after acknowledgment
-  urgent: boolean;                   // true = abort active agents and replan immediately
+  urgent: boolean;                   // true = high-priority for Planner; does not interrupt running calls
   acknowledged_at?: string;          // set by runtime when Planner has processed this note
 }
 ```
@@ -302,9 +315,8 @@ interface InspectionRequest {
 
 Skills and memory records share `RecordBase` (defined in
 [`src/knowledge/types.ts`](https://github.com/salva/saivage/blob/main/src/knowledge/types.ts))
-plus per-kind extensions. On-disk layout (`skills/{project,stages,sessions}/…`
-and `memory/{project,stages,sessions}/…`), the supersession state machine,
-and the audit-log format are documented in
+plus per-kind extensions. The SQLite sidecar layout, the supersession state
+machine, and the audit table are documented in
 [knowledge/skills-and-memory](../knowledge/skills-and-memory).
 
 Summary of shared `RecordBase` fields:
@@ -324,12 +336,12 @@ Summary of shared `RecordBase` fields:
   reinjection.
 
 `SkillRecord` adds
-`{ origin: "builtin"|"project", name, description, triggers[], target_agents[], body_path }`.
+`{ origin: "builtin"|"project", name, description, triggers[], target_agents[] }`.
 `MemoryRecord` adds
 `{ topic: {domain, subject, aspect?}, keys[], target_agents[], body, source_ref? }`.
 
-`AuditEntry` is one JSON line per write attempt (including rejections) in
-the scope's `audit.jsonl`:
+`AuditEntry` describes lifecycle/audit metadata; sidecar writes persist
+audit rows in the SQLite `audit` table:
 `{ ts, record_id, op, outcome, error_code?, author_agent, reason, prev_status?, next_status?, content_hash_before?, content_hash_after? }`.
 
 ## 11. Runtime state
@@ -349,12 +361,18 @@ interface RuntimeState {
 }
 
 interface AgentState {
-  agent_type: "planner" | "manager" | "coder" | "researcher" | "data_agent" | "reviewer" | "inspector" | "chat";
+  agent_type: "planner" | "manager" | "coder" | "researcher" | "data_agent" | "reviewer" | "designer" | "critic" | "inspector" | "chat" | "librarian";
   agent_id: string;                  // unique instance ID
   status: "running" | "suspended" | "idle";
-  current_task_id?: string;          // for coder/researcher
+  current_task_id?: string;
   channel?: string;                  // for chat
   started_at: string;
+  compaction?: {
+    count: number;
+    summarizer_fallbacks: number;
+    consecutive_fallbacks: number;
+    oversized_atomic_fallback: boolean;
+  };
 }
 ```
 
@@ -378,6 +396,10 @@ interface ChatMessage {
   role: "user" | "assistant" | "system";
   content: string;
   timestamp: string;
+  provider?: string;
+  model?: string;
+  modelSpec?: string;
+  requestedModelSpec?: string;
   event?: SystemEvent;               // if this message was triggered by a system event
   note_id?: string;                  // if this message created a user note
   inspector_request_id?: string;     // if this triggered an inspection
@@ -390,6 +412,7 @@ interface SystemEvent {
   task_id?: string;
   report_id?: string;
   summary: string;
+  timestamp?: string;
 }
 ```
 
@@ -429,7 +452,7 @@ ChatLog cross-references Notes and InspectionRequests
 ## 15. ID conventions
 
 `src/ids.ts` provides collision-resistant id generators per category. All
-produce `<prefix>-<base32-rand>` strings (e.g. `stg-abc123`).
+produce `<prefix>-<base36-rand>` strings (e.g. `stg-abc123`).
 
 | Entity       | Prefix   | Example                | Generator           |
 |--------------|----------|------------------------|---------------------|
@@ -438,7 +461,7 @@ produce `<prefix>-<base32-rand>` strings (e.g. `stg-abc123`).
 | Note         | `note-`  | `note-m7n8o9`          | `noteId()`          |
 | Inspection   | `insp-`  | `insp-p0q1r2`          | `inspectionId()`    |
 | Chat session | `chat-`  | `chat-s3t4u5`          | `chatSessionId()`   |
-| Agent inst.  | `agt-`   | `agt-v6w7x8`           | `agentId()`         |
+| Agent inst.  | `agent-` | `agent-v6w7x8`         | `agentId()`         |
 
 ## 16. File lifecycle
 
@@ -450,8 +473,7 @@ produce `<prefix>-<base32-rand>` strings (e.g. `stg-abc123`).
 | `stages/<id>/summary.json` | Manager     | —           | Never (archived)          |
 | `notes/<id>.json`          | Chat        | Runtime     | Volatile: after ack. Permanent: never |
 | `inspections/<id>.json`    | Inspector   | —           | After `expires_at` (if set)|
-| `skills/**/records/*`      | Manager / Inspector | Manager / Inspector | Archived on scope close |
-| `memory/**/records/*`      | Manager / Inspector | Manager / Inspector | Archived on scope close |
+| `knowledge/store.sqlite`   | Knowledge lifecycle | Knowledge lifecycle | Records archived or deleted by lifecycle tools |
 | `tools/inspector/*`        | Inspector   | Inspector   | Never                     |
 | `tmp/state/runtime.json`   | Runtime     | Runtime     | On clean shutdown          |
 | `tmp/chats/<ch>/<id>.json` | Chat        | Chat        | Rotation policy (TBD)      |
@@ -468,12 +490,8 @@ produce `<prefix>-<base32-rand>` strings (e.g. `stg-abc123`).
 
 1. Update the Zod definition in
    [`src/types.ts`](https://github.com/salva/saivage/blob/main/src/types.ts).
-2. If the change is breaking, migrate in place — consume the old shape
-   under `readDocOrNull`, write the upgraded shape with `writeDoc`. Per the
-   workspace architecture-first rule, prefer removing the old shape entirely
-   rather than carrying compatibility shims.
+2. If the change is breaking, update the read/write paths and tests to the
+  new shape. Removed shapes should be rejected explicitly rather than
+  preserved with compatibility shims.
 3. Update this page.
 4. Bump the `package.json` version and note the migration in the changelog.
-
-Schemas use `default()` extensively so new optional fields are
-backward-compatible without explicit migration.
