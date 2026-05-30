@@ -164,6 +164,16 @@ export default withMermaid(defineConfig({
           ],
         },
         {
+          text: "RAG Subsystem",
+          collapsed: false,
+          items: [
+            { text: "Overview", link: "/internals/rag/" },
+            { text: "Configuration", link: "/internals/rag/configuration" },
+            { text: "On-Disk Layout", link: "/internals/rag/on-disk-layout" },
+            { text: "Operational Runbook", link: "/internals/rag/operational-runbook" },
+          ],
+        },
+        {
           text: "Contributing",
           collapsed: false,
           items: [
