@@ -57,7 +57,7 @@ before coding starts.
 
 **Outputs:**
 
-- Task reports (`stages/<stage-id>/reports/<task-id>.json`)
+- Task reports (`.saivage/stages/<stage-id>/reports/<task-id>.json`)
 - Design artifacts written under `research/design/`, `docs/`, or the stage
   artifact directory named by the task.
 
