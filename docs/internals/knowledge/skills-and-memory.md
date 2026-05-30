@@ -6,20 +6,23 @@ Saivage agents reuse two complementary knowledge surfaces:
   are eagerly injected into agent system prompts based on triggers and
   role filters.
 - **Memory** — situational facts and observations (what is true right
-  now). Memory records are retrieved by topic / keyword when the agent
-  asks for them; high-priority records can be eagerly injected like
-  skills.
+  now). Memory records can be fetched by id / topic or searched through
+  the protected knowledge RAG dataset; targeted records can be eagerly
+  injected like skills.
 
-Both surfaces share the same on-disk layout, lifecycle state machine,
-audit trail, and MCP tool patterns. This page is the conceptual /
-architectural reference. The full per-tool catalog (inputs, error codes,
-per-role ACL) lives in [mcp/services](../mcp/services) §§6–7.
+Both surfaces share the same SQLite sidecar, lifecycle state machine,
+audit table, RAG reingest path, and MCP tool patterns. This page is the
+conceptual / architectural reference. The full per-tool catalog (inputs,
+error codes, per-role ACL) lives in [mcp/services](../mcp/services) §§6–7.
 
 ## 1. Records and scopes
 
-Every skill and every memory is a JSON record (`SkillRecord` /
-`MemoryRecord`) plus a markdown body. Records carry a **scope** that
-controls visibility and lifetime:
+Every skill and every memory is a Zod-validated `SkillRecord` /
+`MemoryRecord`. The SQLite `record` row stores the serialized record in
+`record_json`, the body in `body`, kind-specific lookup data in
+`record_skill` / `record_memory`, audit rows in `audit`, and RAG sync
+state in `rag_sync`. Records carry a **scope** that controls visibility
+and lifetime:
 
 | Scope     | Visible to               | Lifetime                              |
 |-----------|--------------------------|---------------------------------------|
@@ -28,27 +31,18 @@ controls visibility and lifetime:
 | `project` | All agents, all stages   | Persists across stages and restarts   |
 
 `scope_ref` points to the owning entity (`session_id`, `stage_id`, or
-omitted for project scope). The on-disk layout reflects this:
+omitted for project scope). The canonical on-disk storage is one sidecar:
 
 ```
 .saivage/
-├── skills/
-│   ├── project/
-│   │   ├── <skill-id>.json
-│   │   ├── <skill-id>.md
-│   │   ├── index.json
-│   │   └── audit.jsonl
-│   ├── stages/<stage-id>/...
-│   └── sessions/<session-id>/...
-└── memory/
-    ├── project/...
-    ├── stages/<stage-id>/...
-    └── sessions/<session-id>/...
+└── knowledge/
+  └── store.sqlite
 ```
 
-The per-scope `index.json` is a projection of the active records'
-summary fields (id, name, description, triggers, target_agents, status,
-updated_at) and is rebuilt atomically on every write.
+The retired `.saivage/skills` and `.saivage/memory` JSON trees are
+legacy markers. Boot removes them when the sidecar already contains
+records, or refuses to start with `KNOWLEDGE_MIGRATION_REQUIRED` when a
+legacy tree exists and the sidecar is empty.
 
 ## 2. Built-in skills
 
@@ -75,37 +69,45 @@ target_agents: [coder]
 survive_compaction: false
 ```
 
-Built-in skills are read-only at runtime — they cannot be archived,
-superseded, or modified via the MCP tools. They are versioned with the
-source code.
+At boot, `upsertBuiltinSkills` parses bundled `SKILL.md` files and
+upserts them into `.saivage/knowledge/store.sqlite` as active
+`origin = "builtin"` rows with stable ids of the form `builtin:<slug>`.
+The eager loader reads built-ins from the sidecar; it no longer scans the
+built-in skill tree at agent-start time. The source files remain
+versioned with the code and refresh the sidecar copy on the next boot.
 
 ## 3. Project, stage, and session skills
 
 Project / stage / session skills are **not** frontmatter files. They are
-`SkillRecord` JSON documents authored by Manager and Inspector via the
-MCP knowledge tools (`create_skill`, `update_skill`, `supersede_skill`,
-`archive_skill`, `delete_skill`). Coder, Researcher, and Data Agent
-**read** skills but cannot write them — they raise observations to the
-Manager, who decides whether to materialize a skill.
+sidecar records authored through the MCP knowledge tools
+(`create_skill`, `update_skill`, `supersede_skill`, `archive_skill`,
+`delete_skill`). Manager may create and update skills; Manager and
+Inspector may supersede, archive, and delete them. Coder, Researcher,
+Data Agent, Reviewer, Designer, Critic, Chat, Librarian, and Planner
+read/search skills but cannot write them.
 
-Writes go through `src/knowledge/store.ts` which guarantees:
+Writes go through `src/knowledge/lifecycle.ts` on top of the SQLite
+sidecar. Each mutation:
 
-- Atomic write (temp-file + rename) for record + body + index.
-- An `AuditEntry` appended to `audit.jsonl` for every write (creates,
-  updates, supersessions, archives, deletes). The audit entry includes
-  `reason`, which is mandatory — `EMPTY_REASON` rejects bare writes.
-- Secret scan on body content; matches are redacted and counted.
+- Requires the runtime lock (`NO_RUNTIME_LOCK` if missing).
+- Validates `reason`, scope / scope_ref, secret scans, and blocked-path
+  guards before mutation.
+- Performs record, kind side-table, and audit updates inside a sidecar
+  transaction.
+- Marks rows `pending_reingest = 1` and best-effort republishes the
+  affected protected RAG dataset (`knowledge.skills` or
+  `knowledge.memory`).
 
 ## 4. Memory tools
 
 Memory mirrors the skill surface (`create_memory`, `update_memory`,
 `supersede_memory`, `archive_memory`, `delete_memory`, `list_memories`,
-`get_memory`, `search_memories`) with one important ACL difference:
-**Coder and Researcher may write memory** — but only with `scope =
-"stage"` and `survive_compaction = false`. This lets workers capture
-short-lived observations without polluting project memory. Manager,
-Planner, and Inspector own the full memory lifecycle including project
-scope and supersession.
+`get_memory`, `search_memories`) with broader write access. Planner,
+Manager, and Inspector own the full memory lifecycle. Coder and
+Researcher may create/update memory only with `scope = "stage"` and
+`scope_ref` equal to the active stage. Librarian may create/update only
+project memory whose topic is `rag/policy`, `rag/secret-incidents`, or
+`rag/drift-incidents`.
 
 Data Agent has access to **skills only**, not memory.
 
@@ -120,10 +122,11 @@ stateDiagram-v2
     [*] --> active : create
     active --> superseded : supersede (by new record)
     active --> archived : archive
-    archived --> active : un-archive (manual)
-    superseded --> [*] : never deleted (audit history)
-    archived --> [*] : delete (tombstone)
-    active --> [*] : delete (tombstone)
+  active --> expired : expire
+  active --> [*] : delete (audit + hard delete)
+  archived --> [*] : delete (audit + hard delete)
+  superseded --> [*] : delete (audit + hard delete)
+  expired --> [*] : delete (audit + hard delete)
 ```
 
 - **active**: visible to readers, eligible for eager injection.
@@ -131,9 +134,10 @@ stateDiagram-v2
   record. Kept on disk for audit. `list_*` returns superseded records
   only when `include_superseded: true`.
 - **archived**: hidden from readers by default; manually retired.
-  Reversible. `list_*` returns archived records only when
-  `include_archived: true`.
-- **deleted**: tombstone in `audit.jsonl`; body file removed from disk.
+  `list_*` returns archived records only when `include_archived: true`.
+- **expired**: a schema lifecycle state for time-based retirement.
+- **deleted**: not a persisted status; delete appends an audit row and
+  removes the sidecar record.
 
 ## 6. Triggers
 
@@ -146,9 +150,10 @@ Skill triggers are flat strings using `kind:value` syntax:
 | `tag:<label>` | The agent's context carries `<label>` as a tag |
 
 `tool:` and `path:` triggers were removed — they were
-under-specified and over-promised. Triggerless skills are allowed: they
-are never eager-injected but participate in `search_skills` and
-`read_skill` by id.
+under-specified and over-promised. Triggerless skills are allowed:
+non-survivor triggerless skills are not ordinary eager candidates, but
+project-scope survivor records can still appear in survivor reinjection.
+All active skills participate in `search_skills` and `read_skill` by id.
 
 Canonical keyword normalization: NFC → lowercase → strip punctuation →
 collapse whitespace. The same normalization runs on both trigger values
@@ -159,9 +164,10 @@ and the agent context.
 When an agent starts a turn, the runtime calls
 [`src/knowledge/eagerLoader.ts`](https://github.com/salva/saivage/blob/main/src/knowledge/eagerLoader.ts):
 
-1. **`loadAllCandidates(projectRoot)`** collects:
-   - Project records from `.saivage/{skills,memory}/{project,stages,sessions}/`.
-   - Built-in skills from `skills/builtin/<topic>/SKILL.md`.
+1. **`loadAllCandidates(projectRoot)`** opens
+  `.saivage/knowledge/store.sqlite` and loads every active skill or
+  memory row, including built-ins already upserted with
+  `origin = "builtin"`.
 
 2. **`resolveEagerRecords(candidates, role, context)`** filters and scores:
    - Drop records whose `status != "active"`.
@@ -169,18 +175,20 @@ When an agent starts a turn, the runtime calls
      the current role.
    - Score skills against the trigger set:
      - `agent:<role>` matching the current role: high weight.
-     - `keyword:<word>` matching the context: medium weight.
      - `tag:<label>` matching context tags: medium weight.
-   - Sort by score, then by `updated_at`, then by `id` (stable ordering).
+     - `keyword:<word>` matching a normalized context token: low weight.
+   - Treat memories as eager-eligible only when they explicitly name
+     `target_agents`.
+   - Sort project records ahead of built-ins, then by score,
+     `updated_at`, and `id` (stable ordering).
 
 3. **Budget application** — two separate ceilings:
-   - **Survivor budget** for records with `survive_compaction: true`.
-     Survivors are re-injected after context compaction (see
-     [runtime/compaction](../runtime/compaction)). The per-record hard
-     cap is 4096 tokens; records exceeding the cap are quarantined but
-     their ids are listed in the survivor block header
-     (`oversized_survivors: [...]`) so the agent can reach them via
-     `read_skill` / `get_memory`.
+   - **Survivor pass** for project-scope records with
+     `survive_compaction: true`. Survivors are summarized and
+     re-injected after context compaction (see
+     [runtime/compaction](../runtime/compaction)). The per-record
+     survivor summary cap is 4096 estimated tokens; over-cap records are
+     returned in `oversizedSurvivors` for the caller.
    - **Ordinary eager budget** for everything else.
 
 4. **`formatEagerBlock(records)`** renders the selected records as
@@ -189,8 +197,9 @@ When an agent starts a turn, the runtime calls
 The implementation entry points:
 
 - [`src/knowledge/eagerLoader.ts`](https://github.com/salva/saivage/blob/main/src/knowledge/eagerLoader.ts) — scoring + budgets + rendering.
-- [`src/knowledge/loader.ts`](https://github.com/salva/saivage/blob/main/src/knowledge/loader.ts) — candidate enumeration.
-- [`src/knowledge/store.ts`](https://github.com/salva/saivage/blob/main/src/knowledge/store.ts) — atomic record / body / index writes + audit.
+- [`src/knowledge/loader.ts`](https://github.com/salva/saivage/blob/main/src/knowledge/loader.ts) — pure trigger scoring, search scoring helpers, survivor split, and redaction.
+- [`src/knowledge/sidecar.ts`](https://github.com/salva/saivage/blob/main/src/knowledge/sidecar.ts) / [`src/knowledge/sidecar-queries.ts`](https://github.com/salva/saivage/blob/main/src/knowledge/sidecar-queries.ts) — SQLite schema, migrations, queries, and mutation primitives.
+- [`src/knowledge/store.ts`](https://github.com/salva/saivage/blob/main/src/knowledge/store.ts) — error taxonomy and write-time guards.
 - [`src/knowledge/lifecycle.ts`](https://github.com/salva/saivage/blob/main/src/knowledge/lifecycle.ts) — state-machine transitions.
 - [`src/mcp/knowledgeSkills.ts`](https://github.com/salva/saivage/blob/main/src/mcp/knowledgeSkills.ts) / [`src/mcp/knowledgeMemory.ts`](https://github.com/salva/saivage/blob/main/src/mcp/knowledgeMemory.ts) — MCP tool adapters.
 
@@ -212,10 +221,11 @@ Guidance:
   [runtime/compaction](../runtime/compaction)) gives Planner a chance to
   promote ephemeral facts to project memory before history is dropped.
 - **Stage / session scope** never survives compaction regardless of the
-  flag (the record itself is deleted with the stage / session).
-- **Workers** can write stage memory only with
-  `survive_compaction: false` (enforced by ACL). They cannot promote
-  observations to long-term memory; that is the Manager / Planner role.
+  flag because survivor selection requires project scope. Stage/session
+  knowledge is archived when that lifecycle closes.
+- **Workers** can write only stage memory tied to the active stage. Such
+  records do not survive compaction; promotion to project memory belongs
+  to Manager / Planner / Inspector workflows.
 
 ## 9. Authoring conventions
 
@@ -238,7 +248,7 @@ original task context should still understand what the fact says and
 why it matters. Include the `_when_` and the `_why_`, not just the
 _what_.
 
-**`reason`** on every write is mandatory and is what shows up in audit
-log inspection. Write something a reviewer will understand months
-later — "fixed typo" is not useful; "renamed skill to match the
-agent role taxonomy after the stage-scoped split" is.
+**`reason`** on every write is mandatory and is stored in the sidecar
+audit row. Write something a reviewer will understand months later —
+"fixed typo" is not useful; "renamed skill to match the agent role
+taxonomy after the stage-scoped split" is.
