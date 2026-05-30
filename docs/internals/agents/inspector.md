@@ -1,10 +1,11 @@
 # Inspector
 
-[`src/agents/inspector.ts`](https://github.com/salva/saivage/blob/main/src/agents/inspector.ts)
+[`src/agents/inspector.ts`](https://github.com/salva/saivage/blob/main/src/agents/inspector.ts),
+[`prompts/inspector.md`](https://github.com/salva/saivage/blob/main/prompts/inspector.md)
 
 The Inspector is a **one-shot deep-analysis agent**. It is invoked by the
-Planner (for retrospectives) or by Chat (on user request) and produces an
-`InspectionReport`.
+Planner through `run_inspector()` or directly by the CLI `inspect` action and
+produces an `InspectionReport`.
 
 ## Purpose
 
@@ -12,14 +13,16 @@ Deep analysis of project state on demand.
 
 ## Lifetime
 
-- Spawned via `run_inspector(request)` (a dispatch tool).
+- Spawned via `run_inspector(request)` when the Planner dispatches it, or by
+  `inspectAction()` for CLI inspection runs.
 - Runs to completion, returns the report as the tool result, terminates.
-- **Serialized:** only one Inspector runs at a time. Concurrent requests are
-  FIFO-queued by the Dispatcher.
+- The current Dispatcher does not implement a FIFO Inspector queue; Inspector
+  is a non-worker dispatch role and is not part of the worker duplicate-dispatch
+  gate.
 
 ## Inputs
 
-- Investigation request (from Planner or Chat)
+- Investigation request (from Planner dispatch or CLI inspect action)
 - Scope/questions to answer
 
 ## Outputs
@@ -30,12 +33,14 @@ Deep analysis of project state on demand.
   interface InspectionReport {
     id: string;
     requested_by: "planner" | "chat";
-    scope: string;
+    request: InspectionRequest;
     findings: string;            // structured Markdown
     recommendations: string[];
+    data: Record<string, unknown>;
+    artifacts: string[];
     created_at: string;
-    expires_at?: string | null;  // null = permanent relevance
-    metadata?: Record<string, unknown>;
+    expires_at: string | null;   // null = permanent relevance
+    duration_ms: number;
   }
   ```
 
@@ -59,18 +64,20 @@ promote useful ones to `tools/inspector/` for reuse across investigations.
   performance, etc.
 - Can create tools/scripts in ephemeral workspace during analysis, then
   promote useful ones to `.saivage/tools/inspector/`.
-- Can read, execute, and modify any project file — same access as other
-  agents. By convention, does not modify main project code unless the
-  investigation requires it.
+- Investigates with read-only filesystem/git tools plus shell. All file output
+  flows through `run_command` and is constrained by the Inspector write
+  territory; it should not modify source code.
 - Reports include metadata (timestamp, TTL) so the Planner can assess
   relevance.
 - **Commits** reports and persistent tools via the MCP git tool.
 
 ## Tools advertised
 
-Same toolset as the workers (filesystem, shell, git, web, memory, index) plus
-`final` to commit the report. The Inspector typically reads more and writes
-less than a Coder.
+Inspector tools are filtered by the roster's `inspector` tool filter:
+read-only filesystem and git tools, `run_command`, web search/fetch tools,
+`list_skills`, `read_skill`, and `read_stash`. It has no dispatch tools and no
+`write_file`; reports, reusable tools, and commits are created through shell
+commands inside the Inspector write territory.
 
 ## Escalation
 
@@ -81,5 +88,4 @@ decides what to do next.
 ## Trigger events
 
 - Planner calls `run_inspector(request)` → Inspector spawned.
-- Chat calls `run_inspector(request)` on user demand → Inspector queued behind
-  any in-flight Planner request.
+- CLI `inspect <project-path> <scope>` constructs an `InspectorAgent` directly.
