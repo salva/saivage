@@ -1,114 +1,438 @@
-# MCP Services Catalog
+# MCP services catalog
 
-[`src/mcp/builtins.ts`](https://github.com/salva/saivage/blob/main/src/mcp/builtins.ts) ·
-spec [`SPEC/v2/05-MCP-SERVICES.md`](https://github.com/salva/saivage/blob/main/SPEC/v2/05-MCP-SERVICES.md)
+[`src/mcp/builtins.ts`](https://github.com/salva/saivage/blob/main/src/mcp/builtins.ts)
 
-The built-in services that ship with Saivage. All run in-process unless
-noted. The plan service has its own page: [Plan MCP Service](./plan-mcp).
+Complete catalog of MCP services available to Saivage agents. Services
+are either **built-in** (shipped with Saivage, registered on startup) or
+**externally declared** in `.saivage/saivage.json` under `mcpServers`.
 
-## Filesystem (`fs`)
+Core services (filesystem, shell, git, skills, memory, plan) run
+**in-process** — direct function calls inside the Node.js process, no
+subprocess overhead. Services that need external dependencies not yet
+integrated (web stub, lock, index) are registered as stubs that return an
+error if called.
 
-| Tool | Purpose |
-|------|---------|
-| `read_file` | Read a file (UTF-8). Length-capped. |
-| `write_file` | Atomic write (temp + rename). |
-| `list_dir` | Directory listing with file/directory flags. |
-| `search_files` | Recursive substring or regex search. |
+Service lifecycle (lazy start, health checks, idle shutdown, crash
+recovery) is managed by `McpRuntime`. See [mcp/runtime](./runtime).
+
+## Service inventory
+
+| Service | Origin | Transport | Purpose |
+|---------|--------|-----------|---------|
+| [Filesystem](#_1-filesystem) | builtin | in-process | File read/write/search |
+| [Shell](#_2-shell) | builtin | in-process | Command execution |
+| [Git](#_3-git) | builtin | in-process | Version control |
+| [Web](#_4-web) | builtin | stub | HTTP fetch, page content extraction |
+| [Plan](#_5-plan) | builtin | in-process | Plan state management |
+| [Skills](#_6-skills) | builtin | in-process | Skill records: CRUD + lifecycle + search |
+| [Memory](#_7-memory) | builtin | in-process | Memory records: CRUD + lifecycle + topic/keyword retrieval |
+| [Agent dispatch](#_8-agent-dispatch) | runtime | in-process | Parent → child agent invocation |
+| External | declared | stdio | Playwright by default; user-declared in `mcpServers` |
+
+## Agent → service access matrix
+
+Which agents can use which services. The Filesystem / Shell / Git / Web /
+Plan / Agent-Dispatch rows are convention-based (except Chat, which is
+genuinely read-only for project state). **The Skills and Memory rows are
+enforced** by the MCP runtime via `ToolCallContext` + `permissions.canCall`
+/ `checkScope` at the runtime entry point ([`src/mcp/runtime.ts`](https://github.com/salva/saivage/blob/main/src/mcp/runtime.ts)),
+not by handler convention. Unauthorized calls return `UNAUTHORIZED_ROLE` or
+`UNAUTHORIZED_SCOPE`.
+
+| Service | Planner | Manager | Coder | Researcher | Data Agent | Inspector | Reviewer | Designer | Chat |
+|---------|---------|---------|-------|------------|------------|-----------|----------|----------|------|
+| Filesystem (read) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Filesystem (write) | — | ✓¹ | ✓ | ✓² | — | ✓ | — | — | — |
+| Shell | — | — | ✓ | ✓ | ✓ | ✓ | — | — | — |
+| Git | ✓³ | ✓³ | ✓ | ✓ | — | ✓ | — | — | — |
+| Web | — | — | ✓ | ✓ | — | ✓ | — | — | — |
+| Plan (read) | ✓ | — | — | — | — | — | — | — | ✓ |
+| Plan (write) | ✓ | — | — | — | — | — | — | — | — |
+| Skills | see §6 | see §6 | see §6 | see §6 | see §6 | see §6 | see §6 | see §6 | see §6 |
+| Memory | see §7 | see §7 | see §7 | see §7 | see §7 | see §7 | see §7 | see §7 | see §7 |
+| Agent dispatch | ✓ | ✓ | — | — | — | — | — | — | ✓⁴ |
+
+¹ Manager writes `tasks.json`, `summary.json` under `.saivage/stages/`.
+² Researcher writes under `research/` by convention.
+³ Planner / Manager use git only for `.saivage/` state files.
+⁴ Chat can only dispatch Inspector, not Manager / Coder / Researcher.
+
+**Skills + Memory ACL.** The full 9-role × per-operation matrix (create /
+update / supersede / archive / delete / list / read / search, split by
+kind) is documented in
+[knowledge/skills-and-memory](../knowledge/skills-and-memory). Key facts:
+
+- **Skill writes** (create / update / supersede / archive / delete):
+  Manager and Inspector only. All other roles are denied with
+  `UNAUTHORIZED_ROLE`.
+- **Memory writes:** Planner, Manager, Inspector own the full lifecycle
+  (including supersede / archive). Coder / Researcher may `create_memory` /
+  `update_memory` **only** with `scope == "stage"` and
+  `scope_ref == <current stage_id>`; any other scope returns
+  `UNAUTHORIZED_SCOPE`. Promotion to `project` requires Inspector or
+  Manager `supersede_memory`.
+- **Reads** (`list_*`, `read_skill`, `get_memory`, `search_*`): every role
+  except Data Agent for memory; Data Agent is skill-only. Worker roles
+  (Coder / Researcher / Reviewer / Designer / Data Agent) honour
+  `target_agents` on reads; Inspector and Chat are privileged readers and
+  see all values.
+- **Chat has NO write tools.** `/remember` / `/forget` are inter-agent
+  messages to Planner; Planner decides whether to call `create_memory` /
+  `archive_memory`.
+
+## 1. Filesystem
+
+**Origin:** builtin · **Implementation:** `src/mcp/builtins.ts` (in-process)
 
 The handler enforces a project-root sandbox by `path.resolve` + prefix
 check; absolute paths outside the project root are rejected.
+**Generic filesystem writes targeted at `.saivage/{skills,memory}/` are
+rejected by `fsGuard` from any role** — the MCP surface is the only
+authoring path for skill / memory records.
 
-## Shell (`shell`)
+### `read_file`
 
-| Tool | Purpose |
-|------|---------|
-| `run_command` | Execute a command in a project subdirectory. |
+Read a windowed slice of a UTF-8 file. Returns up to `mcp.maxFileReadBytes`
+bytes per call.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Absolute or project-relative file path |
+| `offset` | integer | no | Byte offset to start reading from (default 0). Non-negative integer. |
+| `length` | integer | no | Maximum bytes to read (defaults to `mcp.maxFileReadBytes`, capped by it). Non-negative integer. |
+
+**Returns:** `{ content, offset, length, size_bytes, truncated }` where
+`truncated` is `true` when `offset + length < size_bytes`.
+
+**Error codes:** `INVALID_ARGUMENT`, `FILE_TOO_LARGE`, `LENGTH_TOO_LARGE`,
+`INVALID_RANGE`, `BINARY_CONTENT`, `NOT_A_FILE`, `NOT_FOUND`,
+`PERMISSION_DENIED`, `IO_ERROR`. Binary content is detected by a 4 KiB
+NUL-byte probe at the file head, independent of `offset`.
+
+### `write_file`
+
+Atomic write (temp + rename). Creates parent directories if needed.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | File path |
+| `content` | string | yes | Full file content |
+
+**Returns:** `{ written: true, path }`
+
+### `list_dir`
+
+Directory listing with file/directory flags.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `path` | string | yes | Directory path |
+
+**Returns:** `{ entries: [{ name, type: "file" | "dir" }] }`
+
+### `search_files`
+
+Search for files matching a glob pattern.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `directory` | string | yes | Root directory to search |
+| `pattern` | string | yes | Glob pattern (e.g., `**/*.ts`) |
+
+**Returns:** `{ files: string[] }`
+
+## 2. Shell
+
+**Origin:** builtin · **Implementation:** `src/mcp/builtins.ts` (in-process)
 
 Commands run with the daemon's environment, with `PROJECT_ROOT` injected.
-Stdout/stderr are captured (truncated to a configured byte limit) and
-returned as the tool result. There is **no** allow-list — sandboxing is
-the job of the LXC container.
+Stdout / stderr are captured (truncated to a configured byte limit) and
+returned as the tool result. There is **no** allow-list — sandboxing is the
+job of the LXC container.
 
-## Git (`git`)
+### `run_command`
 
-| Tool | Purpose |
-|------|---------|
-| `git_status` | Working-tree status. |
-| `git_create_branch` | Create + checkout a branch. |
-| `git_checkout` | Checkout a ref. |
-| `git_commit` | Stage given files & commit (with message + task_id). |
-| `git_merge` | Merge a branch. |
-| `git_diff` | Diff (optional file/ref filters). |
-| `git_delete_branch` | Delete a branch. |
-| `git_log` | Recent log. |
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `command` | string | yes | — | Shell command to run |
+| `cwd` | string | no | project root | Working directory |
+| `timeout_ms` | number | no | none | Hard wall-clock timeout in ms; `0` disables |
+| `timeout` | number | no | none | Deprecated alias for `timeout_ms` |
+| `inactivity_timeout_ms` | number | no | none | No-output-growth timeout in ms; terminates when stdout/stderr log files do not grow for this long; `0` disables |
+| `idle_timeout_ms` | number | no | none | Deprecated alias for `inactivity_timeout_ms` |
+| `stdout_path` | string | no | auto | Project-relative file path for full stdout log |
+| `stderr_path` | string | no | auto | Project-relative file path for full stderr log |
 
-Workers commit through these tools; the runtime never invokes `git
-commit` directly outside the abort flow's `git checkout -- .`.
+**Returns:** `{ stdout, stderr, exitCode, stdout_path, stderr_path, stdout_bytes, stderr_bytes, started_at, completed_at, duration_ms, last_output_at }`
 
-## Plan (`plan`)
+Full output is written to project-local log files. Returned `stdout` /
+`stderr` are capped tails of those logs. Timeouts return `exitCode: 124`
+and include the timeout reason in `stderr`, including the last observed
+output timestamp for inactivity timeouts. Long-running commands should
+emit periodic stdout / stderr and set `inactivity_timeout_ms` when no log
+growth means the process is unhealthy.
 
-12 tools — see [Plan MCP Service](./plan-mcp).
+## 3. Git
 
-## Notes (`notes`)
+**Origin:** builtin · **Implementation:** `src/mcp/builtins.ts` (in-process,
+wraps `git` CLI)
 
-| Tool | Purpose |
-|------|---------|
-| `create_note` | Create a user note (channel context filled by runtime). |
-| `list_notes` | Read pending notes. |
-| `acknowledge_note` | Mark a note acknowledged. |
+All git operations are serialized through this single service — no direct
+`git` CLI calls by agents. This eliminates race conditions and ensures
+atomic operations. The runtime never invokes `git commit` directly outside
+the abort flow's `git checkout -- .`.
 
-The `create_note` tool is the only mutation surface available to the Chat
-agent.
+### `git_commit`
 
-## Skills (`skills`)
+Stage specified files and commit. **Requires explicit file lists** —
+unlike v1, there is no implicit `["."]` staging.
 
-| Tool | Purpose |
-|------|---------|
-| `list_skills` | List available skills. |
-| `read_skill` | Fetch a skill by name. |
-| `create_skill` | Create a new skill (Markdown + index entry). |
-| `update_skill` | Update an existing skill. |
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `files` | string[] | yes | Files to stage (relative to project root) |
+| `message` | string | yes | Commit message |
+| `task_id` | string | no | If provided, message is prefixed with `[tsk-<id>]` |
 
-## Web (stub by default)
+**Returns:** `{ sha }` or `{ error: "CONFLICT", files: string[] }` if
+conflict detected.
 
-| Tool | Purpose |
-|------|---------|
-| `fetch_url` | Raw URL fetch. |
-| `fetch_page_content` | Fetch + extract text. |
-| `web_search` | Search engine wrapper (provider-dependent). |
-| `download_file` | Download to a path. |
+### `git_status`
 
-The implementations are present but registered as **available** only when
-the daemon is configured with the requisite providers; otherwise the
-service is registered as a stub so the catalog remains discoverable.
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `cwd` | string | no | Working directory (default: project root) |
 
-## Memory (stub)
+**Returns:** `{ modified, added, deleted, untracked }`
 
-`store_memory`, `recall_memory`, `list_memories`, `delete_memory` — keyed
-key-value scratch store. Currently stub; designed for future durable
-memory backends.
+### `git_diff`
 
-## Index (stub)
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `files` | string[] | no | Files to diff (default: all) |
+| `ref1` | string | no | First ref for comparison |
+| `ref2` | string | no | Second ref for comparison |
 
-`index_ingest`, `index_search` — full-text search across project content.
-Stubbed pending integration with a search engine.
+**Returns:** `{ diff }`
 
-## Lock (stub)
+### `git_log`
 
-`lock_acquire`, `lock_release`, `lock_status`, `lock_list` — advisory
-locks for coordinating multiple agent threads on shared resources.
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `n` | number | no | 10 | Number of commits |
+| `branch` | string | no | current | Branch to show |
+
+**Returns:** `{ commits: [{ sha, message, author, date }] }`
+
+Also exposes `git_create_branch`, `git_checkout`, `git_merge`,
+`git_delete_branch` for full branch lifecycle.
+
+### Conflict handling
+
+Conflicts are rare (conventions prevent agents from touching each other's
+files) but possible. When `git_commit` returns a conflict:
+
+- The agent reports it as a task failure.
+- The Manager creates a resolution task or escalates.
+- See [runtime/details](../runtime/details) for edge cases.
+
+## 4. Web
+
+**Origin:** builtin (stub — not yet implemented) ·
+**Implementation:** `src/mcp/builtins.ts` (stub handler)
+
+> Registered but not yet functional. Calls return a descriptive error. A
+> future implementation will use Playwright or a similar library. The
+> default Playwright MCP (launched on demand via
+> `npx -y @playwright/mcp`) is declared as an external server, not as
+> this builtin.
+
+### `fetch_url`
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `url` | string | yes | — | Valid URL |
+| `headers` | object | no | `{}` | Additional HTTP headers |
+| `maxBytes` | number | no | 102400 | Max response size (100KB) |
+
+**Returns:** `{ status, contentType, body, truncated }`
+
+**Limits:** 30-second timeout. User-Agent: `Saivage/0.1.0`.
+
+### `fetch_page_content`
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `url` | string | yes | — | Valid URL |
+| `selector` | string | no | `"body"` | CSS selector for content extraction |
+| `maxLength` | number | no | 51200 | Max content length (50KB) |
+
+**Returns:** `{ title, url, content, truncated }`
+
+Noise elements (scripts, styles, nav, ads) are automatically removed.
+
+## 5. Plan
+
+**Origin:** builtin · **Source:** `src/mcp/plan-server.ts` ·
+**Full specification:** [plan-service](./plan-service)
+
+Manages `plan.json`, including embedded plan history. All reads and writes
+go through this service — no agent touches the file directly.
+
+| Tool | Description | Mutating |
+|------|-------------|----------|
+| `plan_get()` | Read the current plan | no |
+| `plan_get_stage(stage_id)` | Look up a stage (active or history) | no |
+| `plan_get_current_stage()` | Get the currently executing stage | no |
+| `plan_set_stages(stages, current_stage_id)` | Replace the plan's stage list | yes |
+| `plan_add_stage(stage)` | Append a stage | yes |
+| `plan_remove_stage(stage_id)` | Remove a stage | yes |
+| `plan_set_current(stage_id)` | Mark a stage as executing | yes |
+| `plan_complete_stage(stage_id, result, summary, actual_outcomes, escalation?, abort_reason?)` | Archive stage to history | yes |
+| `plan_get_history(last_n?)` | Read plan history | no |
+| `plan_init(stages?)` | Initialize empty plan | yes |
+| `plan_commit(message)` | Commit plan files to git | yes |
+| `plan_done(reason)` | Signal verified project completion | no |
+
+**Atomicity:** all writes use temp-file + rename. Schema validation on
+every write. Error codes: `PLAN_NOT_FOUND`, `STAGE_NOT_FOUND`,
+`STAGE_EXISTS`, `VALIDATION_ERROR`, `IO_ERROR`.
+
+## 6. Skills
+
+**Origin:** builtin · **Implementation:** `src/mcp/builtins.ts` thin
+handlers over [`src/knowledge/store.ts`](https://github.com/salva/saivage/blob/main/src/knowledge/store.ts)
+(`writeRecordAtomic` + `appendJsonlAtomic` + `rebuildIndex`).
+
+Skills are eagerly injected into agent system prompts; see
+[knowledge/skills-and-memory](../knowledge/skills-and-memory) for the
+canonical tool surface and the retrieval algorithm.
+
+All write tools require a non-empty `reason` (`EMPTY_REASON` on violation)
+and append exactly one `AuditEntry` to the scope's `audit.jsonl`.
+Authorization is enforced at the MCP runtime via `ToolCallContext` +
+`permissions.canCall`.
+
+| Tool | Purpose | Callable by | Notes |
+|------|---------|-------------|-------|
+| `create_skill` | Create a new skill record | Manager, Inspector | Inputs: `{ name, description, body, triggers[]?, target_agents[], scope, scope_ref?, expires_at?, ttl_ms?, survive_compaction?, reason }`. Rejects `NAME_COLLISION` within scope. |
+| `update_skill` | Mutate description / body / triggers / target_agents / TTL | Manager, Inspector | Inputs: `{ id, body?, description?, triggers?, target_agents?, expires_at?, ttl_ms?, reason }`. |
+| `supersede_skill` | Replace an active record with a new one; widens scope only | Manager, Inspector | Inputs: `{ old_id, new_record, reason }`. Two-record atomic write; rejects `INVALID_SUPERSEDE_TARGET` / `INVALID_SUPERSEDE_SCOPE`. |
+| `archive_skill` | Mark `active` → `archived` (reversible) | Manager, Inspector | Inputs: `{ id, reason }`. |
+| `delete_skill` | Tombstone + audit | Manager, Inspector | Inputs: `{ id, reason }`. |
+| `list_skills` | Enumerate summaries | all roles | Inputs: `{ scope?, target_agent?, include_archived?, include_superseded? }`. Returns the per-scope `index.json` projection. |
+| `read_skill` | Read full record + body | all roles | Inputs: `{ id }`. Returns `{ record, body }`. Re-scans body for secrets on read. |
+| `search_skills` | Keyword search over triggers + name + description + body snippet | all roles | Inputs: `{ query, scope?, limit? }`. Canonical normalization (NFC + lower + strip-punct + collapse-ws); stable ordering score → updated_at → id. |
+
+**Triggers.** Only `keyword:<word>`, `tag:<label>`, `agent:<role>` are
+valid. `tool:` and `path:` are removed from `SkillRecord.triggers`
+validation. Triggerless skills are allowed: they are never eager-injected
+but participate in `search_skills` and `read_skill` by id.
+
+**Origin & built-ins.** `SkillRecord.origin` is `"builtin"` for skills
+shipped at `saivage/skills/builtin/<topic>/SKILL.md` (bundled into
+`dist/skills/builtin/` by `tsup`), or `"project"` for skills authored at
+runtime under `<project>/.saivage/skills/{project,stages/<id>,sessions/<id>}/`.
+Built-ins are walked by
+[`src/knowledge/eagerLoader.ts`](https://github.com/salva/saivage/blob/main/src/knowledge/eagerLoader.ts),
+parsed through strict frontmatter, and projected into the eager-injection
+candidate set with `origin="builtin"`, `scope="project"`. They have no
+`index.json`.
+
+## 7. Memory
+
+**Origin:** builtin · **Implementation:** `src/mcp/builtins.ts` thin
+handlers over the same `src/knowledge/store.ts` primitives as Skills.
+
+Memories are on-demand lookup (or eager when `target_agents` is
+non-empty); see [knowledge/skills-and-memory](../knowledge/skills-and-memory)
+for the canonical tool surface and the retrieval algorithm.
+
+| Tool | Purpose | Callable by | Notes |
+|------|---------|-------------|-------|
+| `create_memory` | Create a new memory record | Planner, Manager, Coder, Researcher, Inspector | Inputs: `{ topic, keys[]?, body, target_agents[], scope, scope_ref?, expires_at?, ttl_ms?, survive_compaction?, source_ref?, reason }`. Coder/Researcher are restricted to `scope == "stage"` (otherwise `UNAUTHORIZED_SCOPE`). Rejects `TOPIC_COLLISION` within scope. |
+| `update_memory` | Mutate body / keys / target_agents / TTL | Planner, Manager, Coder, Researcher, Inspector | Inputs: `{ id, body?, keys?, target_agents?, expires_at?, ttl_ms?, reason }`. Same worker-scope restriction as `create_memory`. |
+| `supersede_memory` | Replace an active record; widens scope only | Planner, Manager, Inspector | Inputs: `{ old_id, new_record, reason }`. Two-record atomic write. |
+| `archive_memory` | Mark `active` → `archived` (reversible) | Planner, Manager, Inspector | Inputs: `{ id, reason }`. |
+| `delete_memory` | Tombstone + audit | Planner, Manager, Inspector | Inputs: `{ id, reason }`. |
+| `list_memories` | Enumerate summaries | Planner, Manager, Inspector, Reviewer, Chat | Inputs: `{ scope?, topic_domain?, include_archived?, older_than_days? }`. `older_than_days` powers Inspector stale-evidence review. |
+| `get_memory` | Read by id OR by topic; walks supersession chain to head | all roles except Data Agent | Inputs: `{ id }` OR `{ topic: {domain, subject, aspect?} }`. Looks up in `memory/project`, `memory/stages/<ctx.stage_id>`, `memory/sessions/<ctx.channel_id>`; most-specific-scope wins. Returns `null` when chain head is not `active`. |
+| `search_memories` | Keyword search over topic + keys + body snippet | all roles except Data Agent | Inputs: `{ query, scope?, limit? }`. Canonical normalization identical to `search_skills`; scoring weights: 3× topic, 2× keys, 1× body snippet. |
+
+**Chat has no memory write tools.** `/remember <text>` is an inter-agent
+message to Planner; Planner decides whether to call `create_memory`.
+
+**TTL / decay.** Project-scope memories may set `ttl_ms` / `expires_at`;
+stage/session scopes ignore TTL (lifecycle hooks archive them on stage
+terminate / channel close). The sweeper transitions `active → expired`
+on-load under the per-record mutex.
+
+## 8. Agent dispatch
+
+**Origin:** runtime · **Type:** in-process pseudo-tools — not a standalone
+MCP service.
+
+These are registered as tools on the parent agent's LLM conversation. They
+are handled directly by the runtime, not by an external MCP process.
+
+### `run_manager`
+
+Dispatch a stage to the Manager. Planner suspends until Manager completes.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `stage` | `Stage` | yes | Full Stage object from the plan |
+
+**Returns:** `StageSummary`. **Available to:** Planner only.
+
+### `run_coder`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `task` | `Task` | yes | Full Task object including description, checklist, attempt |
+
+**Returns:** `TaskReport`. **Available to:** Manager only.
+
+### `run_researcher`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `task` | `Task` | yes | Full Task object including description, checklist, attempt |
+
+**Returns:** `TaskReport`. **Available to:** Manager only.
+
+### `run_inspector`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `request` | `InspectionRequest` | yes | Investigation scope and questions |
+
+**Returns:** `InspectionReport`. **Available to:** Planner, Chat.
+
+### `create_note`
+
+Create a user note for the Planner.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `content` | string | yes | — | The user's direction/feedback |
+| `permanent` | boolean | no | `false` | If `true`, note persists across replans as a lasting objective modifier |
+| `urgent` | boolean | no | `false` | If `true`, aborts active agents and forces immediate replan |
+
+**Returns:** `{ note_id, created: true }`. **Available to:** Chat only.
+
+The Notes service also exposes `list_notes` and `acknowledge_note` to the
+runtime for Planner injection and acknowledgment housekeeping.
 
 ## External services
 
 The defaults include **Playwright** (browser automation) launched on
 demand via `npx -y @playwright/mcp`. Add more under `mcpServers` in
-`saivage.json` — see [MCP Runtime](./mcp-runtime).
+`saivage.json` — see [mcp/runtime](./runtime).
 
 ## Tool catalog discovery
 
-The agents see only the tools advertised by their role
-(`assembleTools()`). The runtime's complete catalog can be inspected
-via:
+Agents see only the tools advertised by their role (`assembleTools()`).
+The runtime's complete catalog can be inspected via:
 
 ```bash
 curl -fsS http://127.0.0.1:8080/api/state | jq '.mcp.services'
