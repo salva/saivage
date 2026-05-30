@@ -2,7 +2,7 @@
 
 Each target project has a `.saivage/config.json`. This is the contract
 between the human and the agent system: objectives, model preferences,
-notification rules, and routing overrides.
+routing overrides, skill limits, and per-agent compaction knobs.
 
 The schema is the `ProjectConfigSchema` Zod type from [`src/types.ts`](https://github.com/salva/saivage/blob/main/src/types.ts).
 
@@ -15,10 +15,7 @@ The schema is the `ProjectConfigSchema` Zod type from [`src/types.ts`](https://g
     "Build a REST API with /users and /sessions endpoints.",
     "Use Vitest for tests, target >80% coverage."
   ],
-  "notifications": {
-    "channels": ["web"],
-    "filters": { "min_severity": "warning", "categories": [] }
-  },
+  "routing": { "roles": {}, "profiles": {} },
   "skills": { "max_per_agent": 5 }
 }
 ```
@@ -33,29 +30,10 @@ The schema is the `ProjectConfigSchema` Zod type from [`src/types.ts`](https://g
   // free-form objective list, ordered roughly by priority
   "objectives": [ "…" ],
 
-  // default provider/model when no role override applies
-  "provider": "github-copilot/claude-sonnet-4",
-
   // structured routing — see /guide/routing
   "routing": {
     "roles": {},
     "profiles": {}
-  },
-
-  // which channels publish notifications + minimum severity
-  "notifications": {
-    "channels": ["web", "telegram"],
-    "filters": {
-      "min_severity": "warning",
-      "categories": [
-        "stage_completed",
-        "stage_failed",
-        "escalation",
-        "task_failed",
-        "inspector_complete",
-        "plan_updated"
-      ]
-    }
   },
 
   // skill auto-attachment limits
@@ -75,11 +53,7 @@ The schema is the `ProjectConfigSchema` Zod type from [`src/types.ts`](https://g
 |-------|------|-------------|
 | `project_name` | string | Identifier shown in UIs. |
 | `objectives` | string[] | What you want done. Specific is better. |
-| `provider` | string? | Default `provider/model` for any role. |
 | `routing` | object? | Structured router config. See [Routing](./routing). |
-| `notifications.channels` | enum[] | `"web"`, `"telegram"`. |
-| `notifications.filters.min_severity` | enum | `"info"`, `"warning"`, `"error"`. |
-| `notifications.filters.categories` | enum[] | Which event types to publish. Empty = all. |
 | `skills.max_per_agent` | number | Cap on auto-attached skills per agent run. |
 | `agents.<role>.compaction_threshold_pct` | number | % of context window before compaction kicks in (default 80). |
 | `agents.<role>.max_compactions` | number | After this many compactions the agent fails (default 3). |
@@ -97,15 +71,13 @@ The full set of resolved paths is exposed on `ProjectContext.paths`. See
 ## Initializing programmatically
 
 ```ts
-import { initProject } from "saivage";
+import { seedProject } from "saivage";
 
-await initProject("/path/to/project", {
-  project_name: "myproject",
+await seedProject("/path/to/project", {
+  name: "myproject",
   objectives: ["…"],
-  notifications: { channels: ["web"], filters: { min_severity: "info", categories: [] } },
-  skills: { max_per_agent: 5 },
 });
 ```
 
-`initProject` creates the `.saivage/` directory structure and the
-`config.json` file.
+`seedProject` creates the `.saivage/` directory structure plus both
+`config.json` and `saivage.json`.
