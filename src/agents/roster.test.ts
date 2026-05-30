@@ -168,20 +168,21 @@ describe("renderRosterSummary", () => {
   });
 });
 
-describe("ROSTER ↔ SPEC parity", () => {
-  it("SPEC/v2/00-AGENT-SYSTEM.md mentions every roster display name", () => {
-    const specPath = join(
+describe("ROSTER ↔ docs parity", () => {
+  it("docs/internals/agents/index.md mentions every roster display name", () => {
+    const docPath = join(
       __dirname,
       "..",
       "..",
-      "SPEC",
-      "v2",
-      "00-AGENT-SYSTEM.md",
+      "docs",
+      "internals",
+      "agents",
+      "index.md",
     );
-    if (!existsSync(specPath)) return;
-    const spec = readFileSync(specPath, "utf8");
+    if (!existsSync(docPath)) return;
+    const doc = readFileSync(docPath, "utf8");
     for (const entry of ROSTER) {
-      expect(spec).toContain(entry.displayName);
+      expect(doc).toContain(entry.displayName);
     }
   });
 });
