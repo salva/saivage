@@ -3,9 +3,10 @@
 [`src/runtime/self-check.ts`](https://github.com/salva/saivage/blob/main/src/runtime/self-check.ts)
 
 Long-running agent loops occasionally fall into degenerate patterns —
-re-issuing the same tool call, looping over irrelevant searches, etc. The
-self-check mechanism injects a **progress-assessment prompt** on a regular
-cadence to break such patterns.
+re-issuing the same tool call, looping over irrelevant searches, etc.
+`src/runtime/self-check.ts` defines the counter and prompt helper for a
+progress-assessment nudge, but the current `BaseAgent` loop does not wire
+that helper into live conversations.
 
 ## Cadence
 
@@ -17,41 +18,48 @@ const DEFAULT_SELF_CHECK_FREQUENCY: Record<AgentRole, number> = {
   researcher: 15,
   data_agent: 15,
   reviewer: 15,
+  designer: 15,
+  critic: 15,
   inspector: 15,
   chat: 0, // disabled for chat
+  librarian: 20,
 };
 ```
 
 The unit is **tool-call rounds** — every call to the LLM that emits at
-least one tool call counts. Roles with high turn count (Coder doing many
-small edits) get checked more frequently.
+least one tool call counts. `DEFAULT_SELF_CHECK_FREQUENCY` is derived from
+`ROSTER.selfCheckFrequency` rather than maintained as a separate literal.
 
 ## Prompt content
 
-The injected prompt asks the agent to:
+`selfCheckMessage(frequency)` returns a prompt that asks the agent to:
 
 1. Restate the current goal.
 2. Summarize what has been done since the last self-check.
 3. Decide whether progress is being made; if not, propose a different
    approach or terminate the task with a failure reason.
 
-The agent's normal response to this prompt is a short text message; the
-loop then continues. Tool calls embedded in the self-check response are
-honored normally.
+No production caller currently injects that prompt. If the helper is wired
+in later, the agent response should be processed by the normal conversation
+loop and tool calls in the response should be honored normally.
 
 ## Stuck detection
 
-Self-check is **not** an autonomous abort mechanism. The runtime watches
-two harder signals to declare an agent stuck:
+Self-check is **not** an autonomous abort mechanism, and today it is not a
+live mechanism at all. The runtime watches harder signals to declare or
+handle stuck work:
 
-- **Compaction limit reached** (see [Compaction](./compaction)) → fail.
+- **Compaction limit reached**, **fallback exhaustion**, or an **oversized
+  atomic tool round** (see [Compaction](./compaction)) → fail the agent.
 - **Supervisor verdict** of *stuck* repeated `consecutiveStuckVerdicts`
-  times (see [Supervisor](./supervisor)) → abort and surface to the
-  Planner.
+  times (see [Supervisor](./supervisor)) → cancel the selected abortable
+  active agent.
+- **Planner text-only loops** are nudged up to 15 times by `PlannerAgent`
+  before the recovery loop restarts the Planner.
 
 ## Disabling
 
-Self-check is disabled for the Chat agent (it is interactive and short-
-lived). For development you can disable per-role by setting the frequency
-to `0` in a system-prompt override, but there is no public config knob —
-the value lives in code.
+The roster sets Chat's frequency to `0`. `createSelfCheckState(role,
+configFrequency)` accepts an optional override for callers/tests, but
+there is no public runtime configuration knob and no live caller in the
+current `BaseAgent` loop.
