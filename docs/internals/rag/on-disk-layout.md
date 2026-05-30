@@ -12,7 +12,7 @@ one module — operators should not edit any file in this tree by hand.
 ├── store.db-wal      SQLite WAL (transient)
 ├── store.db-shm      SQLite SHM (transient)
 ├── .ingest.lock      proper-lockfile sentinel; held while ingest runs
-└── .corrupted        sentinel written before a CorruptedStoreError throw
+└── store.db.corrupted sentinel written before a CorruptedStoreError throw
 ```
 
 When `dataset.drop()` is invoked the entire directory is removed.
@@ -25,10 +25,11 @@ When `dataset.drop()` is invoked the entire directory is removed.
 {
   "entries": [
     {
-      "datasetId": "project-docs",
+      "id": "project-docs",
+      "projectId": "example-project",
+      "source": "doc",
       "providerStamp": { "provider": "openai", "model": "...", "dim": 1536, "releaseFingerprint": "..." },
-      "createdAt": 1731000000000,
-      "lastIngestAt": 1731010000000
+      "createdAt": "2026-05-30T08:00:00.000Z"
     }
   ]
 }
@@ -42,11 +43,11 @@ from this file on every `register`.
 
 | Table              | Purpose                                                              |
 | ------------------ | -------------------------------------------------------------------- |
-| `chunks`           | One row per chunk: id, path, source kind, scope, byte range, text    |
-| `vss_chunks`       | sqlite-vec virtual table holding the Float32 vectors                 |
+| `chunk`            | One row per chunk: id, path, source kind, metadata columns, text     |
+| `vec_chunk`        | sqlite-vec virtual table holding the Float32 vectors                 |
 | `embedding_cache`  | Stamp-keyed cache: `(stampFingerprint, contentHash) -> embedding`    |
 | `file_state`       | `(path) -> { sourceHash, mtimeMs, lastIngestAt }`                    |
-| `dataset_meta`     | Provider stamp, `secretsDropped`, `lastIngestAt`                     |
+| `meta`             | Provider stamp, `createdAt`, `lastIngestAt`, `secretsDroppedTotal`   |
 
 ### Chunk id formula
 
