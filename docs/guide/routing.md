@@ -35,7 +35,7 @@ models.
         "github-copilot/gpt-5.4",
         "anthropic/claude-3-5-sonnet-20241022"
       ],
-      "preferred_accounts": ["github-copilot@personal"]
+      "preferred_accounts": ["personal"]
     },
     "cheap": {
       "model": "github-copilot/gpt-4o-mini"
@@ -57,7 +57,7 @@ models.
 | Field | Description |
 |-------|-------------|
 | `profile` | Reference to a named profile in `profiles`. |
-| `model` | Explicit `provider/model`. |
+| `model` | Explicit `provider/model` or provider-independent model id. |
 | `auth_profile` | Force a specific OAuth profile. |
 | `account` | Bind to an account declared under `runtime.providers.<id>.accounts`. |
 | `preferred_models` | Ordered fallback list. The router will try these in order before declaring failure. |
@@ -66,31 +66,35 @@ models.
 
 ## Resolution algorithm
 
-1. Look up the role rule (`roles[<role>]`). A bare string is a profile name.
-2. Merge rule with referenced profile, then with `default_profile`.
-3. If still missing fields, fall back to `RuntimeConfig.models[<role>]`,
-   or `RuntimeConfig.models.default`.
+1. Look up the role rule (`roles[<role>]`, then `roles.default`). A bare
+  string is a profile name if it matches `profiles`; otherwise it is a model
+  id.
+2. Merge the rule with its referenced profile chain. If there is no role rule,
+  use `default_profile` when present.
+3. If still missing fields, fall back to the role's runtime model key
+  (`orchestrator`, `coder`, `researcher`, `data_agent`, `reviewer`,
+  `designer`, `critic`, or `chat`), then `RuntimeConfig.models.default`.
 4. Validate: refuse if model or account is not in the rule's allow-list.
 5. Emit `ResolvedModelRoute` with `source` set to whichever level provided
    the final spec.
 
 ## Diagnostic output
 
-The CLI exposes the resolved decision per role:
+The CLI lists the registered providers and their available models:
 
 ```bash
 saivage models /path/to/project
 ```
 
-Which prints, per role: model spec, source layer, and the preferred fallback
-list.
+Use it to confirm provider registration and model discovery before wiring those
+model ids into `routing` or `models`.
 
 ## When to use what
 
-- **Single solo project, one provider** → just set `provider` at top level
-  and forget the rest.
+- **Single solo project, one provider** → set `models.default` in
+  `saivage.json` and leave project routing empty.
 - **Multiple OAuth accounts or strict allow-lists** → switch to `routing`
   and use profiles.
 
 The router itself (failover, retries, rate-limit awareness) is documented
-in [Provider Router](/internals/provider-router).
+in [Provider Router](/internals/providers/router).
