@@ -17,9 +17,6 @@
  *   0 = clean,
  *   1 = error / lock held,
  *   2 = anomalies (duplicates / missing summaries) detected — operator review.
- *
- * See SPEC/plan-persistence-fix/03-plan.md §4 and
- * SPEC/plan-persistence-fix/02-architecture.md §3 for design.
  */
 
 import { promises as fs } from "node:fs";

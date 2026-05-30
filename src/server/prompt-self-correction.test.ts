@@ -6,13 +6,12 @@
  * precondition tool (plan_set_current or plan_add_stage) for the SAME
  * stage id — not a re-dispatch and not plan_done.
  *
- * STATUS: skipped. Per SPEC/plan-persistence-fix/03-plan.md §3.6, this
- * test ships with the assertion shape preserved but skipped because:
+ * STATUS: skipped. This test ships with the assertion shape preserved but
+ * skipped because:
  *   1. The stub-LLM harness needed to drive runPlanner does not yet
  *      exist (shared dependency with prompt-tool-sequence.test.ts).
  *   2. The structured `{code, error}` AgentResult.reason that the
- *      assertion inspects is introduced by Stage C (Fix 1) — see
- *      SPEC/plan-persistence-fix/02-architecture.md §2.3.
+ *      assertion inspects is introduced by Stage C (Fix 1).
  * Re-enable in Stage C once both prerequisites land.
  */
 

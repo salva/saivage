@@ -324,8 +324,7 @@ export class PlanService {
    * getToolSchemas()); intended exclusively for the offline backfill
    * script at src/scripts/backfill-plan-history.ts. Writes via writeDoc so
    * the atomic tmp+rename guarantee and in-memory cache invalidation still
-   * apply. See SPEC/plan-persistence-fix/02-architecture.md §3.1 and
-   * 03-plan.md §4.2.
+   * apply.
    */
   async plan_append_history(
     stage: CompletedStage,

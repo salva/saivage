@@ -8,7 +8,7 @@
  * (e) PLAN_WRITER_TOOLS does NOT expose plan_append_history.
  *
  * Broader coverage (lock interlock, CLI exit codes, fallback-from-reports
- * variants) lands as a follow-up — see SPEC/plan-persistence-fix/03-plan.md §4.4.
+ * variants) lands as a follow-up.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";

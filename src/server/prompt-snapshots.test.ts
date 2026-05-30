@@ -3,7 +3,7 @@
  *
  * Verifies that RECOVERY_PROMPT and CONTINUOUS_IMPROVEMENT_PROMPT carry the
  * plan-mutation contract block introduced by Stage A, plus a snapshot of each
- * to catch unintended drift. See SPEC/plan-persistence-fix/03-plan.md §3.4.
+ * to catch unintended drift.
  */
 
 import { describe, it, expect } from "vitest";

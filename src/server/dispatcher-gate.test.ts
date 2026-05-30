@@ -8,8 +8,7 @@
  *
  * Pass case lives in worker-spawn.test.ts already exercises the happy
  * worker flow; the manager happy path is covered by the integration
- * suite (planner → run_manager) referenced in
- * SPEC/plan-persistence-fix/02-architecture.md §2.5.
+ * suite (planner → run_manager).
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";

@@ -11,7 +11,6 @@
  * guard in prompt-snapshots.test.ts already catches accidental removal
  * of any of those tool names from the prompts. This file is shipped with
  * the assertion shape preserved so the harness work is a follow-up.
- * See SPEC/plan-persistence-fix/03-plan.md §3.5.
  */
 
 import { describe, it, expect } from "vitest";

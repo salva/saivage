@@ -318,9 +318,9 @@ export async function bootstrap(
 }
 
 /**
- * Stage-dispatch gate (Fix 1, see SPEC/plan-persistence-fix/02-architecture.md
- * §2). Validates that a `run_manager` dispatch is admissible against
- * `plan.json` BEFORE constructing a ManagerAgent or mutating tracker state.
+ * Stage-dispatch gate. Validates that a `run_manager` dispatch is
+ * admissible against `plan.json` BEFORE constructing a ManagerAgent or
+ * mutating tracker state.
  *
  * Returns a structured `StructuredFailureReason` ({ code, error }) when the
  * dispatch must be rejected, or `null` when it is admissible. The caller
