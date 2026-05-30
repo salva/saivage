@@ -1,37 +1,48 @@
-# Saivage v2 — Data Model
+# Data types & schemas
 
-All JSON schemas use TypeScript-style type notation. Optional fields are marked with `?`.
-Timestamps are ISO 8601 strings. IDs are opaque strings (nanoid or UUID).
+[`src/types.ts`](https://github.com/salva/saivage/blob/main/src/types.ts) is
+the single source of truth for every JSON document Saivage persists. Each
+shape is declared as a Zod schema and the TypeScript type is derived from it
+via `z.infer`. Schemas are used both at write time (validation before atomic
+write) and at read time (parsing).
 
----
+All schemas below use TypeScript notation. Optional fields are marked with
+`?`. Timestamps are ISO 8601 strings. IDs follow the
+[ID conventions](#id-conventions) below.
 
-## 1. Runtime Config (`SaivageConfig`)
+## Top-level documents
 
-**Path:** `<saivageDir>/saivage.json` (see [`docs/guide/config-runtime.md`](../../docs/guide/config-runtime.md) for the precise resolution rules).
+| Schema | Persisted as |
+|--------|-------------|
+| `ProjectConfigSchema` | `<project>/.saivage/config.json` |
+| `PlanDocumentSchema` | `<project>/.saivage/plan.json` |
+| `TaskListSchema` | `<project>/.saivage/stages/<id>/tasks.json` |
+| `TaskReportSchema` | `<project>/.saivage/stages/<id>/reports/<task-id>.json` |
+| `StageSummarySchema` | `<project>/.saivage/stages/<id>/summary.json` |
+| `InspectionReportSchema` | `<project>/.saivage/inspections/<id>.json` |
+| `UserNoteSchema` | `<project>/.saivage/notes/<id>.json` |
+| `RuntimeStateSchema` | `<project>/.saivage/tmp/state/runtime.json` |
+| `ShutdownRequestSchema` | `<project>/.saivage/tmp/state/shutdown-request.json` |
+| `ShutdownSummarySchema` | `<project>/.saivage/tmp/state/shutdown-summary.json` |
+| `SkillEntrySchema` / `SkillIndexSchema` | `<skills-dir>/index.json` |
+| `ChatLogSchema` | `<project>/.saivage/tmp/chats/<channel>/<sessionId>.json` |
 
-**Canonical source.** The runtime config schema is defined in
-[`src/config.ts`](../../src/config.ts) as the Zod `configSchema` and exported
-as the TypeScript type `SaivageConfig`. The schema — including every
-top-level block (`models`, `providers`, `failover`, `modelEquivalents`,
-`server`, `agent`, `runtime`, `security`, `supervisor`, `telegram`, `mcp`,
-`notifications`, `oauth`, `mcpServers`) — is authoritative. This SPEC does
-not mirror it; the Zod source plus the operator guide are the contract.
+## 1. Runtime config (`SaivageConfig`)
 
-**Operator prose.** [`docs/guide/config-runtime.md`](../../docs/guide/config-runtime.md)
-walks every top-level block, documents defaults, and describes environment
-variable interpolation and reloading.
+**Path:** `<saivageDir>/saivage.json` (see
+[`docs/guide/config-runtime`](../../guide/config-runtime) for the precise
+resolution rules).
 
-**Cross-cutting policy tickets.** Specific schema rules and defaults are
-owned by these review findings:
+The runtime config schema is defined in
+[`src/config.ts`](https://github.com/salva/saivage/blob/main/src/config.ts)
+as the Zod `configSchema` and exported as the TypeScript type
+`SaivageConfig`. Every top-level block (`models`, `providers`, `failover`,
+`modelEquivalents`, `server`, `agent`, `runtime`, `security`, `supervisor`,
+`telegram`, `mcp`, `notifications`, `oauth`, `mcpServers`) lives there; this
+page does not mirror it. The Zod source plus the operator guide are the
+contract.
 
-- [F02 — agent roster drift](review-2026-05/F02-agent-roster-drift.md): final list of `models.*` role keys.
-- [F04 — hardcoded default models](review-2026-05/F04-hardcoded-default-models.md): which `models.*`, `security.injectionModel`, and `supervisor.model` are required vs optional.
-- [F11 — magic constants → config](review-2026-05/F11-magic-constants-not-in-config.md): the `mcp.*` block and the `runtime.notes`, `runtime.recoveryDelayMs`, `supervisor.forceCancelDelayMs` keys.
-- [F33 — config-default drift](review-2026-05/F33-config-default-drift.md): the `seedProject` writer and removal of duplicate default literals.
-
----
-
-## 2. Project Config
+## 2. Project config
 
 **Path:** `<project>/.saivage/config.json`
 
@@ -64,9 +75,7 @@ interface ProjectConfig {
 }
 ```
 
----
-
-## 3. Active Plan View
+## 3. Active plan view
 
 **Path:** `<project>/.saivage/plan.json`
 
@@ -91,15 +100,13 @@ interface Stage {
 }
 ```
 
----
+## 4. Plan document (active + history)
 
-## 4. Embedded Plan History
+**Path:** `<project>/.saivage/plan.json` (full document)
 
-**Path:** `<project>/.saivage/plan.json` (`history` field)
-
-Archive of terminal stages (completed, failed, escalated, aborted). The
-history is embedded in the authoritative plan document so completing a stage
-is a single atomic write.
+Archive of terminal stages (completed, failed, escalated, aborted) is
+embedded in the authoritative plan document so completing a stage is a
+single atomic write.
 
 ```typescript
 interface PlanDocument {
@@ -122,12 +129,10 @@ interface CompletedStage {
   completed_at: string;
   result: "completed" | "failed" | "escalated" | "aborted";
   summary: string;                   // from Manager's stage summary
-  escalation?: Escalation;           // if result == "escalated" (preserved from StageSummary)
-  abort_reason?: string;             // if result == "aborted" (preserved from StageSummary)
+  escalation?: Escalation;           // if result == "escalated"
+  abort_reason?: string;             // if result == "aborted"
 }
 ```
-
----
 
 ## 5. Tasks
 
@@ -164,9 +169,7 @@ interface ChecklistItem {
 }
 ```
 
----
-
-## 6. Task Report
+## 6. Task report
 
 **Path:** `<project>/.saivage/stages/<stage-id>/reports/<task-id>.json`
 
@@ -186,7 +189,7 @@ interface TaskReport {
   tests_run: TestResult[];
   commits: string[];                 // git commit SHAs
   issues_found: Issue[];
-  output_truncated?: boolean;        // true if test output or report was truncated (see 04-RUNTIME-DETAILS §5.2)
+  output_truncated?: boolean;        // true if test output or report was truncated
   failure_reason?: string;           // if status == "failed"
   started_at: string;
   completed_at: string;
@@ -213,13 +216,15 @@ interface Issue {
 }
 ```
 
----
+Output-truncation rules and limits are documented in
+[runtime/details](../runtime/details) §5.2.
 
-## 7. Stage Summary
+## 7. Stage summary
 
 **Path:** `<project>/.saivage/stages/<stage-id>/summary.json`
 
-Written by the Manager when all tasks complete (or on escalation/abort). Consumed by the Planner.
+Written by the Manager when all tasks complete (or on escalation/abort).
+Consumed by the Planner.
 
 ```typescript
 interface StageSummary {
@@ -240,13 +245,15 @@ interface StageSummary {
 }
 ```
 
----
-
-## 8. User Notes
+## 8. User notes
 
 **Path:** `<project>/.saivage/notes/<note-id>.json`
 
-Created by Chat, consumed by Planner. The **runtime** manages note lifecycle: it injects unacknowledged notes into the Planner's context on resume, sets `acknowledged_at` after the Planner completes its planning action, and deletes volatile notes after acknowledgment. Permanent notes persist on disk indefinitely.
+Created by Chat, consumed by Planner. The **runtime** manages note
+lifecycle: it injects unacknowledged notes into the Planner's context on
+resume, sets `acknowledged_at` after the Planner completes its planning
+action, and deletes volatile notes after acknowledgment. Permanent notes
+persist on disk indefinitely.
 
 ```typescript
 interface UserNote {
@@ -261,9 +268,7 @@ interface UserNote {
 }
 ```
 
----
-
-## 9. Inspection Report
+## 9. Inspection report
 
 **Path:** `<project>/.saivage/inspections/<report-id>.json`
 
@@ -293,51 +298,41 @@ interface InspectionRequest {
 }
 ```
 
----
+## 10. Skills & memory records
 
-## 10. Skills & Memory
+Skills and memory records share `RecordBase` (defined in
+[`src/knowledge/types.ts`](https://github.com/salva/saivage/blob/main/src/knowledge/types.ts))
+plus per-kind extensions. On-disk layout (`skills/{project,stages,sessions}/…`
+and `memory/{project,stages,sessions}/…`), the supersession state machine,
+and the audit-log format are documented in
+[knowledge/skills-and-memory](../knowledge/skills-and-memory).
 
-**On-disk layout under `<project>/.saivage/`** (design §B.4):
-
-```
-.saivage/
-├── skills/
-│   ├── project/{index.json, audit.jsonl, records/<uuid>.json, records/<uuid>.md}
-│   ├── stages/<stage_id>/{index.json, audit.jsonl, records/}
-│   └── sessions/<channel_id>/{index.json, audit.jsonl, records/}
-├── memory/
-│   ├── project/{index.json, audit.jsonl, records/<uuid>.json}
-│   ├── stages/<stage_id>/{index.json, audit.jsonl, records/}
-│   └── sessions/<channel_id>/{index.json, audit.jsonl, records/}
-```
-
-Built-in skills ship at `saivage/skills/builtin/<topic>/SKILL.md` (YAML frontmatter, no `index.json`) and live **outside** `<project>/.saivage/`. They are bundled into `dist/skills/builtin/` by `tsup`.
-
-`.saivage/{skills,memory}/sessions/` is gitignored; `project/` and `stages/` subtrees are committed. Each scope subtree is self-contained — its own `index.json` (a derivable summary projection of `records/*.json`), its own append-only `audit.jsonl`, and its own `records/` directory.
-
-**Schemas.** The canonical Zod schemas live in the design document — see [SPEC/v2/skills-memory/01-DESIGN.md](skills-memory/01-DESIGN.md) §B.1 for `SkillRecord`, `MemoryRecord`, and `AuditEntry`. Summary of the shared `RecordBase` fields:
+Summary of shared `RecordBase` fields:
 
 - `id` (UUID) — unique within `(kind, scope, scope_ref)`.
 - `kind` — `"skill"` | `"memory"`.
-- `scope` — `"project"` | `"stage"` | `"session"`; `scope_ref` is required for stage/session and matches the path under §B.4.
-- `status` — `"active"` | `"superseded"` | `"archived"` | `"expired"` (tombstone for `deleted`).
+- `scope` — `"project"` | `"stage"` | `"session"`; `scope_ref` is required
+  for stage/session.
+- `status` — `"active"` | `"superseded"` | `"archived"` | `"expired"`.
 - `created_at` / `updated_at` — ISO 8601 datetimes.
 - `author_agent` — `{ role, agent_id }` of the creator.
 - `source` — optional `{ stage_id?, task_id? }` provenance.
-- `expires_at` / `ttl_ms` — optional decay metadata (project scope only; stage/session use scope hooks instead).
+- `expires_at` / `ttl_ms` — optional decay metadata (project scope only).
 - `supersedes` / `superseded_by` — UUID pair forming the supersession chain.
 - `relates_to` — symmetric free-form references (bounded at 16).
-- `survive_compaction` — boolean; `true` ⇒ record participates in post-compaction reinjection (design §E.1).
+- `survive_compaction` — boolean; `true` ⇒ participates in post-compaction
+  reinjection.
 
-`SkillRecord` adds `{ origin: "builtin"|"project", name, description, triggers[], target_agents[], body_path }`. `MemoryRecord` adds `{ topic: {domain, subject, aspect?}, keys[], target_agents[], body, source_ref? }`. See design §B.1 for the exact refinements.
+`SkillRecord` adds
+`{ origin: "builtin"|"project", name, description, triggers[], target_agents[], body_path }`.
+`MemoryRecord` adds
+`{ topic: {domain, subject, aspect?}, keys[], target_agents[], body, source_ref? }`.
 
-`AuditEntry` is one JSON line per write attempt (including rejections) in the scope's `audit.jsonl`: `{ ts, record_id, op, outcome, error_code?, author_agent, reason, prev_status?, next_status?, content_hash_before?, content_hash_after? }`. Operations: `create | update | supersede | archive | unarchive | delete | expire`.
+`AuditEntry` is one JSON line per write attempt (including rejections) in
+the scope's `audit.jsonl`:
+`{ ts, record_id, op, outcome, error_code?, author_agent, reason, prev_status?, next_status?, content_hash_before?, content_hash_after? }`.
 
-**Lifecycle states.** `active` → `superseded` (via `supersede_*`), `archived` (reversible via `unarchive_*`), `expired` (sweeper), `deleted` (tombstone). Stage terminal transitions archive their stage-scoped records via a directory walk; chat-channel close archives session-scoped records the same way. Supersession may widen scope (`stage → project`) but never narrow it; see design §B.2 / §B.5.
-
----
-
-## 11. Runtime State
+## 11. Runtime state
 
 **Path:** `<project>/.saivage/tmp/state/runtime.json`
 
@@ -363,9 +358,7 @@ interface AgentState {
 }
 ```
 
----
-
-## 12. Chat Log
+## 12. Chat log
 
 **Path:** `<project>/.saivage/tmp/chats/<channel>/<session-id>.json`
 
@@ -400,11 +393,11 @@ interface SystemEvent {
 }
 ```
 
----
-
 ## 13. Escalation
 
-Not a standalone file — escalations are embedded in the stage summary (§7) and trigger Planner re-invocation. Defined here for clarity.
+Not a standalone file — escalations are embedded in the stage summary
+([§7](#_7-stage-summary)) and trigger Planner re-invocation. Defined here
+for clarity.
 
 ```typescript
 interface Escalation {
@@ -417,62 +410,37 @@ interface Escalation {
 }
 ```
 
-The Manager writes this into the `StageSummary.escalation` field and sets `result: "escalated"`.
-The Planner reads it and decides whether to revise the stage, remove it, split it, or schedule an Inspector.
+The Manager writes this into the `StageSummary.escalation` field and sets
+`result: "escalated"`. The Planner reads it and decides whether to revise
+the stage, remove it, split it, or schedule an Inspector.
 
----
+## 14. Document relationships
 
-## 14. Document Relationships
+The full ER diagram lives in [architecture](../architecture) §5.3. The
+linear flow is:
 
 ```
-ProjectConfig
-     │
-     ▼
-   PlanDocument
-     │
-     ├─ stages[] ───────────► Stage
-     │                         │
-     └─ history[] ◄────────────┤ on completion
-                               ▼
-             Manager ──► TaskList
-                           │
-                           ▼
-                         Task[] ────┤
-                           │        │
-                           ▼        │
-                      TaskReport ───┤
-                           │        │
-                           ▼        │
-                     StageSummary ──┘
-                           │
-                           ▼
-                    Escalation? ──► Planner (re-invoke)
-
-   UserNote ──► Runtime (injects into Planner context; manages acknowledgment and cleanup)
-
-   InspectionRequest ──► Inspector ──► InspectionReport ──► Planner | Chat
-
-   ChatLog (cross-references Notes, InspectionRequests)
+ProjectConfig → PlanDocument → Stage → TaskList → Task → TaskReport → StageSummary → (Escalation? → Planner)
+UserNote → Runtime → Planner context
+InspectionRequest → Inspector → InspectionReport → Planner | Chat
+ChatLog cross-references Notes and InspectionRequests
 ```
 
----
+## 15. ID conventions
 
-## 15. ID Conventions
+`src/ids.ts` provides collision-resistant id generators per category. All
+produce `<prefix>-<base32-rand>` strings (e.g. `stg-abc123`).
 
-| Entity       | Prefix   | Example                |
-|--------------|----------|------------------------|
-| Stage        | `stg-`   | `stg-a1b2c3`           |
-| Task         | `tsk-`   | `tsk-x4y5z6`           |
-| Note         | `note-`  | `note-m7n8o9`          |
-| Inspection   | `insp-`  | `insp-p0q1r2`          |
-| Chat session | `chat-`  | `chat-s3t4u5`          |
-| Agent inst.  | `agt-`   | `agt-v6w7x8`           |
+| Entity       | Prefix   | Example                | Generator           |
+|--------------|----------|------------------------|---------------------|
+| Stage        | `stg-`   | `stg-a1b2c3`           | `stageId()`         |
+| Task         | `tsk-`   | `tsk-x4y5z6`           | `taskId()`          |
+| Note         | `note-`  | `note-m7n8o9`          | `noteId()`          |
+| Inspection   | `insp-`  | `insp-p0q1r2`          | `inspectionId()`    |
+| Chat session | `chat-`  | `chat-s3t4u5`          | `chatSessionId()`   |
+| Agent inst.  | `agt-`   | `agt-v6w7x8`           | `agentId()`         |
 
-IDs are generated with nanoid (12 chars, alphanumeric), prefixed by entity type.
-
----
-
-## 16. File Lifecycle
+## 16. File lifecycle
 
 | Document                   | Created by   | Updated by   | Deleted when              |
 |----------------------------|-------------|-------------|---------------------------|
@@ -482,8 +450,30 @@ IDs are generated with nanoid (12 chars, alphanumeric), prefixed by entity type.
 | `stages/<id>/summary.json` | Manager     | —           | Never (archived)          |
 | `notes/<id>.json`          | Chat        | Runtime     | Volatile: after ack. Permanent: never |
 | `inspections/<id>.json`    | Inspector   | —           | After `expires_at` (if set)|
-| `skills/index.json`        | Coder       | Coder       | Never (overwritten)       |
-| `skills/<name>.md`         | Coder       | Coder       | Never                     |
+| `skills/**/records/*`      | Manager / Inspector | Manager / Inspector | Archived on scope close |
+| `memory/**/records/*`      | Manager / Inspector | Manager / Inspector | Archived on scope close |
 | `tools/inspector/*`        | Inspector   | Inspector   | Never                     |
 | `tmp/state/runtime.json`   | Runtime     | Runtime     | On clean shutdown          |
 | `tmp/chats/<ch>/<id>.json` | Chat        | Chat        | Rotation policy (TBD)      |
+
+## Validation philosophy
+
+- **Write-time validation** is the strict gate. A schema mismatch raises
+  before the atomic rename, so corrupt files are never written.
+- **Read-time validation** raises on mismatch unless `readDocOrNull` is
+  used. The runtime usually wraps reads in `readDocOrNull` for tmp files
+  (which may not exist) and `readDoc` for canonical artifacts.
+
+## Evolving the schema
+
+1. Update the Zod definition in
+   [`src/types.ts`](https://github.com/salva/saivage/blob/main/src/types.ts).
+2. If the change is breaking, migrate in place — consume the old shape
+   under `readDocOrNull`, write the upgraded shape with `writeDoc`. Per the
+   workspace architecture-first rule, prefer removing the old shape entirely
+   rather than carrying compatibility shims.
+3. Update this page.
+4. Bump the `package.json` version and note the migration in the changelog.
+
+Schemas use `default()` extensively so new optional fields are
+backward-compatible without explicit migration.

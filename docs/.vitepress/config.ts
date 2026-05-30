@@ -158,7 +158,7 @@ export default withMermaid(defineConfig({
           text: "Data Model",
           collapsed: false,
           items: [
-            { text: "Types & Schemas", link: "/internals/data-model" },
+            { text: "Types & Schemas", link: "/internals/data/types" },
             { text: "On-Disk Layout", link: "/internals/data/on-disk-layout" },
           ],
         },
