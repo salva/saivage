@@ -2,9 +2,9 @@
 
 Two related mechanisms ensure the runtime survives unexpected events:
 
-- **Abort** ([`src/runtime/abort.ts`](https://github.com/salva/saivage/blob/main/src/runtime/abort.ts))
-  — controlled termination of the active agent chain, triggered by an
-  urgent user note or a supervisor verdict.
+- **Abort / cancellation** ([`src/runtime/abort.ts`](https://github.com/salva/saivage/blob/main/src/runtime/abort.ts))
+  — helper primitives plus the live `BaseAgent.cancel()` / abort-signal
+  paths used by planner restart, shutdown, and supervisor cancellation.
 - **Recovery** ([`src/runtime/recovery.ts`](https://github.com/salva/saivage/blob/main/src/runtime/recovery.ts))
   — startup-time reconciliation of disk state after a crash.
 
@@ -12,68 +12,74 @@ Two related mechanisms ensure the runtime survives unexpected events:
 
 ### Trigger sources
 
-- **Urgent user note** (`urgent: true`) — surfaced by the Notes scanner.
-- **Supervisor decision** — see [Supervisor](./supervisor).
-- **Programmatic** — `runtime.abort(reason)` from the public API.
+- **Planner restart request** — `PlannerControl` sets the Planner's
+  abort signal and queues a restart directive.
+- **Process shutdown** — the signal handler cancels the active Planner.
+- **Supervisor decision** — see [Supervisor](./supervisor); it calls
+  `cancel()` on the selected abortable agent.
+
+`abort.ts` still exposes `scanForUrgentNotes`, `triggerAbort`, and
+`resetWorkingTree`, but the current runtime does not wire urgent notes into
+active-work interruption. Chat-created urgent notes are high-priority
+Planner input, not automatic aborts.
 
 ### Procedure
 
-1. `AbortSignal.aborted = true`. The signal is shared with all running
-   agents through their context.
-2. Each agent's `BaseAgent.run` loop checks the flag between tool rounds.
-   On detect:
-   - Workers — write a partial `TaskReport` with `status: "failed"`,
-     `failure_reason: "aborted"` and return.
-   - Manager — wait for in-flight workers to abort, then write
-     `summary.json` with `result: "aborted"` and return.
-   - Planner — does not abort (it's the recipient of the abort).
-3. Abort runs **bottom-up**. The Manager only writes its summary after
-   its workers have come back.
-4. After the chain unwinds, the runtime runs `git checkout -- .` inside
-   the project to reset tracked-but-modified files. Untracked files are
-   preserved — they may contain in-progress experiments worth keeping.
-5. The Planner is resumed with the abort context (the urgent note + a
-   summary of what was rolled back) prepended as a system message.
+1. `BaseAgent.runLoop()` checks the supplied abort signal and the agent's
+  `cancelled` flag before LLM calls, before/after tool dispatch, and
+  during retry sleeps.
+2. Workers map `finishReason: "abort" | "cancelled"` to an `AgentResult`
+  with `kind: "abort"` and a partial failed `TaskReport`.
+3. Manager maps the same finish reasons to `kind: "abort"` with a partial
+  `StageSummary` whose `result` is `"aborted"`.
+4. Planner maps the finish reason to `kind: "abort"`; the recovery loop
+  stops on a Planner abort.
+5. Supervisor cancellation targets one active abortable agent and reissues
+  `cancel()` after `forceCancelDelayMs` if the agent remains registered.
 
 ### Files preserved across abort
 
-- Anything under `.saivage/` (plans, tasks, summaries).
+- Anything already persisted under `.saivage/`.
 - Untracked files anywhere in the working tree.
-- Committed work — abort never rewrites history.
+- Committed work — cancellation never rewrites history.
 
 ### Files lost across abort
 
-- Tracked, modified, uncommitted work in the project tree (reverted by
-  `git checkout`).
 - Worker-process LLM conversation memory (workers are one-shot; never
   durable).
 
+There is no live automatic rollback path that invokes `git checkout -- .`;
+tracked modified files are not reset by cancellation unless some future
+caller wires `resetWorkingTree()` into the runtime.
+
 ## Recovery
 
-Triggered by `bootstrap()` on every startup.
+Triggered by `bootstrap()` on every startup after the single-instance
+PID check and `runtime.lock` acquisition.
 
 ```mermaid
 flowchart TD
-    A[bootstrap] --> B[Read .saivage/tmp/state/runtime.json]
-    B --> C{Stale PID?}
-    C -- yes --> D[Mark crashed, archive runtime.json]
-    C -- no  --> E[Normal start]
-    D --> F[Reset in-progress tasks → pending]
-    E --> F
-    F --> G[Sweep stale temp files]
-    G --> H[Spawn Planner]
+  A[bootstrap] --> B[Single-instance PID check + runtime.lock]
+  B --> C[Sweep stale temp files]
+  C --> D[Read .saivage/tmp/state/runtime.json]
+  D --> E{Stale non-idle state?}
+  E -- yes --> F[Reconcile stage summary, tasks, and reports]
+  E -- no --> H[Spawn Planner]
+  F --> H
 ```
 
-A "stale PID" is a runtime.json with status `"running"` whose PID no longer
-exists. Recovery archives the file (as `runtime.crashed.<ts>.json`) for
-forensic purposes, then proceeds.
+A "stale PID" is a runtime state that is not `"idle"` and whose PID guard
+does not prove another live instance owns it. Recovery does not archive
+`runtime.json`; it reconciles persisted stage/task files and lets the new
+runtime tracker write fresh state.
 
 `Recovery` also:
 
 - Resets `tasks.json` entries with `status: "in-progress"` to `"pending"`
   for every active stage (so the next Manager redispatches them).
-- Sweeps stale tmp files (`sweepStaleTempFiles` in
-  `src/store/documents.ts`).
-- Reads any `shutdown-summary.json` written by a previous graceful shutdown
-  and surfaces the reason to the Planner on resume — see
-  [Supervisor & Shutdown Handoff](./supervisor).
+- Sweeps stale `*.tmp` files in `.saivage/tmp/state/` and the project
+  `.saivage/` root (`sweepStaleTempFiles` in `src/store/documents.ts`).
+
+Shutdown handoff is consumed separately by `bootstrap()` via
+`consumeShutdownHandoff(project)` and queued as a Planner startup directive
+— see [Supervisor & Shutdown Handoff](./supervisor).
