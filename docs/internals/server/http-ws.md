@@ -16,8 +16,9 @@ Telegram bot, and external automation. It is a Fastify app with the
 2. Loads project config (`loadProject`) and runtime config (`loadConfig`).
 3. Builds the `ModelRoutingResolver` and runs `validateModelCoverage`.
 4. Constructs the `ModelRouter` and runs `inspectUsageAtStartup`.
-5. Constructs the `McpRuntime`, registers built-in services, starts the
-   configured MCP servers, and begins monitoring.
+5. Warms provider model caches, constructs RAG and knowledge-store runtime
+   services, constructs the `McpRuntime`, registers built-in services, starts
+   the configured MCP servers, and begins monitoring.
 6. Constructs the `PlanService` and registers the `plan` in-process MCP
    service.
 7. Runs the single-instance guard (`isAnotherInstanceRunning` +
@@ -43,6 +44,7 @@ export interface SaivageRuntime {
   mcpRuntime: McpRuntime;
   eventBus: EventBus;
   planService: PlanService;
+   noteManager: NoteManager;
   project: ProjectContext;
   tracker: RuntimeTracker;
   plannerControl: PlannerControl;
@@ -52,6 +54,10 @@ export interface SaivageRuntime {
   agentRegistry: Map<string, import("../agents/base.js").BaseAgent>;
   /** Background log-only supervisor for stuck-agent detection. */
   supervisor: RuntimeSupervisor | null;
+   /** RAG MCP service skeleton. */
+   ragService: import("./rag/service.js").RagService;
+   /** Knowledge store facade. */
+   knowledgeStore: import("../knowledge/init.js").KnowledgeStore;
   /** Stop the runtime gracefully. */
   shutdown: () => Promise<void>;
 }
@@ -79,9 +85,9 @@ The only method on the returned object is `close`; there is no `stop`.
 Code that calls `.stop()` will throw a TypeError; defensively
 optional-chained `.stop?.()` silently leaks the Fastify socket.
 
-Registers routes, opens the WebSocket endpoint, optionally spawns the
-Telegram bot, then begins listening. Inside the server lifecycle the
-Planner is spawned in the background and the supervisor loop starts.
+Registers routes, opens the WebSocket endpoint, serves the SPA and optional
+docs build, then begins listening. Telegram startup and Planner startup are
+owned by the `serve` CLI action after `startServer(...)` returns.
 
 ## Entry points
 
@@ -97,14 +103,23 @@ path:
 ## Routes
 
 See [Web Dashboard](/guide/web-ui) for the full REST/WS surface. All
-routes live in `server.ts` for simplicity; cross-cutting concerns (CORS,
-auth) are deferred to the deployment.
+routes live in `server.ts` for simplicity; the optional API token gate is
+implemented there, while CORS remains deployment-specific.
 
 ## Static assets
 
-The web UI's built artifacts (`web/dist/`) are served from `/`. In
-development you can run the Vite dev server separately and proxy `/api`
-to the Fastify server.
+The web UI's built artifacts (`web/dist/`) are served from `/`. A built
+VitePress docs tree (`docs/.vitepress/dist/`) is mounted at `/docs/` when it
+exists; otherwise `/docs/` returns a small placeholder page. In development
+you can run the Vite dev server separately and proxy `/api` to the Fastify
+server.
+
+## API token gate
+
+When `SAIVAGE_API_TOKEN` is set, `/api/*` requires the token via
+`Authorization: Bearer`, `x-saivage-token`, or `?token=`. `/ws` performs the
+same check inside the WebSocket handler and closes unauthorized sockets with
+1008. Static assets and `/health` remain public.
 
 ## Graceful shutdown
 
@@ -138,11 +153,12 @@ Sourced from
 2. `writeShutdownSummary(project)` — best-effort.
 3. `supervisor?.stop()`.
 4. `mcpRuntime.shutdown()` — stops external MCP services.
-5. `eventBus.clear()`.
-6. `writeRuntimeState(..., { status: "idle" })` — the persisted on-disk
+5. `knowledgeStore.sidecar.close()` and `ragManager.close()`.
+6. `eventBus.clear()`.
+7. `writeRuntimeState(..., { status: "idle" })` — the persisted on-disk
    status. See [abort-recovery](./abort-recovery) for the full
    runtime-state schema.
-7. `runtimeLock.release()`.
+8. `runtimeLock.release()`.
 
 `start` and `inspect` invoke `runtime.shutdown()` directly with no
 Fastify / Telegram steps — that wrapping is owned only by `serve`.
