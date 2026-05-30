@@ -8,13 +8,13 @@ Working on Saivage itself.
 git clone https://github.com/salva/saivage.git
 cd saivage
 npm ci
+cd web && npm ci && cd ..
 ```
 
 Outputs:
 
 - `node_modules/` — server deps.
-- `web/node_modules/` — web deps (installed automatically by the
-  `prepare` script chain).
+- `web/node_modules/` — dashboard deps, installed from `web/package-lock.json`.
 
 ## Build
 
@@ -24,8 +24,9 @@ npm run build:server    # just tsup
 npm run build:web       # just web
 ```
 
-`tsup` produces `dist/cli.js`, `dist/index.js`, and `.d.ts` files for
-library consumers. Source maps are emitted by default.
+`tsup` produces the ESM CLI/server bundle at `dist/cli.js`, emits source maps,
+and copies the runtime `skills/` and `prompts/` assets into `dist/`. It does not
+emit declarations or a separate `dist/index.js` bundle.
 
 ## Dev loop
 
@@ -35,8 +36,8 @@ The fastest iteration loop is:
 npm run dev               # tsx src/server/cli.ts
 ```
 
-`tsx` watches imports and recompiles on save. Pair with `npm --prefix
-web run dev` for the dashboard.
+`tsx` runs the CLI directly without a prior build. Restart the command after
+server changes, and pair it with `npm --prefix web run dev` for the dashboard.
 
 For library work (no server), `vitest --watch` plus the typecheck task
 gives quick feedback:
@@ -52,9 +53,10 @@ npm run typecheck
 npm run lint              # eslint src/
 ```
 
-The configuration is at `eslint.config.js`. Rules favor explicit types
-(`@typescript-eslint/explicit-module-boundary-types`) and forbid `any`
-except in test files.
+The configuration is at `eslint.config.js`. It composes the recommended and
+strict TypeScript ESLint configs, warns on explicit `any`, enforces unused
+variable handling, bans `eval`, and adds an auth-specific ban on sync `fs`
+imports outside tests/fixtures.
 
 ## Testing
 
@@ -75,9 +77,9 @@ docs:dev` again).
 
 ## Editor
 
-VS Code with the recommended TypeScript and ESLint extensions is the
-supported setup. The repo includes a per-Vue-file linting workflow — see
-the user-memory note about Vue SFC corruption mitigations.
+VS Code with TypeScript, ESLint, Vue, and VitePress tooling is the normal local
+setup. The repository itself does not currently include a `.vscode/` extension
+recommendation file.
 
 ## Common pitfalls
 
@@ -86,5 +88,5 @@ the user-memory note about Vue SFC corruption mitigations.
 - Editing `src/types.ts` without updating consumers — `npm run typecheck`
   catches this immediately.
 - Touching shared MCP tool schemas — the agent system prompts mention
-  tool names; renaming a tool requires updating prompts under
-  `src/agents/*Prompt.ts`.
+  tool names; renaming a tool requires updating the relevant files under
+  `prompts/`.
