@@ -14,8 +14,10 @@ pointers are absolute paths inside `saivage/`.
    - validates / pins the provider stamp,
    - writes / refreshes the registry entry.
 
-`register` is idempotent for matching stamps and throws
-`ConfigDriftError` for stamp mismatches.
+`register` is idempotent for matching registry entries. It throws
+`ConfigDriftError` when the registry's pinned provider dimension differs from
+the requested config; store-level provider/model/fingerprint drift is surfaced
+as `EmbeddingDriftError` when the dataset opens.
 
 ## 2. First ingest
 
@@ -24,10 +26,12 @@ const ds = await manager.register(cfg);
 await ds.ingest({ kind: "fs", root: "/path/to/source", include: ["**/*.md"] });
 ```
 
-Reports back an `IngestReport` with `chunksUpserted`,
-`chunksDroppedSecrets`, `embeddingsRequested`, `embeddingsCacheHits`,
-etc. Operators should check `chunksDroppedSecrets` and investigate any
-non-zero count via `dataset_meta.secretsDropped`.
+Reports back an `IngestReport` with `filesScanned`, `filesChanged`,
+`chunksUpserted`, `chunksDeleted`, `chunksDroppedSecrets`, `tokensEmbedded`,
+`embeddingMs`, and `storeMs`. Operators should check
+`chunksDroppedSecrets`; the store also increments the sqlite `meta` key
+`secretsDroppedTotal`, but the current `Dataset.stats()` facade does not expose
+that total.
 
 ## 3. Query
 
@@ -65,9 +69,10 @@ await ds.watch();    // arms chokidar, runs an initial reconcile
 await ds.unwatch();  // disarms; idempotent
 ```
 
-The controller acquires the same per-dataset lock as `ingest()`; events
-that arrive while a long ingest is running are coalesced into the next
-flush and proceed after the lock releases.
+Watcher batches route through the same `ingest()` path and therefore the same
+per-dataset lock. If another ingest still owns the lock when the watcher batch
+runs, the ingest path throws `IngestLockedError`; the controller logs the
+failure and a later `ds.reconcile()` is the recovery path.
 
 ### 4.3 Reconciliation
 
@@ -104,8 +109,8 @@ Symptoms:
 
 Recovery:
 
-1. Call `ds.drop()` — removes the directory and unlinks the registry
-   entry.
+1. Call `manager.drop(id)` — removes the directory and unlinks the registry
+   entry. `ds.drop()` only drops the dataset directory/store handle.
 2. Re-`register` with the new config.
 3. Run the initial ingest again.
 
@@ -113,8 +118,8 @@ There is no in-place migration. By design.
 
 ## 6. Corruption recovery
 
-If the runtime throws `CorruptedStoreError`, a `.corrupted` sentinel file
-is present in the dataset directory. Recovery is the same as drift
+If the runtime throws `CorruptedStoreError`, a `store.db.corrupted` sentinel
+file is present in the dataset directory. Recovery is the same as drift
 recovery: drop, re-register, re-ingest.
 
 ## 7. Secret incidents
@@ -122,9 +127,10 @@ recovery: drop, re-register, re-ingest.
 `scanChunk` is intentionally conservative and may produce false
 positives. The flow is:
 
-1. Inspect `dataset_meta.secretsDropped` and `IngestReport.chunksDroppedSecrets`.
-2. Cross-reference with the path list under `file_state` for the most
-   recent ingest.
+1. Inspect `IngestReport.chunksDroppedSecrets`; if direct sqlite inspection is
+   needed, the cumulative counter is `meta.secretsDroppedTotal`.
+2. Cross-reference with the path list under `file_state` for recently ingested
+   sources.
 3. If a false positive is suspected, examine the originating files
    directly. The RAG runtime never logs the offending content.
 
