@@ -19,7 +19,7 @@ the REST endpoints + WebSocket described in [Web Dashboard](/guide/web-ui).
 |------|---------|
 | `App.vue` | Top-level layout, panel switcher. |
 | `components/PlanView.vue` | Active plan + history visualization. |
-| `components/AgentsView.vue` | Live agent list and conversation viewer. |
+| `components/agents/AgentsView.vue` | Live agent list and conversation viewer. |
 | `components/ChatWindow.vue` | WebSocket chat against the Chat agent. |
 | `components/StatusPanel.vue` | Daemon status header. |
 | `components/FilesView.vue` | Read-only project file browser. |
@@ -29,10 +29,12 @@ the REST endpoints + WebSocket described in [Web Dashboard](/guide/web-ui).
 
 ## State management
 
-The app holds state in the root `App.vue` and a single composable
-`composables/useWebSocket.ts` owning the WebSocket connection,
-reconnection backoff, and the inbound JSON parser. There is no Pinia or
-Vuex — the surface is small enough.
+The app holds shell state in `App.vue` and local feature state in Vue
+composables. `composables/useWebSocket.ts` owns the WebSocket connection,
+schema parser, auth-aware reconnect path, and bounded backoff. Additional
+composables (`useAuthState`, `useAgentRoster`, `useAgentConversation`, and
+`useChatSessions`) keep feature state local. There is no Pinia or Vuex — the
+surface is still small enough.
 
 ## Build
 
@@ -60,7 +62,10 @@ before bundling the server with tsup.
 
 ## Known constraints
 
-- No authentication. The dashboard assumes a trusted network.
+- Optional token authentication is supported when the daemon sets
+  `SAIVAGE_API_TOKEN`; `utils/api.ts` injects bearer tokens into REST calls and
+  appends `?token=` for WebSocket connections.
 - No SSR. The bundle is purely client-side; the HTML shell is static.
-- WebSocket reconnect is bounded backoff (1 s → 30 s) without state
-  resync — heavy reconnect loops will lose interim events.
+- WebSocket reconnect is bounded backoff (1 s → 30 s, factor 1.7, with jitter)
+  without state resync. Auth-policy close codes stop reconnecting until a new
+  token is supplied.
