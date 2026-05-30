@@ -16,9 +16,9 @@ Inter-agent communication uses two complementary mechanisms:
 - **Tool-call invocation** for control flow — parent calls child, suspends, child
   returns result.
 - **JSON documents on disk** for persistence and auditability — a parent writes
-  the task spec to disk, invokes the child via tool call, the child reads the
-  spec from disk, does its work, writes results to disk, and returns a summary
-  as the tool-call result.
+  durable task or plan state to disk, invokes the child with structured tool
+  input, the child does its work, writes durable results to disk, and returns a
+  summary as the tool-call result.
 
 There are no in-memory message queues. This makes the system crash-recoverable,
 inspectable, and decoupled.
@@ -31,8 +31,7 @@ Files are separated into two categories:
 
 - **Persistent** (committed to git): plans, history, research, skills, stage
   summaries, inspection reports.
-- **Temporary** (gitignored): runtime state, agent working directories,
-  in-progress task data, chat logs.
+- **Temporary** (gitignored): runtime state, Inspector workspace, chat logs.
 
 ## 2. Common base
 
@@ -41,35 +40,44 @@ All agents extend `BaseAgent`
 which owns the conversation loop:
 
 ```ts
-abstract class BaseAgent<Input, Output> {
-  protected role: AgentRole;
-  protected systemPrompt: string;
-  protected tools: ToolSchema[];
+class BaseAgent {
+  readonly id: string;
+  readonly role: AgentRole;
 
-  async run(ctx: AgentContext, input: Input): Promise<AgentResult<Output>>;
-  protected abstract assembleSystemPrompt(ctx, input): string;
-  protected abstract assembleTools(ctx, input): ToolSchema[];
-  protected abstract parseResult(messages: Message[]): Output;
+  constructor(ctx: AgentContext, config: BaseAgentConfig);
+  cancel(): void;
+  runLoop(): Promise<{
+    text: string;
+    finishReason: string;
+    terminal?: { name: string; data: unknown };
+  }>;
+
+  protected getToolSchemas(): ToolSchema[];
+  protected validateFinalResponse(text: string): string | null;
+  protected detectTerminalToolCall(
+    toolCalls: ToolCallResult[],
+    dispatchResult: DispatchResult,
+  ): { name: string; data: unknown } | null;
 }
 ```
 
-The `run` method:
+The shared loop:
 
-1. Resolves model + skills + system prompt.
-2. Initializes a `Dispatcher` with this agent's available tools and the parent
-   `ChildSpawner`.
-3. Loops: `chat()` → execute tool calls → append results → repeat until the
-   model emits a terminal response (no tool calls, or a `final` call).
+1. Builds the system prompt from the role prompt plus eager skill block.
+2. Initializes a `Dispatcher` with the MCP runtime and optional parent
+  `ChildSpawner`.
+3. Loops: compact if needed → drain input channels → `router.chat()` → execute
+  tool calls → append results → repeat until the model emits no tool calls or
+  a role-specific terminal tool call is detected.
 4. Tracks token usage; triggers compaction at the configured threshold.
 5. Periodically injects self-check prompts.
-6. Returns `AgentResult<Output>` with the parsed terminal output and any
-   intermediate artifacts.
+6. Returns the loop result; each concrete agent maps it to `AgentResult`.
 
 ## 3. Roster
 
 | Role | Source | Lifetime | Returns | Page |
 |------|--------|----------|---------|------|
-| Planner | `agents/planner.ts` | Project lifetime | `RunPlanResult` | [planner](./planner) |
+| Planner | `agents/planner.ts` | Project lifetime | `plan_done` summary | [planner](./planner) |
 | Manager | `agents/manager.ts` | One stage | `StageSummary` | [manager](./manager) |
 | Coder | `agents/coder.ts` | One task | `TaskReport` | [workers](./workers) |
 | Researcher | `agents/researcher.ts` | One task | `TaskReport` | [workers](./workers) |
@@ -83,20 +91,23 @@ The `run` method:
 
 ## 4. Tool grammar
 
-Every agent has a fixed catalog of three tool kinds:
+Agents build tool schemas from up to three tool kinds:
 
-- **MCP tools** — drawn from the runtime registry (filesystem, shell, git,
-  plan, notes, skills, web, …). See [MCP services](../mcp/services).
+- **MCP tools** — drawn from the runtime registry (filesystem, shell, data,
+  git, plan, notes, skills, memory, RAG, plus available external MCP tools).
+  See [MCP services](../mcp/services).
 - **Dispatch tools** — `run_manager`, `run_coder`, `run_researcher`,
   `run_inspector`, etc. Recognized by the Dispatcher and converted into
   child-agent invocations. See `DISPATCH_TOOLS` in
   [`src/runtime/dispatcher.ts`](https://github.com/salva/saivage/blob/main/src/runtime/dispatcher.ts).
-- **`final`** (some roles) — a marker tool the agent calls to commit the
-  parsed terminal result.
+- **Terminal tool calls** (some roles) — role-specific tools such as
+  `plan_done` that concrete agents interpret as structured completion.
 
-Each role advertises a subset chosen in `assembleTools()`. The Coder, for
-instance, sees the full filesystem/shell/git toolset; the Chat agent gets
-read-only filesystem + `run_inspector` + `create_note`.
+Each role advertises a subset from `BaseAgent.getToolSchemas()`: MCP tools are
+filtered by the roster's `toolFilter`, and dispatch tools are derived from
+`ROSTER[*].dispatchableBy`. The Coder uses the worker filter; the Chat agent
+gets read-only project tools, web fetch/search tools, `read_stash`, and
+`create_note`, but no dispatch tools.
 
 ## 5. Dispatch graph
 
@@ -166,8 +177,8 @@ while its child runs:
 | Designer   | 1             | Stage-scoped       | Manager via `run_designer()`              |
 | Critic     | 1             | Stage-scoped       | Manager via `run_critic()`                |
 | Reviewer   | 1             | Stage-scoped       | Manager via `run_reviewer()`              |
-| Inspector  | 1             | One investigation  | Planner via `run_inspector()`             |
-| Librarian  | 1             | One investigation  | Planner or Manager via `run_librarian()`  |
+| Inspector  | per dispatch  | One investigation  | Planner via `run_inspector()`             |
+| Librarian  | per dispatch  | One investigation  | Planner or Manager via `run_librarian()`  |
 | Chat       | 1 per channel | Session            | Runtime (independent)                     |
 
 **Stage-scoped workers** (Designer, Critic, Reviewer) keep their conversation
@@ -175,18 +186,19 @@ across the Manager's follow-up dispatches within the same stage so each turn
 builds on prior reasoning. **One-shot workers** (Coder, Researcher, Data Agent,
 Inspector, Librarian) get a fresh instance per dispatch.
 
-**Parallelism:** The Manager can issue multiple worker dispatch tools in the
-same turn; `src/runtime/dispatcher.ts` starts them concurrently via
-`Promise.all`. Concurrency is gated per role — a second dispatch of the same
-role while one is already running is rejected. See
+**Parallelism:** A parent can issue multiple dispatch tools in the same turn;
+`src/runtime/dispatcher.ts` starts them concurrently via `Promise.all`.
+Concurrency is gated only for worker roles — a second worker dispatch of the
+same role in the same batch is rejected. Non-worker dispatch roles such as
+Inspector and Librarian are not part of that worker-role gate. See
 [runtime/details](../runtime/details) §1.3.
 
 **Chat independence:** Chat agents run independently of the Planner hierarchy.
 They can read all documents and forward user direction via `create_note()`
 without blocking or being blocked by the main execution chain.
 
-**Inspector contention:** Only the Planner dispatches the Inspector; one
-investigation runs at a time.
+**Inspector dispatch:** Only the Planner receives `run_inspector` from the
+roster. The current dispatcher does not implement a FIFO Inspector queue.
 
 ## 8. Error escalation chain
 
@@ -219,7 +231,7 @@ User ←→ Chat ──notes──→ Planner
 
 ```
 Planner ──request──→ Inspector ──report──→ Planner
-Chat    ──request──→ Inspector ──report──→ Chat
+Chat    ──note/event──→ Planner / Event Bus
 ```
 
 ## 10. File system layout
@@ -234,7 +246,7 @@ Project-local (inside the project directory, e.g. `<project>/`):
 └── .saivage/
     ├── config.json                # Project objectives, model preferences
     ├── saivage.json               # Runtime/provider config
-    ├── auth/                      # Provider auth tokens
+    ├── auth-profiles.json         # Provider auth profiles
     │
     │── [PERSISTENT — committed to git]
     ├── plan.json                  # Active plan plus terminal stages archive
@@ -262,9 +274,6 @@ Project-local (inside the project directory, e.g. `<project>/`):
     │   ├── chats/
     │   │   └── <channel>/
     │   │       └── <session-id>.json
-    │   └── work/
-    │       ├── coder/             # Coder's scratch space
-    │       └── researcher/        # Researcher's scratch space
     └── .gitignore                 # Ignores tmp/
 ```
 
@@ -273,16 +282,17 @@ including knowledge/rag paths.
 
 ## 11. Version control
 
-All git operations go through an **MCP git server** that serializes access. No
-direct `git` CLI calls by agents. Tools: `git_commit`, `git_status`, `git_diff`,
-`git_log`. See [mcp/services](../mcp/services) §3 for full tool schemas.
+Git operations are exposed as in-process MCP tools. `git_commit` stages an
+explicit file list before committing; read-only roles get `git_status`,
+`git_diff`, and `git_log` through their tool filters. See
+[mcp/services](../mcp/services) §3 for full tool schemas.
 
 **Conflict resolution:** If `git_commit` detects a conflict (rare — two agents
 modifying the same file), it returns an error. The calling agent reports this
 in its `TaskReport` as a failure, which the Manager handles by creating a
 resolution task.
 
-**Conventions** (all agents except Chat have full access — conventions prevent
+**Conventions** (enforced tool filters plus write-territory conventions prevent
 collisions):
 
 - **Coder**: commits project code it modified + its task report.
