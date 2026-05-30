@@ -3,10 +3,8 @@
 > **Status (F01 B11):** authoritative source for the RAG slice of Saivage v2.
 > Implementation lives in `src/rag/` and the on-disk layout described below
 > matches the code in `dataset.ts`, `store/sqlite-vec.ts`, and
-> `watcher/controller.ts`. Refer to the original analysis / design / plan
-> tree under `SPEC/2026-05/rag-subsystem-design/F01-rag-subsystem/` for the
-> reasoning behind each contract; the docs in this folder are the working
-> operator surface.
+> `watcher/controller.ts`. The docs in this folder are the working operator
+> surface.
 
 ## What it does
 
@@ -48,8 +46,10 @@ no-op (`manager.list() === []`; every other call throws
 2. **Secret exclusion is non-negotiable.** Every candidate file passes
    `shouldSkipPath` (which extends the project-wide blocklist with
    credential file globs), and every chunk's text passes `scanChunk`. Hits
-   are dropped silently and counted in `secretsDropped`. There is no opt-in
-   to disable this guard.
+   are dropped silently and counted in `IngestReport.chunksDroppedSecrets`.
+   The store also bumps a `secretsDroppedTotal` meta counter, but the current
+   `Dataset.stats()` facade returns `secretsDropped: 0`. There is no opt-in to
+   disable this guard.
 3. **One ingest at a time per dataset.** `proper-lockfile` arbitrates;
    concurrent calls receive `IngestLockedError`. The watcher also takes the
    same lock so reconcile sweeps and chokidar-triggered ingests cannot
