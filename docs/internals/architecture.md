@@ -201,10 +201,12 @@ The Provider Router manages all LLM API communication. It is a **singleton**.
   configuration. Precedence: `ProjectConfig.model_overrides[role]` →
   `SaivageConfig.providers[name].models[role]` → most capable available.
 - **Retry with backoff:** all retryable errors (HTTP 429, 5xx, timeouts) are
-  retried with exponential backoff (1s→60s, ±20% jitter). Retries are bounded
-  by a maximum retry duration per request (default: 10 minutes). If exceeded,
-  the error is surfaced as an agent failure. Provider failover may resolve
-  the issue before the timeout.
+  retried with exponential backoff (30s starting delay, ×1.5 multiplier,
+  ±20% jitter, capped at 20 min per attempt). Retries continue
+  **indefinitely** — there is no maximum retry duration; the system never
+  gives up during provider outages. Provider failover may resolve the
+  issue before the operator notices. See
+  [runtime/details](./runtime/details) §2 for the full retry contract.
 - **Provider failover:** if a provider fails 5+ consecutive times within 2
   minutes, switch to the configured failover provider. Try the primary again
   on the next agent invocation.

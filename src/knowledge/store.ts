@@ -1,7 +1,7 @@
 /**
  * Saivage — Knowledge store error taxonomy and write-guard helpers.
  *
- * Source of truth: SPEC/v2/skills-memory/01-DESIGN.md §C.3.
+ * Source of truth: docs/internals/knowledge/skills-and-memory.md.
  *
  * After F01(B04) the canonical storage is the SQLite sidecar (see
  * `sidecar.ts` / `sidecar-queries.ts`). The legacy JSON-tree write

@@ -1,8 +1,8 @@
 /**
  * Saivage — Knowledge store types (skills + memories).
  *
- * Source of truth: SPEC/v2/skills-memory/01-DESIGN.md §B.1 (schemas) and
- * §B.2 (lifecycle). Schemas are additive; no consumers yet (WI-01).
+ * Source of truth: docs/internals/knowledge/skills-and-memory.md
+ * (schemas + lifecycle). Schemas are additive; no consumers yet (WI-01).
  */
 
 import { z } from "zod";

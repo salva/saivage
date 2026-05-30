@@ -10,8 +10,8 @@
  *      audit + index rebuild (§C.3 step order).
  *   5. for reads, returns redacted view via `redactForRead`.
  *
- * Source of truth: SPEC/v2/skills-memory/01-DESIGN.md §C.1 (tools 1-8),
- * §F (permission matrix).
+ * Source of truth: docs/internals/mcp/services.md §6 (Skills tool surface)
+ * and docs/internals/knowledge/skills-and-memory.md (concepts + ACL).
  */
 
 import type { ToolEntry } from "./types.js";

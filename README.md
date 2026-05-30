@@ -57,8 +57,8 @@ MCP service integration. All durable state lives on disk under `.saivage/`.
 Project knowledge — both procedural (skills) and factual (memories) — lives under
 `.saivage/{skills,memory}/{project,stages,sessions}/` and is authored exclusively via
 MCP tools (`create_skill`, `create_memory`, lifecycle ops). See
-[SPEC/v2/skills-memory/](SPEC/v2/skills-memory/) for the functional analysis, design,
-and implementation plan.
+[docs/internals/knowledge/skills-and-memory.md](docs/internals/knowledge/skills-and-memory.md)
+for the conceptual reference and authoring conventions.
 
 ## Saivage v3
 

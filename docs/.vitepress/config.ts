@@ -31,10 +31,6 @@ export default withMermaid(defineConfig({
             text: "GitHub",
             link: "https://github.com/salva/saivage",
           },
-          {
-            text: "Specifications",
-            link: "/internals/specifications",
-          },
         ],
       },
     ],
@@ -103,7 +99,6 @@ export default withMermaid(defineConfig({
           items: [
             { text: "Architecture", link: "/internals/architecture" },
             { text: "Source Tree", link: "/internals/source-tree" },
-            { text: "Specifications", link: "/internals/specifications" },
           ],
         },
         {

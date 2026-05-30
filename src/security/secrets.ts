@@ -1,7 +1,8 @@
 /**
  * Saivage — Secret-scanning + blocked-path heuristics.
  *
- * Source of truth: SPEC/v2/skills-memory/01-DESIGN.md §C.3 "Security".
+ * Source of truth: docs/internals/knowledge/skills-and-memory.md
+ * (authoring conventions + secret-scanning).
  * Heuristics:
  *   - provider shapes (sk-…, ghp_…, ya29.…, AKIA…, JWT triple)
  *   - env-style assignments with Shannon entropy > 3.5 bits/char

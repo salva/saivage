@@ -114,7 +114,7 @@ Handler reference:
 [src/channels/websocket.ts L17-L28](src/channels/websocket.ts#L17-L28).
 
 Further reading:
-[docs/internals/channels.md](docs/internals/channels.md) (server-side
+[docs/internals/server/channels.md](../internals/server/channels.md) (server-side
 implementation).
 
 ## Authentication

@@ -87,4 +87,4 @@ the user-memory note about Vue SFC corruption mitigations.
   catches this immediately.
 - Touching shared MCP tool schemas — the agent system prompts mention
   tool names; renaming a tool requires updating prompts under
-  `SPEC/v2/prompts/`.
+  `src/agents/*Prompt.ts`.

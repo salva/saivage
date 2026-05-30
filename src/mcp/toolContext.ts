@@ -1,7 +1,8 @@
 /**
  * Saivage — MCP tool-call context.
  *
- * Source of truth: SPEC/v2/skills-memory/01-DESIGN.md (security + audit).
+ * Source of truth: docs/internals/knowledge/skills-and-memory.md
+ * (security + audit).
  * In-process tool handlers receive a `ToolCallContext` so they can attribute
  * writes to the calling agent (`role`, `agentId`, current `stageId` /
  * `channelId` / `sessionId`). External MCP subprocess tools ignore it.

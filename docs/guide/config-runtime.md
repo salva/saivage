@@ -226,8 +226,7 @@ and asking an LLM whether the system is making progress. After
 `consecutiveStuckVerdicts` consecutive *stuck* verdicts it triggers an
 abort, and waits `forceCancelDelayMs` before force-cancelling an
 unresponsive run. `model` is required when the supervisor is enabled; the
-daemon refuses to boot otherwise. See
-[F04](../../SPEC/v2/review-2026-05/F04-hardcoded-default-models.md).
+daemon refuses to boot otherwise.
 
 ### `telegram`
 

@@ -5,8 +5,8 @@ unprivileged-ish LXC container, with the source bind-mounted from the host.
 The agents have shell access only inside the container, and the host source
 tree updates instantly.
 
-This page mirrors the canonical [`SETUP.md`](https://github.com/salva/saivage/blob/main/SETUP.md)
-in the source tree.
+This page is the canonical Saivage installation guide for LXC
+deployments.
 
 ## Architecture
 

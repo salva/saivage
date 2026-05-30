@@ -1,7 +1,7 @@
 # Dispatcher & Suspend/Resume
 
 [`src/runtime/dispatcher.ts`](https://github.com/salva/saivage/blob/main/src/runtime/dispatcher.ts)
-· spec [`SPEC/v2/04-RUNTIME-DETAILS.md`](https://github.com/salva/saivage/blob/main/SPEC/v2/04-RUNTIME-DETAILS.md)
+· details [`runtime/details`](./details)
 
 The Dispatcher is the heart of the runtime. It implements the
 **suspend / resume / nested-tool-call** pattern that makes the agent

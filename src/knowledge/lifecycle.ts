@@ -5,8 +5,9 @@
  * (`sidecar.ts` + `sidecar-queries.ts`). The legacy JSON-tree layout
  * (`<saivage>/skills/<scope>/records/*.json` + `audit.jsonl`) is gone.
  *
- * Source: SPEC/v2/skills-memory/01-DESIGN.md §A.5 (transaction order),
- * §B.5 (supersession scope-pair table), §D.3 (search scoring).
+ * Source: docs/internals/knowledge/skills-and-memory.md (lifecycle state
+ * machine + supersession rules) and docs/internals/mcp/services.md
+ * §§6–7 (per-tool error taxonomy).
  *
  * Each mutation follows the §A.5 template:
  *   1. `requireRuntimeLock` (writer-only);

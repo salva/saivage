@@ -26,7 +26,6 @@ saivage/
 ├── web/                        # Vite + Vue dashboard (built into web/dist)
 ├── deploy/                     # LXC create/provision scripts + Makefile
 ├── skills/                     # built-in skill catalogue
-├── SPEC/v2/                    # canonical design specifications
 ├── SPECS/v2/                   # board specifications & analysis
 ├── tests/ (under src/**.test.ts) — vitest
 ├── tsconfig.json

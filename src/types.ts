@@ -1,6 +1,6 @@
 /**
  * Saivage — Type definitions and Zod schemas
- * All interfaces from SPEC/v2/01-DATA-MODEL.md
+ * All interfaces from docs/internals/data/types.md
  */
 
 import { z } from "zod";
