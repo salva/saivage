@@ -1,9 +1,10 @@
 # Librarian
 
-[`src/agents/librarian.ts`](https://github.com/salva/saivage/blob/main/src/agents/librarian.ts)
+[`src/agents/librarian.ts`](https://github.com/salva/saivage/blob/main/src/agents/librarian.ts),
+[`prompts/librarian.md`](https://github.com/salva/saivage/blob/main/prompts/librarian.md)
 
 The Librarian is a **bounded steward of unprotected RAG collections**. It
-investigates retrieval gaps and drift; registers, ingests, queries, prunes, and
+investigates retrieval gaps and drift; registers, ingests, queries, drops, and
 diagnoses datasets; and records policy and incident memories under
 `topic.domain="rag"`.
 
@@ -25,13 +26,15 @@ Bounded by design. The Librarian:
 - **Cannot** invoke `run_command`.
 - **Cannot** write skills.
 - **Cannot** mutate protected datasets.
-- **Can** register, ingest, query, prune, and diagnose unprotected RAG
+- **Can** register, ingest, query, drop, and diagnose unprotected RAG
   collections.
 - **Can** write project-scope memories under `topic.domain="rag"` and
   `topic.subject ∈ {policy, secret-incidents, drift-incidents}`.
 
-The full permission matrix is enforced in
-[`src/knowledge/permissions.ts`](https://github.com/salva/saivage/blob/main/src/knowledge/permissions.ts).
+The permission matrix is enforced in
+[`src/knowledge/permissions.ts`](https://github.com/salva/saivage/blob/main/src/knowledge/permissions.ts),
+with the Librarian-specific RAG topic guard in
+[`src/mcp/knowledgeMemory.ts`](https://github.com/salva/saivage/blob/main/src/mcp/knowledgeMemory.ts).
 
 ## Inputs
 
@@ -52,16 +55,18 @@ The full permission matrix is enforced in
 
 - Diagnoses retrieval misses by probing the relevant collections.
 - Registers and ingests new datasets when stages need them.
-- Prunes stale or low-quality records from unprotected collections.
+- Uses `rag_admin` diagnostics and destructive `rag_drop` only under the
+  prompt's confirmation rules.
 - Records policy decisions and incidents as project-scope memories so future
   Librarian invocations can build on prior reasoning.
 
 ## Tools advertised
 
-- RAG MCP tools (`rag_register_collection`, `rag_ingest`, `rag_query`,
-  `rag_prune`, etc.).
+- RAG MCP tools (`rag_list`, `rag_stats`, `rag_query`, `rag_register`,
+  `rag_ingest`, `rag_drop`, `rag_admin`).
 - Memory MCP tools restricted to `topic.domain="rag"` writes (`create_memory`,
-  `update_memory`, `archive_memory`, `search_memories`).
+  `update_memory`) plus read/search tools (`list_memories`, `get_memory`,
+  `search_memories`).
 - Filesystem read-only access for inspecting source datasets.
 
 The Librarian does not have access to `run_command`, dispatch tools, skill
