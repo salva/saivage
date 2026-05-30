@@ -28,8 +28,8 @@ Allowed keys are `name`, `description`, `triggers`, `target_agents`, and
 
 Project skills are authored through MCP tools such as `create_skill`,
 `update_skill`, `supersede_skill`, `archive_skill`, and `delete_skill`. They are
-stored under `.saivage/skills/{project,stages,sessions}/` as records plus body
-files. Agents should not hand-edit those files or patch `index.json`.
+stored in the knowledge SQLite sidecar at `.saivage/knowledge/store.sqlite`.
+Agents should not hand-edit the sidecar or recreate the retired JSON tree.
 
 Typical creation shape:
 
