@@ -34,27 +34,23 @@ each project carry its own `.saivage/saivage.json`.
 
 ## Default content
 
-`seedProject()` writes this on `saivage init` (truncated):
+`seedProject()` writes `SaivageConfigSchema.parse({})` on `saivage init`
+(truncated):
 
-```json
+```jsonc
 {
   "models": {},
-  "providers": {
-    "anthropic": {},
-    "openai": {},
-    "ollama":   { "baseUrl": "http://localhost:11434" },
-    "llamacpp": { "baseUrl": "http://localhost:8080" }
-  },
+  "providers": {},
+  "failover": {},
+  "modelEquivalents": {},
   "server": { "port": 8080, "host": "0.0.0.0" },
   "agent":  { "maxConcurrentAgents": 3 },
-  "mcpServers": {
-    "playwright": {
-      "command": "npx",
-      "args": ["-y", "@playwright/mcp@latest", "--headless"],
-      "env":    { "PLAYWRIGHT_BROWSERS_PATH": "${HOME}/.cache/ms-playwright" },
-      "transport": "stdio"
-    }
-  }
+  "runtime": { "maxServices": 50, "restartOnCrash": true, "continuousImprovement": true },
+  "supervisor": { "enabled": true, "intervalMs": 1200000 },
+  "telegram": { "botToken": "", "allowedUserIds": [] },
+  "notifications": { "channels": ["web"], "filters": { "min_severity": "info", "categories": [] } },
+  "mcpServers": {},
+  "rag": { "enabled": false, "datasets": [] }
 }
 ```
 
@@ -62,10 +58,12 @@ each project carry its own `.saivage/saivage.json`.
 
 ### `models`
 
-Per-role model assignments. Values may be legacy `provider/model` strings
-or ordered provider-independent model lists. Keys: `orchestrator`, `planner`,
-`manager`, `coder`, `researcher`, `data_agent`, `reviewer`, `inspector`,
-`executor`, `chat`, `default`. `ProjectConfig.routing` takes precedence.
+Per-role model assignments. Values may be `provider/model` strings or ordered
+provider-independent model lists. Accepted keys are `orchestrator`, `coder`,
+`researcher`, `data_agent`, `reviewer`, `designer`, `critic`, `chat`, and
+`default`. Planner, Manager, Inspector, and Librarian default through
+`orchestrator`; the Supervisor uses `supervisor.model`. `ProjectConfig.routing`
+takes precedence.
 
 ```json
 "models": {
@@ -248,8 +246,7 @@ daemon refuses to boot otherwise.
 }
 ```
 
-Same shape as the project-level field; the runtime config is the fallback
-default.
+Runtime notification defaults for server-side channels.
 
 ### `mcp`
 
@@ -378,8 +375,9 @@ runtime.
 }
 ```
 
-Built-in services (`fs`, `shell`, `git`, `plan`, `notes`, `skills`) are
-registered programmatically — they don't appear in this map.
+Built-in services (`fs`, `shell`, `git`, `data`, `plan`, `notes`, `skills`,
+`memory`, `rag`) and unavailable stubs (`web`, `index`, `lock`) are registered
+programmatically — they don't appear in this map.
 
 ## Environment-variable interpolation
 
