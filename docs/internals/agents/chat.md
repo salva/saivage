@@ -1,6 +1,7 @@
 # Chat
 
-[`src/agents/chat.ts`](https://github.com/salva/saivage/blob/main/src/agents/chat.ts)
+[`src/agents/chat.ts`](https://github.com/salva/saivage/blob/main/src/agents/chat.ts),
+[`prompts/chat.md`](https://github.com/salva/saivage/blob/main/prompts/chat.md)
 
 The Chat agent is the **user-facing interface**. One instance runs per channel
 + session — one for each connected web UI tab and one per Telegram user.
@@ -22,11 +23,11 @@ be active simultaneously.
 ## Outputs
 
 - Responses to user queries
-- **User notes** (`notes/<note-id>.json`) — forwarded to Planner for
+- **User notes** (`.saivage/notes/<note-id>.json`) — forwarded to Planner for
   consideration
-- Push notifications (Telegram) for significant events
-- **Chat logs** (`tmp/chats/<channel>/<session-id>.json`) — complete dialogue
-  history saved to disk
+- Push notifications for significant events on the active channel
+- **Chat logs** (`.saivage/tmp/chats/<channel>/<session-id>.json`) — complete
+  dialogue history saved to disk
 
 ## Capabilities
 
@@ -35,7 +36,8 @@ be active simultaneously.
 - Push runtime events (system events filtered through subscription).
 - Create user notes (`create_note`) with optional `permanent` / `urgent`
   flags.
-- Dispatch the Inspector (`run_inspector`).
+- Handle local slash commands before LLM turns (`/status`, `/plan`,
+  `/history`, `/replan`, `/restart-planner`, notes, skills, and memories).
 
 It **cannot** write to project source, modify the plan, or execute shell
 commands.
@@ -53,7 +55,7 @@ commands.
 - Pushes notifications to user for:
   - Stage completion
   - Unexpected errors (Manager/Planner handling failures)
-  - Inspector reports requested by the user
+  - Inspector report completion events
 - Notifications are **fire-and-forget** — no response is required. They
   remain in the chat history so the user can ask follow-up questions about
   them later.
@@ -67,10 +69,14 @@ commands.
 
 | Category | Tools |
 |----------|-------|
-| Plan MCP (read-only) | `plan_get`, `plan_get_stage`, `plan_get_history` |
 | Filesystem (read-only) | `read_file`, `list_dir`, `search_files` |
+| Git / skills (read-only) | `git_status`, `git_log`, `git_diff`, `list_skills`, `read_skill` |
+| Web | `web_search`, `fetch_url`, `fetch_page_text` |
+| Stash | `read_stash` |
 | Notes | `create_note(content, permanent?, urgent?)` |
-| Dispatch | `run_inspector` |
+
+Plan/history/status and memory slash commands are handled by local command
+code before the LLM turn; they are not Planner or Inspector dispatch tools.
 
 ## Channels
 
@@ -95,9 +101,10 @@ messages.
 ## Concurrency with the execution hierarchy
 
 Chat is **independent** of the Planner. It runs on the same Node.js event loop
-but its tool calls do not block the Planner's progress (with one exception: an
-Inspector dispatch from Chat shares the global Inspector queue with the
-Planner).
+but its tool calls do not block the Planner's progress. Chat does not receive
+dispatch tools; deep-analysis requests are relayed to the Planner through
+notes, and `/restart-planner` uses `PlannerControl` to request a fresh Planner
+run.
 
 ## Sessions
 
