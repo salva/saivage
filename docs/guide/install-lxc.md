@@ -100,12 +100,21 @@ cat > .saivage/config.json <<'EOF'
     "Implement user authentication with JWT tokens.",
     "Write comprehensive tests for all endpoints."
   ],
-  "provider": "github-copilot/claude-sonnet-4",
-  "notifications": {
-    "channels": [],
-    "filters": { "min_severity": "warning", "categories": [] }
-  },
+  "routing": { "roles": {}, "profiles": {} },
   "skills": { "max_per_agent": 5 }
+}
+EOF
+
+cat > .saivage/saivage.json <<'EOF'
+{
+  "models": {
+    "orchestrator": "github-copilot/claude-sonnet-4",
+    "default": "github-copilot/claude-sonnet-4"
+  },
+  "notifications": {
+    "channels": ["web"],
+    "filters": { "min_severity": "warning", "categories": [] }
+  }
 }
 EOF
 ```
@@ -126,10 +135,11 @@ sudo lxc-stop -n saivage && sudo lxc-start -n saivage
 ```bash
 ssh saivage
 cd /opt/saivage
-node dist/cli.js login github-copilot
+node dist/cli.js login /home/youruser/myproject --provider github-copilot
 ```
 
-Tokens persist in `~/.saivage/auth-profiles.json` inside the container.
+Tokens persist in `/home/youruser/myproject/.saivage/auth-profiles.json` inside
+the bind-mounted project.
 
 ## 7. Point the service at your project
 
