@@ -224,10 +224,10 @@ export const SaivageConfigSchema = z.object({
             source: z.enum(["skill", "memory", "doc", "code"]),
             provider: z.object({
               kind: z.literal("openai"),
-              model: z.literal("text-embedding-3-small").default("text-embedding-3-small"),
-              dim: z
-                .union([z.literal(256), z.literal(512), z.literal(1024), z.literal(1536)])
-                .default(1536),
+              model: z.string().min(1).default("text-embedding-3-small"),
+              dim: z.number().int().positive().default(1536),
+              baseUrl: z.string().min(1).optional(),
+              apiKey: z.string().min(1).optional(),
             }),
             store: z
               .object({

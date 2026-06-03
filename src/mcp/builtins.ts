@@ -9,8 +9,10 @@
 
 import type { McpRuntime, InProcessToolHandler } from "./runtime.js";
 import type { ToolEntry } from "./types.js";
+import type { ToolCallContext } from "./toolContext.js";
 import { knowledgeSkillsTools, makeKnowledgeSkillsHandler } from "./knowledgeSkills.js";
 import { knowledgeMemoryTools, makeKnowledgeMemoryHandler } from "./knowledgeMemory.js";
+import { decidePathMutation } from "../agents/conventions.js";
 
 import { createWriteStream } from "node:fs";
 import { writeFile, mkdir, readdir, stat, open, opendir } from "node:fs/promises";
@@ -76,6 +78,15 @@ function resolvePath(p: string): string {
   const root = projectRoot();
   const target = p.startsWith("/") ? p : join(root, p);
   return assertInside(root, target, "Path");
+}
+
+function authorizePathMutation(
+  ctx: ToolCallContext | undefined,
+  p: string,
+): { path: string; relativePath: string } | { error: { error: string; code: "BLOCKED_PATH"; path: string } } {
+  const decision = decidePathMutation(ctx, p);
+  if (decision.ok) return { path: decision.path, relativePath: decision.relativePath };
+  return { error: { error: decision.reason, code: "BLOCKED_PATH", path: decision.relativePath } };
 }
 
 function parseHttpUrl(value: string): URL {
@@ -469,7 +480,7 @@ const filesystemTools: ToolEntry[] = [
   },
 ];
 
-const filesystemHandler: InProcessToolHandler = async (toolName, args) => {
+const filesystemHandler: InProcessToolHandler = async (toolName, args, ctx) => {
   switch (toolName) {
     case "read_file": {
       const fp = resolvePath(args.path as string);
@@ -652,24 +663,9 @@ const filesystemHandler: InProcessToolHandler = async (toolName, args) => {
       };
     }
     case "write_file": {
-      const fp = resolvePath(args.path as string);
-      // FR-17 / WI-15 — read-only knowledge store: write_file must never
-      // create or mutate records under .saivage/skills/ or .saivage/memory/.
-      // Knowledge changes must go through create_skill / create_memory.
-      const saivageDir = join(projectRoot(), ".saivage");
-      const blockedRoots = [join(saivageDir, "skills"), join(saivageDir, "memory")];
-      for (const blocked of blockedRoots) {
-        if (fp === blocked || fp.startsWith(blocked + "/")) {
-          return {
-            content: {
-              error:
-                `BLOCKED_PATH: write_file cannot write to ${fp}. ` +
-                `Use create_skill / create_memory MCP tools to mutate knowledge records.`,
-            },
-            isError: true,
-          };
-        }
-      }
+      const authorized = authorizePathMutation(ctx, args.path as string);
+      if ("error" in authorized) return { content: authorized.error, isError: true };
+      const fp = authorized.path;
       await mkdir(dirname(fp), { recursive: true });
       await writeFile(fp, args.content as string, "utf-8");
       return { content: { written: true, path: fp }, isError: false };
@@ -1210,19 +1206,28 @@ interface CommandResult {
   last_output_at: string | null;
 }
 
-function resolveCommandLogPaths(args: Record<string, unknown>): CommandLogPaths {
+function resolveCommandLogPaths(
+  args: Record<string, unknown>,
+  ctx?: ToolCallContext,
+): CommandLogPaths | { error: { error: string; code: "BLOCKED_PATH"; path: string } } {
   const id = `${Date.now()}-${randomUUID().slice(0, 8)}`;
-  const stdoutAbs = typeof args.stdout_path === "string"
-    ? resolvePath(args.stdout_path)
-    : resolvePath(`.saivage/tmp/command-logs/${id}.stdout.log`);
-  const stderrAbs = typeof args.stderr_path === "string"
-    ? resolvePath(args.stderr_path)
-    : resolvePath(`.saivage/tmp/command-logs/${id}.stderr.log`);
+  const explicitStdout = typeof args.stdout_path === "string";
+  const explicitStderr = typeof args.stderr_path === "string";
+  const stdoutRel = explicitStdout ? args.stdout_path as string : `.saivage/tmp/command-logs/${id}.stdout.log`;
+  const stderrRel = explicitStderr ? args.stderr_path as string : `.saivage/tmp/command-logs/${id}.stderr.log`;
+  const stdout = explicitStdout
+    ? authorizePathMutation(ctx, stdoutRel)
+    : { path: resolvePath(stdoutRel), relativePath: stdoutRel };
+  if ("error" in stdout) return { error: stdout.error };
+  const stderr = explicitStderr
+    ? authorizePathMutation(ctx, stderrRel)
+    : { path: resolvePath(stderrRel), relativePath: stderrRel };
+  if ("error" in stderr) return { error: stderr.error };
   return {
-    stdoutAbs,
-    stderrAbs,
-    stdoutRel: relative(projectRoot(), stdoutAbs),
-    stderrRel: relative(projectRoot(), stderrAbs),
+    stdoutAbs: stdout.path,
+    stderrAbs: stderr.path,
+    stdoutRel: stdout.relativePath,
+    stderrRel: stderr.relativePath,
   };
 }
 
@@ -1362,7 +1367,7 @@ const dataTools: ToolEntry[] = [
   },
 ];
 
-const dataHandler: InProcessToolHandler = async (toolName, args) => {
+const dataHandler: InProcessToolHandler = async (toolName, args, ctx) => {
   switch (toolName) {
     case "web_search": {
       const query = typeof args.query === "string" ? args.query.trim() : "";
@@ -1650,7 +1655,9 @@ const dataHandler: InProcessToolHandler = async (toolName, args) => {
           isError: true,
         };
       }
-      const outPath = resolvePath(String(args.path));
+      const authorized = authorizePathMutation(ctx, String(args.path));
+      if ("error" in authorized) return { content: authorized.error, isError: true };
+      const outPath = authorized.path;
       const maxBytes = Math.min(Math.max(Number(args.max_bytes ?? MAX_DOWNLOAD_BYTES), 1), 2 * 1024 * 1024 * 1024);
       const attempts: DownloadAttempt[] = [];
       const outcome = await downloadUrl(url, outPath, {
@@ -1681,8 +1688,15 @@ const dataHandler: InProcessToolHandler = async (toolName, args) => {
           isError: true,
         };
       }
-      const outPath = resolvePath(String(args.path));
-      const manifestPath = args.manifest_path ? resolvePath(String(args.manifest_path)) : null;
+      const authorized = authorizePathMutation(ctx, String(args.path));
+      if ("error" in authorized) return { content: authorized.error, isError: true };
+      const outPath = authorized.path;
+      let manifestPath: string | null = null;
+      if (args.manifest_path) {
+        const manifestAuthorized = authorizePathMutation(ctx, String(args.manifest_path));
+        if ("error" in manifestAuthorized) return { content: manifestAuthorized.error, isError: true };
+        manifestPath = manifestAuthorized.path;
+      }
       const maxBytes = Math.min(Math.max(Number(args.max_bytes ?? MAX_DOWNLOAD_BYTES), 1), 2 * 1024 * 1024 * 1024);
       const retriesPerUrl = Math.min(Math.max(Number(args.retries_per_url ?? 2), 1), 5);
       const headers = args.headers as Record<string, string> | undefined;
@@ -1764,7 +1778,7 @@ async function gitExec(gitArgs: string[], cwd: string): Promise<string> {
   return stdout.trim();
 }
 
-const gitHandler: InProcessToolHandler = async (toolName, args) => {
+const gitHandler: InProcessToolHandler = async (toolName, args, ctx) => {
   const cwd = projectRoot();
 
   switch (toolName) {
@@ -1808,6 +1822,8 @@ const gitHandler: InProcessToolHandler = async (toolName, args) => {
       const prefix = taskId ? `[tsk-${taskId}] ` : "";
 
       for (const f of files) {
+        const authorized = authorizePathMutation(ctx, f);
+        if ("error" in authorized) return { content: authorized.error, isError: true };
         await gitExec(["add", "--", f], cwd);
       }
 
@@ -1938,7 +1954,7 @@ export function registerBuiltinServices(
   WEB_SEARCH_ENDPOINT = options.webSearchEndpoint ?? "https://duckduckgo.com/html/";
   const innerCapMs = mcpConfig.shellTimeoutMs - WALL_CLOCK_HEADROOM_MS;
 
-  const shellHandler: InProcessToolHandler = async (toolName, args) => {
+  const shellHandler: InProcessToolHandler = async (toolName, args, ctx) => {
     if (toolName !== "run_command") {
       return { content: { error: `Unknown shell tool: ${toolName}` }, isError: true };
     }
@@ -1951,7 +1967,8 @@ export function registerBuiltinServices(
       ["inactivity_timeout_ms", "idle_timeout_ms"],
       "inactivity_timeout_ms",
     ));
-    const outputPaths = resolveCommandLogPaths(args);
+    const outputPaths = resolveCommandLogPaths(args, ctx);
+    if ("error" in outputPaths) return { content: outputPaths.error, isError: true };
 
     // Always enforce a hard wall-clock cap so the process group is
     // properly killed even when the agent omits timeout_ms. The cap is

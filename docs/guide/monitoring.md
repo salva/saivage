@@ -19,15 +19,23 @@ Which is `journalctl -u saivage -f` inside the container.
 
 ## Live state
 
+The v2 web API is intended for a container-local operator boundary: the service
+should be reachable only from the host or trusted container network. Setting
+`SAIVAGE_API_TOKEN` keeps optional bearer-token protection available for
+`/api/*` and `/ws`, but it is not mandatory in the default isolated deployment.
+Debug/config endpoints return curated safe fields to reduce accidental exposure
+in copied responses, logs, and screenshots.
+
 - **Web dashboard** (`/`) — the canonical observability surface.
 - **`GET /health`** — liveness, project name, and runtime status.
 - **`GET /api/state`** — JSON snapshot.
-- **`GET /api/debug/state`** — runtime, active plan, plan history, and loaded
-  project/runtime configuration.
+- **`GET /api/debug/state`** — runtime, active plan, plan history, and safe
+  project metadata; raw runtime/provider config is not returned.
 - **`GET /api/debug/timeline`** — timeline derived from plan history and task
   reports.
 - **`GET /api/debug/errors`** — recent error log.
-- **`GET /api/providers`** — registered providers and their available models.
+- **`GET /api/providers`** — registered provider names and available model IDs;
+  account refs, auth profiles, headers, base URLs, and API keys are not returned.
 
 ## CLI snapshots
 

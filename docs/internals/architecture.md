@@ -120,10 +120,10 @@ conversation.
 - **Tool-call dispatch:** intercept agent-dispatch tool calls (`run_manager`,
   `run_coder`, etc.), suspend the parent, spawn the child, and inject the
   child's result back into the parent's conversation when done.
-- **Abort handling:** detect urgent user notes, terminate the active agent
-  chain bottom-up, clean the working tree (`git checkout -- .` resets tracked
-  modified files; untracked files are left for the rollback stage), and
-  resume the Planner with the abort context.
+- **Planner restart handling:** accept explicit control requests, cancel the
+  active Planner turn, queue a restart directive, and start a fresh Planner
+  loop from persistent plan/history state. Urgent notes are high-priority
+  Planner context, not hidden abort triggers.
 - **Context compaction:** track token usage per conversation, trigger
   compaction when usage exceeds the threshold (default 80%), produce a summary
   message that replaces the conversation history.
@@ -139,12 +139,13 @@ conversation.
   non-blocking.
 - Parent agents are suspended in-memory (full message history + pending
   tool-call IDs). On crash, this is lost, but disk state is authoritative.
-- The Dispatcher supports **resume-on-each** for parallel child dispatch: when
-  the Manager issues multiple worker dispatches in one LLM response, children
-  run concurrently and the Manager resumes independently as each returns. The
-  runtime permits at most one dispatch per worker role in a single batch
-  (Coder, Researcher, Data Agent, Reviewer, Designer, Critic); duplicate
-  dispatch calls for the same worker role are rejected with an error result.
+- The Dispatcher supports **parallel batch dispatch**: when the Manager issues
+  multiple worker dispatches in one LLM response, allowed children run
+  concurrently and the Manager resumes after the batch settles with all child
+  results together. The runtime permits at most one dispatch per worker role in
+  a single batch (Coder, Researcher, Data Agent, Reviewer, Designer, Critic);
+  duplicate dispatch calls for the same worker role are rejected with an error
+  result.
 
 See [runtime/details](./runtime/details) for full suspend/resume mechanics,
 compaction timing, self-check injection, and failure handling.
@@ -443,9 +444,8 @@ sequenceDiagram
                 MG->>RS: run_researcher(task_b)
             end
             CD-->>MG: TaskReport
-            Note over MG: Resumed
             RS-->>MG: TaskReport
-            Note over MG: Resumed
+            Note over MG: Resumed with completed batch
             MG->>MG: Update tasks.json
         end
 
@@ -459,10 +459,12 @@ sequenceDiagram
     end
 ```
 
-### 6.2 Abort & replanning
+### 6.2 Explicit restart & replanning
 
-When the user sends an urgent note, the runtime aborts the active agent chain
-and returns control to the Planner. See
+Urgent notes are injected as high-priority Planner context. They do not abort
+active work. Operators can explicitly request a Planner restart through the
+runtime control path, which cancels the current Planner turn, queues a restart
+directive, and starts a fresh Planner loop from persistent state. See
 [runtime/abort-recovery](./runtime/abort-recovery) for full semantics.
 
 ### 6.3 Error escalation
@@ -497,8 +499,8 @@ child processes that expose tools via the MCP SDK stdio protocol.
   eliminates race conditions — no locking needed.
 - **Plan is atomic:** all plan writes use temp-file + rename. Schema
   validation on every write.
-- **Services are lazy:** started on first tool call, shut down after idle
-  timeout.
+- **External services are autostart-only:** configured external MCP services are
+  started during bootstrap when `autostart: true`; built-ins run in-process.
 
 | Service | Planner | Manager | Coder | Researcher | Inspector | Chat |
 |---------|:-------:|:-------:|:-----:|:----------:|:---------:|:----:|
@@ -647,10 +649,10 @@ graph TB
 | LLM API 400 (bad request) | Agent returns failure to parent |
 | LLM provider persistently down | Failover to backup provider |
 | Invalid tool call from LLM | Error result returned to LLM (self-corrects); 3 consecutive failures → agent failure |
-| MCP service crash | Auto-restart on next tool call |
+| MCP service crash | Health checks restart already-running external services when configured |
 | Agent infinite loop | Self-check → compaction → max compactions → forced termination |
 | Process crash | Disk-based recovery on restart |
-| User abort | `git checkout -- .`, rollback stage, replan |
+| Planner restart request | Cancel current Planner turn, queue restart directive, restart from persistent state; no automatic git checkout rollback |
 | Git conflict | Agent reports failure; Manager creates resolution task or escalates |
 
 ### 10.3 Auditability

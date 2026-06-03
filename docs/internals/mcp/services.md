@@ -15,8 +15,9 @@ to agent LLM calls.
 
 External services declared in `.saivage/saivage.json` under `mcpServers`
 are started at boot only when `disabled: false` and `autostart: true`.
-Health checks, idle shutdown, restart, and cooldown handling for those
-external clients are managed by `McpRuntime`. See [mcp/runtime](./runtime).
+Health checks, restart, and cooldown handling for those external clients are
+managed by `McpRuntime`. Idle shutdown is disabled for external clients because
+v2 does not lazily restart stopped services. See [mcp/runtime](./runtime).
 
 ## Service inventory
 

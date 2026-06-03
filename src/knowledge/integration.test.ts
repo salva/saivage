@@ -55,6 +55,8 @@ function ctxFor(role: KnowledgeAgentRole, projectRoot: string, stageId?: string)
     role,
     agentId: "agent-" + role,
     projectRoot,
+    operatorContext: true,
+    author: "test:knowledge-integration",
     ...(stageId ? { stageId } : {}),
   };
 }

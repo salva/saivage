@@ -61,15 +61,21 @@ snapshots through `apiFetch()` (see Authentication below).
 The web UI's API surface is also useful for scripting. All paths are
 under `/api/` except `/health` and `/ws`.
 
+Saivage v2 assumes the HTTP API is reachable only across the container-local
+operator boundary. `SAIVAGE_API_TOKEN` can still be set to require a bearer
+token for `/api/*` and `/ws`, but token auth is optional rather than the primary
+safety boundary. Debug and config endpoints therefore return curated response
+shapes and omit raw provider, account, auth-profile, and runtime config data.
+
 | Method | Path | Purpose | Source |
 |---|---|---|---|
 | `GET` | `/health` | Liveness + project name + runtime status. | [server.ts L127](src/server/server.ts#L127) |
-| `GET` | `/api/config` | Project metadata + resolved planner/chat routing. | [server.ts L201](src/server/server.ts#L201) |
+| `GET` | `/api/config` | Project metadata + safe resolved planner/chat model routing. | [server.ts L201](src/server/server.ts#L201) |
 | `GET` | `/api/state` | `{ state, plan }` snapshot. | [server.ts L173](src/server/server.ts#L173) |
 | `GET` | `/api/plan` | `{ plan, history }`. | [server.ts L142](src/server/server.ts#L142) |
 | `GET` | `/api/plan/stages/:id` | Stage detail: tasks, summary, reports. | [server.ts L150](src/server/server.ts#L150) |
 | `GET` | `/api/agents/:agentId/conversation` | Full LLM conversation snapshot for a running agent (404 if exited). | [server.ts L183](src/server/server.ts#L183) |
-| `GET` | `/api/providers` | Per-provider model list + error if listing failed. Registered scriptable endpoint; no current SPA panel. | [server.ts L218](src/server/server.ts#L218) |
+| `GET` | `/api/providers` | Per-provider model list; no account refs, headers, base URLs, or auth profiles. Registered scriptable endpoint; no current SPA panel. | [server.ts L218](src/server/server.ts#L218) |
 | `GET` | `/api/mcp/tools` | Inspector listing of every MCP tool the runtime is aware of. Registered scriptable endpoint; no current SPA panel. | [server.ts L232](src/server/server.ts#L232) |
 | `GET` | `/api/inspections` | All `inspections/*.json` reports. Registered scriptable endpoint; no current SPA panel. | [server.ts L238](src/server/server.ts#L238) |
 | `GET` | `/api/notes` | Current user notes (consumed by the Files tab). | [server.ts L255](src/server/server.ts#L255) |
@@ -78,9 +84,9 @@ under `/api/` except `/health` and `/ws`.
 | `DELETE` | `/api/notes` | Delete all notes. | [server.ts L279](src/server/server.ts#L279) |
 | `GET` | `/api/chats` | List persisted chat sessions across channels. | [server.ts L286](src/server/server.ts#L286) |
 | `GET` | `/api/chats/:sessionId` | Full chat log for one session. | [server.ts L325](src/server/server.ts#L325) |
-| `GET` | `/api/files?root=saivage\|project&path=` | Directory listing; `root` defaults to `saivage`. Project root listing hides `node_modules`, `.git`, `.saivage-work`, `dist`, `build`. | [server.ts L376](src/server/server.ts#L376) |
-| `GET` | `/api/files/content?root=&path=` | File contents (UTF-8); truncated at 1 MiB with `truncated: true`. | [server.ts L428](src/server/server.ts#L428) |
-| `GET` | `/api/debug/state` | Raw runtime state, plan, history, project config, saivage.json. | [server.ts L477](src/server/server.ts#L477) |
+| `GET` | `/api/files?root=saivage\|project&path=` | Directory listing; `root` defaults to `saivage`. Known sensitive filenames/directories are hidden. | [server.ts L376](src/server/server.ts#L376) |
+| `GET` | `/api/files/content?root=&path=` | File contents (UTF-8); truncated at 1 MiB with `truncated: true`; the same hidden-path rules as listing apply. | [server.ts L428](src/server/server.ts#L428) |
+| `GET` | `/api/debug/state` | Runtime state, active plan, plan history, and safe project metadata. | [server.ts L477](src/server/server.ts#L477) |
 | `GET` | `/api/debug/errors` | Aggregated stage/task failures sorted by timestamp. | [server.ts L502](src/server/server.ts#L502) |
 | `GET` | `/api/debug/prompts` | Active prompt files grouped by role/shared prompt. | [server.ts L610](src/server/server.ts#L610) |
 | `GET` | `/api/debug/skills` | Active skill summaries from the knowledge sidecar. | [server.ts L619](src/server/server.ts#L619) |

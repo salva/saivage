@@ -239,6 +239,24 @@ describe("ragRegister", () => {
     expect(out).toMatchObject({ ok: false, code: "RAG_INVALID_ARGS" });
   });
 
+  it("registers arbitrary non-default embedding model and positive dimension", async () => {
+    const svc = makeService({ projectRoot });
+    (svc.manager.register as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "d" });
+    (svc.manager.ingest as ReturnType<typeof vi.fn>).mockResolvedValue({
+      filesScanned: 1, filesChanged: 1, chunksUpserted: 1, chunksDeleted: 0,
+      chunksDroppedSecrets: 0, tokensEmbedded: 1, embeddingMs: 0, storeMs: 0,
+    });
+    const out = await ragRegister(svc, {
+      collection_id: "d",
+      source: "doc",
+      provider: { model: "mxbai-embed-large", dim: 1024 },
+      chunker: { kind: "markdown" },
+      sources: [{ root: "data" }],
+    });
+    expect(out).toMatchObject({ collection: { id: "d" }, persisted: false });
+    expect(svc.datasets[0]?.provider).toEqual({ kind: "openai", model: "mxbai-embed-large", dim: 1024 });
+  });
+
   it("rejects root that escapes the project", async () => {
     const svc = makeService({ projectRoot });
     const out = await ragRegister(svc, {

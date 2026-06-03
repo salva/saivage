@@ -2,6 +2,9 @@ import { McpClient } from "./client.js";
 import type { ServiceEntry, ToolEntry } from "./types.js";
 import { log } from "../log.js";
 import type { SaivageConfig } from "../config.js";
+import { applyToolFilter } from "../agents/tool-filters.js";
+import { getToolFilter } from "../agents/roster.js";
+import type { ToolCallContext } from "./toolContext.js";
 
 export interface RuntimeToolEntry extends ToolEntry {
   service: string;
@@ -11,7 +14,7 @@ export interface RuntimeToolEntry extends ToolEntry {
 export type InProcessToolHandler = (
   toolName: string,
   args: Record<string, unknown>,
-  ctx?: import("./toolContext.js").ToolCallContext,
+  ctx?: ToolCallContext,
 ) => Promise<{ content: unknown; isError: boolean }>;
 
 interface InProcessService {
@@ -44,14 +47,14 @@ export interface McpRuntimeOptions {
 
 /**
  * MCP Runtime — manages lifecycle of MCP service processes.
- * Start, stop, health-check, lazy loading, idle shutdown, crash recovery.
+ * In-process services are registered directly; external services are started
+ * from configured entries during bootstrap and are not lazily started by calls.
  */
 export class McpRuntime {
   private services = new Map<string, ManagedService>();
   private inProcessServices = new Map<string, InProcessService>();
   private externalFailures = new Map<string, ExternalFailureState>();
   private healthInterval: ReturnType<typeof setInterval> | null = null;
-  private idleInterval: ReturnType<typeof setInterval> | null = null;
   private config: SaivageConfig["runtime"];
   private clientFactory: (entry: ServiceEntry) => McpClient;
   private now: () => number;
@@ -75,7 +78,7 @@ export class McpRuntime {
     this.shellTimeoutMs = config.mcp.shellTimeoutMs;
   }
 
-  /** Start health-check and idle-shutdown loops */
+  /** Start health-check monitoring for running external services. */
   startMonitoring(): void {
     if (this.config.healthCheckIntervalMs > 0) {
       this.healthInterval = setInterval(
@@ -83,31 +86,24 @@ export class McpRuntime {
         this.config.healthCheckIntervalMs,
       );
     }
-    if (this.config.idleShutdownMs > 0) {
-      this.idleInterval = setInterval(
-        () => this.checkIdleServices(),
-        60_000, // check every minute
-      );
-    }
   }
 
   stopMonitoring(): void {
     if (this.healthInterval) clearInterval(this.healthInterval);
-    if (this.idleInterval) clearInterval(this.idleInterval);
   }
 
-  /** Start a service by name (must already be running, declared in config.mcpServers, and started). */
-  async startService(name: string): Promise<McpClient> {
+  /** Return a connected external service client that was already started. */
+  async getRunningService(name: string): Promise<McpClient> {
     this.assertNotCoolingDown(name);
 
     const existing = this.services.get(name);
     if (existing?.client.connected) {
-      existing.idleSince = null; // Mark as active
+      existing.idleSince = null; // Mark as active for diagnostics.
       return existing.client;
     }
 
     throw new Error(
-      `MCP service "${name}" is not running; declare it under config.mcpServers with autostart: true`,
+      `MCP service "${name}" is not running; declare it under config.mcpServers with autostart: true and restart the runtime`,
     );
   }
 
@@ -144,11 +140,6 @@ export class McpRuntime {
     log.info(`Stopped service "${name}"`);
   }
 
-  /** Get a running client (lazy-start if not running) */
-  async getClient(name: string): Promise<McpClient> {
-    return this.startService(name);
-  }
-
   /** Register an in-process service (no subprocess, direct function calls) */
   registerInProcess(
     name: string,
@@ -164,12 +155,12 @@ export class McpRuntime {
     );
   }
 
-  /** Call a tool on a service (lazy-start) */
+  /** Call a tool on an in-process service or an already-running external service. */
   async callTool(
     serviceName: string,
     toolName: string,
     args: Record<string, unknown>,
-    ctx?: import("./toolContext.js").ToolCallContext,
+    ctx?: ToolCallContext,
   ): Promise<unknown> {
     // Check in-process services first
     const inProc = this.inProcessServices.get(serviceName);
@@ -177,6 +168,7 @@ export class McpRuntime {
       if (!inProc.available) {
         throw new Error(`Service "${serviceName}" is registered but unavailable`);
       }
+      this.authorizeInProcessToolCall(inProc, toolName, ctx);
       const timeoutMs = serviceName === "shell"
         ? this.shellTimeoutMs
         : this.inProcessTimeoutMs;
@@ -193,7 +185,13 @@ export class McpRuntime {
       return result.content;
     }
 
-    const client = await this.getClient(serviceName);
+    if (ctx && ctx.operatorContext !== true) {
+      throw new Error(
+        `UNAUTHORIZED_TOOL: ${ctx.role} cannot call external MCP tool ${serviceName}.${toolName}; operatorContext is required`,
+      );
+    }
+
+    const client = await this.getRunningService(serviceName);
     const managed = this.services.get(serviceName);
     if (managed) managed.idleSince = null; // Active
 
@@ -204,6 +202,22 @@ export class McpRuntime {
       );
     }
     return result.content;
+  }
+
+  private authorizeInProcessToolCall(
+    service: InProcessService,
+    toolName: string,
+    ctx?: ToolCallContext,
+  ): void {
+    if (!ctx || ctx.operatorContext === true) return;
+    const tool = service.tools.find((candidate) => candidate.name === toolName);
+    if (!tool) {
+      throw new Error(`Unknown tool "${toolName}" on service "${service.name}"`);
+    }
+    const filter = getToolFilter(ctx.role);
+    if (!applyToolFilter(filter, { ...tool, service: service.name })) {
+      throw new Error(`UNAUTHORIZED_TOOL: ${ctx.role} cannot call ${service.name}.${toolName}`);
+    }
   }
 
   /** Get all tool schemas across all services (in-process + running) */
@@ -374,21 +388,6 @@ export class McpRuntime {
     this.externalFailures.delete(name);
   }
 
-  // --- Idle shutdown ---
-
-  private async checkIdleServices(): Promise<void> {
-    const now = Date.now();
-    for (const [name, managed] of this.services) {
-      if (managed.idleSince === null) {
-        managed.idleSince = now; // Start tracking
-        continue;
-      }
-      if (now - managed.idleSince > this.config.idleShutdownMs) {
-        log.info(`Service "${name}" idle for ${this.config.idleShutdownMs}ms, shutting down`);
-        await this.stopService(name);
-      }
-    }
-  }
 }
 
 /** Race a promise against a timeout. Rejects with the given message on timeout. */

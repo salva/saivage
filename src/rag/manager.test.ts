@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRagManager } from "./manager.js";
 import type { OpenAIProviderOptions, EmbeddingsClient } from "./provider/index.js";
-import { ConfigDriftError, DatasetNotFoundError } from "./errors.js";
+import { ConfigDriftError, DatasetNotFoundError, EmbeddingDriftError } from "./errors.js";
 
 function fakeEmbeddingsClient(dim: number): EmbeddingsClient {
   return {
@@ -100,6 +100,38 @@ describe("RagManager", () => {
       providerOptions: providerOptions(1024),
     });
     await expect(m2.register(cfg1024)).rejects.toBeInstanceOf(ConfigDriftError);
+    await m2.close();
+  });
+
+  it("rejects registration when provider.model changes between sessions", async () => {
+    const base = {
+      id: "docs",
+      source: "doc" as const,
+      provider: { kind: "openai" as const, model: "first-embedding-model", dim: 256 },
+      store: { kind: "sqlite-vec" as const },
+      chunker: { kind: "markdown" as const },
+    };
+    const m1 = await createRagManager({
+      projectRoot: root,
+      projectId: "p1",
+      enabled: true,
+      datasets: [base],
+      providerOptions: providerOptions(256),
+    });
+    await m1.register(base);
+    await m1.close();
+
+    const drifted = { ...base, provider: { ...base.provider, model: "second-embedding-model" } };
+    const m2 = await createRagManager({
+      projectRoot: root,
+      projectId: "p1",
+      enabled: true,
+      datasets: [drifted],
+      providerOptions: providerOptions(256),
+    });
+    await expect(m2.register(drifted)).rejects.toSatisfy(
+      (e: unknown) => e instanceof ConfigDriftError || e instanceof EmbeddingDriftError,
+    );
     await m2.close();
   });
 

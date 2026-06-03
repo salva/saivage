@@ -78,15 +78,14 @@ The runtime:
 `ToolCallContext` carries the caller role, agent id, project root, and
 optional stage/channel/session ids. Knowledge and RAG handlers use it for
 authorization and audit attribution; external MCP subprocesses ignore it.
-   awaits the response.
 ## Health & autostart
 
 - Crashed or disconnected external servers are restarted during health
   checks when `runtime.restartOnCrash` is true.
 - A periodic `healthCheckIntervalMs` ping verifies that long-running
   services still respond.
-- `idleShutdownMs` stops external services that have been inactive longer
-  than the configured idle window.
+- External idle shutdown is disabled in v2 because tool calls do not lazily
+  restart stopped services; `idleShutdownMs` is ignored for external clients.
 - Repeated external startup failures are tracked in a short failure window;
   once the threshold is reached, the service enters cooldown and is removed
   from the running-service map.
@@ -119,4 +118,6 @@ Add to `saivage.json`:
 }
 ```
 
-The runtime will spawn it on boot.
+The runtime will spawn it on boot. Calls to non-autostarted external services
+fail until the service is configured with `autostart: true` and the runtime is
+restarted.

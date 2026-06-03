@@ -11,8 +11,8 @@ export interface ProviderStamp {
 
 export interface EmbeddingProviderRef {
   kind: "openai";
-  model: "text-embedding-3-small";
-  dim: 256 | 512 | 1024 | 1536;
+  model: string;
+  dim: number;
 }
 
 export interface VectorStoreRef {

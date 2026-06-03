@@ -9,6 +9,7 @@ import { initProjectTree } from "../store/project.js";
 import { registerBuiltinServices } from "./builtins.js";
 import { McpRuntime } from "./runtime.js";
 import { loadConfig } from "../config.js";
+import type { ToolCallContext } from "./toolContext.js";
 
 let tmpDir: string;
 let prevCwd: string;
@@ -29,7 +30,20 @@ afterEach(() => {
 });
 
 async function writeFileTool(path: string, content: string): Promise<unknown> {
-  return runtime.callTool("filesystem", "write_file", { path, content });
+  return runtime.callTool("filesystem", "write_file", { path, content }, {
+    role: "coder",
+    agentId: "coder-test",
+    projectRoot: tmpDir,
+  });
+}
+
+function operatorCtx(): ToolCallContext {
+  return {
+    role: "planner",
+    agentId: "operator-test",
+    projectRoot: tmpDir,
+    operatorContext: true,
+  };
 }
 
 describe("write_file BLOCKED_PATH guard (WI-15)", () => {
@@ -46,13 +60,13 @@ describe("write_file BLOCKED_PATH guard (WI-15)", () => {
   });
 
   it("permits writes outside the knowledge store", async () => {
-    await writeFileTool("notes/free.md", "hello");
+    await runtime.callTool("filesystem", "write_file", { path: "notes/free.md", content: "hello" }, operatorCtx());
     expect(existsSync(join(tmpDir, "notes/free.md"))).toBe(true);
     expect(readFileSync(join(tmpDir, "notes/free.md"), "utf-8")).toBe("hello");
   });
 
   it("permits writes inside .saivage/ but outside skills/ and memory/", async () => {
-    await writeFileTool(".saivage/notes/free.md", "ok");
+    await runtime.callTool("filesystem", "write_file", { path: ".saivage/notes/free.md", content: "ok" }, operatorCtx());
     expect(existsSync(join(tmpDir, ".saivage/notes/free.md"))).toBe(true);
   });
 });

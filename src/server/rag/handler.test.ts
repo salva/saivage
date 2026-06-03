@@ -74,6 +74,48 @@ describe("makeRagHandler", () => {
     expect(r.content).toMatchObject({ ok: false, code: "RAG_INVALID_ARGS" });
   });
 
+  it("rag_register accepts custom embedding model and dimension", async () => {
+    const svc = makeService({ projectRoot: "/tmp" });
+    svc.adminRoles.add("coder");
+    (svc.manager.register as ReturnType<typeof vi.fn>).mockResolvedValue({ id: "docs" });
+    (svc.manager.ingest as ReturnType<typeof vi.fn>).mockResolvedValue({
+      filesScanned: 0, filesChanged: 0, chunksUpserted: 0, chunksDeleted: 0,
+      chunksDroppedSecrets: 0, tokensEmbedded: 0, embeddingMs: 0, storeMs: 0,
+    });
+    const h = makeRagHandler(svc);
+    const r = await h(
+      "rag_register",
+      {
+        collection_id: "docs",
+        source: "doc",
+        provider: { model: "custom-embedding-model", dim: 768 },
+        chunker: { kind: "markdown" },
+        sources: [{ root: "/tmp" }],
+      },
+      baseCtx,
+    );
+    expect(r.content).toMatchObject({ ok: true });
+    expect(svc.datasets[0]?.provider).toEqual({ kind: "openai", model: "custom-embedding-model", dim: 768 });
+  });
+
+  it("rag_register rejects empty model and non-positive dimensions", async () => {
+    const svc = makeService();
+    svc.adminRoles.add("coder");
+    const h = makeRagHandler(svc);
+    const r = await h(
+      "rag_register",
+      {
+        collection_id: "docs",
+        source: "doc",
+        provider: { model: "", dim: 0 },
+        chunker: { kind: "markdown" },
+        sources: [{ root: "/tmp/proj" }],
+      },
+      baseCtx,
+    );
+    expect(r.content).toMatchObject({ ok: false, code: "RAG_INVALID_ARGS" });
+  });
+
   it("RAG_CONTROL_BUSY when control mutex is held", async () => {
     const svc = makeService({ control: { busy: true } });
     svc.adminRoles.add("coder");

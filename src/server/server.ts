@@ -29,6 +29,7 @@ import { listSkills, readSkillById, listMemories, getMemory } from "../knowledge
 import { chatSessionId, agentId } from "../ids.js";
 import { WebSocketChannel } from "../channels/websocket.js";
 import { log } from "../log.js";
+import type { ResolvedModelRoute } from "../routing/resolver.js";
 
 /**
  * Returns true if `target` is the same as or a descendant of `base` after
@@ -58,6 +59,145 @@ function activePlanView(doc: PlanDocument | null): ActivePlanView | null {
 
 function historyView(doc: PlanDocument | null): PlanHistoryView | null {
   return doc ? { stages: doc.history } : null;
+}
+
+export interface SafeResolvedRoute {
+  role: string;
+  modelSpec: string;
+  provider: string;
+  model: string;
+  preferredModels: string[];
+  source: ResolvedModelRoute["source"];
+}
+
+export interface SafeProjectConfig {
+  project_name: string;
+  objectives: string[];
+  skills?: { max_per_agent: number };
+  agents?: Record<string, { compaction_threshold_pct: number; max_compactions: number }>;
+}
+
+export interface SafeConfigResponse extends SafeProjectConfig {
+  project_root: string;
+  saivage_dir: string;
+  /** Backward-compatible dashboard label for the planner model spec. */
+  provider: string;
+  routing: {
+    planner: SafeResolvedRoute;
+    chat: SafeResolvedRoute;
+  };
+}
+
+export interface SafeDebugStateResponse {
+  runtime: unknown;
+  plan: ActivePlanView | null;
+  history: PlanHistoryView | null;
+  config: SafeProjectConfig;
+}
+
+export interface SafeProvidersResponse {
+  providers: Array<{
+    name: string;
+    models: string[];
+    unavailable?: true;
+  }>;
+}
+
+function safeRouteView(route: ResolvedModelRoute): SafeResolvedRoute {
+  return {
+    role: route.role,
+    modelSpec: route.modelSpec,
+    provider: route.provider,
+    model: route.model,
+    preferredModels: [...route.preferredModels],
+    source: route.source,
+  };
+}
+
+export function safeProjectConfigView(config: SaivageRuntime["project"]["config"]): SafeProjectConfig {
+  return {
+    project_name: config.project_name,
+    objectives: [...config.objectives],
+    ...(config.skills ? { skills: { max_per_agent: config.skills.max_per_agent } } : {}),
+    ...(config.agents ? { agents: config.agents } : {}),
+  };
+}
+
+export function safeConfigResponse(runtime: SaivageRuntime): SafeConfigResponse {
+  const plannerRoute = runtime.routing.resolve("planner");
+  const chatRoute = runtime.routing.resolve("chat");
+  return {
+    ...safeProjectConfigView(runtime.project.config),
+    project_root: runtime.project.projectRoot,
+    saivage_dir: runtime.project.saivageDir,
+    provider: plannerRoute.modelSpec,
+    routing: {
+      planner: safeRouteView(plannerRoute),
+      chat: safeRouteView(chatRoute),
+    },
+  };
+}
+
+export function safeDebugStateResponse(args: {
+  runtimeState: unknown;
+  planDoc: PlanDocument | null;
+  projectConfig: SaivageRuntime["project"]["config"];
+}): SafeDebugStateResponse {
+  return {
+    runtime: args.runtimeState,
+    plan: activePlanView(args.planDoc),
+    history: historyView(args.planDoc),
+    config: safeProjectConfigView(args.projectConfig),
+  };
+}
+
+export async function safeProvidersResponse(
+  router: Pick<SaivageRuntime["router"], "listProviders" | "listModels">,
+): Promise<SafeProvidersResponse> {
+  const providers = await Promise.all(router.listProviders().map(async (name) => {
+    try {
+      const models = await router.listModels(name);
+      return { name, models: models.filter((model): model is string => typeof model === "string") };
+    } catch {
+      return { name, models: [], unavailable: true as const };
+    }
+  }));
+  return { providers };
+}
+
+const SENSITIVE_FILE_NAMES = new Set([
+  "auth-profiles.json",
+  "saivage.json",
+  ".env",
+]);
+
+const SENSITIVE_DIR_NAMES = new Set([
+  ".git",
+  ".saivage",
+  ".saivage-work",
+  ".secrets",
+  "backup",
+  "backups",
+  "node_modules",
+  "secrets",
+]);
+
+const PROJECT_ONLY_HIDDEN_DIR_NAMES = new Set(["build", "dist"]);
+
+function isSensitiveFileName(name: string): boolean {
+  return SENSITIVE_FILE_NAMES.has(name) ||
+    name.startsWith(".env.") ||
+    name.endsWith(".pem") ||
+    name.endsWith(".key");
+}
+
+export function isPathHiddenForFileRoot(root: "project" | "saivage", relPath: string): boolean {
+  if (!relPath || relPath === ".") return false;
+  const segments = relPath.split("/").filter(Boolean);
+  if (segments.some((segment) => SENSITIVE_DIR_NAMES.has(segment))) return true;
+  if (root === "project" && segments.some((segment) => PROJECT_ONLY_HIDDEN_DIR_NAMES.has(segment))) return true;
+  const last = segments.at(-1) ?? "";
+  return isSensitiveFileName(last);
 }
 
 export interface ServerOptions {
@@ -242,31 +382,11 @@ export async function startServer(
   // ─── Config API ─────────────────────────────────────────────────────────
 
   app.get("/api/config", async () => {
-    const { project_name, objectives } = runtime.project.config;
-    const plannerRoute = runtime.routing.resolve("planner");
-    const chatRoute = runtime.routing.resolve("chat");
-    return {
-      project_name,
-      objectives,
-      project_root: runtime.project.projectRoot,
-      saivage_dir: runtime.project.saivageDir,
-      provider: plannerRoute.modelSpec,
-      routing: {
-        planner: plannerRoute,
-        chat: chatRoute,
-      },
-    };
+    return safeConfigResponse(runtime);
   });
 
   app.get("/api/providers", async () => {
-    const providers = await Promise.all(runtime.router.listProviders().map(async (name) => {
-      try {
-        return { name, models: await runtime.router.listModels(name) };
-      } catch (err) {
-        return { name, models: [], error: err instanceof Error ? err.message : String(err) };
-      }
-    }));
-    return { providers };
+    return safeProvidersResponse(runtime.router);
   });
 
   // WI-12 — Inspector endpoint listing every MCP tool the runtime is aware
@@ -364,8 +484,6 @@ export async function startServer(
 
   // ─── Files API ─────────────────────────────────────────────────────────
 
-  const HIDDEN_FILES = new Set(["auth-profiles.json"]);
-
   /**
    * Resolve a file-root query parameter to a base directory.
    * `root=saivage` (default) → .saivage/
@@ -375,18 +493,8 @@ export async function startServer(
     return root === "project" ? runtime.project.projectRoot : runtime.project.saivageDir;
   }
 
-  /**
-   * Hidden-file checks differ per root. For the project root we exclude the
-   * entire .saivage/ subtree from listing (it's served via root=saivage) plus
-   * common heavy/secret directories. For .saivage we just hide auth files.
-   */
   function isPathHiddenForRoot(root: string, relPath: string): boolean {
-    const last = relPath.split("/").pop() ?? "";
-    if (root === "saivage") return HIDDEN_FILES.has(last);
-    // project: hide vcs/build/cache/secret roots
-    const first = relPath.split("/")[0] ?? "";
-    if (["node_modules", ".git", ".saivage-work", "dist", "build"].includes(first)) return true;
-    return false;
+    return isPathHiddenForFileRoot(root === "project" ? "project" : "saivage", relPath);
   }
 
   app.get("/api/files", async (req, reply) => {
@@ -496,22 +604,11 @@ export async function startServer(
       readDocOrNull(runtime.project.paths.plan, PlanDocumentSchema),
     ]);
 
-    // Read raw config files
-    let saivageConfig = null;
-    try {
-      const saivagePath = join(runtime.project.saivageDir, "saivage.json");
-      if (await pathExistsP(saivagePath)) {
-        saivageConfig = JSON.parse(await readFile(saivagePath, "utf-8"));
-      }
-    } catch { /* ignore */ }
-
-    return {
-      runtime: runtimeState,
-      plan: activePlanView(doc),
-      history: historyView(doc),
-      config: runtime.project.config,
-      saivage_config: saivageConfig,
-    };
+    return safeDebugStateResponse({
+      runtimeState,
+      planDoc: doc,
+      projectConfig: runtime.project.config,
+    });
   });
 
   app.get("/api/debug/errors", async () => {

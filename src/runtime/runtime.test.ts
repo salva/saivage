@@ -30,11 +30,6 @@ import {
   isMaxCompactionsReached,
 } from "./compaction.js";
 import {
-  createAbortSignal,
-  triggerAbort,
-  scanForUrgentNotes,
-} from "./abort.js";
-import {
   isAnotherInstanceRunning,
   recoverFromCrash,
   writeRuntimeState,
@@ -1335,67 +1330,6 @@ describe("Compaction", () => {
         config,
       ),
     ).toBe(true);
-  });
-});
-
-// ─── Abort ───────────────────────────────────────────────────────────────────
-
-describe("Abort", () => {
-  it("createAbortSignal starts unaborted", () => {
-    const signal = createAbortSignal();
-    expect(signal.aborted).toBe(false);
-  });
-
-  it("triggerAbort sets aborted state", () => {
-    const signal = createAbortSignal();
-    triggerAbort(signal, "User requested stop");
-    expect(signal.aborted).toBe(true);
-    expect(signal.reason).toBe("User requested stop");
-  });
-
-  it("scanForUrgentNotes finds urgent unacknowledged notes", async () => {
-    const notesDir = join(tmpDir, "notes");
-    await ensureDir(notesDir);
-
-    await writeDoc(
-      join(notesDir, "note-1.json"),
-      {
-        id: "note-1",
-        channel: "test",
-        session_id: "s1",
-        content: "change direction",
-        created_at: new Date().toISOString(),
-        permanent: false,
-        urgent: true,
-      },
-      UserNoteSchema,
-    );
-
-    const note = await scanForUrgentNotes(notesDir);
-    expect(note).not.toBeNull();
-    expect(note?.urgent).toBe(true);
-  });
-
-  it("scanForUrgentNotes ignores acknowledged urgent notes", async () => {
-    const notesDir = join(tmpDir, "notes");
-    await ensureDir(notesDir);
-
-    await writeDoc(
-      join(notesDir, "note-1.json"),
-      {
-        id: "note-1",
-        channel: "test",
-        session_id: "s1",
-        content: "old",
-        created_at: new Date().toISOString(),
-        permanent: false,
-        urgent: true,
-        acknowledged_at: new Date().toISOString(),
-      },
-      UserNoteSchema,
-    );
-
-    expect(await scanForUrgentNotes(notesDir)).toBeNull();
   });
 });
 

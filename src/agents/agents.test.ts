@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { checkConvention, getConvention } from "./conventions.js";
+import { checkConvention, decidePathMutation, getConvention } from "./conventions.js";
 import { ensureDir } from "../store/documents.js";
 import { ReviewerAgent } from "./reviewer.js";
 import { ChatAgent } from "./chat.js";
@@ -90,6 +90,32 @@ describe("Conventions", () => {
     const rule = getConvention("coder");
     expect(rule).not.toBeNull();
     expect(rule?.writeTerritory).toContain("src/");
+  });
+
+  it("denies coder writes outside write territory", () => {
+    const decision = decidePathMutation(
+      { role: "coder", agentId: "coder-1", projectRoot: tmpDir },
+      "notes/free.md",
+    );
+    expect(decision.ok).toBe(false);
+    if (!decision.ok) expect(decision.reason).toContain("outside write territory");
+  });
+
+  it("denies researcher writes to source through enforceable decisions", () => {
+    const decision = decidePathMutation(
+      { role: "researcher", agentId: "researcher-1", projectRoot: tmpDir },
+      "src/main.ts",
+    );
+    expect(decision.ok).toBe(false);
+  });
+
+  it("blocks direct agent writes under knowledge store paths", () => {
+    const decision = decidePathMutation(
+      { role: "librarian", agentId: "librarian-1", projectRoot: tmpDir },
+      ".saivage/memory/project/fact.json",
+    );
+    expect(decision.ok).toBe(false);
+    if (!decision.ok) expect(decision.reason).toContain("BLOCKED_PATH");
   });
 });
 

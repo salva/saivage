@@ -26,11 +26,13 @@ describe("rag types — compile-time + structural", () => {
     expect(s.dim).toBe(1536);
   });
 
-  it("EmbeddingProviderRef accepts each documented dim and rejects others at the type layer", () => {
-    const dims: EmbeddingProviderRef["dim"][] = [256, 512, 1024, 1536];
-    expect(dims).toHaveLength(4);
+  it("EmbeddingProviderRef accepts arbitrary model strings and dimensions at the type layer", () => {
+    const ref: EmbeddingProviderRef = { kind: "openai", model: "custom-embedding-model", dim: 768 };
+    expect(ref.model).toBe("custom-embedding-model");
+    expect(ref.dim).toBe(768);
     expectTypeOf<EmbeddingProviderRef["kind"]>().toEqualTypeOf<"openai">();
-    expectTypeOf<EmbeddingProviderRef["model"]>().toEqualTypeOf<"text-embedding-3-small">();
+    expectTypeOf<EmbeddingProviderRef["model"]>().toEqualTypeOf<string>();
+    expectTypeOf<EmbeddingProviderRef["dim"]>().toEqualTypeOf<number>();
   });
 
   it("VectorStoreRef is single-kind in v1", () => {

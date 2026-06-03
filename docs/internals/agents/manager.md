@@ -137,7 +137,7 @@ failures; those updates are part of the Manager-authored task list.
 |---------|----------------------|---------------------|
 | All tasks completed | `completed` | yes |
 | Escalation to Planner | `escalated` | yes |
-| Aborted (urgent note) | `aborted` | yes |
+| Cancelled by runtime control path | `aborted` | yes |
 | Fatal (e.g. context exhausted after max compactions) | `failed` | yes |
 
 On the normal LLM path, the prompt requires the Manager to write `tasks.json`

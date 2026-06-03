@@ -320,7 +320,7 @@ Subsystem pages:
 - [runtime/dispatcher](../runtime/dispatcher) — suspend/resume + tool dispatch.
 - [runtime/compaction](../runtime/compaction) — context compaction.
 - [runtime/self-check](../runtime/self-check) — periodic self-check injection.
-- [runtime/abort-recovery](../runtime/abort-recovery) — urgent-note abort
-  semantics + rollback stages.
+- [runtime/abort-recovery](../runtime/abort-recovery) — explicit planner
+  restart, cancellation, and crash recovery.
 - [runtime/supervisor](../runtime/supervisor) — shutdown handoff.
 - [runtime/events](../runtime/events) — event bus for channels.

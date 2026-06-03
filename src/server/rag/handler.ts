@@ -77,8 +77,8 @@ const SCHEMAS = {
       source: z.enum(["doc", "code"]),
       provider: z
         .object({
-          model: z.literal("text-embedding-3-small").optional(),
-          dim: z.union([z.literal(256), z.literal(512), z.literal(1024), z.literal(1536)]).optional(),
+          model: z.string().min(1).optional(),
+          dim: z.number().int().positive().optional(),
         })
         .optional(),
       chunker: chunkerSchema,
@@ -157,7 +157,13 @@ export const RAG_TOOL_DEFINITIONS: ToolEntry[] = [
         source: { type: "string", enum: ["doc", "code"] },
         chunker: { type: "object" },
         sources: { type: "array" },
-        provider: { type: "object" },
+        provider: {
+          type: "object",
+          properties: {
+            model: { type: "string", minLength: 1 },
+            dim: { type: "integer", minimum: 1 },
+          },
+        },
         exclusions: { type: "array" },
         watch: {},
         persist: { type: "boolean" },

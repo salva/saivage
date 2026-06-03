@@ -195,7 +195,13 @@ export async function bootstrap(
   await planService.init();
   planService.setGitCommit(async (files: string[], message: string) => {
     // Use MCP git service to commit
-    const result = await mcpRuntime.callTool("git", "git_commit", { files, message });
+    const result = await mcpRuntime.callTool("git", "git_commit", { files, message }, {
+      role: "planner",
+      agentId: "runtime:plan-service",
+      projectRoot: project.projectRoot,
+      operatorContext: true,
+      author: "runtime:plan-service",
+    });
     return { sha: (result as { sha?: string })?.sha ?? "unknown" };
   });
 

@@ -540,12 +540,11 @@ error:
   task or escalates to the Planner.
 - The Planner may adjust stage assignments to prevent future conflicts.
 
-### 11.2 Untracked files after abort
+### 11.2 Cancellation and rollback
 
-`git checkout -- .` resets tracked modified files. Untracked files (new
-files created by the aborted agent) remain. The rollback stage handles
-cleanup: it inspects the working tree for unexpected files and removes
-them if appropriate.
+Planner restart, shutdown, and supervisor cancellation do not automatically
+reset tracked files or remove untracked files. Any working-tree rollback is a
+deliberate operator or planned-stage action, not a runtime side effect.
 
 ### 11.3 Plan commit no-op
 
@@ -560,7 +559,7 @@ writes to note files.
 
 ### 12.1 Injection
 
-When the Planner resumes (after a Manager returns or an abort), the
+When the Planner resumes (after a Manager returns, restart, or fresh turn), the
 runtime:
 
 1. Scans `notes/` for files with no `acknowledged_at` field.

@@ -2,9 +2,8 @@
 
 Two related mechanisms ensure the runtime survives unexpected events:
 
-- **Abort / cancellation** ([`src/runtime/abort.ts`](https://github.com/salva/saivage/blob/main/src/runtime/abort.ts))
-  — helper primitives plus the live `BaseAgent.cancel()` / abort-signal
-  paths used by planner restart, shutdown, and supervisor cancellation.
+- **Abort / cancellation** — live `BaseAgent.cancel()` / abort-signal paths
+  used by planner restart, shutdown, and supervisor cancellation.
 - **Recovery** ([`src/runtime/recovery.ts`](https://github.com/salva/saivage/blob/main/src/runtime/recovery.ts))
   — startup-time reconciliation of disk state after a crash.
 
@@ -18,10 +17,9 @@ Two related mechanisms ensure the runtime survives unexpected events:
 - **Supervisor decision** — see [Supervisor](./supervisor); it calls
   `cancel()` on the selected abortable agent.
 
-`abort.ts` still exposes `scanForUrgentNotes`, `triggerAbort`, and
-`resetWorkingTree`, but the current runtime does not wire urgent notes into
-active-work interruption. Chat-created urgent notes are high-priority
-Planner input, not automatic aborts.
+Chat-created urgent notes are high-priority Planner input, not automatic
+aborts. There is no urgent-note scanner or working-tree rollback helper in the
+live runtime control path.
 
 ### Procedure
 
@@ -49,8 +47,7 @@ Planner input, not automatic aborts.
   durable).
 
 There is no live automatic rollback path that invokes `git checkout -- .`;
-tracked modified files are not reset by cancellation unless some future
-caller wires `resetWorkingTree()` into the runtime.
+tracked modified files are not reset by cancellation.
 
 ## Recovery
 

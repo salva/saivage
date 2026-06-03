@@ -1,8 +1,7 @@
 /**
  * Saivage — Tool-call Dispatcher
  * Nested tool-call pattern: intercept agent-dispatch calls, suspend parent,
- * spawn child, resume parent with result. Supports parallel dispatch with
- * resume-on-each.
+ * spawn children, then resume parent with the completed batch results.
  */
 
 import type { ToolCallResult } from "../providers/types.js";
@@ -48,7 +47,8 @@ export interface ToolCallResultEntry {
  * The Dispatcher handles all tool calls from an LLM response.
  * - Local tools are executed immediately via MCP runtime.
  * - Agent dispatch tools spawn child agents and suspend the parent.
- * - Parallel dispatch is supported with resume-on-each semantics.
+ * - Dispatch tools in one LLM response run as a parallel batch; the parent
+ *   receives all allowed child results together after the batch settles.
  */
 export class Dispatcher {
   private mcpRuntime: McpRuntime;
@@ -117,7 +117,7 @@ export class Dispatcher {
       });
     }
 
-    // Execute dispatch tools (start all concurrently, collect as they complete)
+    // Execute dispatch tools concurrently, then return one completed batch.
     const dispatchPromises = allowedDispatches.map(async (tc) => {
       if (abortSignal?.aborted) {
         return {

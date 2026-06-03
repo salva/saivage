@@ -16,7 +16,7 @@ export const LOCAL_CHAT_COMMANDS = [
   { name: "/status",          usage: "/status",                   help: "Show runtime status (agents, current stage)" },
   { name: "/plan",            usage: "/plan",                     help: "Show the current plan with all stages" },
   { name: "/history",         usage: "/history [n]",              help: "Show completed stages (last n, default 5)" },
-  { name: "/replan",          usage: "/replan [reason]",          help: "Force replanning (urgent note to Planner)" },
+  { name: "/replan",          usage: "/replan [reason]",          help: "Create an urgent Planner note; does not interrupt running work" },
   { name: "/restart-planner", aliases: ["/planner-restart"],
                               usage: "/restart-planner [reason]", help: "Restart the Planner from persisted state" },
   { name: "/note",            usage: "/note <msg>",               help: "Create a note for the Planner" },

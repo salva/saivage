@@ -26,7 +26,7 @@ const ctx: ToolCallContext = {
 };
 
 const toolDef: ToolEntry = {
-  name: "probe",
+  name: "read_file",
   description: "probe tool",
   inputSchema: { type: "object", properties: {}, additionalProperties: true },
 };
@@ -75,7 +75,7 @@ describe("ToolCallContext propagation", () => {
       },
     );
 
-    await runtime.callTool("probe-svc", "probe", {}, ctx);
+    await runtime.callTool("probe-svc", "read_file", {}, ctx);
 
     expect(seen).toBeDefined();
     expect(seen?.role).toBe("coder");
@@ -96,7 +96,7 @@ describe("ToolCallContext propagation", () => {
       },
     );
 
-    await runtime.callTool("probe-svc", "probe", {});
+    await runtime.callTool("probe-svc", "read_file", {});
 
     expect(seen).toBeUndefined();
   });
@@ -120,7 +120,7 @@ describe("ToolCallContext propagation", () => {
       channelId: "web",
       sessionId: "sess-42",
     };
-    await runtime.callTool("probe-svc", "probe", {}, chatCtx);
+    await runtime.callTool("probe-svc", "read_file", {}, chatCtx);
 
     expect(seen?.channelId).toBe("web");
     expect(seen?.sessionId).toBe("sess-42");

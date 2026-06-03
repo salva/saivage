@@ -18,7 +18,7 @@ import { isProtected } from "./list.js";
 export interface RagRegisterInput {
   collection_id: string;
   source: "doc" | "code";
-  provider?: { model?: "text-embedding-3-small"; dim?: 256 | 512 | 1024 | 1536 };
+  provider?: { model?: string; dim?: number };
   chunker: ChunkerRef;
   exclusions?: string[];
   sources: Array<{ root: string; include?: string[]; exclude?: string[] }>;
