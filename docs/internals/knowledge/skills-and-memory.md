@@ -39,10 +39,9 @@ omitted for project scope). The canonical on-disk storage is one sidecar:
   └── store.sqlite
 ```
 
-The retired `.saivage/skills` and `.saivage/memory` JSON trees are
-legacy markers. Boot removes them when the sidecar already contains
-records, or refuses to start with `KNOWLEDGE_MIGRATION_REQUIRED` when a
-legacy tree exists and the sidecar is empty.
+The retired `.saivage/skills` and `.saivage/memory` JSON trees are no longer
+part of runtime startup. Active projects are expected to use the sidecar store
+only.
 
 ## 2. Built-in skills
 

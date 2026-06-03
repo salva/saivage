@@ -54,6 +54,6 @@ Every gap that should drive a correction task must appear in `issues_found[]`. E
 - **root_cause** — why the issue happened or what evidence is missing.
 - **suggestion** — the concrete correction the Manager can dispatch.
 
-Return the full `TaskReport` JSON as your final response.
+Write the assigned `TaskReport` JSON artifact to the path from the initial message, then return a concise final response. Do not put the full `TaskReport` JSON in final prose.
 
 {{> shared/execution-style}}

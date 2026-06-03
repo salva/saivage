@@ -32,13 +32,12 @@ export interface InitKnowledgeStoreOptions {
  * Public init entry. Phases (per design §A.8):
  *  1. assert RAG enabled
  *  2. open sidecar
- *  3. refuse/clean legacy tree
- *  4. ensure + register protected datasets
- *  5. upsert built-in skills
- *  6. divergence sweep
+ *  3. ensure + register protected datasets
+ *  4. upsert built-in skills
+ *  5. divergence sweep
  *
- * The skeleton in B03 wires the dependency graph; phases 3–6 land in
- * B04 (lifecycle), B05 (built-ins), B07 (legacy refusal).
+ * The skeleton in B03 wires the dependency graph; lifecycle and built-ins land
+ * in the current sidecar-only store.
  */
 export async function initKnowledgeStore(
   opts: InitKnowledgeStoreOptions,
@@ -48,8 +47,6 @@ export async function initKnowledgeStore(
       "knowledge store requires rag.enabled = true; refusing to boot",
     );
   }
-  const { refuseOrCleanLegacyTree } = await import("./legacy.js");
-  await refuseOrCleanLegacyTree(opts.projectRoot);
   const { openSidecar } = await import("./sidecar.js");
   const sidecar = await openSidecar(opts.projectRoot);
   const { reingestKind } = await import("./reingest.js");

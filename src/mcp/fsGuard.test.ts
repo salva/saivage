@@ -22,7 +22,7 @@ beforeEach(async () => {
   process.chdir(tmpDir);
   const cfg = await loadConfig(tmpDir);
   runtime = new McpRuntime(cfg);
-  registerBuiltinServices(runtime, cfg.mcp, cfg.security);
+  registerBuiltinServices(runtime, cfg.mcp, cfg.security, { project: { projectRoot: tmpDir } });
 });
 afterEach(() => {
   process.chdir(prevCwd);

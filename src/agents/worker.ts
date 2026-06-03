@@ -24,7 +24,6 @@ import type {
 } from "./types.js";
 import {
   normalizeTask,
-  parseTaskReport,
   buildFailureReport,
   ROLE_TO_TASK_TYPE,
   type WorkerRole,
@@ -34,6 +33,8 @@ import { loadRolePrompt } from "./prompts.js";
 import { buildEagerBlock } from "../knowledge/eagerLoader.js";
 import { buildHandoffContext } from "./handoff.js";
 import { log } from "../log.js";
+import { checkWorkerCompletion } from "./compliance.js";
+import { ProjectStore } from "../store/project-store.js";
 
 type WorkerCtor = new (
   ctx: AgentContext,
@@ -96,7 +97,7 @@ export async function buildInitialMessage(
   instructions.push(
     `Commit using git with message prefix: [${input.task.id}] if you modify files.`,
   );
-  instructions.push("Return the full TaskReport JSON as your final response.");
+  instructions.push("After writing the report, return a concise final response. Do not include the full TaskReport JSON in the final response.");
 
   return (
     `## ${meta.heading}${headingSuffix}\n\n` +
@@ -226,14 +227,22 @@ export abstract class WorkerAgent extends BaseAgent implements Agent {
           ),
         };
       }
+      const artifact = this.readTaskReportArtifact();
+      if (artifact.kind === "valid") {
+        return { kind: "success", data: artifact.artifact };
+      }
+      const reason = artifact.kind === "missing"
+        ? `Expected TaskReport artifact was not written at ${artifact.path}.`
+        : `Invalid TaskReport artifact at ${artifact.path}: ${artifact.reason}.`;
       return {
-        kind: "success",
-        data: parseTaskReport(
-          text,
+        kind: "failure",
+        reason,
+        partial: buildFailureReport(
           input,
           this.workerRole,
           startedAt,
           startMs,
+          reason,
         ),
       };
     } catch (err) {
@@ -253,8 +262,25 @@ export abstract class WorkerAgent extends BaseAgent implements Agent {
     }
   }
 
-  protected override validateFinalResponse(_text: string): string | null {
-    if (this.hasUsedAnyTool()) return null;
-    return this.invalidFinalResponseMessage;
+  protected override validateFinalResponse(text: string): string | null {
+    const artifact = this.readTaskReportArtifact();
+    if (artifact.kind === "invalid") {
+      return `Invalid TaskReport artifact at ${artifact.path}: ${artifact.reason}. Fix the on-disk TaskReport JSON for stage ${this.input.stageId}, task ${this.input.task.id}.`;
+    }
+    const violation = checkWorkerCompletion({
+      text,
+      hasMeaningfulToolEvidence: this.hasMeaningfulToolEvidence(),
+      requiredToolMessage: this.invalidFinalResponseMessage,
+      artifactValidated: artifact.kind === "valid",
+    });
+    return violation?.repairPrompt ?? null;
+  }
+
+  private readTaskReportArtifact() {
+    return new ProjectStore(this.ctx.project).readExpectedStageTaskReport({
+      stageId: this.input.stageId,
+      taskId: this.input.task.id,
+      agent: this.workerRole,
+    });
   }
 }

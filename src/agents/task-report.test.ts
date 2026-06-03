@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
   normalizeTask,
-  parseTaskReport,
   buildFailureReport,
   type WorkerRole,
 } from "./task-report.js";
@@ -50,27 +49,6 @@ describe("task-report shared helpers", () => {
     expect(t.description).toContain("a.ts");
     expect(t.description).toContain("Use TDD");
     expect(t.checklist).toEqual([{ description: "passes", required: true }]);
-  });
-
-  it("parseTaskReport extracts JSON when present", () => {
-    const input = makeInput("coder");
-    const text =
-      'Here is the report: {"task_id":"t1","stage_id":"stage-1","status":"completed","summary":"ok"}';
-    const r = parseTaskReport(text, input, "coder", new Date().toISOString(), Date.now());
-    expect(r.agent).toBe("coder");
-    expect(r.status).toBe("completed");
-    expect(r.summary).toBe("ok");
-  });
-
-  it("parseTaskReport returns a failure report when no JSON is found", () => {
-    const input = makeInput("researcher");
-    const text = "plain text answer no JSON here";
-    const r = parseTaskReport(text, input, "researcher", new Date().toISOString(), Date.now());
-    expect(r.agent).toBe("researcher");
-    expect(r.status).toBe("failed");
-    expect(r.failure_reason).toContain("no_json");
-    expect(r.issues_found).toHaveLength(1);
-    expect(r.issues_found[0].severity).toBe("error");
   });
 
   it("buildFailureReport sets issues_found uniformly across all worker roles", () => {

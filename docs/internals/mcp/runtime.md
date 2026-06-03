@@ -20,8 +20,8 @@ implementations and supports two service flavors:
 
 `McpRuntime` keeps two in-memory maps: in-process services and running
 external services. `getAllTools()` returns only currently available tools
-for agent schemas, while `listAllToolsForApi()` also includes unavailable
-in-process stubs with `available: false` for API discovery.
+for agent schemas, while `listAllToolsForApi()` includes every registered
+in-process service and annotates each tool with `available` for API discovery.
 
 Each tool entry includes:
 

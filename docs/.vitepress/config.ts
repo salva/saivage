@@ -169,6 +169,25 @@ export default withMermaid(defineConfig({
           ],
         },
         {
+          text: "Remediation",
+          collapsed: true,
+          items: [
+            { text: "Architecture Program", link: "/internals/remediation/" },
+            { text: "Implementation Plan", link: "/internals/remediation/architecture-implementation-plan" },
+            { text: "Design Review Critique", link: "/internals/remediation/design-review-critique" },
+            { text: "Agent Session Split", link: "/internals/remediation/agent-session-decomposition" },
+            { text: "Runtime Kernel Split", link: "/internals/remediation/runtime-kernel-split" },
+            { text: "MCP Built-Ins", link: "/internals/remediation/mcp-builtins-modularization" },
+            { text: "Agent Autonomy", link: "/internals/remediation/agent-autonomy-conventions" },
+            { text: "Typed Submissions", link: "/internals/remediation/typed-artifact-submission" },
+            { text: "Persistence Ownership", link: "/internals/remediation/persistence-ownership" },
+            { text: "Server API", link: "/internals/remediation/server-api-modularization" },
+            { text: "Provider Router", link: "/internals/remediation/provider-router-decomposition" },
+            { text: "Legacy Cleanup", link: "/internals/remediation/legacy-transition-cleanup" },
+            { text: "Compatibility Debt Removal", link: "/internals/remediation/compatibility-debt-removal-plan" },
+          ],
+        },
+        {
           text: "Contributing",
           collapsed: false,
           items: [

@@ -34,7 +34,7 @@ interface StageDetail {
 interface Config {
   project_name: string;
   objectives: string[];
-  provider: string;
+  routing?: { planner?: { modelSpec?: string } };
 }
 
 const plan = ref<Plan | null>(null);
@@ -179,7 +179,7 @@ watch(() => props.focusStageId, async (stageId) => {
     <div v-else-if="activeSection === 'overview'" class="section-content overview-grid">
       <section class="project-panel">
         <h2>{{ config?.project_name ?? 'Project' }}</h2>
-        <div class="meta-line"><span>provider</span><strong>{{ config?.provider ?? 'unknown' }}</strong></div>
+        <div class="meta-line"><span>model</span><strong>{{ config?.routing?.planner?.modelSpec ?? 'unknown' }}</strong></div>
         <div class="meta-line"><span>updated</span><strong>{{ formatDate(plan?.updated_at) }}</strong></div>
         <div v-if="config?.objectives?.length" class="objective-list">
           <h3>Objectives</h3>

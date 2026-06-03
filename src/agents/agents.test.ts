@@ -3,12 +3,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { checkConvention, decidePathMutation, getConvention } from "./conventions.js";
-import { ensureDir } from "../store/documents.js";
 import { ReviewerAgent } from "./reviewer.js";
 import { ChatAgent } from "./chat.js";
 import { CoderAgent } from "./coder.js";
@@ -136,6 +135,11 @@ describe("ReviewerAgent", () => {
             usage: { inputTokens: 1, outputTokens: 1 },
           };
         }
+        writeStageArtifact(`stage-1/reports/review-${reviewNumber}.json`, makeTaskReport({
+          task_id: `review-${reviewNumber}`,
+          agent: "reviewer",
+          summary: reviewNumber === 1 ? "first review found blocker" : "follow-up checked corrective task",
+        }));
         return {
           content: JSON.stringify({
             task_id: `review-${reviewNumber}`,
@@ -196,6 +200,11 @@ describe("ReviewerAgent", () => {
           };
         }
         if (calls.length === 2) {
+          writeStageArtifact("stage-1/reports/review-1.json", makeTaskReport({
+            task_id: "review-1",
+            agent: "reviewer",
+            summary: "review done",
+          }));
           return {
             content: "REVIEW DONE",
             toolCalls: [],
@@ -211,6 +220,11 @@ describe("ReviewerAgent", () => {
             usage: { inputTokens: 1, outputTokens: 1 },
           };
         }
+        writeStageArtifact("stage-1/reports/review-2.json", makeTaskReport({
+          task_id: "review-2",
+          agent: "reviewer",
+          summary: "review done 2",
+        }));
         return {
           content: "REVIEW DONE 2",
           toolCalls: [],
@@ -424,6 +438,180 @@ describe("ChatAgent", () => {
 });
 
 describe("Execution guards", () => {
+  it("accepts a valid on-disk TaskReport artifact over final prose", async () => {
+    const calls: ChatRequest[] = [];
+    writeStageArtifact("stage-1/reports/task-1.json", makeTaskReport({ summary: "artifact result" }));
+    const router = {
+      getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
+      chat: async (request: ChatRequest): Promise<ChatResponse> => {
+        calls.push(request);
+        if (calls.length === 1) {
+          return {
+            content: "Inspecting before completion.",
+            toolCalls: [{ id: "tool-1", name: "test_tool", input: {} }],
+            finishReason: "tool_use",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        return {
+          content: "The report is on disk.",
+          toolCalls: [],
+          finishReason: "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+
+    const agent = await WorkerAgent.createWorker<CoderAgent>(
+      makeReviewerContext(tmpDir, router, {
+        getAllTools: () => [{ name: "test_tool", description: "test", inputSchema: {}, service: "test" }],
+        callTool: async () => ({ ok: true }),
+      }),
+      makeWorkerInput("task-1", "Do one thing"),
+      "coder",
+    );
+
+    const result = await agent.run();
+
+    expect(result.kind).toBe("success");
+    if (result.kind === "success") {
+      expect((result.data as { summary: string }).summary).toBe("artifact result");
+    }
+    expect(calls).toHaveLength(2);
+  });
+
+  it("accepts a valid on-disk StageSummary artifact over final prose", async () => {
+    const calls: ChatRequest[] = [];
+    writeStageArtifact("stage-1/summary.json", makeStageSummary({ summary: "artifact summary" }));
+    const router = {
+      getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
+      chat: async (request: ChatRequest): Promise<ChatResponse> => {
+        calls.push(request);
+        if (calls.length === 1) {
+          return {
+            content: "Dispatching implementation worker.",
+            toolCalls: [{ id: "dispatch-1", name: "run_coder", input: { task: {}, stageId: "stage-1" } }],
+            finishReason: "tool_use",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        if (calls.length === 2) {
+          return {
+            content: "Dispatching reviewer.",
+            toolCalls: [{ id: "dispatch-2", name: "run_reviewer", input: { task: {}, stageId: "stage-1" } }],
+            finishReason: "tool_use",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        return {
+          content: "The summary is on disk.",
+          toolCalls: [],
+          finishReason: "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+
+    const agent = new ManagerAgent(
+      makeReviewerContext(tmpDir, router),
+      makeManagerInput(),
+      "initial",
+      "",
+      async (role) => ({ kind: "success", data: makeTaskReport({ task_id: role === "reviewer" ? "review-1" : "task-1", agent: role }) }),
+    );
+
+    const result = await agent.run();
+
+    expect(result.kind).toBe("success");
+    if (result.kind === "success") {
+      expect((result.data as { summary: string }).summary).toBe("artifact summary");
+    }
+    expect(calls).toHaveLength(3);
+  });
+
+  it("nudges worker when an expected TaskReport artifact is invalid", async () => {
+    const calls: ChatRequest[] = [];
+    writeStageArtifact("stage-1/reports/task-1.json", { ...makeTaskReport(), task_id: "other-task" });
+    const router = {
+      getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
+      chat: async (request: ChatRequest): Promise<ChatResponse> => {
+        calls.push(request);
+        if (calls.length === 1) {
+          return {
+            content: "Inspecting before completion.",
+            toolCalls: [{ id: "tool-1", name: "test_tool", input: {} }],
+            finishReason: "tool_use",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        return {
+          content: JSON.stringify(makeTaskReport()),
+          toolCalls: [],
+          finishReason: "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+
+    const agent = await WorkerAgent.createWorker<CoderAgent>(
+      makeReviewerContext(tmpDir, router, {
+        getAllTools: () => [{ name: "test_tool", description: "test", inputSchema: {}, service: "test" }],
+        callTool: async () => ({ ok: true }),
+      }),
+      makeWorkerInput("task-1", "Do one thing"),
+      "coder",
+    );
+
+    const result = await agent.run();
+
+    expect(result.kind).toBe("failure");
+    expect(JSON.stringify(calls[2].messages)).toContain("Invalid TaskReport artifact");
+  });
+
+  it("fails when worker returns final-response JSON without writing the TaskReport artifact", async () => {
+    let callCount = 0;
+    const router = {
+      getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
+      chat: async (): Promise<ChatResponse> => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            content: "Inspecting before completion.",
+            toolCalls: [{ id: "tool-1", name: "test_tool", input: {} }],
+            finishReason: "tool_use",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        return {
+          content: JSON.stringify(makeTaskReport({ summary: "final prose result" })),
+          toolCalls: [],
+          finishReason: "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+
+    const agent = await WorkerAgent.createWorker<CoderAgent>(
+      makeReviewerContext(tmpDir, router, {
+        getAllTools: () => [{ name: "test_tool", description: "test", inputSchema: {}, service: "test" }],
+        callTool: async () => ({ ok: true }),
+      }),
+      makeWorkerInput("task-1", "Do one thing"),
+      "coder",
+    );
+
+    const result = await agent.run();
+
+    expect(result.kind).toBe("failure");
+    if (result.kind === "failure") {
+      expect(String(result.reason)).toContain("no valid TaskReport artifact was written");
+    }
+  });
+
   it("retries coder when it tries to finish before any tool use", async () => {
     const calls: ChatRequest[] = [];
     const router = {
@@ -453,13 +641,12 @@ describe("Execution guards", () => {
             usage: { inputTokens: 1, outputTokens: 1 },
           };
         }
+        writeStageArtifact("stage-1/reports/task-1.json", makeTaskReport({
+          summary: "Used a tool and completed the task.",
+          checklist_results: [{ description: "do the task", passed: true, notes: "verified with tool evidence" }],
+        }));
         return {
-          content: JSON.stringify({
-            task_id: "task-1",
-            stage_id: "stage-1",
-            status: "completed",
-            summary: "Used a tool and completed the task.",
-          }),
+          content: "The task report is on disk.",
           toolCalls: [],
           finishReason: "end_turn",
           usage: { inputTokens: 1, outputTokens: 1 },
@@ -516,18 +703,19 @@ describe("Execution guards", () => {
             usage: { inputTokens: 1, outputTokens: 1 },
           };
         }
+        if (calls.length === 3) {
+          return {
+            content: "I am dispatching a reviewer now.",
+            toolCalls: [{ id: "dispatch-2", name: "run_reviewer", input: { task: {}, stageId: "stage-1" } }],
+            finishReason: "tool_use",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        writeStageArtifact("stage-1/summary.json", makeStageSummary({
+          summary: "Dispatched worker and reviewer, then completed the stage.",
+        }));
         return {
-          content: JSON.stringify({
-            stage_id: "stage-1",
-            result: "completed",
-            summary: "Dispatched worker and completed the stage.",
-            tasks_completed: 1,
-            tasks_failed: 0,
-            total_tasks: 1,
-            outcomes_achieved: ["done"],
-            outcomes_missed: [],
-            issues: [],
-          }),
+          content: "The stage summary is on disk.",
           toolCalls: [],
           finishReason: "end_turn",
           usage: { inputTokens: 1, outputTokens: 1 },
@@ -538,6 +726,8 @@ describe("Execution guards", () => {
     const agent = new ManagerAgent(
       makeReviewerContext(tmpDir, router),
       makeManagerInput(),
+      "initial",
+      "",
       async () => ({
         kind: "success",
         data: {
@@ -563,8 +753,147 @@ describe("Execution guards", () => {
     const result = await agent.run();
 
     expect(result.kind).toBe("success");
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(4);
     expect(JSON.stringify(calls[1].messages)).toContain("Invalid final stage response");
+  });
+
+  it("nudges manager when it tries to finish without reviewer evidence", async () => {
+    const calls: ChatRequest[] = [];
+    const router = {
+      getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
+      chat: async (request: ChatRequest): Promise<ChatResponse> => {
+        calls.push(request);
+        if (calls.length === 1) {
+          return {
+            content: "Dispatching implementation worker.",
+            toolCalls: [{ id: "dispatch-1", name: "run_coder", input: { task: {}, stageId: "stage-1" } }],
+            finishReason: "tool_use",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        if (calls.length === 2) {
+          writeStageArtifact("stage-1/summary.json", makeStageSummary({
+            summary: "Worker completed the stage.",
+            tasks_completed: 1,
+            total_tasks: 1,
+          }));
+          return {
+            content: JSON.stringify({
+              stage_id: "stage-1",
+              result: "completed",
+              summary: "Worker completed the stage.",
+              tasks_completed: 1,
+              tasks_failed: 0,
+              total_tasks: 1,
+              outcomes_achieved: ["done"],
+              outcomes_missed: [],
+              issues: [],
+            }),
+            toolCalls: [],
+            finishReason: "end_turn",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        if (calls.length === 3) {
+          return {
+            content: "Dispatching reviewer.",
+            toolCalls: [{ id: "dispatch-2", name: "run_reviewer", input: { task: {}, stageId: "stage-1" } }],
+            finishReason: "tool_use",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        writeStageArtifact("stage-1/summary.json", makeStageSummary({
+          summary: "Worker and reviewer completed the stage.",
+        }));
+        return {
+          content: "The stage summary is on disk.",
+          toolCalls: [],
+          finishReason: "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+
+    const agent = new ManagerAgent(
+      makeReviewerContext(tmpDir, router),
+      makeManagerInput(),
+      "initial",
+      "",
+      async (role) => ({
+        kind: "success",
+        data: {
+          task_id: role === "reviewer" ? "review-1" : "task-1",
+          stage_id: "stage-1",
+          agent: role,
+          status: "completed",
+          summary: "done",
+          checklist_results: [],
+          files_modified: [],
+          files_created: [],
+          tests_added: [],
+          tests_run: [],
+          commits: [],
+          issues_found: [],
+          started_at: new Date().toISOString(),
+          completed_at: new Date().toISOString(),
+          duration_ms: 1,
+        },
+      }),
+    );
+
+    const result = await agent.run();
+
+    expect(result.kind).toBe("success");
+    expect(calls).toHaveLength(4);
+    expect(JSON.stringify(calls[2].messages)).toContain("dispatch run_reviewer");
+  });
+
+  it("does not clear repeated invalid final response count for a trivial worker tool", async () => {
+    const calls: ChatRequest[] = [];
+    const router = {
+      getMaxContextTokens: () => 200_000,
+      countTokens: () => 0,
+      chat: async (request: ChatRequest): Promise<ChatResponse> => {
+        calls.push(request);
+        if (calls.length === 2) {
+          return {
+            content: "Listing files only.",
+            toolCalls: [{ id: "tool-1", name: "list_dir", input: { path: "." } }],
+            finishReason: "tool_use",
+            usage: { inputTokens: 1, outputTokens: 1 },
+          };
+        }
+        return {
+          content: JSON.stringify({
+            task_id: "task-1",
+            stage_id: "stage-1",
+            status: "completed",
+            summary: "Done without evidence.",
+          }),
+          toolCalls: [],
+          finishReason: "end_turn",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+    };
+
+    const agent = await WorkerAgent.createWorker<CoderAgent>(
+      makeReviewerContext(tmpDir, router, {
+        getAllTools: () => [{ name: "list_dir", description: "list", inputSchema: {}, service: "filesystem" }],
+        callTool: async () => ({ ok: true }),
+      }),
+      makeWorkerInput("task-1", "Do one thing"),
+      "coder",
+    );
+
+    const result = await agent.run();
+
+    expect(result.kind).toBe("failure");
+    expect(calls).toHaveLength(4);
+    if (result.kind === "failure") {
+      expect(result.reason).toContain("3 invalid final responses");
+    }
   });
 });
 
@@ -601,24 +930,13 @@ describe("DesignerAgent", () => {
             usage: { inputTokens: 1, outputTokens: 1 },
           };
         }
+        writeStageArtifact("stage-1/reports/design-1.json", makeTaskReport({
+          task_id: "design-1",
+          agent: "designer",
+          summary: "Produced a dashboard design brief.",
+        }));
         return {
-          content: JSON.stringify({
-            task_id: "design-1",
-            stage_id: "stage-1",
-            agent: "designer",
-            status: "completed",
-            summary: "Produced a dashboard design brief.",
-            checklist_results: [],
-            files_modified: [],
-            files_created: [],
-            tests_added: [],
-            tests_run: [],
-            commits: [],
-            issues_found: [],
-            started_at: new Date().toISOString(),
-            completed_at: new Date().toISOString(),
-            duration_ms: 1,
-          }),
+          content: "The design report is on disk.",
           toolCalls: [],
           finishReason: "end_turn",
           usage: { inputTokens: 1, outputTokens: 1 },
@@ -665,8 +983,7 @@ describe("DesignerAgent", () => {
 
 function makeReviewerContext(root: string, router: unknown, mcpRuntimeOverride?: Partial<AgentContext["mcpRuntime"]>): AgentContext {
   const saivageDir = join(root, ".saivage");
-  ensureDir(saivageDir);
-  ensureDir(join(saivageDir, "skills"));
+  mkdirSync(join(saivageDir, "skills"), { recursive: true });
 
   return {
     project: {
@@ -769,6 +1086,51 @@ function deferred<T>(): {
     reject = promiseReject;
   });
   return { promise, resolve, reject };
+}
+
+function writeStageArtifact(relativePath: string, value: unknown): void {
+  const path = join(tmpDir, ".saivage", "stages", relativePath);
+  mkdirSync(join(path, ".."), { recursive: true });
+  writeFileSync(path, JSON.stringify(value, null, 2));
+}
+
+function makeTaskReport(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    task_id: "task-1",
+    stage_id: "stage-1",
+    agent: "coder",
+    status: "completed",
+    summary: "done",
+    checklist_results: [],
+    files_modified: [],
+    files_created: [],
+    tests_added: [],
+    tests_run: [],
+    commits: [],
+    issues_found: [],
+    started_at: new Date().toISOString(),
+    completed_at: new Date().toISOString(),
+    duration_ms: 1,
+    ...overrides,
+  };
+}
+
+function makeStageSummary(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    stage_id: "stage-1",
+    result: "completed",
+    summary: "stage complete",
+    tasks_completed: 2,
+    tasks_failed: 0,
+    total_tasks: 2,
+    outcomes_achieved: ["done"],
+    outcomes_missed: [],
+    issues: [],
+    started_at: new Date().toISOString(),
+    completed_at: new Date().toISOString(),
+    duration_ms: 1,
+    ...overrides,
+  };
 }
 
 function makeReviewInput(id: string, objective: string): WorkerInput {

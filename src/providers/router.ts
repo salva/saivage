@@ -20,6 +20,7 @@ import { getOAuthApiKey, getProfileByKey, hasOAuthCredentials } from "../auth/in
 import { log } from "../log.js";
 import type { RuntimeProviderAccountLike, RuntimeProviderConfigLike } from "../routing/resolver.js";
 import { parseAccountRef } from "../routing/resolver.js";
+import { buildCandidateChain, type CandidatePlanRequest, type ChatCandidate } from "./candidate-planner.js";
 
 const PROVIDER_REQUEST_TIMEOUT_MS = 300_000;
 const PRIMARY_RETRY_BASE_DELAY_MS = 30_000;
@@ -37,12 +38,6 @@ interface ModelHealth {
   consecutiveFailures: number;
   disabledUntil: number;   // epoch ms — model is skipped until this time
   backoffMs: number;       // current backoff duration (grows × BACKOFF_MULTIPLIER each failure)
-}
-
-interface ChatCandidate {
-  spec: string;
-  accountRef?: string;
-  healthKey: string;
 }
 
 interface UsageSnapshot {
@@ -620,85 +615,31 @@ export class ModelRouter {
 
   private buildCandidateChain(
     modelSpec: string,
-    request?: { authProfileKey?: string; accountRef?: string },
+    request?: CandidatePlanRequest,
   ): ChatCandidate[] {
-    const sticky = this.stickyFailovers.get(modelSpec);
-    const chain: ChatCandidate[] = [];
-
-    if (sticky && sticky.spec !== modelSpec) {
-      if (Date.now() < sticky.nextPrimaryRetryAt) {
-        this.appendCandidatesForModelSpec(sticky.spec, chain, request);
-      } else {
-        log.info(`Model switch: ${sticky.spec} -> ${modelSpec} (retrying primary after cooldown)`);
-      }
-    }
-
-    this.appendFailoverChain(modelSpec, chain, new Set<string>(), request);
-    return chain;
-  }
-
-  private appendFailoverChain(
-    modelSpec: string,
-    chain: ChatCandidate[],
-    expanded: Set<string>,
-    request?: { authProfileKey?: string; accountRef?: string },
-  ): void {
-    this.appendCandidatesForModelSpec(modelSpec, chain, request);
-    if (expanded.has(modelSpec)) return;
-    expanded.add(modelSpec);
-
-    for (const equivalent of this.modelEquivalents.get(modelSpec) ?? []) {
-      this.appendFailoverChain(equivalent, chain, expanded, request);
-    }
-
-    const parsed = tryParseModelId(modelSpec);
-    const providerName = parsed?.provider;
-    const model = parsed?.model ?? modelSpec;
-    // Look up failover by full spec first, provider-independent model next,
-    // then by provider-only key for legacy provider failover chains.
-    const failovers = this.failoverChains[modelSpec] ?? this.failoverChains[model] ?? (providerName ? this.failoverChains[providerName] : undefined);
-    if (!failovers) return;
-
-    // Expand provider-only failover entries to full specs using the same model.
-    for (const fallback of failovers) {
-      if (parsed && !fallback.includes("/") && this.modelEquivalents.has(modelSpec)) {
-        continue;
-      }
-      const next = parsed && isProviderName(fallback) ? `${fallback}/${model}` : fallback;
-      this.appendFailoverChain(next, chain, expanded, request);
-    }
-  }
-
-  private appendCandidatesForModelSpec(
-    modelSpec: string,
-    chain: ChatCandidate[],
-    request?: { authProfileKey?: string; accountRef?: string },
-  ): void {
-    const parsed = tryParseModelId(modelSpec);
-    const candidates = parsed
-      ? this.expandProviderModelCandidates(parsed.provider, parsed.model, request)
-      : this.expandProviderIndependentCandidates(modelSpec, request);
-
-    for (const candidate of candidates) {
-      if (chain.some((item) => item.healthKey === candidate.healthKey)) continue;
-      chain.push(candidate);
-    }
-  }
-
-  private expandProviderIndependentCandidates(
-    model: string,
-    request?: { authProfileKey?: string; accountRef?: string },
-  ): ChatCandidate[] {
-    return [...this.providers.keys()]
-      .filter((providerName) => this.providerCanServeModel(providerName, model))
-      .sort((a, b) => this.compareProviderOrder(a, b))
-      .flatMap((providerName) => this.expandProviderModelCandidates(providerName, model, request));
+    return buildCandidateChain({
+      modelSpec,
+      request,
+      sticky: this.stickyFailovers.get(modelSpec),
+      now: Date.now(),
+      failoverChains: this.failoverChains,
+      modelEquivalents: this.modelEquivalents,
+      providerNames: [...this.providers.keys()],
+      providerCanServeModel: (providerName, model) => this.providerCanServeModel(providerName, model),
+      compareProviderOrder: (a, b) => this.compareProviderOrder(a, b),
+      expandProviderModelCandidates: (providerName, model, candidateRequest) =>
+        this.expandProviderModelCandidates(providerName, model, candidateRequest),
+      isProviderName,
+      onPrimaryRetryAfterStickyCooldown: (stickySpec, primarySpec) => {
+        log.info(`Model switch: ${stickySpec} -> ${primarySpec} (retrying primary after cooldown)`);
+      },
+    });
   }
 
   private expandProviderModelCandidates(
     providerName: string,
     model: string,
-    request?: { authProfileKey?: string; accountRef?: string },
+    request?: CandidatePlanRequest,
   ): ChatCandidate[] {
     const requestedAccount = request?.accountRef ? this.parseMatchingAccountRef(providerName, request.accountRef) : undefined;
     const accounts = this.orderedAccountsForModel(providerName, model, requestedAccount);

@@ -1,80 +1,72 @@
-# Saivage v2 Architecture Remediation Plan
+# Saivage v2 Architecture Improvement Program
 
-This packet records the design decisions and execution plan for cleaning up the
-issues found in the June 2026 Saivage v2 architecture assessment.
+This packet records the target architecture and implementation plan for cleaning
+up Saivage v2 after the June 2026 architecture review.
 
-Saivage v2 is an isolated-container runtime. The HTTP API is expected to be
-reachable only from the host, so this plan does not require bearer-token auth as
-a primary safety mechanism. The goal is simpler internal structure, clearer
-contracts, and fewer places where prompts or conventions substitute for runtime
-policy.
+The guiding product idea is agent autonomy. Saivage agents should decide what to
+do from their role prompts, conventions, evidence, and local context. The
+runtime should not overfit the workflow by forcing every step from outside. The
+runtime should instead provide a small set of reliable boundaries, observe the
+agent's behavior, validate produced artifacts, and nudge the agent when it drifts
+from its stated contract.
 
-## Scope
+## Principles
 
-The plan addresses these fix areas:
+- Keep role permissions simple. Tool access is a coarse affordance, not the main
+  behavioral control system.
+- Put behavioral expectations in prompts, role conventions, and typed artifact
+  contracts.
+- Let agents choose their tactics inside those conventions.
+- Make the runtime an observer and contract validator before it is a controller.
+- Prefer nudges, repair prompts, and retry loops over hard denial when the issue
+  is behavioral drift.
+- Use hard runtime refusal only for corruption, secrets, process safety,
+  malformed state transitions, or operator/security boundaries.
+- Remove compatibility scaffolding and stale transition code when it no longer
+  serves the clean v2 architecture.
+
+## Design Documents
 
 | Order | Area | Design Doc | Outcome |
 | --- | --- | --- | --- |
-| 1 | Type contracts | [RAG config type contract](./rag-config-type-contract.md) | Restore `npm run typecheck`; make config and runtime dataset types agree. |
-| 2 | Role access boundaries | [Role access boundaries](./role-access-boundaries.md) | Enforce existing role/tool filters and write-territory conventions at runtime boundaries. |
-| 3 | Dispatch semantics | [Dispatcher semantics](./dispatcher-semantics.md) | Align implementation and docs around parallel batch dispatch. |
-| 4 | Abort and restart control | [Abort control path](./abort-control-path.md) | Remove stale urgent-note abort/rollback semantics; use the existing explicit restart path. |
-| 5 | MCP lifecycle | [MCP lifecycle simplification](./mcp-lifecycle-simplification.md) | Rename/document external MCP startup behavior as autostart-only. |
-| 6 | Local API posture | [Local API and debug posture](./local-api-debug-posture.md) | Keep container-local API simple while avoiding accidental secret/config exposure. |
+| 1 | Execution | [Implementation plan](./architecture-implementation-plan.md) | Revised phase order: hard structural simplification first, behavior changes after cleaner seams exist. |
+| 2 | Review | [Design review critique](./design-review-critique.md) | Inconsistencies, overlooks, and suggested revisions to the design packet. |
+| 3 | Agent session structure | [Agent session decomposition](./agent-session-decomposition.md) | Break `BaseAgent` into focused conversation, retry, and compaction components without over-extracting trivial views. |
+| 4 | Runtime structure | [Runtime kernel split](./runtime-kernel-split.md) | Separate the truly complex runtime pieces, especially agent construction and Planner recovery. |
+| 5 | MCP built-ins | [MCP built-ins modularization](./mcp-builtins-modularization.md) | Split the 2000-line built-ins module into injected service modules with explicit project/security context. |
+| 6 | Agent autonomy and compliance | [Agent autonomy, conventions, and nudges](./agent-autonomy-conventions.md) | Preserve broad agent discretion while evolving existing repair hooks into deterministic drift nudges. |
+| 7 | Artifact contracts | [Typed artifact submission](./typed-artifact-submission.md) | Replace final freeform JSON parsing with validated artifacts or terminal submission tools. |
+| 8 | Persistence ownership | [Persistence ownership](./persistence-ownership.md) | Centralize project file I/O and stop mixing cached services with direct raw file reads. |
+| 9 | Server/API structure | [Server API modularization](./server-api-modularization.md) | Split HTTP routes from reads/commands, redaction, static assets, file browsing, and chat lifecycle. |
+| 10 | Provider routing | [Provider router decomposition](./provider-router-decomposition.md) | Decompose routing policies later, only where focused tests need it. |
+| 11 | Legacy cleanup | [Legacy and transition cleanup](./legacy-transition-cleanup.md) | Remove v1/backward-compatible/stub scaffolding where clean v2 no longer needs it. |
+| 12 | Compatibility debt removal | [Compatibility debt removal plan](./compatibility-debt-removal-plan.md) | Concrete assessment and removal plan for remaining compatibility bridges, temporary fallbacks, and dead code candidates. |
 
-## Guiding Decisions
+## Relationship To Existing Remediation Notes
 
-- Prefer small correctness fixes before structural changes.
-- Keep v2 stable as a deployed harness; do not redesign it into v3.
-- Enforce policy where runtime calls already converge, but avoid new policy
-  abstractions that duplicate existing roster/filter/convention data.
-- Remove misleading abstractions when they add surface area without real behavior.
-- Treat prompt instructions as guidance only; runtime guarantees must be enforced in code.
-- Keep API token support optional because deployment isolation is the intended security boundary.
+Earlier remediation notes in this directory focused on specific correctness
+issues such as RAG config typing, dispatcher semantics, local API posture, MCP
+lifecycle, and abort/restart behavior. Those notes remain useful for local
+history, but this packet supersedes any recommendation to make role behavior
+primarily runtime-enforced.
 
-## Execution Phases
+The new target is:
 
-### Phase 1: Correctness Gates
-
-1. Complete the partial RAG config/type widening already present in
-   `src/config.ts`.
-2. Run `npm run typecheck` and `npm test`.
-3. Update docs if the RAG model configuration surface changes.
-
-### Phase 2: Role Access Boundaries
-
-1. Make runtime/operator call sites pass explicit operator context where needed.
-2. Update direct-call tests to use explicit operator context where appropriate.
-3. Add role/tool enforcement in `McpRuntime.callTool` using the existing
-   `tool-filters.ts` source.
-4. Decide and implement external MCP behavior for agent-originated calls.
-5. Upgrade `conventions.ts` from warning-only to enforceable path decisions.
-6. Wire write/download/commit handlers through those path decisions.
-7. Add focused tests for blocked tools, blocked writes, and operator bypass.
-
-### Phase 3: Runtime Semantics Cleanup
-
-1. Update dispatcher comments/docs to describe parallel batch dispatch.
-2. Remove stale urgent-note abort/rollback helpers and docs.
-3. Rename MCP service methods and comments so they do not imply lazy startup.
-4. Update architecture docs so they describe current implementation, not
-   aspirational behavior.
-
-### Phase 4: Local API and Docs
-
-1. Remove raw runtime config from debug endpoints; use explicit safe response
-   shapes instead of broad redaction.
-2. Add clear docs explaining container-local trust assumptions.
-3. Expand file-browser hiding for known sensitive filenames.
-4. Run `npm run docs:build` if docs pages changed.
+- Runtime-enforced state integrity.
+- Prompt- and convention-led role behavior.
+- Runtime-observed compliance with nudges and evidence checks.
+- Minimal compatibility obligations.
 
 ## Success Criteria
 
-- `npm run typecheck` passes.
-- `npm test` passes.
-- In-process agent-visible tools and runtime-executable tools use the same
-  permission source; external MCP tools have an explicit documented behavior.
-- Role mutation boundaries are enforced by code, not only prompts.
-- Debug/config/file endpoints do not expose raw provider, account, auth-profile,
-  account-ref, or token-bearing values.
-- Architecture docs no longer claim unimplemented lazy MCP startup, urgent-note abort, or resume-on-each semantics unless those behaviors are implemented.
+- The runtime core can be explained without reading server bootstrap code.
+- An agent turn can be tested with a stub model and deterministic tool outputs.
+- Plan, task, report, knowledge, and runtime state each have one owning service
+  or repository.
+- Workers and managers produce typed artifacts through validated tools or
+  validated on-disk files, while prompts still describe the expected behavior
+  and conventions.
+- The web/API layer reads through application services, not arbitrary raw files.
+- Provider routing behavior is decomposed into independently testable policies.
+- Legacy/stub/backward-compatible paths are deleted unless a current deployment
+  genuinely requires them.

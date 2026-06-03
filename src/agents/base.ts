@@ -23,43 +23,22 @@ import { applyToolFilter } from "./tool-filters.js";
 import { Dispatcher } from "../runtime/dispatcher.js";
 import type { ChildSpawner, DispatchResult } from "../runtime/dispatcher.js";
 import {
-  shouldCompact,
-  isMaxCompactionsReached,
-  compactConversation,
   type CompactionConfig,
   type CompactionState,
 } from "../runtime/compaction.js";
-import { buildSurvivorBlock } from "../knowledge/eagerLoader.js";
-import type { KnowledgeAgentRole } from "../knowledge/types.js";
 import type { SkillMatchContext } from "../knowledge/loader.js";
 import { stashResult } from "../runtime/stash.js";
 import type { RuntimeToolEntry } from "../mcp/runtime.js";
 import { log } from "../log.js";
+import {
+  ConversationState,
+  type ConversationEntry,
+  type LlmResponseSource,
+} from "./conversation-state.js";
+import { RetryPolicy } from "./retry-policy.js";
+import { CompactionController } from "./compaction-controller.js";
 
-/** A single entry in the serialized conversation snapshot for the dashboard. */
-export interface ConversationEntry {
-  role: "user" | "assistant" | "system";
-  kind:
-    | "text"
-    | "activity"
-    | "model_issue"
-    | "model_repair"
-    | "model_recovered"
-    | "tool_call"
-    | "tool_result"
-    | "tool_error";
-  content: string;
-  timestamp: string;
-  roundId: string;
-  messageIndex: number;
-  blockIndex: number;
-  toolUseId?: string;
-  toolName?: string;
-  provider?: string;
-  model?: string;
-  modelSpec?: string;
-  requestedModelSpec?: string;
-}
+export type { ConversationEntry, LlmResponseSource } from "./conversation-state.js";
 
 /** Runtime activity status surfaced to the dashboard. */
 export interface ActivityStatus {
@@ -71,26 +50,6 @@ export interface ActivityStatus {
     retry_at: string | null;
   } | null;
   last_activity_at: string;
-}
-
-export interface LlmResponseSource {
-  provider?: string;
-  model?: string;
-  modelSpec?: string;
-  requestedModelSpec?: string;
-}
-
-const MAX_DIAGNOSTIC_ENTRIES = 30;
-
-function describeToolUseBlocks(blocks: ContentBlock[]): string {
-  const names = blocks.map((block) => block.name ?? "unknown");
-  const counts = new Map<string, number>();
-  for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1);
-  const summary = Array.from(counts.entries())
-    .map(([name, count]) => count === 1 ? name : `${name} x${count}`)
-    .join(", ");
-  const noun = blocks.length === 1 ? "tool" : "tools";
-  return `Using ${blocks.length} ${noun}: ${summary}`;
 }
 
 /** Configuration for creating a BaseAgent. */
@@ -137,17 +96,13 @@ export interface BaseAgentConfig {
  * Implements the conversation loop with LLM calls, tool execution,
  * compaction and stash.
  */
-const LLM_BACKOFF_BASE_SECONDS = 30;
-const LLM_BACKOFF_MULT = 1.5;
-const LLM_BACKOFF_MAX_SECONDS = 20 * 60; // 20 minutes
-
 export class BaseAgent {
   private static readonly MAX_INVALID_FINAL_RESPONSES = 3;
   readonly id: string;
   readonly role: AgentRole;
 
   protected ctx: AgentContext;
-  protected messages: Message[] = [];
+  private conversation: ConversationState;
   protected systemPrompt: string;
   protected cancelled = false;
   private dispatcher: Dispatcher;
@@ -159,24 +114,17 @@ export class BaseAgent {
     oversizedAtomicFallback: false,
   };
   private compactionConfig: CompactionConfig;
+  private compactionController: CompactionController;
   private abortSignal?: { aborted: boolean };
   private onActivity?: (agentId: string) => void;
   private onCompactionUpdate?: BaseAgentConfig["onCompactionUpdate"];
-  private diagnostics: ConversationEntry[] = [];
-  private messageTimestamps: string[] = [];
-  private messageSources: (LlmResponseSource | undefined)[] = [];
   private toolCallNames: string[] = [];
+  private meaningfulToolCallNames: string[] = [];
   private invalidFinalResponseCount = 0;
-  private roundCounter = 0;
-  private compactionCounter = 0;
-  private currentRoundId: string | null = null;
-  private pendingRoundId: string | null = null;
-  private messageRoundIds: (string | null)[] = [];
   private lastActivityAt: string = new Date().toISOString();
   private pendingCall: NonNullable<ActivityStatus["pending_call"]> | null = null;
   private onCompactionHookComplete?: (writeCount: number) => void;
   private readonly inputChannels: InputChannel[];
-  private runningInputTokens = 0;
   private staticInputTokens = 0;
   readonly startedAt = new Date().toISOString();
 
@@ -184,6 +132,10 @@ export class BaseAgent {
     this.id = ctx.agentId;
     this.role = ctx.role;
     this.ctx = ctx;
+    this.conversation = new ConversationState({
+      modelSpec: ctx.modelSpec,
+      countTokens: ctx.router.countTokens.bind(ctx.router),
+    });
 
     // FR-1 / FR-15 §D.6: factories pre-build the eager block (async I/O) and pass it here.
     const skillBlock = config.eagerSkillBlock ?? "";
@@ -216,6 +168,23 @@ export class BaseAgent {
     this.onCompactionUpdate = config.onCompactionUpdate;
     this.onCompactionHookComplete = config.onCompactionHookComplete;
     this.inputChannels = config.inputChannels ?? [];
+
+    this.compactionController = new CompactionController({
+      agentId: this.id,
+      role: this.role,
+      projectRoot: this.ctx.project.projectRoot,
+      router: this.ctx.router,
+      modelSpec: this.ctx.modelSpec,
+      systemPrompt: this.systemPrompt,
+      compactionConfig: this.compactionConfig,
+      compactionState: this.compactionState,
+      inputChannels: this.inputChannels,
+      getMessages: () => this.messages,
+      getToolSchemas: () => this.getToolSchemas(),
+      replaceMessages: (messages) => this.replaceMessages(messages),
+      addDiagnostic: (kind, content) => this.addDiagnostic(kind, content),
+      onCompactionUpdate: this.onCompactionUpdate,
+    });
 
     // F07 — precompute static input (system prompt + tools) once.
     this.staticInputTokens = this.ctx.router.countTokens(
@@ -256,9 +225,9 @@ export class BaseAgent {
       }
 
       // Check compaction before LLM call
-      if (shouldCompact(this.runningInputTokens + this.staticInputTokens, this.compactionConfig)) {
-        if (isMaxCompactionsReached(this.compactionState, this.compactionConfig)) {
-          const stopReason = this.compactionStopReason();
+      if (this.compactionController.shouldCompact(this.conversation.runningInputTokens + this.staticInputTokens)) {
+        if (this.compactionController.isStopReached()) {
+          const stopReason = this.compactionController.stopReason();
           log.warn(
             `[agent:${this.role}:${this.id}] Compaction stop reached (${stopReason}) — terminating`,
           );
@@ -302,25 +271,15 @@ export class BaseAgent {
           : response.content;
         this.pushMessage({ role: "assistant", content: assistantContent }, undefined, responseSource(response));
         if (finalResponseIssue) {
-          this.invalidFinalResponseCount += 1;
-          this.addDiagnostic("model_repair", finalResponseIssue);
-          if (this.invalidFinalResponseCount >= BaseAgent.MAX_INVALID_FINAL_RESPONSES) {
-            return {
-              text: `Agent terminated after ${this.invalidFinalResponseCount} invalid final responses: ${finalResponseIssue}`,
-              finishReason: "error",
-              source: responseSource(response),
-            };
-          }
-          this.pushMessage({
-            role: "user",
-            content: `${finalResponseIssue} Continue the task by using the required tools and return a final result only after real execution evidence exists.`,
-          });
+          const repair = this.recordInvalidFinalResponse(finalResponseIssue, responseSource(response));
+          if (repair) return repair;
           continue;
         }
+        this.invalidFinalResponseCount = 0;
+        this.conversation.clearPendingRepairPrompt();
         return { text: response.content, finishReason: response.finishReason, source: responseSource(response) };
       }
 
-      this.invalidFinalResponseCount = 0;
       this.toolCallNames.push(...response.toolCalls.map((tc) => tc.name));
 
       // Build assistant message with tool-use blocks
@@ -353,6 +312,13 @@ export class BaseAgent {
         this.abortSignal,
       );
       this.recordActivity();
+      const meaningfulNames = response.toolCalls
+        .filter((tc) => this.isMeaningfulToolEvidence(tc, dispatchResult))
+        .map((tc) => tc.name);
+      if (meaningfulNames.length > 0) {
+        this.meaningfulToolCallNames.push(...meaningfulNames);
+        this.invalidFinalResponseCount = 0;
+      }
 
       // Build tool result message
       const resultBlocks: ContentBlock[] = await Promise.all(
@@ -371,6 +337,14 @@ export class BaseAgent {
 
       const terminal = this.detectTerminalToolCall(response.toolCalls, dispatchResult);
       if (terminal) {
+        const terminalIssue = this.validateTerminalToolCall(terminal);
+        if (terminalIssue) {
+          const repair = this.recordInvalidFinalResponse(terminalIssue, responseSource(response));
+          if (repair) return repair;
+          continue;
+        }
+        this.invalidFinalResponseCount = 0;
+        this.conversation.clearPendingRepairPrompt();
         return {
           text: response.content,
           finishReason: "tool_terminal",
@@ -390,113 +364,16 @@ export class BaseAgent {
 
   /** Get the current message count. */
   get messageCount(): number {
-    return this.messages.length;
+    return this.conversation.messageCount;
   }
 
   /** Return a serializable snapshot of the conversation for the dashboard. */
   getConversationSnapshot(): ConversationEntry[] {
-    // Pass 1: per-toolUseId → { name, roundId } from assistant tool_use blocks.
-    const toolMeta = new Map<string, { name: string; roundId: string }>();
-    for (const [idx, msg] of this.messages.entries()) {
-      if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
-      const roundId = this.messageRoundIds[idx] ?? `r-msg:${idx}`;
-      for (const block of msg.content) {
-        if (block.type === "tool_use" && block.id) {
-          toolMeta.set(block.id, { name: block.name ?? "unknown", roundId });
-        }
-      }
-    }
+    return this.conversation.snapshot();
+  }
 
-    // Pass 2: walk messages and emit entries.
-    const entries: ConversationEntry[] = [];
-    for (const [idx, msg] of this.messages.entries()) {
-      const timestamp = this.messageTimestamps[idx];
-      const source = msg.role === "assistant" ? this.messageSources[idx] ?? {} : {};
-      const ownRoundId = this.messageRoundIds[idx]
-        ?? (msg.role === "assistant" ? `r-msg:${idx}` : `r-msg:${idx}`);
-
-      if (typeof msg.content === "string") {
-        entries.push({
-          role: msg.role,
-          kind: "text",
-          content: msg.content,
-          timestamp,
-          roundId: ownRoundId,
-          messageIndex: idx,
-          blockIndex: 0,
-          ...source,
-        });
-        continue;
-      }
-      if (!Array.isArray(msg.content)) continue;
-
-      const textBlocks = msg.content.filter((block) => block.type === "text" && block.text);
-      const toolUseBlocks = msg.content.filter((block) => block.type === "tool_use");
-      if (msg.role === "assistant" && textBlocks.length === 0 && toolUseBlocks.length > 0) {
-        entries.push({
-          role: "assistant",
-          kind: "activity",
-          content: describeToolUseBlocks(toolUseBlocks),
-          timestamp,
-          roundId: ownRoundId,
-          messageIndex: idx,
-          blockIndex: -1,
-          ...source,
-        });
-      }
-
-      for (const [bIdx, block] of msg.content.entries()) {
-        if (block.type === "text" && block.text) {
-          entries.push({
-            role: msg.role,
-            kind: "text",
-            content: block.text,
-            timestamp,
-            roundId: ownRoundId,
-            messageIndex: idx,
-            blockIndex: bIdx,
-            ...source,
-          });
-        } else if (block.type === "tool_use") {
-          const inputStr = typeof block.input === "string"
-            ? block.input
-            : JSON.stringify(block.input, null, 2);
-          entries.push({
-            role: "assistant",
-            kind: "tool_call",
-            toolUseId: block.id,
-            toolName: block.name ?? "unknown",
-            content: inputStr.length > 2000 ? inputStr.slice(0, 2000) + "\n…(truncated)" : inputStr,
-            timestamp,
-            roundId: ownRoundId,
-            messageIndex: idx,
-            blockIndex: bIdx,
-            ...source,
-          });
-        } else if (block.type === "tool_result") {
-          const meta = block.tool_use_id ? toolMeta.get(block.tool_use_id) : undefined;
-          const text = block.content ?? block.text ?? "";
-          entries.push({
-            role: "system",
-            kind: block.is_error ? "tool_error" : "tool_result",
-            toolUseId: block.tool_use_id,
-            toolName: meta?.name,
-            content: text.length > 3000 ? text.slice(0, 3000) + "\n…(truncated)" : text,
-            timestamp,
-            roundId: meta?.roundId ?? ownRoundId,
-            messageIndex: idx,
-            blockIndex: bIdx,
-          });
-        }
-      }
-    }
-
-    return [...entries, ...this.diagnostics].sort(
-      (a, b) =>
-        a.timestamp.localeCompare(b.timestamp)
-        || a.messageIndex - b.messageIndex
-        || a.blockIndex - b.blockIndex,
-    );
+  protected get messages(): Message[] {
+    return this.conversation.messages;
   }
 
   // ─── Protected ──────────────────────────────────────────────────────────
@@ -507,8 +384,7 @@ export class BaseAgent {
    *  triggers compaction and immediate retry instead of backoff.
    */
   protected async callLLM(): Promise<ChatResponse> {
-    const myRoundId = `r${++this.roundCounter}`;
-    this.pendingRoundId = myRoundId;
+    const myRoundId = this.conversation.startRound();
     this.pendingCall = {
       started_at: new Date().toISOString(),
       status: "in_flight",
@@ -524,12 +400,12 @@ export class BaseAgent {
       `[agent:${this.role}:${this.id}] Calling LLM with ${tools.length} tools, ${this.messages.length} messages`,
     );
 
-    let nonThrottleAttempts = 0;
+    const retryPolicy = new RetryPolicy({ transientCap: this.transientCap });
 
     for (let attempt = 0; ; attempt++) {
       if (this.cancelled || this.abortSignal?.aborted) {
         this.pendingCall = null;
-        this.pendingRoundId = null;
+        this.conversation.clearPendingRound();
         throw new ProviderError({ kind: "non_retryable", message: "Agent cancelled" });
       }
 
@@ -551,35 +427,20 @@ export class BaseAgent {
           );
         }
         this.pendingCall = null;
-        // F07 — monotonically-tightening calibration: only trust the provider count
-        // when it exceeds our estimate by >10%, never loosen the trigger.
-        const reported = response.usage?.inputTokens;
-        const estimated = this.runningInputTokens + this.staticInputTokens;
-        if (typeof reported === "number" && reported > estimated * 1.1) {
-          this.runningInputTokens = Math.max(0, reported - this.staticInputTokens);
-        }
+        this.conversation.recordReportedInputTokens(response.usage?.inputTokens, this.staticInputTokens);
         return response;
       } catch (err) {
-        const pe = err instanceof ProviderError
-          ? err
-          : new ProviderError({
-              kind: "transient",
-              message: err instanceof Error ? err.message : String(err),
-              cause: err,
-            });
-        const msg = pe.message;
+        const decision = retryPolicy.decide(err, attempt);
 
         // Context overflow / orphaned tool result → compact and retry immediately (no backoff)
-        if (pe.kind === "context_overflow" || pe.kind === "orphaned_tool_result") {
-          const reason = pe.kind === "context_overflow"
-            ? "context window exceeded"
-            : "orphaned tool_result";
-          if (isMaxCompactionsReached(this.compactionState, this.compactionConfig)) {
-            const stopReason = this.compactionStopReason();
+        if (decision.kind === "repair_context") {
+          const { error: pe, reason } = decision;
+          if (this.compactionController.isStopReached()) {
+            const stopReason = this.compactionController.stopReason();
             const failure = `Cannot repair malformed model request: ${stopReason} (${reason}). Aborting this agent so the parent can handle the failure.`;
             this.addDiagnostic("model_issue", failure);
             this.pendingCall = null;
-            this.pendingRoundId = null;
+            this.conversation.clearPendingRound();
             throw new ProviderError({ kind: "non_retryable", message: failure, cause: pe });
           }
           this.addDiagnostic(
@@ -591,66 +452,42 @@ export class BaseAgent {
           );
           await this.compactWithReinjection();
           await this.drainChannels();
-          this.pendingRoundId = myRoundId;
+          this.conversation.restorePendingRound(myRoundId);
           continue;
         }
 
         // Non-retryable errors — propagate immediately
-        if (pe.kind === "non_retryable") {
-          this.pendingCall = null;
-          this.pendingRoundId = null;
-          throw pe;
-        }
-
-        const throttled = pe.kind === "throttling";
-
-        // Only count non-throttling errors toward the retry cap
-        if (!throttled) {
-          nonThrottleAttempts++;
-          if (nonThrottleAttempts >= this.transientCap) {
-            const failure = `LLM call failed after ${nonThrottleAttempts} non-throttling attempts. Last error: ${truncateDiagnostic(msg)}`;
-            this.addDiagnostic("model_issue", failure);
-            this.pendingCall = null;
-            this.pendingRoundId = null;
-            throw new ProviderError({ kind: "transient", message: failure, cause: pe });
+        if (decision.kind === "throw") {
+          if (decision.error.kind === "transient") {
+            this.addDiagnostic("model_issue", decision.error.message);
           }
+          this.pendingCall = null;
+          this.conversation.clearPendingRound();
+          throw decision.error;
         }
 
         // Transient errors → exponential backoff (clamped by retryAfterMs when present)
-        const expSec = Math.min(
-          LLM_BACKOFF_BASE_SECONDS * Math.pow(LLM_BACKOFF_MULT, attempt),
-          LLM_BACKOFF_MAX_SECONDS,
-        );
-        const retryAfterSec = pe.retryAfterMs ? pe.retryAfterMs / 1000 : 0;
-        const delaySec = Math.min(
-          Math.max(expSec, retryAfterSec),
-          LLM_BACKOFF_MAX_SECONDS,
-        );
-        const label = throttled ? "throttled" : "failed";
         log.warn(
-          `[agent:${this.role}:${this.id}] LLM ${label} (attempt ${attempt + 1}): ${msg} — retrying in ${Math.round(delaySec)}s`,
+          `[agent:${this.role}:${this.id}] LLM ${decision.label} (attempt ${decision.attemptNumber}): ${decision.error.message} — retrying in ${Math.round(decision.delaySec)}s`,
         );
-        this.addDiagnostic(
-          "model_issue",
-          `${throttled ? "Provider throttling" : "Temporary model service issue"} on attempt ${attempt + 1}. Retrying in ${Math.round(delaySec)}s. Error: ${truncateDiagnostic(msg)}`,
-        );
+        this.addDiagnostic("model_issue", decision.diagnostic);
 
         // Reset model health so the router retries the primary model
         this.ctx.router.resetModelHealth(this.ctx.modelSpec);
 
-        const retryAt = new Date(Date.now() + delaySec * 1000).toISOString();
+        const retryAt = new Date(Date.now() + decision.delaySec * 1000).toISOString();
         this.pendingCall = {
           started_at: this.pendingCall?.started_at ?? new Date().toISOString(),
           status: "backoff",
-          attempt: attempt + 1,
-          reason: throttled ? "throttled" : "transient",
+          attempt: decision.attemptNumber,
+          reason: decision.pendingReason,
           retry_at: retryAt,
         };
-        await this.sleepWithCancellation(delaySec * 1000);
+        await this.sleepWithCancellation(decision.delaySec * 1000);
         this.pendingCall = {
           started_at: new Date().toISOString(),
           status: "in_flight",
-          attempt: attempt + 1,
+          attempt: decision.attemptNumber,
           reason: null,
           retry_at: null,
         };
@@ -709,6 +546,10 @@ export class BaseAgent {
     return null;
   }
 
+  protected validateTerminalToolCall(_terminal: { name: string; data: unknown }): string | null {
+    return null;
+  }
+
   protected detectTerminalToolCall(
     _toolCalls: ToolCallResult[],
     _dispatchResult: DispatchResult,
@@ -724,9 +565,18 @@ export class BaseAgent {
     return this.toolCallNames.length > 0;
   }
 
+  protected hasMeaningfulToolEvidence(): boolean {
+    return this.meaningfulToolCallNames.length > 0;
+  }
+
   protected hasUsedToolNamed(...toolNames: string[]): boolean {
     const allowed = new Set(toolNames);
     return this.toolCallNames.some((name) => allowed.has(name));
+  }
+
+  protected hasMeaningfulToolNamed(...toolNames: string[]): boolean {
+    const allowed = new Set(toolNames);
+    return this.meaningfulToolCallNames.some((name) => allowed.has(name));
   }
 
   // ─── Private ────────────────────────────────────────────────────────────
@@ -754,23 +604,29 @@ export class BaseAgent {
     this.onActivity?.(this.id);
   }
 
-  private recordCompactionUpdate(): void {
-    this.onCompactionUpdate?.(this.id, {
-      count: this.compactionState.compactionCount,
-      summarizerFallbacks: this.compactionState.summarizerFallbacks,
-      consecutiveFallbacks: this.compactionState.consecutiveFallbacks,
-      oversizedAtomicFallback: this.compactionState.oversizedAtomicFallback,
-    });
+  private recordInvalidFinalResponse(
+    finalResponseIssue: string,
+    source?: LlmResponseSource,
+  ): { text: string; finishReason: string; source?: LlmResponseSource } | null {
+    this.invalidFinalResponseCount += 1;
+    this.addDiagnostic("model_repair", finalResponseIssue, { source });
+    if (this.invalidFinalResponseCount >= BaseAgent.MAX_INVALID_FINAL_RESPONSES) {
+      return {
+        text: `Agent terminated after ${this.invalidFinalResponseCount} invalid final responses: ${finalResponseIssue}`,
+        finishReason: "error",
+        source,
+      };
+    }
+    const prompt = `${finalResponseIssue} Continue the task by using the required tools and return a final result only after real execution evidence exists.`;
+    this.conversation.setPendingRepairPrompt(prompt);
+    this.pushMessage({ role: "user", content: prompt });
+    return null;
   }
 
-  private compactionStopReason(): string {
-    if (this.compactionState.oversizedAtomicFallback) {
-      return "oversized atomic tool round (use stash)";
-    }
-    if (this.compactionState.consecutiveFallbacks >= this.compactionConfig.maxConsecutiveFallbacks) {
-      return "summarizer fallback exhausted";
-    }
-    return "max compactions exceeded";
+  private isMeaningfulToolEvidence(toolCall: ToolCallResult, dispatchResult: DispatchResult): boolean {
+    const result = dispatchResult.toolResults.find((tr) => tr.toolUseId === toolCall.id);
+    if (result?.isError) return false;
+    return !TRIVIAL_EVIDENCE_TOOLS.has(toolCall.name);
   }
 
   /** Public lifecycle status for the dashboard. */
@@ -791,50 +647,17 @@ export class BaseAgent {
     content: string,
     opts?: { roundId?: string; source?: LlmResponseSource },
   ): void {
-    const roundId = opts?.roundId ?? this.pendingRoundId ?? this.currentRoundId ?? "r-pre";
-    const entry: ConversationEntry = {
-      role: "system",
-      kind,
-      content,
-      timestamp: new Date().toISOString(),
-      roundId,
-      messageIndex: -1,
-      blockIndex: this.diagnostics.length,
-      ...(opts?.source ?? {}),
-    };
-    this.diagnostics.push(entry);
-    if (this.diagnostics.length > MAX_DIAGNOSTIC_ENTRIES) {
-      this.diagnostics.splice(0, this.diagnostics.length - MAX_DIAGNOSTIC_ENTRIES);
-    }
+    this.conversation.addDiagnostic(kind, content, opts);
     this.recordActivity();
   }
 
   protected pushMessage(message: Message, timestamp = new Date().toISOString(), source?: LlmResponseSource): void {
-    this.messages.push(message);
-    this.runningInputTokens += this.ctx.router.countTokens(this.ctx.modelSpec, [message]);
-    this.messageTimestamps.push(timestamp);
-    this.messageSources.push(source);
-    if (message.role === "assistant") {
-      // Assistant message completes the pending round: claim pending id, then clear pending.
-      const roundId = this.pendingRoundId ?? this.currentRoundId ?? `r-msg:${this.messages.length - 1}`;
-      this.messageRoundIds.push(roundId);
-      this.currentRoundId = roundId;
-      this.pendingRoundId = null;
-    } else {
-      this.messageRoundIds.push(null);
-    }
+    this.conversation.pushMessage(message, timestamp, source);
     this.recordActivity();
   }
 
   protected replaceMessages(messages: Message[], timestamp = new Date().toISOString()): void {
-    this.messages = messages;
-    this.runningInputTokens = this.ctx.router.countTokens(this.ctx.modelSpec, messages);
-    this.messageTimestamps = messages.map(() => timestamp);
-    this.messageSources = messages.map(() => undefined);
-    const compactionRound = `r-compacted-${++this.compactionCounter}`;
-    this.messageRoundIds = messages.map(() => compactionRound);
-    this.currentRoundId = null;
-    this.pendingRoundId = null;
+    this.conversation.replaceMessages(messages, timestamp);
     this.recordActivity();
   }
 
@@ -914,48 +737,24 @@ export class BaseAgent {
    * the pre-LLM-call compaction path and the model-repair compaction path.
    */
   private async compactWithReinjection(): Promise<void> {
-    if (this.role === "planner") {
-      try {
-        await this.runPlannerCompactionHook();
-      } catch (err) {
-        log.warn(
-          `[agent:${this.role}:${this.id}] pre-compaction hook failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    }
-    const summarized = await compactConversation(
-      this.systemPrompt,
-      this.messages,
-      this.ctx.router,
-      {
-        ...this.compactionConfig,
-        onFallback: (info) => {
-          this.addDiagnostic(
-            "model_repair",
-            `Summarizer fallback (round-parser truncation). keptRounds=${info.keptRounds}${info.oversizedAtomic ? ", oversized atomic round" : ""}.`,
-          );
-        },
-      },
-      this.compactionState,
-      this.ctx.modelSpec,
-      this.getToolSchemas(),
+    const pendingRepairPrompt = this.conversation.pendingRepairPrompt;
+    await this.compactionController.compact(
+      this.role === "planner"
+        ? async () => {
+            try {
+              await this.runPlannerCompactionHook();
+            } catch (err) {
+              log.warn(
+                `[agent:${this.role}:${this.id}] pre-compaction hook failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
+            }
+          }
+        : undefined,
     );
-    let next: Message[] = summarized;
-    try {
-      const block = await buildSurvivorBlock(
-        this.ctx.project.projectRoot,
-        this.role as KnowledgeAgentRole,
-        this.compactionState.compactionCount,
-      );
-      if (block) next = [...summarized, { role: "user", content: block }];
-    } catch (err) {
-      log.warn(
-        `[agent:${this.role}:${this.id}] survivor reinjection failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+    if (pendingRepairPrompt) {
+      this.pushMessage({ role: "user", content: pendingRepairPrompt });
+      this.conversation.setPendingRepairPrompt(pendingRepairPrompt);
     }
-    this.replaceMessages(next);
-    this.recordCompactionUpdate();
-    for (const ch of this.inputChannels) ch.onContextReset();
   }
 
   /** Push pending channel messages into this.messages. Call immediately before any router.chat. */
@@ -973,15 +772,13 @@ export class BaseAgent {
     }
     if (this.cancelled || this.abortSignal?.aborted) {
       this.pendingCall = null;
-      this.pendingRoundId = null;
+      this.conversation.clearPendingRound();
       throw new ProviderError({ kind: "non_retryable", message: "Agent cancelled" });
     }
   }
 }
 
-function truncateDiagnostic(value: string, max = 700): string {
-  return value.length <= max ? value : `${value.slice(0, max)}…`;
-}
+const TRIVIAL_EVIDENCE_TOOLS = new Set(["list_dir", "read_stash"]);
 
 // ─── Error Classification ───────────────────────────────────────────────
 // All provider-error classification lives in providers/error.ts. The

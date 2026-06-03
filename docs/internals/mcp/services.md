@@ -8,10 +8,9 @@ are either **built-in** (shipped with Saivage, registered on startup) or
 
 Core services (filesystem, shell, data, git, skills, memory, plan, notes,
 and rag) run **in-process** — direct function calls inside the Node.js
-process, no subprocess overhead. Services that need external dependencies
-not yet integrated (web, lock, index) are registered as unavailable stubs;
-they appear in API discovery with `available: false` but are not advertised
-to agent LLM calls.
+process, no subprocess overhead. Retired placeholder services such as `web`,
+`index`, and `lock` are not registered; current web lookup tools live in the
+`data` service.
 
 External services declared in `.saivage/saivage.json` under `mcpServers`
 are started at boot only when `disabled: false` and `autostart: true`.
@@ -33,7 +32,6 @@ v2 does not lazily restart stopped services. See [mcp/runtime](./runtime).
 | [RAG](#_8-rag) | builtin | in-process | Semantic collection registration, ingest, query, and admin |
 | [Notes](#_9-notes) | builtin | in-process | Create Planner notes from tool calls |
 | [Agent dispatch](#_10-agent-dispatch) | runtime | in-process | Parent -> child agent invocation |
-| Web / index / lock | builtin | unavailable stub | Discovery-only placeholders; not advertised to agents |
 | External | declared | stdio / sse | User-declared services in `mcpServers` |
 
 ## Agent → service access matrix
@@ -163,9 +161,7 @@ job of the LXC container.
 | `command` | string | yes | — | Shell command to run |
 | `cwd` | string | no | project root | Working directory |
 | `timeout_ms` | number | no | derived cap | Hard wall-clock timeout in ms. Omitted / `0` still uses the service cap derived from `mcp.shellTimeoutMs`; lower nonzero values are raised to `mcp.shellTimeoutFloorMs`. |
-| `timeout` | number | no | derived cap | Deprecated alias for `timeout_ms` |
 | `inactivity_timeout_ms` | number | no | disabled | No-output-growth timeout in ms; terminates when stdout/stderr log files do not grow for this long; `0` disables. Lower nonzero values are raised to `mcp.shellTimeoutFloorMs`. |
-| `idle_timeout_ms` | number | no | none | Deprecated alias for `inactivity_timeout_ms` |
 | `stdout_path` | string | no | auto | Project-relative file path for full stdout log |
 | `stderr_path` | string | no | auto | Project-relative file path for full stderr log |
 
@@ -244,12 +240,11 @@ files) but possible. When `git_commit` returns a conflict:
 
 **Origin:** builtin · **Implementation:** `src/mcp/builtins.ts` (in-process)
 
-The current web-facing tools live in the **data** service, not the legacy
-`web` stub. The data service supports public web search, bounded text
-fetches, HTML-to-text extraction, downloads with provenance, fallback
-downloads, and HEAD metadata. The separate `web` service is registered as
-`available: false` with stub tools `fetch_url` / `fetch_page_content`, so
-agent tool schemas do not include it.
+The current web-facing tools live in the **data** service. The data service
+supports public web search, bounded text fetches, HTML-to-text extraction,
+downloads with provenance, fallback downloads, and HEAD metadata. Retired
+`web` placeholder tools are no longer registered, so agents only see the
+data-service tools listed above.
 
 ### `web_search`
 

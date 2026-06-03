@@ -78,7 +78,9 @@ graph TB
         PLAN["Plan"]
         NOTES["Notes"]
         SK["Skills"]
-        WB["Web (stub)"]
+        MEM["Memory"]
+        DATA["Data"]
+        RAG["RAG"]
     end
 
     TG --> CT
@@ -197,8 +199,8 @@ The Provider Router manages all LLM API communication. It is a **singleton**.
 **Responsibilities:**
 
 - **Model selection:** for each agent role, select the model from
-  configuration. Precedence: `ProjectConfig.model_overrides[role]` →
-  `SaivageConfig.providers[name].models[role]` → most capable available.
+  `SaivageConfig.providers[name].models[role]`, then the most capable
+  available candidate.
 - **Candidate health and failover:** retryable provider errors (HTTP 429,
   5xx, timeouts, provider-specific transient codes) mark the current
   provider/model/account candidate unhealthy and the router moves to the next
@@ -249,9 +251,9 @@ configured external MCP server processes.
   handler or an already-running external client.
 
 **Services available:** filesystem, shell, data, git, skills, memory, plan,
-notes, RAG, plus unavailable web/index/lock stubs. External MCP services use
-the configured MCP transport; built-ins are in-process. Full tool schemas and
-access matrix in [mcp/services](./mcp/services).
+notes, and RAG. External MCP services use the configured MCP transport;
+built-ins are in-process. Full tool schemas and access matrix in
+[mcp/services](./mcp/services).
 
 ### 2.5 Event bus & notification system
 

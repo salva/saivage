@@ -202,8 +202,11 @@ function messageText(m: { content: unknown }): string {
 }
 
 describe("PlannerAgent plan_done terminal protocol", () => {
-  it("terminates on a single plan_done tool call", async () => {
+  it("terminates on plan_done after completed-plan evidence", async () => {
     const router = makeRouter([
+      toolResponse([
+        toolCall("tc-plan", "plan_get", {}),
+      ]),
       toolResponse([
         toolCall("tc-done", "plan_done", { reason: "objectives verified" }),
       ]),
@@ -217,7 +220,32 @@ describe("PlannerAgent plan_done terminal protocol", () => {
       kind: "success",
       data: { completion: "plan_done", summary: "objectives verified" },
     });
-    expect(router.calls).toHaveLength(1);
+    expect(router.calls).toHaveLength(2);
+  });
+
+  it("nudges plan_done without completed-plan evidence before accepting repaired completion", async () => {
+    const router = makeRouter([
+      toolResponse([
+        toolCall("tc-done", "plan_done", { reason: "objectives verified" }),
+      ]),
+      toolResponse([
+        toolCall("tc-plan", "plan_get", {}),
+      ]),
+      toolResponse([
+        toolCall("tc-done-2", "plan_done", { reason: "objectives verified after plan inspection" }),
+      ]),
+    ]);
+    const { ctx } = makePlannerContext(tmpDir, router);
+    const planner = await PlannerAgent.create(ctx, failingChildSpawner);
+
+    const result = await planner.run();
+
+    expect(result).toEqual({
+      kind: "success",
+      data: { completion: "plan_done", summary: "objectives verified after plan inspection" },
+    });
+    expect(router.calls).toHaveLength(3);
+    expect(JSON.stringify(router.calls[1].messages)).toContain("Invalid plan_done");
   });
 
   it("a rejected batched plan_done followed by a valid single plan_done uses the second reason", async () => {
@@ -333,6 +361,9 @@ describe("PlannerAgent plan_done terminal protocol", () => {
     const router = makeRouter([
       textResponse("I have nothing else to do."),
       toolResponse([
+        toolCall("tc-plan", "plan_get", {}),
+      ]),
+      toolResponse([
         toolCall("tc-done", "plan_done", { reason: "objectives verified" }),
       ]),
     ]);
@@ -342,7 +373,7 @@ describe("PlannerAgent plan_done terminal protocol", () => {
     const result = await planner.run();
 
     expect(result.kind).toBe("success");
-    expect(router.calls).toHaveLength(2);
+    expect(router.calls).toHaveLength(3);
 
     const msgs = router.calls[1].messages as Array<{ role: string; content: unknown }>;
     const count = msgs.filter((m) =>

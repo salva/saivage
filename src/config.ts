@@ -9,7 +9,7 @@ import {
   DEFAULT_GITHUB_COPILOT_CLIENT_ID,
 } from "./auth/defaults.js";
 import { pathExists } from "./store/documents.js";
-import { WALL_CLOCK_HEADROOM_MS } from "./mcp/builtins.js";
+import { WALL_CLOCK_HEADROOM_MS } from "./mcp/builtins/shell.js";
 import {
   DEFAULT_CREDENTIAL_LEXEMES,
   DEFAULT_CONFIG_POINTER_SUFFIXES,

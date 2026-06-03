@@ -18,6 +18,7 @@ import { loadContract } from "../repo-layout/contract.js";
 import { buildHandoffContext } from "./handoff.js";
 import { loadRolePrompt } from "./prompts.js";
 import { buildEagerBlock } from "../knowledge/eagerLoader.js";
+import { checkPlannerPlanDone } from "./compliance.js";
 
 const MAX_NUDGES = 15;
 
@@ -145,6 +146,22 @@ export class PlannerAgent extends BaseAgent implements Agent {
     if (typeof reason !== "string" || reason.trim() === "") return null;
 
     return { name: "plan_done", data: { reason } };
+  }
+
+  protected override validateTerminalToolCall(terminal: { name: string; data: unknown }): string | null {
+    if (terminal.name !== "plan_done") return null;
+    const violation = checkPlannerPlanDone({
+      hasCompletedPlanEvidence: this.hasMeaningfulToolNamed(
+        "plan_get",
+        "plan_get_history",
+        "plan_add_stage",
+        "plan_set_current",
+        "plan_complete_stage",
+        "run_manager",
+        "run_inspector",
+      ),
+    });
+    return violation?.repairPrompt ?? null;
   }
 }
 

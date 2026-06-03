@@ -160,6 +160,6 @@ Good: `reason: "Frozen run-spec at specs/baseline.json references dataset 'ds-A'
 - Stage summary: `.saivage/stages/<stage-id>/summary.json`.
 - Commit messages: `[stg-<id>] <description>`.
 
-Return the full `StageSummary` JSON as your final response.
+Write `.saivage/stages/<stage-id>/summary.json` as the full `StageSummary` JSON, then return a concise final response. Do not put the full `StageSummary` JSON in final prose.
 
 {{> shared/execution-style}}

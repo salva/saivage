@@ -375,9 +375,9 @@ runtime.
 }
 ```
 
-Built-in services (`fs`, `shell`, `git`, `data`, `plan`, `notes`, `skills`,
-`memory`, `rag`) and unavailable stubs (`web`, `index`, `lock`) are registered
-programmatically — they don't appear in this map.
+Built-in services (`filesystem`, `shell`, `git`, `data`, `plan`, `notes`,
+`skills`, `memory`, `rag`) are registered programmatically — they don't appear
+in this map.
 
 ## Environment-variable interpolation
 

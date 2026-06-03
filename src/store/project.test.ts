@@ -16,8 +16,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { initProjectTree, seedProject } from "./project.js";
+import { ProjectStore } from "./project-store.js";
 import { readDoc } from "./documents.js";
 import { loadConfig, SaivageConfigSchema, type SaivageConfig } from "../config.js";
+import type { PlanDocument, RuntimeState, StageSummary, TaskList, TaskReport } from "../types.js";
 import {
   DEFAULT_ANTHROPIC_CLIENT_ID,
   DEFAULT_GITHUB_COPILOT_CLIENT_ID,
@@ -187,3 +189,254 @@ describe("initProjectTree — idempotence", () => {
     expect(lines).toContain("# user comment");
   });
 });
+
+describe("ProjectStore stage artifacts", () => {
+  it("returns missing for absent task reports and stage summaries", async () => {
+    const project = await seedProject(projectRoot, { name: "p", objectives: [] });
+    const store = new ProjectStore(project);
+
+    expect(store.readExpectedStageTaskReport({ stageId: "stage-1", taskId: "task-1", agent: "coder" })).toEqual({
+      kind: "missing",
+      path: join(project.paths.stages, "stage-1", "reports", "task-1.json"),
+    });
+    expect(store.readExpectedStageSummary("stage-1")).toEqual({
+      kind: "missing",
+      path: join(project.paths.stages, "stage-1", "summary.json"),
+    });
+  });
+
+  it("returns invalid for malformed task reports and stage summaries", async () => {
+    const project = await seedProject(projectRoot, { name: "p", objectives: [] });
+    const store = new ProjectStore(project);
+    mkdirSync(join(project.paths.stages, "stage-1", "reports"), { recursive: true });
+    writeFileSync(join(project.paths.stages, "stage-1", "reports", "task-1.json"), "{", "utf-8");
+    writeFileSync(join(project.paths.stages, "stage-1", "summary.json"), "{", "utf-8");
+
+    expect(store.readExpectedStageTaskReport({ stageId: "stage-1", taskId: "task-1", agent: "coder" }).kind).toBe("invalid");
+    expect(store.readExpectedStageSummary("stage-1").kind).toBe("invalid");
+  });
+
+  it("returns invalid for artifact identity mismatches", async () => {
+    const project = await seedProject(projectRoot, { name: "p", objectives: [] });
+    const store = new ProjectStore(project);
+    mkdirSync(join(project.paths.stages, "stage-1", "reports"), { recursive: true });
+    writeFileSync(
+      join(project.paths.stages, "stage-1", "reports", "task-1.json"),
+      JSON.stringify(makeTaskReport({ task_id: "other-task" })),
+      "utf-8",
+    );
+    writeFileSync(
+      join(project.paths.stages, "stage-1", "summary.json"),
+      JSON.stringify(makeStageSummary({ stage_id: "other-stage" })),
+      "utf-8",
+    );
+
+    expect(store.readExpectedStageTaskReport({ stageId: "stage-1", taskId: "task-1", agent: "coder" })).toMatchObject({
+      kind: "invalid",
+      reason: "task_id other-task does not match task-1",
+    });
+    expect(store.readExpectedStageSummary("stage-1")).toMatchObject({
+      kind: "invalid",
+      reason: "stage_id other-stage does not match stage-1",
+    });
+  });
+
+  it("reads valid task reports and stage summaries", async () => {
+    const project = await seedProject(projectRoot, { name: "p", objectives: [] });
+    const store = new ProjectStore(project);
+    const report = makeTaskReport({ summary: "task artifact" });
+    const summary = makeStageSummary({ summary: "stage artifact" });
+    await store.writeStageTaskReport(report);
+    await store.writeStageSummary(summary);
+
+    expect(store.readExpectedStageTaskReport({ stageId: "stage-1", taskId: "task-1", agent: "coder" })).toMatchObject({
+      kind: "valid",
+      artifact: { summary: "task artifact" },
+    });
+    expect(store.readExpectedStageSummary("stage-1")).toMatchObject({
+      kind: "valid",
+      artifact: { summary: "stage artifact" },
+    });
+  });
+});
+
+describe("ProjectStore dashboard reads", () => {
+  it("returns active plan, history, and runtime state views", async () => {
+    const project = await seedProject(projectRoot, { name: "p", objectives: [] });
+    const store = new ProjectStore(project);
+    const plan = makePlanDocument();
+    const runtimeState = makeRuntimeState();
+    writeFileSync(project.paths.plan, JSON.stringify(plan), "utf-8");
+    writeFileSync(project.paths.runtimeState, JSON.stringify(runtimeState), "utf-8");
+
+    expect(await store.activePlanView()).toEqual({
+      updated_at: plan.updated_at,
+      current_stage_id: plan.current_stage_id,
+      stages: plan.stages,
+    });
+    expect(await store.planHistoryView()).toEqual({ stages: plan.history });
+    expect(await store.runtimeState()).toEqual(runtimeState);
+  });
+
+  it("returns stage details without server-side path assembly", async () => {
+    const project = await seedProject(projectRoot, { name: "p", objectives: [] });
+    const store = new ProjectStore(project);
+    const tasks = makeTaskList();
+    const summary = makeStageSummary({ summary: "stage summary" });
+    const report = makeTaskReport({ summary: "task report" });
+    mkdirSync(join(project.paths.stages, "stage-1", "reports"), { recursive: true });
+    writeFileSync(join(project.paths.stages, "stage-1", "tasks.json"), JSON.stringify(tasks), "utf-8");
+    writeFileSync(join(project.paths.stages, "stage-1", "summary.json"), JSON.stringify(summary), "utf-8");
+    writeFileSync(join(project.paths.stages, "stage-1", "reports", "task-1.json"), JSON.stringify(report), "utf-8");
+
+    expect(await store.stageDetails("stage-1")).toEqual({
+      stage_id: "stage-1",
+      tasks,
+      summary,
+      reports: [report],
+    });
+  });
+
+  it("returns explicit lenient debug errors and timeline entries", async () => {
+    const project = await seedProject(projectRoot, { name: "p", objectives: [] });
+    const store = new ProjectStore(project);
+    writeFileSync(project.paths.plan, JSON.stringify(makePlanDocument()), "utf-8");
+    mkdirSync(join(project.paths.stages, "stage-1", "reports"), { recursive: true });
+    writeFileSync(
+      join(project.paths.stages, "stage-1", "summary.json"),
+      JSON.stringify(makeStageSummary({
+        result: "failed",
+        summary: "stage failed",
+        issues: [{ severity: "warning", description: "stage issue" }],
+        completed_at: "2026-01-01T00:00:03.000Z",
+      })),
+      "utf-8",
+    );
+    writeFileSync(
+      join(project.paths.stages, "stage-1", "reports", "task-1.json"),
+      JSON.stringify(makeTaskReport({
+        status: "failed",
+        failure_reason: "task failed",
+        completed_at: "2026-01-01T00:00:04.000Z",
+      })),
+      "utf-8",
+    );
+    writeFileSync(join(project.paths.stages, "stage-1", "reports", "bad.json"), "{", "utf-8");
+
+    expect(await store.debugErrors()).toMatchObject([
+      { source: "stage-1/task-1", type: "task_failed", message: "task failed" },
+      { source: "stage-1", type: "stage_issue", message: "stage issue" },
+      { source: "stage-1", type: "summary_failed", message: "stage failed" },
+      { source: "done-stage", type: "stage_failed", message: "historical failure" },
+    ]);
+    expect(await store.debugTimeline()).toMatchObject([
+      { source: "stage-1/task-1", type: "task_failed" },
+      { source: "done-stage", type: "stage_failed" },
+      { source: "done-stage", type: "stage_started" },
+    ]);
+  });
+});
+
+function makeTaskReport(overrides: Partial<TaskReport> = {}): TaskReport {
+  return {
+    task_id: "task-1",
+    stage_id: "stage-1",
+    agent: "coder",
+    status: "completed",
+    summary: "done",
+    checklist_results: [],
+    files_modified: [],
+    files_created: [],
+    tests_added: [],
+    tests_run: [],
+    commits: [],
+    issues_found: [],
+    started_at: "2026-01-01T00:00:00.000Z",
+    completed_at: "2026-01-01T00:00:01.000Z",
+    duration_ms: 1,
+    ...overrides,
+  };
+}
+
+function makeStageSummary(overrides: Partial<StageSummary> = {}): StageSummary {
+  return {
+    stage_id: "stage-1",
+    result: "completed",
+    summary: "done",
+    tasks_completed: 1,
+    tasks_failed: 0,
+    total_tasks: 1,
+    outcomes_achieved: [],
+    outcomes_missed: [],
+    issues: [],
+    started_at: "2026-01-01T00:00:00.000Z",
+    completed_at: "2026-01-01T00:00:01.000Z",
+    duration_ms: 1,
+    ...overrides,
+  };
+}
+
+function makeTaskList(overrides: Partial<TaskList> = {}): TaskList {
+  return {
+    stage_id: "stage-1",
+    created_at: "2026-01-01T00:00:00.000Z",
+    updated_at: "2026-01-01T00:00:00.000Z",
+    tasks: [
+      {
+        id: "task-1",
+        type: "code",
+        assigned_to: "coder",
+        description: "do work",
+        checklist: [],
+        dependencies: [],
+        status: "completed",
+        attempt: 1,
+        max_attempts: 3,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function makePlanDocument(overrides: Partial<PlanDocument> = {}): PlanDocument {
+  return {
+    updated_at: "2026-01-01T00:00:00.000Z",
+    current_stage_id: "stage-1",
+    stages: [
+      {
+        id: "stage-1",
+        objective: "active work",
+        starting_points: [],
+        expected_outcomes: ["done"],
+        acceptance_criteria: ["done"],
+        references: [],
+        tags: [],
+      },
+    ],
+    history: [
+      {
+        id: "done-stage",
+        objective: "past work",
+        expected_outcomes: ["done"],
+        actual_outcomes: [],
+        started_at: "2026-01-01T00:00:01.000Z",
+        completed_at: "2026-01-01T00:00:02.000Z",
+        result: "failed",
+        summary: "historical failure",
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function makeRuntimeState(overrides: Partial<RuntimeState> = {}): RuntimeState {
+  return {
+    status: "running",
+    current_stage_id: "stage-1",
+    active_agents: [],
+    started_at: "2026-01-01T00:00:00.000Z",
+    updated_at: "2026-01-01T00:00:01.000Z",
+    pid: 123,
+    ...overrides,
+  };
+}

@@ -42,6 +42,6 @@ Filesystem and shell for inspecting the product, codebase, and docs and for ligh
 - **Excluded:** `src/`. Read it for context; do not write production code there even as illustration.
 - **Plan-state safety:** never hand-edit `.saivage/plan*.json`; those files are owned by tools that are filtered out of your toolset anyway.
 
-Return the full `TaskReport` JSON as your final response.
+Write the assigned `TaskReport` JSON artifact to the path from the initial message, then return a concise final response. Do not put the full `TaskReport` JSON in final prose.
 
 {{> shared/execution-style}}

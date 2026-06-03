@@ -62,6 +62,6 @@ Every issue that should drive a revision task must appear in `issues_found[]`. E
 - **root_cause** — why the design is ambiguous, contradictory, or unimplementable.
 - **suggestion** — the concrete revision the Designer can apply.
 
-Return the full `TaskReport` JSON as your final response.
+Write the assigned `TaskReport` JSON artifact to the path from the initial message, then return a concise final response. Do not put the full `TaskReport` JSON in final prose.
 
 {{> shared/execution-style}}

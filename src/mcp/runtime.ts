@@ -21,7 +21,6 @@ interface InProcessService {
   name: string;
   tools: ToolEntry[];
   handler: InProcessToolHandler;
-  available: boolean;
 }
 
 interface ManagedService {
@@ -145,14 +144,9 @@ export class McpRuntime {
     name: string,
     tools: ToolEntry[],
     handler: InProcessToolHandler,
-    options: { available?: boolean } = {},
   ): void {
-    const available = options.available ?? true;
-    this.inProcessServices.set(name, { name, tools, handler, available });
-    log.info(
-      `In-process service "${name}" registered — ${tools.length} tools` +
-      (available ? "" : " (unavailable)"),
-    );
+    this.inProcessServices.set(name, { name, tools, handler });
+    log.info(`In-process service "${name}" registered — ${tools.length} tools`);
   }
 
   /** Call a tool on an in-process service or an already-running external service. */
@@ -165,9 +159,6 @@ export class McpRuntime {
     // Check in-process services first
     const inProc = this.inProcessServices.get(serviceName);
     if (inProc) {
-      if (!inProc.available) {
-        throw new Error(`Service "${serviceName}" is registered but unavailable`);
-      }
       this.authorizeInProcessToolCall(inProc, toolName, ctx);
       const timeoutMs = serviceName === "shell"
         ? this.shellTimeoutMs
@@ -227,7 +218,6 @@ export class McpRuntime {
 
     // First: in-process services (always available, no startup needed)
     for (const [name, svc] of this.inProcessServices) {
-      if (!svc.available) continue;
       for (const tool of svc.tools) {
         tools.push({ ...tool, service: name });
         seen.add(tool.name);
@@ -245,21 +235,14 @@ export class McpRuntime {
     return tools;
   }
 
-  /**
-   * Like {@link getAllTools} but also includes in-process services that are
-   * currently `available:false` (e.g. legacy stub registrations during the
-   * M2/M3 transition). Returns a flat projection suitable for the
-   * `/api/mcp/tools` endpoint (WI-12). Each entry carries an explicit
-   * `available` flag derived from the owning service.
-   */
+  /** Return a flat projection suitable for the `/api/mcp/tools` endpoint. */
   listAllToolsForApi(): Array<{
     name: string;
     service: string;
     description: string;
     inputSchema: unknown;
-    available: boolean;
   }> {
-    const out: Array<{ name: string; service: string; description: string; inputSchema: unknown; available: boolean }> = [];
+    const out: Array<{ name: string; service: string; description: string; inputSchema: unknown }> = [];
     const seen = new Set<string>();
 
     for (const [name, svc] of this.inProcessServices) {
@@ -269,7 +252,6 @@ export class McpRuntime {
           service: name,
           description: tool.description,
           inputSchema: tool.inputSchema,
-          available: svc.available,
         });
         seen.add(tool.name);
       }
@@ -282,7 +264,6 @@ export class McpRuntime {
           service: name,
           description: tool.description,
           inputSchema: tool.inputSchema,
-          available: true,
         });
         seen.add(tool.name);
       }

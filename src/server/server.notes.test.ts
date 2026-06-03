@@ -6,7 +6,7 @@ import { join } from "node:path";
 import Fastify from "fastify";
 
 import { createUserNote, NoteManager } from "../runtime/notes.js";
-import { registerNotesRoutes } from "./server.js";
+import { registerNotesRoutes } from "./routes/notes.js";
 
 describe("G50 /api/notes routes", () => {
   const created: string[] = [];
@@ -24,7 +24,14 @@ describe("G50 /api/notes routes", () => {
     created.push(notesDir);
     const noteManager = new NoteManager(notesDir);
     const app = Fastify({ logger: false });
-    registerNotesRoutes(app, { noteManager });
+    registerNotesRoutes(app, {
+      reads: { listNotes: () => noteManager.listNotes() },
+      commands: {
+        acknowledgeNote: (noteId) => noteManager.acknowledgeNote(noteId),
+        deleteNote: (noteId) => noteManager.deleteNote(noteId),
+        clearNotes: () => noteManager.clearNotes(),
+      },
+    });
     await app.ready();
     return { app, noteManager, notesDir };
   }
@@ -112,6 +119,49 @@ describe("G50 /api/notes routes", () => {
     }
   });
 
+  it("supports fake note reads and commands in the extracted route module", async () => {
+    const app = Fastify({ logger: false });
+    const calls: string[] = [];
+    registerNotesRoutes(app, {
+      reads: {
+        listNotes: async () => [{ id: "note-1", content: "hello" }],
+      },
+      commands: {
+        acknowledgeNote: async (noteId) => {
+          calls.push(`ack:${noteId}`);
+          return null;
+        },
+        deleteNote: async (noteId) => {
+          calls.push(`delete:${noteId}`);
+          return noteId === "note-1";
+        },
+        clearNotes: async () => 2,
+      },
+    });
+    await app.ready();
+
+    try {
+      const list = await app.inject({ method: "GET", url: "/api/notes" });
+      expect(list.statusCode).toBe(200);
+      expect(list.json()).toEqual({ notes: [{ id: "note-1", content: "hello" }] });
+
+      const missingAck = await app.inject({ method: "POST", url: "/api/notes/missing/acknowledge" });
+      expect(missingAck.statusCode).toBe(404);
+      expect(missingAck.json()).toEqual({ error: "Note not found" });
+
+      const del = await app.inject({ method: "DELETE", url: "/api/notes/note-1" });
+      expect(del.statusCode).toBe(200);
+      expect(del.json()).toEqual({ deleted: true });
+
+      const clear = await app.inject({ method: "DELETE", url: "/api/notes" });
+      expect(clear.statusCode).toBe(200);
+      expect(clear.json()).toEqual({ deleted: 2 });
+      expect(calls).toEqual(["ack:missing", "delete:note-1"]);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("only constructs NoteManager in bootstrap and tests", () => {
     const out = execFileSync(
       "grep",
@@ -134,6 +184,8 @@ describe("G50 /api/notes routes", () => {
       "src/server/bootstrap.test.ts",
       "src/server/bootstrap.ts",
       "src/server/dispatcher-gate.test.ts",
+      "src/server/prompt-self-correction.test.ts",
+      "src/server/prompt-tool-sequence.test.ts",
       "src/server/server.notes.test.ts",
       "src/server/telegram-bot.test.ts",
     ]);

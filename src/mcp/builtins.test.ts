@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer, type Server } from "node:http";
 
-import { registerBuiltinServices, classifyFsError, extractDdgResults, type DdgResult } from "./builtins.js";
+import { registerBuiltinServices } from "./builtins.js";
+import { classifyFsError } from "./builtins/errors.js";
+import { extractDdgResults, type DdgResult } from "./builtins/web.js";
 import { McpRuntime } from "./runtime.js";
 import { loadConfig } from "../config.js";
 
@@ -71,7 +73,7 @@ describe("built-in MCP services", () => {
     );
     cfg = await loadConfig(projectRoot);
     runtime = new McpRuntime(cfg);
-    registerBuiltinServices(runtime, cfg.mcp, cfg.security);
+    registerBuiltinServices(runtime, cfg.mcp, cfg.security, { project: { projectRoot } });
   });
 
   afterEach(async () => {
@@ -101,7 +103,7 @@ describe("built-in MCP services", () => {
       .rejects.toThrow("Path must stay inside");
   });
 
-  it("hides unavailable stub services from the tool catalog", async () => {
+  it("does not register retired unavailable stub services", async () => {
     const toolNames = runtime.getAllTools().map((tool) => tool.name);
 
     expect(toolNames).toContain("read_file");
@@ -110,7 +112,7 @@ describe("built-in MCP services", () => {
     expect(toolNames).toContain("download_with_fallbacks");
     expect(toolNames).not.toContain("fetch_page_content");
     await expect(runtime.callTool("web", "fetch_url", { url: "https://example.com" }))
-      .rejects.toThrow("registered but unavailable");
+      .rejects.toThrow('MCP service "web" is not running');
   });
 
   it("exposes an optional shell command timeout", () => {
@@ -118,9 +120,7 @@ describe("built-in MCP services", () => {
 
     expect(runCommand?.inputSchema.properties).toMatchObject({
       timeout_ms: { type: "number" },
-      timeout: { type: "number" },
       inactivity_timeout_ms: { type: "number" },
-      idle_timeout_ms: { type: "number" },
       stdout_path: { type: "string" },
       stderr_path: { type: "string" },
     });
@@ -303,7 +303,7 @@ describe("read_file size cap (G31)", () => {
     );
     cfg = await loadConfig(projectRoot);
     runtime = new McpRuntime(cfg);
-    registerBuiltinServices(runtime, cfg.mcp, cfg.security);
+    registerBuiltinServices(runtime, cfg.mcp, cfg.security, { project: { projectRoot } });
   });
 
   afterEach(async () => {
@@ -518,7 +518,7 @@ describe("built-in MCP shell — inner wall-clock cap", () => {
     );
     const cfg = await loadConfig(projectRoot);
     runtime = new McpRuntime(cfg);
-    registerBuiltinServices(runtime, cfg.mcp, cfg.security);
+    registerBuiltinServices(runtime, cfg.mcp, cfg.security, { project: { projectRoot } });
   });
 
   afterEach(async () => {
@@ -780,7 +780,7 @@ describe("data: web_search (G33)", () => {
       webSearchMaxResults: opts.webSearchMaxResults ?? cfg.mcp.webSearchMaxResults,
     };
     runtime = new McpRuntime(cfg);
-    registerBuiltinServices(runtime, mcp, cfg.security, { webSearchEndpoint: opts.endpoint });
+    registerBuiltinServices(runtime, mcp, cfg.security, { project: { projectRoot }, webSearchEndpoint: opts.endpoint });
   }
 
   beforeEach(async () => {
@@ -988,7 +988,7 @@ describe("search_files (G32)", () => {
   async function finishSetup() {
     cfg = await loadConfig(projectRoot);
     runtime = new McpRuntime(cfg);
-    registerBuiltinServices(runtime, cfg.mcp, cfg.security);
+    registerBuiltinServices(runtime, cfg.mcp, cfg.security, { project: { projectRoot } });
   }
 
   beforeEach(async () => {
@@ -1342,7 +1342,7 @@ describe("filterShellEnv (config-driven secret env predicate)", () => {
     );
     const cfg = await loadConfig(projectRoot);
     runtime = new McpRuntime(cfg);
-    registerBuiltinServices(runtime, cfg.mcp, cfg.security);
+    registerBuiltinServices(runtime, cfg.mcp, cfg.security, { project: { projectRoot } });
   }
 
   async function spawnAndCaptureEnv(envIn: Record<string, string>): Promise<Record<string, string>> {

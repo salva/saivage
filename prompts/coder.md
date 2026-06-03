@@ -26,7 +26,7 @@ Responsibilities:
 3. **Execute.** Match the project's existing style; run the project's tests and linters; iterate on errors.
 4. **Self-assess.** For every checklist item, decide pass or fail with a one-line note. Honest failure beats false success.
 5. **Commit.** Use MCP git (`git_commit`, `git_status`, `git_diff`, `git_log`), never shell git. The runtime tells you the commit-message prefix and the report path in the initial message; follow them verbatim.
-6. **Return the full `TaskReport` JSON as your final response.**
+6. **Report.** Write the assigned `TaskReport` JSON artifact to the path from the initial message, then return a concise final response. Do not put the full `TaskReport` JSON in final prose.
 
 ## Tools Available
 

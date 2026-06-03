@@ -25,29 +25,23 @@ import {
 import { recoverFromCrash, writeRuntimeState, createRuntimeState, isAnotherInstanceRunning, acquireRuntimeLock, RuntimeTracker, type RuntimeLock } from "../runtime/recovery.js";
 import { RuntimeSupervisor } from "../runtime/supervisor.js";
 import { consumeShutdownHandoff, writeShutdownSummary } from "../runtime/shutdown-handoff.js";
-import { PlannerAgent } from "../agents/planner.js";
-import { ManagerAgent } from "../agents/manager.js";
-// Worker subclasses register themselves with `WorkerAgent` via
-// `registerWorkerCtor(...)` as a side effect of being imported. The dispatcher
-// only needs the `WorkerAgent` base type after that.
-import "../agents/coder.js";
-import "../agents/researcher.js";
-import "../agents/data-agent.js";
-import "../agents/reviewer.js";
-import "../agents/designer.js";
-import "../agents/critic.js";
-import { InspectorAgent } from "../agents/inspector.js";
-import { LibrarianAgent } from "../agents/librarian.js";
-import { WorkerAgent } from "../agents/worker.js";
-import type { AgentContext, AgentResult, Agent } from "../agents/types.js";
-import { formatAgentResultReason } from "../agents/types.js";
-import { assertExhaustive, getRoster } from "../agents/roster.js";
-import type { AgentState } from "../types.js";
+import type { AgentResult } from "../agents/types.js";
 import type { ServiceEntry } from "../mcp/types.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
-import { agentId } from "../ids.js";
 import { log } from "../log.js";
 import { ModelRoutingResolver } from "../routing/resolver.js";
+import { createChildSpawner as createAgentFactoryChildSpawner } from "./agent-factory.js";
+import {
+  PlannerRunner,
+  queuePlannerDirective,
+  runPlanner as runPlannerFromRunner,
+} from "./planner-runner.js";
+
+export {
+  CONTINUOUS_IMPROVEMENT_PROMPT,
+  RECOVERY_PROMPT,
+  waitForRecoveryDelay,
+} from "./planner-runner.js";
 
 /** Saivage runtime context — returned by bootstrap. */
 export interface SaivageRuntime {
@@ -186,7 +180,11 @@ export async function bootstrap(
     ragDatasets: ragService.datasets,
     ragEnabled: ragService.enabled,
   });
-  registerBuiltinServices(mcpRuntime, config.mcp, config.security, { rag: ragService, knowledge: knowledgeStore });
+  registerBuiltinServices(mcpRuntime, config.mcp, config.security, {
+    project,
+    rag: ragService,
+    knowledge: knowledgeStore,
+  });
   await startConfiguredMcpServers(mcpRuntime, config);
   mcpRuntime.startMonitoring();
 
@@ -324,281 +322,13 @@ export async function bootstrap(
 }
 
 /**
- * Stage-dispatch gate. Validates that a `run_manager` dispatch is
- * admissible against `plan.json` BEFORE constructing a ManagerAgent or
- * mutating tracker state.
- *
- * Returns a structured `StructuredFailureReason` ({ code, error }) when the
- * dispatch must be rejected, or `null` when it is admissible. The caller
- * surfaces a rejection as `{ kind: "failure", reason }` so the planner's
- * tool-call turn receives a normal failed tool result (not an exception)
- * and the Fix 3 PLAN-MUTATION CONTRACT prompt can teach it to self-correct.
- *
- * Reuses PlanService error codes verbatim: PLAN_NOT_FOUND, STAGE_NOT_FOUND,
- * STAGE_MISMATCH (new), VALIDATION_ERROR.
- */
-async function assertStageDispatchable(
-  planService: PlanService,
-  dispatchedStageId: string | undefined,
-): Promise<import("../agents/types.js").StructuredFailureReason | null> {
-  if (!dispatchedStageId || dispatchedStageId.trim() === "") {
-    return { code: "VALIDATION_ERROR", error: "run_manager requires stage.id" };
-  }
-  const plan = await planService.plan_get();
-  if ("code" in plan) {
-    return { code: plan.code, error: plan.error };
-  }
-  const lookup = await planService.plan_get_stage(dispatchedStageId);
-  if ("code" in lookup) {
-    // STAGE_NOT_FOUND from plan_get_stage means not in active or history.
-    return {
-      code: "STAGE_NOT_FOUND",
-      error:
-        `Stage '${dispatchedStageId}' is not in plan.stages; ` +
-        `call plan_add_stage(stage) and plan_set_current('${dispatchedStageId}') before run_manager.`,
-    };
-  }
-  if (lookup.source === "history") {
-    return {
-      code: "STAGE_MISMATCH",
-      error:
-        `Stage '${dispatchedStageId}' is already in plan.history; ` +
-        `call plan_add_stage with a new id and plan_set_current before run_manager.`,
-    };
-  }
-  if (plan.current_stage_id !== dispatchedStageId) {
-    return {
-      code: "STAGE_MISMATCH",
-      error:
-        `Stage '${dispatchedStageId}' is not the current stage ` +
-        `(plan.current_stage_id=${plan.current_stage_id === null ? "null" : `'${plan.current_stage_id}'`}); ` +
-        `call plan_set_current('${dispatchedStageId}') before run_manager.`,
-    };
-  }
-  return null;
-}
-
-/**
  * Create the child spawner factory for the agent hierarchy.
  * This is the function that wires Planner → Manager → Coder/Researcher.
  */
 export function createChildSpawner(
   runtime: SaivageRuntime,
 ): ChildSpawner {
-  /**
-   * Stage-scoped worker cache. Indexed by `stageId` then by role. Stage-scoped
-   * roles (reviewer, designer, critic) keep their conversation history across
-   * follow-up dispatches within the same stage so each new task builds on the
-   * prior turns instead of starting from a blank slate.
-   */
-  const stageWorkers = new Map<
-    string,
-    Map<import("../agents/roster.js").WorkerRole, { agent: WorkerAgent; ctx: AgentContext }>
-  >();
-
-  function getCachedStageWorker(
-    stageId: string,
-    role: import("../agents/roster.js").WorkerRole,
-  ): { agent: WorkerAgent; ctx: AgentContext } | undefined {
-    return stageWorkers.get(stageId)?.get(role);
-  }
-
-  function cacheStageWorker(
-    stageId: string,
-    role: import("../agents/roster.js").WorkerRole,
-    entry: { agent: WorkerAgent; ctx: AgentContext },
-  ): void {
-    let perStage = stageWorkers.get(stageId);
-    if (!perStage) {
-      perStage = new Map();
-      stageWorkers.set(stageId, perStage);
-    }
-    perStage.set(role, entry);
-  }
-
-  return async (
-    role: import("../agents/roster.js").DispatchableRole,
-    input: unknown,
-    _parentCtx: AgentContext,
-  ): Promise<AgentResult> => {
-    const { project, router, mcpRuntime, noteManager, eventBus, tracker } = runtime;
-
-    const ctx: AgentContext = {
-      project,
-      router,
-      mcpRuntime,
-      noteManager,
-      agentId: agentId(),
-      role,
-      ...resolveAgentRoute(runtime, role),
-    };
-
-    let agent: Agent;
-    let trackingAgentId = ctx.agentId;
-    let taskId: string | undefined;
-
-    switch (role) {
-      case "manager": {
-        const managerInput = input as import("../agents/types.js").ManagerInput;
-        const gateFailure = await assertStageDispatchable(
-          runtime.planService,
-          managerInput.stage?.id,
-        );
-        if (gateFailure) {
-          log.warn(
-            `[dispatch-gate] rejected run_manager(${managerInput.stage?.id ?? "?"}): ` +
-              `${gateFailure.code} ${gateFailure.error}`,
-          );
-          return { kind: "failure", reason: gateFailure };
-        }
-        const managerSpawner = createChildSpawner(runtime);
-        ctx.stageId = managerInput.stage?.id;
-        agent = await ManagerAgent.create(ctx, managerInput, managerSpawner, {
-          onActivity: (agentId) => tracker.agentActivity(agentId),
-          onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
-        });
-        tracker.setCurrentStage(managerInput.stage?.id ?? null);
-        break;
-      }
-
-      case "coder":
-      case "researcher":
-      case "data_agent":
-      case "reviewer":
-      case "designer":
-      case "critic": {
-        const workerInput = normalizeWorkerDispatchInput(input, role);
-        const stageId = workerInput.stageId ?? "unknown-stage";
-        ctx.stageId = workerInput.stageId;
-
-        const isStageScoped = getRoster(role).stageScoped;
-        const cached = isStageScoped ? getCachedStageWorker(stageId, role) : undefined;
-
-        if (cached) {
-          agent = cached.agent;
-          trackingAgentId = cached.ctx.agentId;
-          // Update the bound input on the cached worker before dispatch so the
-          // post-loop branch below routes to `runNext(...)`.
-          (agent as WorkerAgent & { input: import("../agents/types.js").WorkerInput }).input =
-            workerInput;
-        } else {
-          const worker = await WorkerAgent.createWorker<WorkerAgent>(ctx, workerInput, role, {
-            onActivity: (agentId) => tracker.agentActivity(agentId),
-            onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
-          });
-          agent = worker;
-          if (isStageScoped) {
-            cacheStageWorker(stageId, role, { agent: worker, ctx });
-          }
-        }
-
-        taskId = workerInput.task?.id;
-        tracker.setCurrentStage(workerInput.stageId);
-        break;
-      }
-
-      case "inspector": {
-        const inspectorInput = input as import("../agents/types.js").InspectorInput;
-        ctx.stageId = tracker.getCurrentStage() ?? undefined;
-        agent = await InspectorAgent.create(ctx, inspectorInput, {
-          onActivity: (agentId) => tracker.agentActivity(agentId),
-          onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
-        });
-        break;
-      }
-
-      case "librarian": {
-        const librarianInput = input as import("../agents/librarian.js").LibrarianInput;
-        agent = await LibrarianAgent.create(ctx, librarianInput, {
-          onActivity: (agentId) => tracker.agentActivity(agentId),
-          onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
-        });
-        break;
-      }
-
-      default:
-        return assertExhaustive(role);
-    }
-
-      tracker.agentStarted(trackingAgentId, role as AgentState["agent_type"], taskId);
-      runtime.agentRegistry.set(trackingAgentId, agent as unknown as import("../agents/base.js").BaseAgent);
-
-    try {
-      // Stage-scoped workers reuse one instance across follow-up dispatches;
-      // `WorkerAgent.run()` handles both the first turn and follow-up turns
-      // uniformly based on its internal `turnCount`, so the dispatcher does
-      // not need a per-role branch here.
-      const result = await agent.run();
-
-      // Publish events for significant results
-      if (role === "manager") {
-        const stageId = (input as import("../agents/types.js").ManagerInput).stage?.id;
-        await publishAgentResult(eventBus, role, stageId, result);
-      } else if (role === "inspector") {
-        await publishAgentResult(eventBus, role, undefined, result);
-      }
-
-      return result;
-    } finally {
-      tracker.agentStopped(trackingAgentId);
-      if (role === "manager") {
-        tracker.setCurrentStage(null);
-      }
-      runtime.agentRegistry.delete(trackingAgentId);
-    }
-  };
-}
-
-function normalizeWorkerDispatchInput(
-  input: unknown,
-  role: import("../agents/roster.js").DispatchableRole,
-): import("../agents/types.js").WorkerInput {
-  const raw = input as Record<string, unknown> | null;
-  if (!raw || typeof raw !== "object") {
-    throw new Error(`Invalid ${role} dispatch: expected an object input`);
-  }
-
-  const rawStageId = raw.stageId ?? raw.stage_id;
-  if (typeof rawStageId !== "string" || rawStageId.trim() === "") {
-    throw new Error(`Invalid ${role} dispatch: missing required stageId`);
-  }
-
-  const rawTask = raw.task as Record<string, unknown> | null;
-  if (!rawTask || typeof rawTask !== "object") {
-    throw new Error(`Invalid ${role} dispatch: missing required task object`);
-  }
-
-  const rawTaskId = rawTask.id ?? rawTask.task_id;
-  if (typeof rawTaskId !== "string" || rawTaskId.trim() === "") {
-    throw new Error(`Invalid ${role} dispatch: task.id is required`);
-  }
-
-  const description = firstNonEmptyString(
-    rawTask.description,
-    rawTask.objective,
-    rawTask.title,
-    rawTask.name,
-    rawTask.instructions,
-  );
-  if (!description) {
-    throw new Error(`Invalid ${role} dispatch: task.description or task.objective is required`);
-  }
-
-  return {
-    stageId: rawStageId.trim(),
-    task: {
-      ...rawTask,
-      id: rawTaskId.trim(),
-      description,
-    } as import("../types.js").Task,
-  };
-}
-
-function firstNonEmptyString(...values: unknown[]): string | undefined {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim() !== "") return value.trim();
-  }
-  return undefined;
+  return createAgentFactoryChildSpawner(runtime);
 }
 
 /**
@@ -608,101 +338,7 @@ export async function runPlanner(
   runtime: SaivageRuntime,
   options: { abortSignal?: { aborted: boolean } } = {},
 ): Promise<AgentResult> {
-  const { project, router, mcpRuntime, noteManager, tracker } = runtime;
-
-  const ctx: AgentContext = {
-    project,
-    router,
-    mcpRuntime,
-    noteManager,
-    agentId: agentId(),
-    role: "planner",
-    ...resolveAgentRoute(runtime, "planner"),
-    startupDirectives: runtime.plannerStartupDirectives.splice(0),
-    stageId: tracker.getCurrentStage() ?? undefined,
-  };
-
-  const childSpawner = createChildSpawner(runtime);
-  const planner = await PlannerAgent.create(ctx, childSpawner, {
-    abortSignal: options.abortSignal,
-    onActivity: (agentId) => tracker.agentActivity(agentId),
-    onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
-  });
-
-  tracker.agentStarted(ctx.agentId, "planner");
-  runtime.agentRegistry.set(ctx.agentId, planner as import("../agents/base.js").BaseAgent);
-
-  // Handle graceful shutdown
-  const shutdownHandler = () => {
-    log.info("[v2] Received shutdown signal — cancelling Planner");
-    planner.cancel();
-  };
-  process.on("SIGINT", shutdownHandler);
-  process.on("SIGTERM", shutdownHandler);
-
-  try {
-    const result = await planner.run();
-    return result;
-  } finally {
-    tracker.agentStopped(ctx.agentId);
-    runtime.agentRegistry.delete(ctx.agentId);
-    process.off("SIGINT", shutdownHandler);
-    process.off("SIGTERM", shutdownHandler);
-  }
-}
-
-export const RECOVERY_PROMPT =
-  `SYSTEM RECOVERY: The planner session ended without completing all objectives. ` +
-  `You have been automatically restarted. You MUST:\n\n` +
-  `1. Call plan_get() to read the current plan state.\n` +
-  `2. Call plan_get_history() to see what stages have completed, failed, or escalated.\n\n` +
-  `PLAN-MUTATION CONTRACT (mandatory before any run_manager call):\n` +
-  `  a. The stage must exist in plan.stages (use plan_add_stage if new).\n` +
-  `  b. plan.current_stage_id must equal the stage id (use plan_set_current).\n` +
-  `  c. Only then call run_manager(stage).\n` +
-  `  d. When the manager returns, call plan_complete_stage with the result.\n` +
-  `If run_manager rejects with STAGE_NOT_FOUND, STAGE_MISMATCH, or PLAN_NOT_FOUND,\n` +
-  `the dispatcher is telling you a precondition tool was skipped. Call the missing\n` +
-  `tool and retry the SAME stage — do not invent a different stage and do not escalate.\n\n` +
-  `3. Assess what work remains to achieve ALL project objectives.\n` +
-  `4. If escalated stages exist, analyze WHY they failed and create corrective stages.\n` +
-  `5. Following the contract above, call plan_add_stage (if the stage is new) then plan_set_current() on the next stage and dispatch it with run_manager().\n\n` +
-  `DO NOT call plan_done unless ALL objectives are truly achieved with evidence from successful stages. ` +
-  `If stages have escalated or failed, the objectives are NOT complete — you must fix the issues and retry.`;
-
-export const CONTINUOUS_IMPROVEMENT_PROMPT =
-  `SYSTEM CONTINUOUS IMPROVEMENT: The configured project objectives appear complete, but Saivage is running in continuous-improvement mode. ` +
-  `Do not stop just because the active plan is empty. You MUST keep improving the target project while preserving its objectives and constraints. ` +
-  `The next stage must be driven by the project's stated mission, not by generic repository tidying.\n\n` +
-  `PLAN-MUTATION CONTRACT (mandatory before any run_manager call):\n` +
-  `  1) plan_add_stage(stage)        // register the stage in plan.json\n` +
-  `  2) plan_set_current(stage.id)   // mark it active; stamps started_at\n` +
-  `  3) run_manager(stage)           // dispatch — dispatcher enforces 1 & 2\n` +
-  `  4) plan_complete_stage(...)     // move to history with the result\n` +
-  `Skipping any of (1)-(2) causes run_manager to reject with STAGE_NOT_FOUND or\n` +
-  `STAGE_MISMATCH. On rejection, run the missing tool and retry the SAME stage.\n\n` +
-  `On this cycle:\n` +
-  `1. Call plan_get() and plan_get_history() to confirm the current state.\n` +
-  `2. Re-read the project objectives and recent results to identify the next highest-value objective-aligned experiment or blocker.\n` +
-  `3. If the project is an ML/research project, first assess whether the dataset is large, complete, high-quality, and auditable enough for model work. If not, prioritize data acquisition, repair, provenance, quality reporting, and snapshot freezing before additional model tuning.\n` +
-  `4. Once the data foundation is credible, prefer a research -> data/features -> implementation -> evaluation -> comparison cycle: find a promising model/data idea, implement a bounded experiment, retrieve required data, run honest evaluation, update the leaderboard/reporting, and compare against prior models.\n` +
-  `5. Only create maintenance, QA, documentation, or hardening stages when they directly unblock or improve the reliability of the objective-aligned experiment loop.\n` +
-  `6. Because plan.json already exists in continuous-improvement cycles, DO NOT call plan_init(). Create at least one concrete, bounded next stage with plan_add_stage() (preferred for single-stage additions; plan_set_stages is also acceptable).\n` +
-  `7. Following the contract above, call plan_set_current(stage.id) and then run_manager(stage).\n\n` +
-  `Only call plan_done if continuous-improvement mode has been disabled by runtime configuration or shutdown is requested.`;
-
-function buildRestartPrompt(request: PlannerRestartRequest): string {
-  return (
-    `SYSTEM REQUESTED PLANNER RESTART: ${request.requestedBy} explicitly requested that the Planner restart.\n\n` +
-    `Requested at: ${request.requestedAt}\n` +
-    `Reason/request: ${request.reason}\n\n` +
-    `On restart, do not assume the previous in-memory conversation is complete. ` +
-    `Call plan_get() and plan_get_history(), reassess current project state, honor this user request, and continue with the next concrete action.`
-  );
-}
-
-function queuePlannerDirective(runtime: SaivageRuntime, content: string): void {
-  runtime.plannerStartupDirectives.push(content);
+  return runPlannerFromRunner(runtime, options);
 }
 
 /**
@@ -713,122 +349,7 @@ function queuePlannerDirective(runtime: SaivageRuntime, content: string): void {
 export async function runPlannerWithRecovery(
   runtime: SaivageRuntime,
 ): Promise<AgentResult> {
-  let cancelled = false;
-  let iteration = 0;
-
-  const cancelRecovery = () => { cancelled = true; };
-  process.on("SIGINT", cancelRecovery);
-  process.on("SIGTERM", cancelRecovery);
-
-  try {
-    while (!cancelled) {
-      iteration++;
-      log.info(`[recovery] Starting planner (iteration ${iteration})`);
-
-      const abortSignal = { aborted: false };
-      let restartDuringRun: PlannerRestartRequest | null = null;
-      const unsubscribeRestart = runtime.plannerControl.onRestartRequested((request) => {
-        restartDuringRun = request;
-        abortSignal.aborted = true;
-        log.info(`[recovery] Planner restart requested by ${request.requestedBy}: ${request.reason}`);
-      });
-
-      let result: AgentResult;
-      try {
-        result = await runPlanner(runtime, { abortSignal });
-      } finally {
-        unsubscribeRestart();
-      }
-
-      const restartRequest = runtime.plannerControl.consumeRestartRequest() ?? restartDuringRun;
-
-      if (restartRequest) {
-        queuePlannerDirective(runtime, buildRestartPrompt(restartRequest));
-        await runtime.eventBus.publish({
-          type: "plan_updated",
-          summary: `Planner restart requested by ${restartRequest.requestedBy}. Restart directive queued.`,
-        });
-        log.info("[recovery] Restarting planner immediately after explicit request");
-        continue;
-      }
-
-      log.info(`[recovery] Planner exited: ${result.kind} (iteration ${iteration})`);
-
-      // Hard stops — no recovery
-      if (result.kind === "abort") {
-        log.info("[recovery] Planner aborted — stopping recovery loop");
-        return result;
-      }
-
-      // In continuous-improvement mode, plan_done completes the current
-      // objective batch and then restarts the Planner for the next cycle.
-      if (result.kind === "success" && isPlanDoneCompletion(result.data)) {
-        if (!runtime.config.runtime.continuousImprovement) {
-          log.info(`[recovery] Planner completed via plan_done: ${result.data.summary}`);
-          return result;
-        }
-
-        queuePlannerDirective(runtime, CONTINUOUS_IMPROVEMENT_PROMPT);
-        await runtime.eventBus.publish({
-          type: "plan_updated",
-          summary: "Planner completed the active plan via plan_done. Continuous-improvement directive queued; restarting Planner.",
-          timestamp: new Date().toISOString(),
-        });
-        log.info("[recovery] Planner completed via plan_done; continuous-improvement mode is enabled. Restarting planner");
-        continue;
-      }
-
-      if (cancelled) break;
-
-      // For success (nudge-out) or failure — always retry
-      const recoveryDelayMs = runtime.config.runtime.recoveryDelayMs;
-      log.info(
-        `[recovery] Planner ended without plan_done (${result.kind}). ` +
-        `Waiting ${recoveryDelayMs / 1000}s before restart...`,
-      );
-
-      await runtime.eventBus.publish({
-        type: "plan_updated",
-        summary: `Planner ended (${result.kind}). Recovery restart in ${Math.round(recoveryDelayMs / 1000)}s.`,
-        timestamp: new Date().toISOString(),
-      });
-
-      if (await waitForRecoveryDelay(recoveryDelayMs)) cancelled = true;
-
-      if (cancelled) break;
-
-      queuePlannerDirective(runtime, RECOVERY_PROMPT);
-      log.info("[recovery] Queued recovery directive for the next planner session");
-    }
-
-    log.info("[recovery] Recovery loop cancelled — shutting down");
-    return { kind: "abort", reason: "Recovery loop cancelled by shutdown signal" };
-  } finally {
-    process.off("SIGINT", cancelRecovery);
-    process.off("SIGTERM", cancelRecovery);
-  }
-}
-
-/**
- * Wait for a recovery-loop delay. Returns true if a shutdown signal cancelled
- * the wait, false if the timer elapsed normally.
- */
-export function waitForRecoveryDelay(ms: number): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
-    let settled = false;
-    const finish = (cancelled: boolean) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      process.off("SIGINT", onCancel);
-      process.off("SIGTERM", onCancel);
-      resolve(cancelled);
-    };
-    const timer = setTimeout(() => finish(false), ms);
-    const onCancel = () => finish(true);
-    process.once("SIGINT", onCancel);
-    process.once("SIGTERM", onCancel);
-  });
+  return new PlannerRunner(runtime).runWithRecovery();
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -903,73 +424,4 @@ async function startConfiguredMcpServers(
       log.warn(`[mcp] External MCP "${name}" unavailable: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-}
-
-
-function resolveAgentRoute(runtime: SaivageRuntime, role: string): Pick<AgentContext, "modelSpec" | "authProfileKey" | "accountRef"> {
-  const route = runtime.routing.resolve(role);
-  return {
-    modelSpec: route.modelSpec,
-    authProfileKey: route.authProfile,
-    accountRef: route.accountRef,
-  };
-}
-
-async function publishAgentResult(
-  eventBus: EventBus,
-  agentRole: string,
-  stageId: string | undefined,
-  result: AgentResult,
-): Promise<void> {
-  switch (result.kind) {
-    case "success":
-      if (agentRole === "manager") {
-        await eventBus.publish({
-          type: "stage_completed",
-          stage_id: stageId,
-          summary: "Stage completed successfully",
-        });
-      } else if (agentRole === "inspector") {
-        const report = result.data as { id?: string } | undefined;
-        await eventBus.publish({
-          type: "inspector_complete",
-          report_id: report?.id,
-          summary: "Inspector report ready",
-        });
-      }
-      break;
-
-    case "failure":
-      if (agentRole === "manager") {
-        await eventBus.publish({
-          type: "stage_failed",
-          stage_id: stageId,
-          summary: formatAgentResultReason(result.reason),
-        });
-      }
-      break;
-
-    case "escalation":
-      await eventBus.publish({
-        type: "escalation",
-        stage_id: stageId,
-        summary: result.escalation.reason ?? "Stage escalated",
-      });
-      break;
-
-    case "abort":
-      break; // Aborts don't generate events — the user already knows
-  }
-}
-
-interface PlanDoneCompletion {
-  completion: "plan_done";
-  summary: string;
-}
-
-function isPlanDoneCompletion(value: unknown): value is PlanDoneCompletion {
-  return !!value &&
-    typeof value === "object" &&
-    (value as { completion?: unknown }).completion === "plan_done" &&
-    typeof (value as { summary?: unknown }).summary === "string";
 }

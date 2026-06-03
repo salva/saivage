@@ -46,6 +46,6 @@ For downloads, validation scripts, provider CLIs, or other long-running shell wo
 
 Every blocked or risky data condition belongs in `issues_found[]`: inaccessible source, unclear license, JS-only access without Playwright available, failed checksum/parse, schema mismatch, unreliable mirrors, or any task-specific validity concern the Manager and Coder need to know about. If all acquisition routes fail, the report must list the alternatives tried and a concrete next acquisition route rather than a bare failure.
 
-Return the full TaskReport JSON as your final response.
+Write the assigned `TaskReport` JSON artifact to the path from the initial message, then return a concise final response. Do not put the full `TaskReport` JSON in final prose.
 
 {{> shared/execution-style}}

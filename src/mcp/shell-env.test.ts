@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { filterShellEnv } from "./builtins.js";
+import { filterShellEnv } from "./builtins/shell.js";
 
 describe("filterShellEnv", () => {
   it("strips well-known secret keys", () => {

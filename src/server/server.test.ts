@@ -1,11 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
-import {
-  isPathHiddenForFileRoot,
-  isPathInside,
-  safeConfigResponse,
-  safeDebugStateResponse,
-  safeProvidersResponse,
-} from "./server.js";
+import { isPathHiddenForFileRoot, isPathInside } from "./file-browser-service.js";
+import { safeConfigResponse, safeProvidersResponse } from "./read-models/config.js";
+import { safeDebugStateResponse } from "./read-models/debug.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -102,7 +98,6 @@ describe("safe API response shapes", () => {
       agents: { planner: { compaction_threshold_pct: 80, max_compactions: 3 } },
       project_root: "/work/project",
       saivage_dir: "/work/project/.saivage",
-      provider: "github-copilot/gpt-5.4",
       routing: {
         planner: {
           role: "planner",

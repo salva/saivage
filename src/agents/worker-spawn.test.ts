@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -21,6 +21,7 @@ describe("createChildSpawner worker dispatch", () => {
     const root = mkdtempSync(join(tmpdir(), "saivage-worker-spawn-"));
     try {
       const runtime = makeRuntime(root);
+      writeTaskReport(root, makeTaskReport("coder"));
       const runLoop = vi.spyOn(WorkerAgent.prototype as unknown as Record<string, () => unknown>, "runLoop").mockResolvedValue({
         text: JSON.stringify(makeTaskReport("coder")),
         finishReason: "end_turn",
@@ -46,6 +47,7 @@ describe("createChildSpawner worker dispatch", () => {
     const root = mkdtempSync(join(tmpdir(), "saivage-worker-spawn-"));
     try {
       const runtime = makeRuntime(root);
+      writeTaskReport(root, makeTaskReport("reviewer"));
       vi.spyOn(WorkerAgent.prototype as unknown as Record<string, () => unknown>, "runLoop").mockResolvedValue({
         text: JSON.stringify(makeTaskReport("reviewer")),
         finishReason: "end_turn",
@@ -74,6 +76,8 @@ describe("createChildSpawner worker dispatch", () => {
     const root = mkdtempSync(join(tmpdir(), "saivage-worker-spawn-"));
     try {
       const runtime = makeRuntime(root);
+      writeTaskReport(root, makeTaskReport(role, `${role}-1`));
+      writeTaskReport(root, makeTaskReport(role, `${role}-2`));
       vi.spyOn(WorkerAgent.prototype as unknown as Record<string, () => unknown>, "runLoop").mockResolvedValue({
         text: JSON.stringify(makeTaskReport(role)),
         finishReason: "end_turn",
@@ -251,9 +255,9 @@ function makeInput(
   };
 }
 
-function makeTaskReport(role: WorkerInput["task"]["assigned_to"]) {
+function makeTaskReport(role: WorkerInput["task"]["assigned_to"], taskId = `${role}-task`) {
   return {
-    task_id: `${role}-task`,
+    task_id: taskId,
     stage_id: "stage-1",
     agent: role,
     status: "completed",
@@ -269,4 +273,10 @@ function makeTaskReport(role: WorkerInput["task"]["assigned_to"]) {
     completed_at: new Date().toISOString(),
     duration_ms: 1,
   };
+}
+
+function writeTaskReport(root: string, report: ReturnType<typeof makeTaskReport>): void {
+  const dir = join(root, ".saivage", "stages", report.stage_id, "reports");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${report.task_id}.json`), JSON.stringify(report), "utf-8");
 }

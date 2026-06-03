@@ -43,6 +43,10 @@ class TestAgent extends BaseAgent {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (this as any).pushMessage(msg);
   }
+  public seedPendingRepairPrompt(prompt: string): void {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (this as any).conversation.setPendingRepairPrompt(prompt);
+  }
 }
 
 let tmpDir: string;
@@ -151,6 +155,25 @@ describe("BaseAgent compaction integration (WI-14)", () => {
         m.content.includes("always-on-survivor"),
     );
     expect(survivor).toBeDefined();
+  });
+
+  it("reinjects a pending repair prompt after compaction", async () => {
+    const prompt = "Invalid final task response: repair with evidence.";
+    const agent = new TestAgent(
+      makeContext("coder", async () => ({
+        content: "summary text",
+        toolCalls: [],
+        finishReason: "end_turn",
+        usage: { inputTokens: 0, outputTokens: 0 },
+      })),
+      { systemPrompt: "sys" },
+    );
+    agent.seedMessage({ role: "user", content: "long history" });
+    agent.seedPendingRepairPrompt(prompt);
+
+    await agent.runCompaction();
+
+    expect(agent.getMessages().some((msg) => msg.role === "user" && msg.content === prompt)).toBe(true);
   });
 
   it("§E.2 — Planner pre-compaction hook fires onCompactionHookComplete with writeCount=0 when no tool calls", async () => {

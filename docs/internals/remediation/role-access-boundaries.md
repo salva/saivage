@@ -1,4 +1,14 @@
-# Role Access Boundaries
+# Role Access Boundaries (Historical)
+
+This note predates the current autonomy-first direction in
+[Agent autonomy, conventions, and nudges](./agent-autonomy-conventions.md). It is
+kept as historical context for an enforcement-oriented option, not as the active
+target design.
+
+The active direction keeps role permissions simple and uses runtime observation,
+typed artifact validation, and nudges to correct most role drift. Hard runtime
+refusal is reserved for secrets, state corruption, project-root escape,
+operator-only actions, and similar safety boundaries.
 
 ## Problem
 
@@ -7,9 +17,14 @@ but the enforcement is incomplete:
 
 - `BaseAgent` filters tool schemas before showing them to the model.
 - `McpRuntime.callTool` executes any known tool when called directly.
-- `src/agents/conventions.ts` logs territory violations but does not block them.
-- `src/agents/conventions.ts` is currently used only by tests, so wiring it into
-  built-in tool handlers is part of the work.
+- `src/agents/conventions.ts` provides `decidePathMutation()`, which **already
+  blocks** write-path mutations that violate role territory. It is wired into the
+  `write_file`, `download_file`, `download_with_fallbacks`, `git_commit`, and
+  shell command path handlers in `builtins.ts`. Path conventions are not advisory
+  — they are enforced at the tool handler level.
+- This historical note described enforcement as a future goal, but path enforcement
+  is already active. The active direction (autonomy-first) keeps path blocking
+  for safety boundaries and adds compliance nudges for behavioral drift.
 - Some handlers contain ad-hoc path guards, such as `write_file` blocking direct
   writes under `.saivage/skills/` and `.saivage/memory/`.
 
@@ -70,41 +85,23 @@ Specialized handler checks stay where they are:
 
 ### Path Mutations
 
-`src/agents/conventions.ts` should evolve from warning-only helpers into
-enforceable role territory helpers.
+`src/agents/conventions.ts` already enforces role-based path mutations at the tool
+handler level. `write_file`, `download_file`, `download_with_fallbacks`,
+`git_commit`, and explicit shell output paths all call `decidePathMutation()`,
+which **blocks** writes that violate role territory and returns a structured error
+to the agent.
 
-Recommended shape:
+This enforcement is a safety boundary, not a behavioral nudge. The active design
+keeps it as hard refusal and does not soften it into a nudge.
 
-- Keep `getConvention(role)`.
-- Replace or supplement `checkConvention(role, filePath)` with a function that
-  returns `{ ok: true }` or `{ ok: false, reason: string }`.
-- Use resolved project-relative paths, not string containment on arbitrary
-  absolute paths.
-- Allow agent writes only when the resolved project-relative path is inside the
-  role's `writeTerritory` and outside every `excludeTerritory`. Paths that match
-  neither list are denied. Operator context bypasses role territory checks.
-- `operatorContext` bypasses role path restrictions.
-- Preserve hard knowledge-store protection: direct file writes to
-  `.saivage/skills/` and `.saivage/memory/` remain blocked for agents and should
-  be expressed through the same path decision path, not as a separate ad-hoc
-  branch.
+Recommended changes to path enforcement:
 
-Initial enforcement points:
-
-- `write_file`
-- `download_file`
-- `download_with_fallbacks`
-- optional `manifest_path` for downloads
-- explicit `stdout_path` and `stderr_path` for `run_command`
-- `git_commit` file list
-
-Shell command contents are not parseable in a reliable, simple way. Therefore,
-`run_command` remains a high-trust tool. Role filtering must decide which roles
-can use shell at all; path checks only cover explicit output paths.
-
-The shared `worker` tool filter can still expose mutation-capable tools to
-Coder, Researcher, Data Agent, Designer, and Manager. Path authorization is what
-narrows those broad worker tools to each role's territory.
+- Keep existing blocking as-is. It is not a convention nudge — it is a safety
+  boundary preventing agents from writing outside their territory.
+- Migrate `process.env.PROJECT_ROOT` resolution in `decidePathMutation` to use
+  injected `ProjectContext` when built-ins modularization lands.
+- Preserve hard knowledge-store protection (`.saivage/skills/` and
+  `.saivage/memory/`) as-is.
 
 ## Execution Plan
 

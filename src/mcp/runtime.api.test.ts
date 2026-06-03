@@ -18,29 +18,20 @@ function testConfig(): SaivageConfig {
 }
 
 describe("McpRuntime.listAllToolsForApi (WI-12)", () => {
-  it("emits available flag for in-process services", () => {
+  it("emits callable in-process services", () => {
     const rt = new McpRuntime(testConfig());
     rt.registerInProcess(
       "alpha",
       [{ name: "alpha_do", description: "ok", inputSchema: { type: "object" } }],
       async () => ({ content: [] }),
-      { available: true },
-    );
-    rt.registerInProcess(
-      "stub",
-      [{ name: "stub_op", description: "stub", inputSchema: { type: "object" } }],
-      async () => ({ content: [] }),
-      { available: false },
     );
     const out = rt.listAllToolsForApi();
     const alpha = out.find((t) => t.name === "alpha_do");
-    const stub = out.find((t) => t.name === "stub_op");
-    expect(alpha).toMatchObject({ service: "alpha", available: true });
-    expect(stub).toMatchObject({ service: "stub", available: false });
+    expect(alpha).toMatchObject({ service: "alpha" });
     if (!alpha) throw new Error("expected alpha tool");
     // projection shape
     expect(Object.keys(alpha).sort()).toEqual(
-      ["available", "description", "inputSchema", "name", "service"].sort(),
+      ["description", "inputSchema", "name", "service"].sort(),
     );
   });
 

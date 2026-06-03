@@ -12,14 +12,15 @@ import type {
   ManagerInput,
   Agent,
 } from "./types.js";
-import { StageSummarySchema, type StageSummary, type Stage } from "../types.js";
-import { parseLlmJsonAs } from "../parse-llm-json.js";
+import type { StageSummary, Stage } from "../types.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
 import { log } from "../log.js";
 import { buildHandoffContext } from "./handoff.js";
 import { loadRolePrompt } from "./prompts.js";
 import { buildEagerBlock } from "../knowledge/eagerLoader.js";
 import { getDispatchToolsFor } from "./roster.js";
+import { checkManagerCompletion } from "./compliance.js";
+import { ProjectStore } from "../store/project-store.js";
 
 
 export class ManagerAgent extends BaseAgent implements Agent {
@@ -91,8 +92,15 @@ export class ManagerAgent extends BaseAgent implements Agent {
         return { kind: "failure", reason: text, partial: summary };
       }
 
-      // Parse StageSummary from response
-      const summary = parseStageSummary(text, stage, startedAt, start);
+      const artifact = this.readStageSummaryArtifact();
+      if (artifact.kind !== "valid") {
+        const reason = artifact.kind === "missing"
+          ? `Expected StageSummary artifact was not written at ${artifact.path}.`
+          : `Invalid StageSummary artifact at ${artifact.path}: ${artifact.reason}.`;
+        const summary = buildFailureSummary(stage, startedAt, start, reason);
+        return { kind: "failure", reason, partial: summary };
+      }
+      const summary = artifact.artifact;
 
       if (summary.result === "escalated" && summary.escalation) {
         return { kind: "escalation", escalation: summary.escalation };
@@ -107,11 +115,23 @@ export class ManagerAgent extends BaseAgent implements Agent {
     }
   }
 
-  protected override validateFinalResponse(): string | null {
-    if (this.hasUsedToolNamed(...getDispatchToolsFor("manager"))) {
-      return null;
+  protected override validateFinalResponse(text: string): string | null {
+    const artifact = this.readStageSummaryArtifact();
+    if (artifact.kind === "invalid") {
+      return `Invalid StageSummary artifact at ${artifact.path}: ${artifact.reason}. Fix the on-disk StageSummary JSON for stage ${this.input.stage.id}.`;
     }
-    return "Invalid final stage response: you have not dispatched any worker yet.";
+    const dispatchTools = getDispatchToolsFor("manager");
+    const violation = checkManagerCompletion({
+      text,
+      hasWorkerEvidence: this.hasMeaningfulToolNamed(...dispatchTools),
+      hasReviewerEvidence: this.hasMeaningfulToolNamed("run_reviewer"),
+      artifactResult: artifact.kind === "valid" ? artifact.artifact.result : undefined,
+    });
+    return violation?.repairPrompt ?? null;
+  }
+
+  private readStageSummaryArtifact() {
+    return new ProjectStore(this.ctx.project).readExpectedStageSummary(this.input.stage.id);
   }
 }
 
@@ -162,51 +182,8 @@ async function buildManagerMessage(ctx: AgentContext, input: ManagerInput): Prom
     `5. If the Reviewer finds blockers or important issues, plan targeted correction tasks, dispatch them, and rerun review after material fixes. In each follow-up review, summarize the corrective tasks, new TaskReports, changed files, and previous issues the Reviewer should recheck. Continue this review/fix/re-review loop until blockers are resolved, warnings are accepted as residual risk, or escalation is justified.\n` +
     `6. Process results, handle failures, write the summary.\n` +
     `7. Write .saivage/stages/${stage.id}/summary.json.\n` +
-    `8. Return the full StageSummary JSON as your final response.`
+    `8. After writing the summary, return a concise final response. Do not include the full StageSummary JSON in the final response.`
   );
-}
-
-function parseStageSummary(
-  text: string,
-  stage: Stage,
-  startedAt: string,
-  startMs: number,
-): StageSummary {
-  const result = parseLlmJsonAs(text, StageSummarySchema.partial());
-  if (!result.ok) {
-    return {
-      stage_id: stage.id,
-      result: "failed",
-      summary: `Manager emitted ${result.reason}: ${result.detail}`,
-      tasks_completed: 0,
-      tasks_failed: 0,
-      total_tasks: 0,
-      outcomes_achieved: [],
-      outcomes_missed: stage.expected_outcomes,
-      issues: [],
-      abort_reason: result.detail,
-      started_at: startedAt,
-      completed_at: new Date().toISOString(),
-      duration_ms: Date.now() - startMs,
-    };
-  }
-  const parsed = result.value;
-  return {
-    stage_id: parsed.stage_id ?? stage.id,
-    result: parsed.result ?? "completed",
-    summary: parsed.summary ?? "",
-    tasks_completed: parsed.tasks_completed ?? 0,
-    tasks_failed: parsed.tasks_failed ?? 0,
-    total_tasks: parsed.total_tasks ?? 0,
-    outcomes_achieved: parsed.outcomes_achieved ?? [],
-    outcomes_missed: parsed.outcomes_missed ?? [],
-    issues: parsed.issues ?? [],
-    escalation: parsed.escalation,
-    abort_reason: parsed.abort_reason,
-    started_at: startedAt,
-    completed_at: new Date().toISOString(),
-    duration_ms: Date.now() - startMs,
-  };
 }
 
 function buildFailureSummary(
