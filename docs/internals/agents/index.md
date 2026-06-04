@@ -109,6 +109,13 @@ filtered by the roster's `toolFilter`, and dispatch tools are derived from
 gets read-only project tools, web fetch/search tools, `read_stash`, and
 `create_note`, but no dispatch tools.
 
+Worker dispatch intentionally remains role-specific at the LLM-facing tool
+surface (`run_coder`, `run_researcher`, `run_data_agent`, `run_designer`,
+`run_critic`, `run_reviewer`) because those names make Manager tool selection
+explicit. Internally, every worker dispatch is normalized into a single
+`WorkerDispatchSpec` and runs through one shared worker construction/lifecycle
+path.
+
 ## 5. Dispatch graph
 
 All inter-agent invocation uses the tool-call pattern. The canonical dispatch

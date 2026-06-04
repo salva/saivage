@@ -240,6 +240,17 @@ internal implementation has been unified.
 5. Confirm manager prompt still communicates role choice clearly enough for the
    model to choose the right worker behavior.
 
+### Decision
+
+Keep the role-specific public worker dispatch tools (`run_coder`,
+`run_researcher`, `run_data_agent`, `run_designer`, `run_critic`, and
+`run_reviewer`). They make the Manager prompt and tool-choice surface explicit,
+preserve existing prompt snapshots and tool-filter expectations, and avoid a
+semantic public API change. Stage 4 removed the implementation duplication by
+mapping every worker tool through one internal `WorkerDispatchSpec` and one
+generic worker execution path, so a public `run_worker` tool would currently add
+prompt/test churn without reducing runtime branching.
+
 ### Exit Criteria
 
 - There is exactly one worker implementation path.
