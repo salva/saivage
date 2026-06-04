@@ -20,6 +20,7 @@ import { buildHandoffContext } from "./handoff.js";
 import { loadRolePrompt } from "./prompts.js";
 import { buildEagerBlock } from "../knowledge/eagerLoader.js";
 import { checkPlannerPlanDone } from "./compliance.js";
+import { buildPlanMutationContract } from "./planner-contract.js";
 import { responseSource } from "./base.js";
 
 const MAX_NUDGES = 15;
@@ -268,7 +269,8 @@ async function buildPlannerMessageImpl(ctx: AgentContext): Promise<string> {
     `### Instructions\n` +
     `1. Read the project configuration and assess current state.\n` +
     `2. Call plan_get() before changing the plan. If plan_get() returns PLAN_NOT_FOUND, create the first multi-stage plan with plan_init(stages). If plan_get() returns an existing plan, DO NOT call plan_init(); continue it, or use plan_add_stage() / plan_set_stages() to add or replace remaining stages.\n` +
-    `3. Execute stages one at a time via run_manager(stage).\n` +
+    buildPlanMutationContract() +
+    `3. Execute stages one at a time via the contract above.\n` +
     `4. Process results, adapt the plan, and continue until all objectives are met.\n` +
     `5. If all objectives are achieved but a continuous-improvement note is present, create and dispatch the next improvement/verification/hardening stage with plan_add_stage() or plan_set_stages(), not plan_init().\n` +
     `6. Call plan_done(reason) only when objectives are verified and no continuous-improvement instruction is active.`

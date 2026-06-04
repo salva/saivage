@@ -4,12 +4,12 @@ exports[`planner prompt contract (Fix 3) — structural > CONTINUOUS_IMPROVEMENT
 "SYSTEM CONTINUOUS IMPROVEMENT: The configured project objectives appear complete, but Saivage is running in continuous-improvement mode. Do not stop just because the active plan is empty. You MUST keep improving the target project while preserving its objectives and constraints. The next stage must be driven by the project's stated mission, not by generic repository tidying.
 
 PLAN-MUTATION CONTRACT (mandatory before any run_manager call):
-  1) plan_add_stage(stage)        // register the stage in plan.json
+  1) plan_add_stage(stage)        // register the stage in plan.json if it is new
   2) plan_set_current(stage.id)   // mark it active; stamps started_at
-  3) run_manager(stage)           // dispatch — dispatcher enforces 1 & 2
+  3) run_manager(stage)           // dispatch; dispatcher enforces 1 & 2
   4) plan_complete_stage(...)     // move to history with the result
-Skipping any of (1)-(2) causes run_manager to reject with STAGE_NOT_FOUND or
-STAGE_MISMATCH. On rejection, run the missing tool and retry the SAME stage.
+Skipping any required precondition causes run_manager to reject with STAGE_NOT_FOUND, STAGE_MISMATCH, or PLAN_NOT_FOUND.
+On rejection, run the missing plan tool and retry the SAME stage; do not invent a different stage and do not escalate.
 
 On this cycle:
 1. Call plan_get() and plan_get_history() to confirm the current state.
@@ -30,13 +30,12 @@ exports[`planner prompt contract (Fix 3) — structural > RECOVERY_PROMPT snapsh
 2. Call plan_get_history() to see what stages have completed, failed, or escalated.
 
 PLAN-MUTATION CONTRACT (mandatory before any run_manager call):
-  a. The stage must exist in plan.stages (use plan_add_stage if new).
-  b. plan.current_stage_id must equal the stage id (use plan_set_current).
-  c. Only then call run_manager(stage).
-  d. When the manager returns, call plan_complete_stage with the result.
-If run_manager rejects with STAGE_NOT_FOUND, STAGE_MISMATCH, or PLAN_NOT_FOUND,
-the dispatcher is telling you a precondition tool was skipped. Call the missing
-tool and retry the SAME stage — do not invent a different stage and do not escalate.
+  1) plan_add_stage(stage)        // register the stage in plan.json if it is new
+  2) plan_set_current(stage.id)   // mark it active; stamps started_at
+  3) run_manager(stage)           // dispatch; dispatcher enforces 1 & 2
+  4) plan_complete_stage(...)     // move to history with the result
+Skipping any required precondition causes run_manager to reject with STAGE_NOT_FOUND, STAGE_MISMATCH, or PLAN_NOT_FOUND.
+On rejection, run the missing plan tool and retry the SAME stage; do not invent a different stage and do not escalate.
 
 3. Assess what work remains to achieve ALL project objectives.
 4. If escalated stages exist, analyze WHY they failed and create corrective stages.

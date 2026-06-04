@@ -1,4 +1,5 @@
 import { PlannerAgent } from "../agents/planner.js";
+import { buildPlanMutationContract } from "../agents/planner-contract.js";
 import type { AgentContext, AgentResult } from "../agents/types.js";
 import { agentId } from "../ids.js";
 import { log } from "../log.js";
@@ -12,14 +13,7 @@ export const RECOVERY_PROMPT =
   `You have been automatically restarted. You MUST:\n\n` +
   `1. Call plan_get() to read the current plan state.\n` +
   `2. Call plan_get_history() to see what stages have completed, failed, or escalated.\n\n` +
-  `PLAN-MUTATION CONTRACT (mandatory before any run_manager call):\n` +
-  `  a. The stage must exist in plan.stages (use plan_add_stage if new).\n` +
-  `  b. plan.current_stage_id must equal the stage id (use plan_set_current).\n` +
-  `  c. Only then call run_manager(stage).\n` +
-  `  d. When the manager returns, call plan_complete_stage with the result.\n` +
-  `If run_manager rejects with STAGE_NOT_FOUND, STAGE_MISMATCH, or PLAN_NOT_FOUND,\n` +
-  `the dispatcher is telling you a precondition tool was skipped. Call the missing\n` +
-  `tool and retry the SAME stage — do not invent a different stage and do not escalate.\n\n` +
+  buildPlanMutationContract() +
   `3. Assess what work remains to achieve ALL project objectives.\n` +
   `4. If escalated stages exist, analyze WHY they failed and create corrective stages.\n` +
   `5. Following the contract above, call plan_add_stage (if the stage is new) then plan_set_current() on the next stage and dispatch it with run_manager().\n\n` +
@@ -30,13 +24,7 @@ export const CONTINUOUS_IMPROVEMENT_PROMPT =
   `SYSTEM CONTINUOUS IMPROVEMENT: The configured project objectives appear complete, but Saivage is running in continuous-improvement mode. ` +
   `Do not stop just because the active plan is empty. You MUST keep improving the target project while preserving its objectives and constraints. ` +
   `The next stage must be driven by the project's stated mission, not by generic repository tidying.\n\n` +
-  `PLAN-MUTATION CONTRACT (mandatory before any run_manager call):\n` +
-  `  1) plan_add_stage(stage)        // register the stage in plan.json\n` +
-  `  2) plan_set_current(stage.id)   // mark it active; stamps started_at\n` +
-  `  3) run_manager(stage)           // dispatch — dispatcher enforces 1 & 2\n` +
-  `  4) plan_complete_stage(...)     // move to history with the result\n` +
-  `Skipping any of (1)-(2) causes run_manager to reject with STAGE_NOT_FOUND or\n` +
-  `STAGE_MISMATCH. On rejection, run the missing tool and retry the SAME stage.\n\n` +
+  buildPlanMutationContract() +
   `On this cycle:\n` +
   `1. Call plan_get() and plan_get_history() to confirm the current state.\n` +
   `2. Re-read the project objectives and recent results to identify the next highest-value objective-aligned experiment or blocker.\n` +
