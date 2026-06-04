@@ -2,6 +2,7 @@ import { PlannerAgent } from "../agents/planner.js";
 import type { AgentContext, AgentResult } from "../agents/types.js";
 import { agentId } from "../ids.js";
 import { log } from "../log.js";
+import type { RuntimeCancellationSignal } from "../runtime/lifecycle.js";
 import { createChildSpawner } from "./agent-orchestrator.js";
 import type { PlannerRestartRequest } from "./bootstrap.js";
 import type { PlannerRuntimeDeps } from "./runtime-facades.js";
@@ -48,7 +49,7 @@ export const CONTINUOUS_IMPROVEMENT_PROMPT =
 
 interface PlannerRunnerDeps {
   runPlanner?: (runtime: PlannerRuntimeDeps, options?: { abortSignal?: { aborted: boolean } }) => Promise<AgentResult>;
-  waitForRecoveryDelay?: (ms: number) => Promise<boolean>;
+  waitForRecoveryDelay?: (ms: number, signal?: RuntimeCancellationSignal) => Promise<boolean>;
 }
 
 export class PlannerRunner {
@@ -70,19 +71,23 @@ export class PlannerRunner {
    * shutdown.
    */
   async runWithRecovery(): Promise<AgentResult> {
-    let cancelled = false;
+    const lifecycleSignal = this.runtime.lifecycle?.signal;
+    let cancelled = lifecycleSignal?.aborted ?? false;
     let iteration = 0;
+    let activeAbortSignal: { aborted: boolean } | null = null;
 
-    const cancelRecovery = () => { cancelled = true; };
-    process.on("SIGINT", cancelRecovery);
-    process.on("SIGTERM", cancelRecovery);
+    const unsubscribeShutdown = lifecycleSignal?.onAbort(() => {
+      cancelled = true;
+      if (activeAbortSignal) activeAbortSignal.aborted = true;
+    });
 
     try {
       while (!cancelled) {
         iteration++;
         log.info(`[recovery] Starting planner (iteration ${iteration})`);
 
-        const abortSignal = { aborted: false };
+        const abortSignal = { aborted: lifecycleSignal?.aborted ?? false };
+        activeAbortSignal = abortSignal;
         let restartDuringRun: PlannerRestartRequest | null = null;
         const unsubscribeRestart = this.runtime.plannerControl.onRestartRequested((request) => {
           restartDuringRun = request;
@@ -94,6 +99,7 @@ export class PlannerRunner {
         try {
           result = await this.runPlannerImpl(this.runtime, { abortSignal });
         } finally {
+          activeAbortSignal = null;
           unsubscribeRestart();
         }
 
@@ -150,7 +156,7 @@ export class PlannerRunner {
           timestamp: new Date().toISOString(),
         });
 
-        if (await this.waitForRecoveryDelayImpl(recoveryDelayMs)) cancelled = true;
+        if (await this.waitForRecoveryDelayImpl(recoveryDelayMs, lifecycleSignal)) cancelled = true;
 
         if (cancelled) break;
 
@@ -161,8 +167,7 @@ export class PlannerRunner {
       log.info("[recovery] Recovery loop cancelled — shutting down");
       return { kind: "abort", reason: "Recovery loop cancelled by shutdown signal" };
     } finally {
-      process.off("SIGINT", cancelRecovery);
-      process.off("SIGTERM", cancelRecovery);
+      unsubscribeShutdown?.();
     }
   }
 }
@@ -225,21 +230,28 @@ export async function runPlannerWithRecovery(runtime: PlannerRuntimeDeps): Promi
  * Wait for a recovery-loop delay. Returns true if a shutdown signal cancelled
  * the wait, false if the timer elapsed normally.
  */
-export function waitForRecoveryDelay(ms: number): Promise<boolean> {
+export function waitForRecoveryDelay(ms: number, signal?: RuntimeCancellationSignal): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     let settled = false;
+    let unsubscribeAbort: (() => void) | undefined;
     const finish = (cancelled: boolean) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      unsubscribeAbort?.();
       process.off("SIGINT", onCancel);
       process.off("SIGTERM", onCancel);
       resolve(cancelled);
     };
     const timer = setTimeout(() => finish(false), ms);
     const onCancel = () => finish(true);
-    process.once("SIGINT", onCancel);
-    process.once("SIGTERM", onCancel);
+    if (signal) {
+      unsubscribeAbort = signal.onAbort(onCancel);
+      if (signal.aborted) finish(true);
+    } else {
+      process.once("SIGINT", onCancel);
+      process.once("SIGTERM", onCancel);
+    }
   });
 }
 

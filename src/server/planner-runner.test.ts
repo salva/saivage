@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { AgentResult } from "../agents/types.js";
 import { PlannerControl, type SaivageRuntime } from "./bootstrap.js";
 import { PlannerRunner, RECOVERY_PROMPT } from "./planner-runner.js";
+import type { RuntimeCancellationSignal } from "../runtime/lifecycle.js";
 
 describe("PlannerRunner", () => {
   it("queues recovery directive after non-plan_done result and reruns planner", async () => {
@@ -55,6 +56,27 @@ describe("PlannerRunner", () => {
     expect(runtime.plannerStartupDirectives[0]).toContain("SYSTEM REQUESTED PLANNER RESTART");
     expect(runtime.eventBus.publishCalls[0]?.summary).toContain("Planner restart requested by test");
   });
+
+  it("uses the lifecycle signal instead of installing recovery signal listeners", async () => {
+    const signal = makeSignal();
+    const runtime = makeRuntime({ continuousImprovement: false, recoveryDelayMs: 25 });
+    runtime.lifecycle = { signal } as SaivageRuntime["lifecycle"];
+    const sigintBefore = process.listenerCount("SIGINT");
+    const sigtermBefore = process.listenerCount("SIGTERM");
+
+    const result = await new PlannerRunner(runtime, {
+      runPlanner: async (_runtime, options) => {
+        signal.abort();
+        expect(options?.abortSignal?.aborted).toBe(true);
+        return { kind: "abort", reason: "cancelled" };
+      },
+      waitForRecoveryDelay: async () => false,
+    }).runWithRecovery();
+
+    expect(result.kind).toBe("abort");
+    expect(process.listenerCount("SIGINT")).toBe(sigintBefore);
+    expect(process.listenerCount("SIGTERM")).toBe(sigtermBefore);
+  });
 });
 
 function makeRuntime(opts: {
@@ -90,5 +112,28 @@ function makeRuntime(opts: {
     ragService: {} as SaivageRuntime["ragService"],
     knowledgeStore: {} as SaivageRuntime["knowledgeStore"],
     shutdown: async () => {},
+  };
+}
+
+function makeSignal(): RuntimeCancellationSignal & { abort: () => void } {
+  let aborted = false;
+  const listeners = new Set<() => void>();
+  return {
+    get aborted() {
+      return aborted;
+    },
+    onAbort(listener: () => void) {
+      if (aborted) {
+        listener();
+        return () => {};
+      }
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    abort() {
+      if (aborted) return;
+      aborted = true;
+      for (const listener of listeners) listener();
+    },
   };
 }

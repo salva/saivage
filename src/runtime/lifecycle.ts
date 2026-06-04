@@ -21,16 +21,35 @@ export interface RuntimeLifecycleDeps {
   getSupervisor: () => RuntimeSupervisor | null;
 }
 
+export interface RuntimeCancellationSignal {
+  readonly aborted: boolean;
+  onAbort(listener: () => void): () => void;
+}
+
 let fatalHandlersInstalled = false;
 
 export class RuntimeLifecycle {
   private shutdownStarted = false;
+  private readonly abortListeners = new Set<() => void>();
+  private readonly cancellationState = { aborted: false };
+
+  readonly signal = new RuntimeCancellationSignalImpl(
+    this.cancellationState,
+    this.abortListeners,
+  );
 
   constructor(private readonly deps: RuntimeLifecycleDeps) {}
+
+  requestShutdown(_reason: string): void {
+    if (this.cancellationState.aborted) return;
+    this.cancellationState.aborted = true;
+    for (const listener of this.abortListeners) listener();
+  }
 
   async shutdown(): Promise<void> {
     if (this.shutdownStarted) return;
     this.shutdownStarted = true;
+    this.requestShutdown("shutdown");
 
     const { project, tracker, mcpRuntime, knowledgeStore, ragManager, eventBus, runtimeLock } = this.deps;
     log.info("[v2] Shutting down...");
@@ -84,5 +103,25 @@ export class RuntimeLifecycle {
 
     process.on("uncaughtException", onFatal("uncaughtException"));
     process.on("unhandledRejection", onFatal("unhandledRejection"));
+  }
+}
+
+class RuntimeCancellationSignalImpl implements RuntimeCancellationSignal {
+  constructor(
+    private readonly state: { aborted: boolean },
+    private readonly listeners: Set<() => void>,
+  ) {}
+
+  get aborted(): boolean {
+    return this.state.aborted;
+  }
+
+  onAbort(listener: () => void): () => void {
+    if (this.state.aborted) {
+      listener();
+      return () => {};
+    }
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 }

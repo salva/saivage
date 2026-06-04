@@ -286,6 +286,7 @@ program
           return;
         }
         shuttingDown = true;
+        runtime.lifecycle?.requestShutdown("signal");
         console.log("\nShutting down...");
         try { await telegramBot?.stop(); } catch (err) {
           console.error(`Telegram stop error: ${err instanceof Error ? err.message : err}`);

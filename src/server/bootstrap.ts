@@ -61,6 +61,8 @@ export interface SaivageRuntime {
   agentRegistry: Map<string, import("../agents/base.js").BaseAgent>;
   /** Background log-only supervisor for stuck-agent detection. */
   supervisor: RuntimeSupervisor | null;
+  /** Runtime lifecycle/cancellation owner. */
+  lifecycle?: RuntimeLifecycle;
   /** RAG MCP service skeleton (F02 B07). */
   ragService: import("./rag/service.js").RagService;
   /** Knowledge store façade (F01 B07). */
@@ -279,6 +281,7 @@ export async function bootstrap(
     plannerStartupDirectives: [],
     agentRegistry,
     supervisor: null,
+    lifecycle,
     ragService,
     knowledgeStore,
     shutdown: () => lifecycle.shutdown(),
