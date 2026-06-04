@@ -177,6 +177,7 @@ describe("G50 /api/notes routes", () => {
       "src/agents/librarian.behaviour.test.ts",
       "src/agents/librarian.e2e.test.ts",
       "src/agents/librarian.test.ts",
+      "src/agents/manager-initial-message.test.ts",
       "src/agents/planner.nudge.test.ts",
       "src/agents/worker-initial-message.test.ts",
       "src/agents/worker-spawn.test.ts",

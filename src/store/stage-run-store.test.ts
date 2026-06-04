@@ -82,7 +82,7 @@ describe("StageRunStore events", () => {
     const project = await seedProject(projectRoot, { name: "p", objectives: [] });
     const store = new StageRunStore(project);
     const event = { event_id: "event-1", type: "task_report_written", stage_id: "stage-1", task_id: "task-1", at: "2026-01-01T00:00:00.000Z" };
-    writeFileSync(project.paths.events!, `${JSON.stringify(event)}\n${JSON.stringify(event)}\n{`, "utf-8");
+    writeFileSync(project.paths.events, `${JSON.stringify(event)}\n${JSON.stringify(event)}\n{`, "utf-8");
 
     expect(await store.readEvents()).toEqual([event]);
   });
