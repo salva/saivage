@@ -26,25 +26,8 @@ import { archiveStage } from "../knowledge/lifecycle.js";
 import { log } from "../log.js";
 import { dispatchPlanToolCall } from "./plan-dispatch.js";
 import { getPlanToolSchemas } from "./plan-schemas.js";
-
-// Drift guard: the disjoint union of these sets must equal getToolSchemas() names.
-export const PLAN_WRITER_TOOLS: ReadonlySet<string> = new Set([
-  "plan_set_stages",
-  "plan_add_stage",
-  "plan_remove_stage",
-  "plan_set_current",
-  "plan_complete_stage",
-  "plan_init",
-  "plan_commit",
-]);
-
-export const PLAN_READER_TOOLS: ReadonlySet<string> = new Set([
-  "plan_get",
-  "plan_get_stage",
-  "plan_get_current_stage",
-  "plan_get_history",
-  "plan_done",
-]);
+export { PLAN_READER_TOOLS, PLAN_WRITER_TOOLS } from "./plan-registry.js";
+import { PLAN_WRITER_TOOLS } from "./plan-registry.js";
 
 /** Error codes returned by the Plan MCP service. */
 export type PlanErrorCode =
