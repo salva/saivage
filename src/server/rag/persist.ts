@@ -1,10 +1,11 @@
-import { writeFile, readFile, rename, unlink } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import {
   SaivageConfigSchema,
   configPath,
   type SaivageConfig,
 } from "../../config.js";
 import { pathExists } from "../../store/documents.js";
+import { writeAtomicJson } from "../../store/atomic-json.js";
 
 export type SaivagePersistStage = "read" | "validate" | "write";
 
@@ -57,12 +58,9 @@ export async function saveSaivageConfig(
     throw new SaivagePersistError((err as Error).message, { stage: "validate" });
   }
 
-  const tmp = `${fp}.${process.pid}.tmp`;
   try {
-    await writeFile(tmp, JSON.stringify(next, null, 2));
-    await rename(tmp, fp);
+    await writeAtomicJson(fp, next);
   } catch (err) {
-    await unlink(tmp).catch(() => {});
     throw new SaivagePersistError((err as Error).message, { stage: "write" });
   }
 }
