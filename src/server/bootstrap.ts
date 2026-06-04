@@ -11,7 +11,6 @@ import { ModelRouter } from "../providers/router.js";
 import { McpRuntime } from "../mcp/runtime.js";
 import { registerBuiltinServices } from "../mcp/builtins.js";
 import { cleanStash } from "../runtime/stash.js";
-import { writeFileSync } from "node:fs";
 
 import { EventBus } from "../events/bus.js";
 import { PlanService } from "../mcp/plan-server.js";
@@ -22,9 +21,10 @@ import {
   discoverProject,
   type ProjectContext,
 } from "../store/project.js";
-import { recoverFromCrash, writeRuntimeState, createRuntimeState, isAnotherInstanceRunning, acquireRuntimeLock, RuntimeTracker, type RuntimeLock } from "../runtime/recovery.js";
+import { recoverFromCrash, writeRuntimeState, createRuntimeState, isAnotherInstanceRunning, acquireRuntimeLock, RuntimeTracker } from "../runtime/recovery.js";
 import { RuntimeSupervisor } from "../runtime/supervisor.js";
-import { consumeShutdownHandoff, writeShutdownSummary } from "../runtime/shutdown-handoff.js";
+import { consumeShutdownHandoff } from "../runtime/shutdown-handoff.js";
+import { RuntimeLifecycle } from "../runtime/lifecycle.js";
 import type { AgentResult } from "../agents/types.js";
 import type { ServiceEntry } from "../mcp/types.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
@@ -254,6 +254,16 @@ export async function bootstrap(
   const agentRegistry = new Map<string, import("../agents/base.js").BaseAgent>();
   const plannerControl = new PlannerControl();
   let supervisor: RuntimeSupervisor | null = null;
+  const lifecycle = new RuntimeLifecycle({
+    project,
+    tracker,
+    mcpRuntime,
+    knowledgeStore,
+    ragManager,
+    eventBus,
+    runtimeLock,
+    getSupervisor: () => supervisor,
+  });
 
   const runtime: SaivageRuntime = {
     config,
@@ -271,30 +281,10 @@ export async function bootstrap(
     supervisor: null,
     ragService,
     knowledgeStore,
-    shutdown: async () => {
-      log.info("[v2] Shutting down...");
-      // Freeze the tracker FIRST so any agent activity callbacks firing
-      // during teardown cannot race the final "idle" write below.
-      tracker.freeze("shutdown");
-      try {
-        await writeShutdownSummary(project);
-      } catch (err) {
-        log.warn(`[shutdown] Failed to save shutdown summary: ${err instanceof Error ? err.message : String(err)}`);
-      }
-      supervisor?.stop();
-      await mcpRuntime.shutdown();
-      knowledgeStore.sidecar.close();
-      await ragManager.close();
-      eventBus.clear();
-      const finalState = createRuntimeState();
-      finalState.status = "idle";
-      await writeRuntimeState(project.paths.runtimeState, finalState);
-      runtimeLock.release();
-      log.info("[v2] Shutdown complete");
-    },
+    shutdown: () => lifecycle.shutdown(),
   };
 
-  installFatalHandlers(runtime, runtimeLock);
+  lifecycle.installFatalHandlers();
 
   const noteService = new NoteService(project.paths.notes);
   mcpRuntime.registerInProcess(
@@ -353,47 +343,6 @@ export async function runPlannerWithRecovery(
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-let fatalHandlersInstalled = false;
-
-/**
- * Install last-resort handlers for `uncaughtException` / `unhandledRejection`.
- * They flush an "error" runtime state and release the lockfile so the next
- * bootstrap doesn't see ourselves as still running, then exit. Without this
- * a thrown promise in any background path (chat, supervisor, MCP client)
- * would kill the process leaving runtime.json claiming "running".
- */
-function installFatalHandlers(runtime: SaivageRuntime, lock: RuntimeLock): void {
-  if (fatalHandlersInstalled) return;
-  fatalHandlersInstalled = true;
-
-  const onFatal = (label: string) => (err: unknown) => {
-    const msg = err instanceof Error ? err.stack ?? err.message : String(err);
-    log.error(`[fatal] ${label}: ${msg}`);
-    try {
-      runtime.tracker.freeze(label);
-    } catch { /* ignore */ }
-    try {
-      const failState = createRuntimeState();
-      failState.status = "error";
-      // Sync write — we're about to exit and cannot await reliably from a
-      // fatal handler. Best-effort only.
-      writeFileSync(
-        runtime.project.paths.runtimeState,
-        JSON.stringify(failState, null, 2),
-        "utf-8",
-      );
-    } catch (writeErr) {
-      log.warn(`[fatal] Failed to mark runtime state as error: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`);
-    }
-    try { lock.release(); } catch { /* ignore */ }
-    // Exit on next tick so the log line has a chance to flush.
-    setImmediate(() => process.exit(1));
-  };
-
-  process.on("uncaughtException", onFatal("uncaughtException"));
-  process.on("unhandledRejection", onFatal("unhandledRejection"));
-}
 
 async function startConfiguredMcpServers(
   mcpRuntime: McpRuntime,
