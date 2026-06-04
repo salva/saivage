@@ -15,10 +15,11 @@ import { OllamaProvider } from "./ollama.js";
 import { LlamaCppProvider } from "./llamacpp.js";
 import { NvidiaNimProvider } from "./nvidia-nim.js";
 import { ProviderError, classifyProviderError } from "./error.js";
-import { getOAuthApiKey, getProfileByKey, hasOAuthCredentials } from "../auth/index.js";
+import { hasOAuthCredentials } from "../auth/index.js";
 import { log } from "../log.js";
 import type { RuntimeProviderAccountLike, RuntimeProviderConfigLike } from "../routing/resolver.js";
 import { parseAccountRef } from "../routing/resolver.js";
+import { CredentialResolver, type CredentialRequest } from "./credential-resolver.js";
 import {
   buildCandidateChain,
   buildModelEquivalenceIndex,
@@ -141,6 +142,7 @@ export class ModelRouter {
   private modelEquivalents: Map<string, string[]>;
   private modelAssignments: Record<string, string | string[] | undefined>;
   private providerConfigs: Record<string, RuntimeProviderConfigLike>;
+  private readonly credentialResolver: CredentialResolver;
   private readonly stickyFailovers = new StickyFailoverManager();
   private usageSnapshots = new Map<string, UsageSnapshot>();
   private readonly healthTracker = new ModelHealthTracker();
@@ -150,6 +152,7 @@ export class ModelRouter {
     this.failoverChains = config.failover;
     this.modelAssignments = config.models as Record<string, string | string[] | undefined>;
     this.providerConfigs = config.providers as Record<string, RuntimeProviderConfigLike>;
+    this.credentialResolver = new CredentialResolver(this.providerConfigs);
     // Equivalence index defaults to empty; populated by init() once
     // providers are registered (init reads OAuth state, so it must be
     // async).
@@ -261,33 +264,9 @@ export class ModelRouter {
    */
   async resolveApiKey(
     providerName: string,
-    options: { authProfileKey?: string; accountRef?: string } = {},
+    options: CredentialRequest = {},
   ): Promise<string | null> {
-    const providerConfig = this.providerConfigs[providerName];
-    const accountConfig = this.getRequestedAccountConfig(providerName, options);
-    const mergedHeaders = {
-      ...(providerConfig?.headers ?? {}),
-      ...(accountConfig?.headers ?? {}),
-    };
-    const headers = Object.keys(mergedHeaders).length > 0 ? mergedHeaders : undefined;
-
-    if (options.authProfileKey) {
-      const explicitProfile = await getProfileByKey(options.authProfileKey);
-      if (explicitProfile?.provider === providerName) {
-        const key = await getOAuthApiKey(providerName, { profileKey: options.authProfileKey, headers });
-        if (key) return key;
-      }
-    }
-
-    if (accountConfig?.authProfile) {
-      const profiledKey = await getOAuthApiKey(providerName, { profileKey: accountConfig.authProfile, headers });
-      if (profiledKey) return profiledKey;
-    }
-
-    if (accountConfig?.apiKey) return accountConfig.apiKey;
-    if (providerConfig?.apiKey) return providerConfig.apiKey;
-
-    return getOAuthApiKey(providerName, { headers });
+    return this.credentialResolver.resolveApiKey(providerName, options);
   }
 
   /** Resolve a role (e.g. "coder") to a model spec string */
@@ -762,9 +741,9 @@ export class ModelRouter {
 
   private getProviderForRequest(
     providerName: string,
-    request?: { authProfileKey?: string; accountRef?: string },
+    request?: CredentialRequest,
   ): ModelProvider | undefined {
-    const accountName = this.resolveRequestedAccountName(providerName, request);
+    const accountName = this.credentialResolver.resolveRequestedAccountName(providerName, request);
     if (!accountName) return this.providers.get(providerName);
 
     const key = `${providerName}#${accountName}`;
@@ -775,29 +754,6 @@ export class ModelRouter {
     if (!provider) return this.providers.get(providerName);
     this.providers.set(key, provider);
     return provider;
-  }
-
-  private resolveRequestedAccountName(
-    providerName: string,
-    request?: { authProfileKey?: string; accountRef?: string },
-  ): string | undefined {
-    if (request?.authProfileKey) return undefined;
-    if (request?.accountRef) {
-      const parsed = parseAccountRef(request.accountRef.includes(".") ? request.accountRef : `${providerName}.${request.accountRef}`);
-      if (parsed.provider === providerName) return parsed.account;
-    }
-
-    const defaultAccount = this.providerConfigs[providerName]?.defaultAccount;
-    if (defaultAccount && this.getAccountConfig(providerName, defaultAccount)) return defaultAccount;
-    return undefined;
-  }
-
-  private getRequestedAccountConfig(
-    providerName: string,
-    request?: { authProfileKey?: string; accountRef?: string },
-  ): RuntimeProviderAccountLike | undefined {
-    const accountName = this.resolveRequestedAccountName(providerName, request);
-    return accountName ? this.getAccountConfig(providerName, accountName) : undefined;
   }
 
   private getAccountConfig(providerName: string, accountName: string): RuntimeProviderAccountLike | undefined {
