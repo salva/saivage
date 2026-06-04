@@ -1,6 +1,6 @@
 /**
- * WI-14 — Tests for §E.1 survivor reinjection and §E.2 Planner
- * pre-compaction memory-write hook wired into BaseAgent.
+ * WI-14 — Tests for §E.1 survivor reinjection and BaseAgent's generic
+ * before-compaction hook seam.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { BaseAgent } from "./base.js";
+import { PlannerAgent } from "./planner.js";
 import type { AgentContext, AgentRole, InputChannel } from "./types.js";
 import type { ChatRequest, ChatResponse, Message } from "../providers/types.js";
 import { initProjectTree } from "../store/project.js";
@@ -46,6 +47,17 @@ class TestAgent extends BaseAgent {
   public seedPendingRepairPrompt(prompt: string): void {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (this as any).conversation.setPendingRepairPrompt(prompt);
+  }
+}
+
+class TestPlannerAgent extends PlannerAgent {
+  public async runCompaction(): Promise<void> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (this as any).compactWithReinjection();
+  }
+  public seedMessage(msg: Message): void {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (this as any).pushMessage(msg);
   }
 }
 
@@ -176,10 +188,10 @@ describe("BaseAgent compaction integration (WI-14)", () => {
     expect(agent.getMessages().some((msg) => msg.role === "user" && msg.content === prompt)).toBe(true);
   });
 
-  it("§E.2 — Planner pre-compaction hook fires onCompactionHookComplete with writeCount=0 when no tool calls", async () => {
+  it("runs the configured before-compaction hook before compacting", async () => {
     let captured: number | "unset" = "unset";
     const agent = new TestAgent(
-      makeContext("planner", async () => ({
+      makeContext("coder", async () => ({
         content: "no writes needed",
         toolCalls: [],
         finishReason: "end_turn",
@@ -187,8 +199,8 @@ describe("BaseAgent compaction integration (WI-14)", () => {
       })),
       {
         systemPrompt: "sys",
-        onCompactionHookComplete: (n) => {
-          captured = n;
+        beforeCompaction: async () => {
+          captured = 0;
         },
       },
     );
@@ -197,8 +209,32 @@ describe("BaseAgent compaction integration (WI-14)", () => {
     expect(captured).toBe(0);
   });
 
-  it("§E.2 — Hook is skipped for non-planner roles", async () => {
-    let called = false;
+  it("PlannerAgent registers the planner pre-compaction memory hook", async () => {
+    let captured: number | "unset" = "unset";
+    const agent = new TestPlannerAgent(
+      makeContext("planner", async () => ({
+        content: "no writes needed",
+        toolCalls: [],
+        finishReason: "end_turn",
+        usage: { inputTokens: 0, outputTokens: 0 },
+      })),
+      async () => ({ kind: "success", data: { ok: true } }),
+      "initial planner message",
+      "",
+      {
+        onCompactionHookComplete: (n) => {
+          captured = n;
+        },
+      },
+    );
+    agent.seedMessage({ role: "user", content: "long history" });
+
+    await agent.runCompaction();
+
+    expect(captured).toBe(0);
+  });
+
+  it("skips before-compaction work when no hook is configured", async () => {
     const agent = new TestAgent(
       makeContext("coder", async () => ({
         content: "summary",
@@ -206,16 +242,13 @@ describe("BaseAgent compaction integration (WI-14)", () => {
         finishReason: "end_turn",
         usage: { inputTokens: 0, outputTokens: 0 },
       })),
-      {
-        systemPrompt: "sys",
-        onCompactionHookComplete: () => {
-          called = true;
-        },
-      },
+      { systemPrompt: "sys" },
     );
     agent.seedMessage({ role: "user", content: "history" });
     await agent.runCompaction();
-    expect(called).toBe(false);
+    expect(agent.getMessages().some((msg) =>
+      typeof msg.content === "string" && msg.content.includes("PRE-COMPACTION MEMORY HOOK"),
+    )).toBe(false);
   });
 
   it("fallback compaction keeps complete tool rounds and records honest counters", async () => {
@@ -347,11 +380,11 @@ describe("BaseAgent input channels (F06)", () => {
     expect(ch.resets).toBe(1);
   });
 
-  it("onContextReset still fires when role is planner (after pre-compaction hook + compactConversation)", async () => {
+  it("onContextReset still fires after a before-compaction hook and compactConversation", async () => {
     let hookComplete = false;
     const ch = makeChannel([]);
     const agent = new TestAgent(
-      makeContext("planner", async () => ({
+      makeContext("coder", async () => ({
         content: "summary",
         toolCalls: [],
         finishReason: "end_turn",
@@ -360,7 +393,7 @@ describe("BaseAgent input channels (F06)", () => {
       {
         systemPrompt: "sys",
         inputChannels: [ch.channel],
-        onCompactionHookComplete: () => {
+        beforeCompaction: async () => {
           hookComplete = true;
         },
       },

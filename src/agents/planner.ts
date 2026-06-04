@@ -11,6 +11,7 @@ import type {
   Agent,
 } from "./types.js";
 import type { ToolCallResult } from "../providers/types.js";
+import type { ContentBlock } from "../providers/types.js";
 import type { ChildSpawner, DispatchResult } from "../runtime/dispatcher.js";
 import { NoteChannel, type NoteManager } from "../runtime/notes.js";
 import { log } from "../log.js";
@@ -19,6 +20,7 @@ import { buildHandoffContext } from "./handoff.js";
 import { loadRolePrompt } from "./prompts.js";
 import { buildEagerBlock } from "../knowledge/eagerLoader.js";
 import { checkPlannerPlanDone } from "./compliance.js";
+import { responseSource } from "./base.js";
 
 const MAX_NUDGES = 15;
 
@@ -29,6 +31,7 @@ const MAX_NUDGES = 15;
  */
 export class PlannerAgent extends BaseAgent implements Agent {
   private noteManager: NoteManager;
+  private readonly onCompactionHookComplete?: (writeCount: number) => void;
 
   static async create(
     ctx: AgentContext,
@@ -67,6 +70,8 @@ export class PlannerAgent extends BaseAgent implements Agent {
     });
 
     this.noteManager = noteManager;
+    this.onCompactionHookComplete = config?.onCompactionHookComplete;
+    this.setBeforeCompactionHook(() => this.runPlannerCompactionHook());
   }
 
   async run(): Promise<AgentResult> {
@@ -162,6 +167,73 @@ export class PlannerAgent extends BaseAgent implements Agent {
       ),
     });
     return violation?.repairPrompt ?? null;
+  }
+
+  /**
+   * FR-16 / WI-14 — §E.2 Planner pre-compaction memory-write window.
+   * Lets the Planner persist survivable knowledge before its conversation is summarized.
+   */
+  private async runPlannerCompactionHook(): Promise<void> {
+    const MAX_TURNS = 5;
+    const NUDGE =
+      "PRE-COMPACTION MEMORY HOOK: Conversation context is about to be compacted. " +
+      "You have up to 5 tool-call turns to call create_memory / create_skill " +
+      "for anything important that must survive compaction. " +
+      "Reply with a final text answer (no tool calls) to skip.";
+    this.pushMessage({ role: "user", content: NUDGE });
+
+    let writeCount = 0;
+    for (let turn = 0; turn < MAX_TURNS; turn++) {
+      if (this.cancelled) break;
+      let response;
+      try {
+        response = await this.callLLM();
+      } catch (err) {
+        log.warn(
+          `[agent:${this.role}:${this.id}] pre-compaction hook callLLM failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        break;
+      }
+
+      if (response.toolCalls.length === 0) {
+        const content: string | ContentBlock[] = response.reasoning
+          ? [
+              { type: "thinking", thinking: response.reasoning, thinking_signature: "reasoning_content" },
+              ...(response.content ? [{ type: "text", text: response.content } as ContentBlock] : []),
+            ]
+          : response.content;
+        this.pushMessage({ role: "assistant", content }, undefined, responseSource(response));
+        break;
+      }
+
+      const blocks: ContentBlock[] = [];
+      if (response.reasoning) {
+        blocks.push({ type: "thinking", thinking: response.reasoning, thinking_signature: "reasoning_content" });
+      }
+      if (response.content) blocks.push({ type: "text", text: response.content });
+      for (const tc of response.toolCalls) {
+        blocks.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input });
+        if (tc.name === "create_memory" || tc.name === "create_skill") writeCount += 1;
+      }
+      this.pushMessage({ role: "assistant", content: blocks }, undefined, responseSource(response));
+      const dispatchResult = await this.processToolCalls(response.toolCalls);
+      const resultBlocks: ContentBlock[] = dispatchResult.toolResults.map((r) => ({
+        type: "tool_result" as const,
+        tool_use_id: r.toolUseId,
+        content: r.content,
+        is_error: r.isError,
+      }));
+      this.pushMessage({ role: "user", content: resultBlocks });
+      if (dispatchResult.aborted) break;
+    }
+
+    try {
+      this.onCompactionHookComplete?.(writeCount);
+    } catch (err) {
+      log.warn(
+        `[agent:${this.role}:${this.id}] onCompactionHookComplete threw: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 }
 

@@ -86,7 +86,7 @@ export class BaseAgent {
   private invalidFinalResponseCount = 0;
   private lastActivityAt: string = new Date().toISOString();
   private pendingCallTracker = new PendingCallTracker();
-  private onCompactionHookComplete?: (writeCount: number) => void;
+  private beforeCompaction?: () => Promise<void>;
   private readonly inputChannels: InputChannel[];
   private staticInputTokens = 0;
   readonly startedAt = new Date().toISOString();
@@ -129,7 +129,7 @@ export class BaseAgent {
     this.abortSignal = config.abortSignal;
     this.onActivity = config.onActivity;
     this.onCompactionUpdate = config.onCompactionUpdate;
-    this.onCompactionHookComplete = config.onCompactionHookComplete;
+    this.beforeCompaction = config.beforeCompaction;
     this.inputChannels = config.inputChannels ?? [];
 
     this.compactionController = new CompactionController({
@@ -269,11 +269,7 @@ export class BaseAgent {
 
       // Process tool calls through dispatcher
       this.recordActivity();
-      const dispatchResult = await this.dispatcher.processToolCalls(
-        response.toolCalls,
-        this.ctx,
-        this.abortSignal,
-      );
+      const dispatchResult = await this.processToolCalls(response.toolCalls);
       this.recordActivity();
       const meaningfulNames = response.toolCalls
         .filter((tc) => this.isMeaningfulToolEvidence(tc, dispatchResult))
@@ -610,74 +606,12 @@ export class BaseAgent {
     this.recordActivity();
   }
 
-  /**
-   * FR-16 / WI-14 — §E.2 Planner pre-compaction memory-write window.
-   * Injects the nudge and lets the model run up to 5 tool-call turns so
-   * survivable knowledge gets persisted before the summary is built.
-   * Only invoked when role === "planner".
-   */
-  private async runPlannerCompactionHook(): Promise<void> {
-    const MAX_TURNS = 5;
-    const NUDGE =
-      "PRE-COMPACTION MEMORY HOOK: Conversation context is about to be compacted. " +
-      "You have up to 5 tool-call turns to call create_memory / create_skill " +
-      "for anything important that must survive compaction. " +
-      "Reply with a final text answer (no tool calls) to skip.";
-    this.pushMessage({ role: "user", content: NUDGE });
+  protected setBeforeCompactionHook(hook: (() => Promise<void>) | undefined): void {
+    this.beforeCompaction = hook;
+  }
 
-    let writeCount = 0;
-    for (let turn = 0; turn < MAX_TURNS; turn++) {
-      if (this.cancelled || this.abortSignal?.aborted) break;
-      let response: ChatResponse;
-      try {
-        response = await this.callLLM();
-      } catch (err) {
-        log.warn(
-          `[agent:${this.role}:${this.id}] pre-compaction hook callLLM failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
-        break;
-      }
-      if (response.toolCalls.length === 0) {
-        const content: string | ContentBlock[] = response.reasoning
-          ? [
-              { type: "thinking", thinking: response.reasoning, thinking_signature: "reasoning_content" },
-              ...(response.content ? [{ type: "text", text: response.content } as ContentBlock] : []),
-            ]
-          : response.content;
-        this.pushMessage({ role: "assistant", content }, undefined, responseSource(response));
-        break;
-      }
-      const blocks: ContentBlock[] = [];
-      if (response.reasoning) {
-        blocks.push({ type: "thinking", thinking: response.reasoning, thinking_signature: "reasoning_content" });
-      }
-      if (response.content) blocks.push({ type: "text", text: response.content });
-      for (const tc of response.toolCalls) {
-        blocks.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input });
-        if (tc.name === "create_memory" || tc.name === "create_skill") writeCount += 1;
-      }
-      this.pushMessage({ role: "assistant", content: blocks }, undefined, responseSource(response));
-      const dispatchResult = await this.dispatcher.processToolCalls(
-        response.toolCalls,
-        this.ctx,
-        this.abortSignal,
-      );
-      const resultBlocks: ContentBlock[] = dispatchResult.toolResults.map((r) => ({
-        type: "tool_result" as const,
-        tool_use_id: r.toolUseId,
-        content: r.content,
-        is_error: r.isError,
-      }));
-      this.pushMessage({ role: "user", content: resultBlocks });
-      if (dispatchResult.aborted) break;
-    }
-    try {
-      this.onCompactionHookComplete?.(writeCount);
-    } catch (err) {
-      log.warn(
-        `[agent:${this.role}:${this.id}] onCompactionHookComplete threw: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+  protected async processToolCalls(toolCalls: ToolCallResult[]): Promise<DispatchResult> {
+    return this.dispatcher.processToolCalls(toolCalls, this.ctx, this.abortSignal);
   }
 
   /**
@@ -688,13 +622,13 @@ export class BaseAgent {
   private async compactWithReinjection(): Promise<void> {
     const pendingRepairPrompt = this.conversation.pendingRepairPrompt;
     await this.compactionController.compact(
-      this.role === "planner"
+      this.beforeCompaction
         ? async () => {
             try {
-              await this.runPlannerCompactionHook();
+              await this.beforeCompaction?.();
             } catch (err) {
               log.warn(
-                `[agent:${this.role}:${this.id}] pre-compaction hook failed: ${err instanceof Error ? err.message : String(err)}`,
+                `[agent:${this.role}:${this.id}] before-compaction hook failed: ${err instanceof Error ? err.message : String(err)}`,
               );
             }
           }
@@ -732,7 +666,7 @@ export class BaseAgent {
 // agent layer consumes the ProviderError discriminant instead of running
 // regex over English error strings.
 
-function responseSource(response: ChatResponse): LlmResponseSource | undefined {
+export function responseSource(response: ChatResponse): LlmResponseSource | undefined {
   if (!response.modelSpec && !response.provider && !response.model) return undefined;
   return {
     provider: response.provider,

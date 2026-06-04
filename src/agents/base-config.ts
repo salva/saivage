@@ -34,6 +34,8 @@ export interface BaseAgentConfig {
    * `create_memory` (or related) tool calls observed during the window.
    */
   onCompactionHookComplete?: (writeCount: number) => void;
+  /** Optional role-specific hook invoked immediately before conversation compaction. */
+  beforeCompaction?: () => Promise<void>;
   /**
    * Input channels that may inject `{role:"user"}` messages immediately
    * before each `router.chat` call, and that observe context resets.
