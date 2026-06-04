@@ -1,14 +1,9 @@
-# Saivage v2 Architecture Improvement Program
+# Saivage v2 Remediation Records
 
-This packet records the target architecture and implementation plan for cleaning
-up Saivage v2 after the June 2026 architecture review.
-
-The guiding product idea is agent autonomy. Saivage agents should decide what to
-do from their role prompts, conventions, evidence, and local context. The
-runtime should not overfit the workflow by forcing every step from outside. The
-runtime should instead provide a small set of reliable boundaries, observe the
-agent's behavior, validate produced artifacts, and nudge the agent when it drifts
-from its stated contract.
+This section keeps the small set of remediation records that still document
+current architecture decisions. Earlier working analysis, design-review packets,
+and implementation plans were removed after the cleanup they guided was
+implemented. Current subsystem behavior is documented in the main internals docs.
 
 ## Principles
 
@@ -25,44 +20,22 @@ from its stated contract.
 - Remove compatibility scaffolding and stale transition code when it no longer
   serves the clean v2 architecture.
 
-## Design Documents
+## Current Records
 
-| Order | Area | Design Doc | Outcome |
-| --- | --- | --- | --- |
-| 1 | Execution | [Implementation plan](./architecture-implementation-plan.md) | Revised phase order: hard structural simplification first, behavior changes after cleaner seams exist. |
-| 2 | Review | [Design review critique](./design-review-critique.md) | Inconsistencies, overlooks, and suggested revisions to the design packet. |
-| 3 | Agent session structure | [Agent session decomposition](./agent-session-decomposition.md) | Break `BaseAgent` into focused conversation, retry, and compaction components without over-extracting trivial views. |
-| 4 | Runtime structure | [Runtime kernel split](./runtime-kernel-split.md) | Separate the truly complex runtime pieces, especially agent construction and Planner recovery. |
-| 5 | MCP built-ins | [MCP built-ins modularization](./mcp-builtins-modularization.md) | Split the 2000-line built-ins module into injected service modules with explicit project/security context. |
-| 6 | Agent autonomy and compliance | [Agent autonomy, conventions, and nudges](./agent-autonomy-conventions.md) | Preserve broad agent discretion while evolving existing repair hooks into deterministic drift nudges. |
-| 7 | Artifact contracts | [Typed artifact submission](./typed-artifact-submission.md) | Replace final freeform JSON parsing with validated artifacts or terminal submission tools. |
-| 8 | Persistence ownership | [Persistence ownership](./persistence-ownership.md) | Centralize project file I/O and stop mixing cached services with direct raw file reads. |
-| 9 | Server/API structure | [Server API modularization](./server-api-modularization.md) | Split HTTP routes from reads/commands, redaction, static assets, file browsing, and chat lifecycle. |
-| 10 | Provider routing | [Provider router decomposition](./provider-router-decomposition.md) | Decompose routing policies later, only where focused tests need it. |
-| 11 | Legacy cleanup | [Legacy and transition cleanup](./legacy-transition-cleanup.md) | Remove v1/backward-compatible/stub scaffolding where clean v2 no longer needs it. |
-| 12 | Compatibility debt removal | [Compatibility debt removal plan](./compatibility-debt-removal-plan.md) | Concrete assessment and removal plan for remaining compatibility bridges, temporary fallbacks, and dead code candidates. |
-| 13 | Post-simplification cleanup | [Architecture cleanup plan](./v2-architecture-cleanup-plan.md) | Implemented cleanup after commit `9705346`: lifecycle/orchestration seams, provider routing, tool-schema/RAG/persistence unification, and final route/read-model narrowing. |
-| 14 | Runtime lifecycle | [Runtime lifecycle and orchestration](./runtime-lifecycle-and-orchestration.md) | Design for one lifecycle owner, one agent orchestrator, narrow runtime facades, and generic `BaseAgent` boundaries. |
-| 15 | Provider route ownership | [Provider routing unification](./provider-routing-unification.md) | Design for canonical provider/account route objects and a thinner `ModelRouter` facade. |
-| 16 | Tool and persistence contracts | [Tool schema and persistence unification](./tool-schema-and-persistence-unification.md) | Design for single-source Plan/RAG tool definitions, prompt fragments, RAG provider config ownership, shared atomic JSON writes, and SQLite metadata descriptors. |
-| 17 | Stage execution data model | [Stage run data model](./stage-run-data-model.md) | Phases 1-4 implemented: `StageRunStore`, typed artifact tools, lifecycle events, and completion events. Phase 5 decision: keep compatibility files plus `.saivage/events.jsonl`; defer per-stage `run.json` or SQLite until there is a concrete need. |
-| 18 | Architecture/data cleanup | [Architecture and data cleanup master plan](./v2-architecture-data-cleanup-master-plan.md) | Staged plan for schema/path cleanup, stage ownership, plan-history separation, generic worker dispatch, MCP split, bootstrap composition, provider/config simplification, and final legacy removal. |
-| 19 | Event/history canonicalization | [Event and history canonicalization](./event-history-canonicalization.md) | Stage 9 decision: keep stage artifacts canonical, treat events as timelines/read-model evidence, and defer per-stage aggregate/SQLite/event-sourcing migrations until concrete triggers appear. |
+| Area | Record | Outcome |
+| --- | --- | --- |
+| Stage execution data | [Stage run data model](./stage-run-data-model.md) | `StageRunStore`, typed artifact tools, lifecycle events, and completion events are implemented. Compatibility files plus `.saivage/events.jsonl` remain the supported storage layout until a concrete migration need appears. |
+| Architecture/data cleanup | [Architecture and data cleanup master plan](./v2-architecture-data-cleanup-master-plan.md) | Records the staged cleanup that simplified schemas, stage ownership, plan-history reads, worker dispatch, MCP runtime structure, bootstrap composition, config schema organization, and final legacy shims. |
+| Event/history storage | [Event and history canonicalization](./event-history-canonicalization.md) | Keeps stage artifacts canonical, treats events as timeline/read-model evidence, and defers per-stage aggregate, SQLite, or event-sourcing migrations until there is a concrete trigger. |
 
-## Relationship To Existing Remediation Notes
+## Current Authority
 
-Earlier remediation notes in this directory focused on specific correctness
-issues such as RAG config typing, dispatcher semantics, local API posture, MCP
-lifecycle, and abort/restart behavior. Those notes remain useful for local
-history, but this packet supersedes any recommendation to make role behavior
-primarily runtime-enforced.
-
-The new target is:
-
-- Runtime-enforced state integrity.
-- Prompt- and convention-led role behavior.
-- Runtime-observed compliance with nudges and evidence checks.
-- Minimal compatibility obligations.
+- [Architecture](../architecture.md)
+- [Source tree](../source-tree.md)
+- [Agents](../agents/)
+- [Runtime details](../runtime/details.md)
+- [MCP services](../mcp/services.md)
+- [On-disk layout](../data/on-disk-layout.md)
 
 ## Success Criteria
 

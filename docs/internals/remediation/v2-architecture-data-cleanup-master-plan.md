@@ -1,7 +1,7 @@
 # Saivage v2 Architecture and Data Cleanup Master Plan
 
 **Date**: 2026-06-04
-**Status**: Planned
+**Status**: Implemented through Stage 10
 **Follows**: [Stage run data model](./stage-run-data-model.md), commit `0b9230f`
 
 ## Purpose
@@ -11,11 +11,9 @@ cleanup program. The target is a simpler Saivage v2 architecture where runtime
 state has clear ownership, workers share one generic execution path, and durable
 data has fewer duplicate sources of truth.
 
-This document is the current master sequencing document. Earlier narrower plans,
-including [v2-simplification-plan.md](./v2-simplification-plan.md), remain useful
-as implementation detail references where they describe already-reviewed local
-extractions. If a narrower plan conflicts with this document, this document's
-ordering and ownership decisions take precedence.
+This document records the implemented master sequence. Earlier narrower working
+plans were removed after the cleanup they guided was implemented; current runtime
+behavior is documented in the main internals docs.
 
 The earlier remediation packet already reduced several large classes and added a
 first-class `StageRunStore`. The remaining complexity is now concentrated in:

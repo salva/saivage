@@ -2,7 +2,7 @@
 
 **Date**: 2026-06-04
 **Status**: Phases 1-4 implemented; Phase 5 storage decision recorded
-**Follows**: [v2-architecture-cleanup-plan.md](./v2-architecture-cleanup-plan.md), commit `8abd147`
+**Follows**: architecture cleanup through commit `8abd147`
 
 ## Purpose
 
@@ -472,12 +472,10 @@ The implemented Plan MCP tool surface includes:
 - `stage_get_run`
 - `stage_list_reports`
 
-The MCP names follow existing Plan/RAG tool registry conventions and the
-single-source schema guidance in
-[tool-schema-and-persistence-unification.md](./tool-schema-and-persistence-unification.md).
-The tools live beside Plan MCP rather than in a separate framework. A later split
-into a dedicated `StageRunService` is only justified if the tool set grows or
-Plan MCP becomes unclear.
+The MCP names follow existing Plan/RAG tool registry conventions. The tools live
+beside Plan MCP rather than in a separate framework. A later split into a
+dedicated `StageRunService` is only justified if the tool set grows or Plan MCP
+becomes unclear.
 
 Agents still receive prompts explaining expected behavior and where artifacts are
 visible. Core persistence goes through tools that call `StageRunStore`.
