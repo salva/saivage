@@ -3,7 +3,8 @@ import type { AgentContext, AgentResult } from "../agents/types.js";
 import { agentId } from "../ids.js";
 import { log } from "../log.js";
 import { createChildSpawner } from "./agent-factory.js";
-import type { PlannerRestartRequest, SaivageRuntime } from "./bootstrap.js";
+import type { PlannerRestartRequest } from "./bootstrap.js";
+import type { PlannerRuntimeDeps } from "./runtime-facades.js";
 
 export const RECOVERY_PROMPT =
   `SYSTEM RECOVERY: The planner session ended without completing all objectives. ` +
@@ -46,7 +47,7 @@ export const CONTINUOUS_IMPROVEMENT_PROMPT =
   `Only call plan_done if continuous-improvement mode has been disabled by runtime configuration or shutdown is requested.`;
 
 interface PlannerRunnerDeps {
-  runPlanner?: (runtime: SaivageRuntime, options?: { abortSignal?: { aborted: boolean } }) => Promise<AgentResult>;
+  runPlanner?: (runtime: PlannerRuntimeDeps, options?: { abortSignal?: { aborted: boolean } }) => Promise<AgentResult>;
   waitForRecoveryDelay?: (ms: number) => Promise<boolean>;
 }
 
@@ -55,7 +56,7 @@ export class PlannerRunner {
   private readonly waitForRecoveryDelayImpl: NonNullable<PlannerRunnerDeps["waitForRecoveryDelay"]>;
 
   constructor(
-    private readonly runtime: SaivageRuntime,
+    private readonly runtime: PlannerRuntimeDeps,
     deps: PlannerRunnerDeps = {},
   ) {
     this.runPlannerImpl = deps.runPlanner ?? runPlanner;
@@ -170,7 +171,7 @@ export class PlannerRunner {
  * Start the Planner agent and run the autonomous loop.
  */
 export async function runPlanner(
-  runtime: SaivageRuntime,
+  runtime: PlannerRuntimeDeps,
   options: { abortSignal?: { aborted: boolean } } = {},
 ): Promise<AgentResult> {
   const { project, router, mcpRuntime, noteManager, tracker } = runtime;
@@ -216,7 +217,7 @@ export async function runPlanner(
   }
 }
 
-export async function runPlannerWithRecovery(runtime: SaivageRuntime): Promise<AgentResult> {
+export async function runPlannerWithRecovery(runtime: PlannerRuntimeDeps): Promise<AgentResult> {
   return new PlannerRunner(runtime).runWithRecovery();
 }
 
@@ -242,7 +243,7 @@ export function waitForRecoveryDelay(ms: number): Promise<boolean> {
   });
 }
 
-export function queuePlannerDirective(runtime: SaivageRuntime, content: string): void {
+export function queuePlannerDirective(runtime: Pick<PlannerRuntimeDeps, "plannerStartupDirectives">, content: string): void {
   runtime.plannerStartupDirectives.push(content);
 }
 
@@ -256,7 +257,7 @@ function buildRestartPrompt(request: PlannerRestartRequest): string {
   );
 }
 
-function resolveAgentRoute(runtime: SaivageRuntime, role: string): Pick<AgentContext, "modelSpec" | "authProfileKey" | "accountRef"> {
+function resolveAgentRoute(runtime: PlannerRuntimeDeps, role: string): Pick<AgentContext, "modelSpec" | "authProfileKey" | "accountRef"> {
   const route = runtime.routing.resolve(role);
   return {
     modelSpec: route.modelSpec,

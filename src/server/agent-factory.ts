@@ -11,7 +11,7 @@ import { agentId } from "../ids.js";
 import { log } from "../log.js";
 import type { EventBus } from "../events/bus.js";
 import type { PlanService } from "../mcp/plan-server.js";
-import type { SaivageRuntime } from "./bootstrap.js";
+import type { AgentRuntimeDeps } from "./runtime-facades.js";
 
 export class AgentFactory {
   /**
@@ -25,7 +25,7 @@ export class AgentFactory {
     Map<import("../agents/roster.js").WorkerRole, { agent: WorkerAgent; ctx: AgentContext }>
   >();
 
-  constructor(private readonly runtime: SaivageRuntime) {}
+  constructor(private readonly runtime: AgentRuntimeDeps) {}
 
   createChildSpawner(): ChildSpawner {
     return async (
@@ -176,7 +176,7 @@ export class AgentFactory {
   }
 }
 
-export function createChildSpawner(runtime: SaivageRuntime): ChildSpawner {
+export function createChildSpawner(runtime: AgentRuntimeDeps): ChildSpawner {
   return new AgentFactory(runtime).createChildSpawner();
 }
 
@@ -278,7 +278,7 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
   return undefined;
 }
 
-function resolveAgentRoute(runtime: SaivageRuntime, role: string): Pick<AgentContext, "modelSpec" | "authProfileKey" | "accountRef"> {
+function resolveAgentRoute(runtime: AgentRuntimeDeps, role: string): Pick<AgentContext, "modelSpec" | "authProfileKey" | "accountRef"> {
   const route = runtime.routing.resolve(role);
   return {
     modelSpec: route.modelSpec,
