@@ -30,7 +30,7 @@ import type { ServiceEntry } from "../mcp/types.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
 import { log } from "../log.js";
 import { ModelRoutingResolver } from "../routing/resolver.js";
-import { createChildSpawner as createAgentFactoryChildSpawner } from "./agent-factory.js";
+import { createChildSpawner as createAgentOrchestratorChildSpawner } from "./agent-orchestrator.js";
 import {
   PlannerRunner,
   queuePlannerDirective,
@@ -328,7 +328,7 @@ export async function bootstrap(
 export function createChildSpawner(
   runtime: SaivageRuntime,
 ): ChildSpawner {
-  return createAgentFactoryChildSpawner(runtime);
+  return createAgentOrchestratorChildSpawner(runtime);
 }
 
 /**

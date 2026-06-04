@@ -2,7 +2,7 @@ import { PlannerAgent } from "../agents/planner.js";
 import type { AgentContext, AgentResult } from "../agents/types.js";
 import { agentId } from "../ids.js";
 import { log } from "../log.js";
-import { createChildSpawner } from "./agent-factory.js";
+import { createChildSpawner } from "./agent-orchestrator.js";
 import type { PlannerRestartRequest } from "./bootstrap.js";
 import type { PlannerRuntimeDeps } from "./runtime-facades.js";
 
