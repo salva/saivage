@@ -177,6 +177,22 @@ describe("StageRunStore aggregate and ProjectStore compatibility", () => {
           result: "completed",
           summary: "finished",
         },
+        {
+          id: "stage-2",
+          objective: "escalated stage",
+          expected_outcomes: ["outcome"],
+          actual_outcomes: [],
+          started_at: "2026-01-01T00:01:00.000Z",
+          completed_at: "2026-01-01T00:03:00.000Z",
+          result: "escalated",
+          summary: "needs help",
+          escalation: {
+            stage_id: "stage-2",
+            reason: "blocked",
+            attempted_remediations: [],
+            created_at: "2026-01-01T00:03:00.000Z",
+          },
+        },
       ],
     };
     writeFileSync(project.paths.plan, JSON.stringify(plan), "utf-8");
@@ -198,7 +214,30 @@ describe("StageRunStore aggregate and ProjectStore compatibility", () => {
         result: "completed",
       },
     ]);
-    await expect(store.listStageRuns()).resolves.toMatchObject([{ stage_id: "stage-1", status: "completed" }]);
+    await expect(store.listStageRuns()).resolves.toMatchObject([
+      { stage_id: "stage-1", status: "completed" },
+      { stage_id: "stage-2", status: "escalated" },
+    ]);
+    await expect(store.listCompletedRuns()).resolves.toMatchObject([
+      { stage_id: "stage-1", status: "completed", started_at: "2026-01-01T00:00:00.000Z", completed_at: "2026-01-01T00:00:02.000Z" },
+      { stage_id: "stage-2", status: "escalated", started_at: "2026-01-01T00:01:00.000Z", completed_at: "2026-01-01T00:03:00.000Z" },
+    ]);
+  });
+
+  it("lists completed runs from completion events when embedded history is absent", async () => {
+    const project = await seedProject(projectRoot, { name: "p", objectives: [] });
+    const store = new StageRunStore(project);
+
+    await store.markStageCompleted({
+      stageId: "event-only-stage",
+      result: "aborted",
+      knowledgeArchiveOutcome: "failed",
+      at: "2026-01-01T00:04:00.000Z",
+    });
+
+    await expect(store.listCompletedRuns()).resolves.toMatchObject([
+      { stage_id: "event-only-stage", status: "aborted", completed_at: "2026-01-01T00:04:00.000Z" },
+    ]);
   });
 });
 

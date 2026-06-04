@@ -112,15 +112,17 @@ export class StageRunStore {
 
     const validTasks = TaskListSchema.safeParse(tasks).success ? tasks as TaskList : null;
     const validSummary = StageSummarySchema.safeParse(summary).success ? summary as StageSummary : null;
-    const status = deriveStatus({ completed, summary: validSummary, tasks: validTasks });
+    const compatibilityEvents = deriveCompatibilityEvents(stageId, validTasks, reports, validSummary, completed);
+    const effectiveEvents = events.length > 0 ? events : compatibilityEvents;
+    const completionEvent = latestCompletionEvent(effectiveEvents);
+    const status = deriveStatus({ completed, completionEvent, summary: validSummary, tasks: validTasks });
     const updatedAt = latestTimestamp([
-      ...events.map((event) => event.at),
+      ...effectiveEvents.map((event) => event.at),
       validSummary?.completed_at,
       completed?.completed_at,
       validTasks?.updated_at,
       ...reports.map((report) => report.completed_at),
     ]);
-    const compatibilityEvents = deriveCompatibilityEvents(stageId, validTasks, reports, validSummary, completed);
 
     return {
       stage_id: stageId,
@@ -130,26 +132,14 @@ export class StageRunStore {
       reports,
       summary: validSummary,
       started_at: validSummary?.started_at ?? completed?.started_at ?? definition?.started_at ?? null,
-      completed_at: validSummary?.completed_at ?? completed?.completed_at ?? null,
+      completed_at: completed?.completed_at ?? completionEvent?.at ?? validSummary?.completed_at ?? null,
       updated_at: updatedAt,
-      events: events.length > 0 ? events : compatibilityEvents,
+      events: effectiveEvents,
     };
   }
 
   async listStageRuns(): Promise<StageRunSummary[]> {
-    const ids = new Set<string>();
-    const plan = await readDocOrNull(this.project.paths.plan, PlanDocumentSchema);
-    for (const stage of plan?.stages ?? []) ids.add(stage.id);
-    for (const stage of plan?.history ?? []) ids.add(stage.id);
-    if (await pathExists(this.project.paths.stages)) {
-      const { readdir, stat } = await import("node:fs/promises");
-      for (const stageId of await readdir(this.project.paths.stages)) {
-        try {
-          if ((await stat(join(this.project.paths.stages, stageId))).isDirectory()) ids.add(stageId);
-        } catch { /* ignore concurrently removed stages */ }
-      }
-    }
-
+    const ids = await this.listKnownStageIds();
     const runs = await Promise.all([...ids].map((id) => this.getStageRun(id)));
     return runs.filter((run): run is StageRun => run !== null).map((run) => ({
       stage_id: run.stage_id,
@@ -158,6 +148,14 @@ export class StageRunStore {
       report_count: run.reports.length,
       updated_at: run.updated_at,
     }));
+  }
+
+  async listCompletedRuns(): Promise<StageRun[]> {
+    const ids = await this.listKnownStageIds();
+    const runs = await Promise.all([...ids].map((id) => this.getStageRun(id)));
+    return runs
+      .filter((run): run is StageRun => run !== null && isCompletedStatus(run.status))
+      .sort((a, b) => (a.completed_at ?? a.updated_at).localeCompare(b.completed_at ?? b.updated_at));
   }
 
   readExpectedStageTaskReport(opts: {
@@ -329,6 +327,23 @@ export class StageRunStore {
     return events;
   }
 
+  private async listKnownStageIds(): Promise<Set<string>> {
+    const ids = new Set<string>();
+    const plan = await readDocOrNull(this.project.paths.plan, PlanDocumentSchema);
+    for (const stage of plan?.stages ?? []) ids.add(stage.id);
+    for (const stage of plan?.history ?? []) ids.add(stage.id);
+    for (const event of await this.readEvents()) ids.add(event.stage_id);
+    if (await pathExists(this.project.paths.stages)) {
+      const { readdir, stat } = await import("node:fs/promises");
+      for (const stageId of await readdir(this.project.paths.stages)) {
+        try {
+          if ((await stat(join(this.project.paths.stages, stageId))).isDirectory()) ids.add(stageId);
+        } catch { /* ignore concurrently removed stages */ }
+      }
+    }
+    return ids;
+  }
+
   private async readPlanStage(stageId: string): Promise<{ definition: Stage | null; completed: CompletedStage | null }> {
     const plan = await readDocOrNull(this.project.paths.plan, PlanDocumentSchema);
     const definition = plan?.stages.find((stage) => stage.id === stageId) ?? null;
@@ -394,11 +409,23 @@ function deriveCompatibilityEvents(
   return events;
 }
 
-function deriveStatus(args: { completed: CompletedStage | null; summary: StageSummary | null; tasks: TaskList | null }): StageRunStatus {
+function deriveStatus(args: { completed: CompletedStage | null; completionEvent: StageRunEvent | null; summary: StageSummary | null; tasks: TaskList | null }): StageRunStatus {
   if (args.completed) return args.completed.result;
+  if (args.completionEvent?.result) return args.completionEvent.result;
   if (args.summary) return "summarized";
   if (args.tasks) return "tasks_ready";
   return "planned";
+}
+
+function latestCompletionEvent(events: StageRunEvent[]): StageRunEvent | null {
+  return events
+    .filter((event) => event.type === "stage_completed" && event.result)
+    .sort((a, b) => a.at.localeCompare(b.at))
+    .at(-1) ?? null;
+}
+
+function isCompletedStatus(status: StageRunStatus): boolean {
+  return status === "completed" || status === "failed" || status === "escalated" || status === "aborted";
 }
 
 function latestTimestamp(values: Array<string | undefined>): string {

@@ -301,10 +301,25 @@ export class PlanService {
     await this.writeDoc(nextDoc);
 
     // FR-9 / WI-11: archive stage-scoped skills + memory at stage close.
+    let knowledgeArchiveOutcome: "ok" | "failed" = "ok";
     try {
       await archiveStage(this.projectRoot, stage.id);
     } catch (err) {
+      knowledgeArchiveOutcome = "failed";
       log.warn(`[plan-server] archiveStage failed for ${stage.id}: ${String(err)}`);
+    }
+
+    if (this.stageRuns) {
+      try {
+        await this.stageRuns.markStageCompleted({
+          stageId: stage.id,
+          result: args.result,
+          knowledgeArchiveOutcome,
+          at: now,
+        });
+      } catch (err) {
+        log.warn(`[plan-server] StageRunStore.markStageCompleted failed for ${stage.id}: ${String(err)}`);
+      }
     }
 
     return { completed_stage: structuredClone(completedStage), plan: structuredClone(this.activeView(nextDoc)) };
