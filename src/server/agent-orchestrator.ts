@@ -2,11 +2,12 @@ import { ManagerAgent } from "../agents/manager.js";
 import { InspectorAgent } from "../agents/inspector.js";
 import { LibrarianAgent } from "../agents/librarian.js";
 import { WorkerAgent } from "../agents/worker.js";
-import type { AgentContext, AgentResult, Agent } from "../agents/types.js";
+import { normalizeTask } from "../agents/task-report.js";
+import type { AgentContext, AgentResult, Agent, WorkerInput } from "../agents/types.js";
 import { formatAgentResultReason } from "../agents/types.js";
 import { assertExhaustive, getRoster } from "../agents/roster.js";
 import type { DispatchableRole, WorkerRole } from "../agents/roster.js";
-import type { AgentState, Task } from "../types.js";
+import type { AgentState } from "../types.js";
 import { StageSummarySchema } from "../types.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
 import { StageRunStore } from "../store/stage-run-store.js";
@@ -15,6 +16,10 @@ import { log } from "../log.js";
 import type { EventBus } from "../events/bus.js";
 import type { PlanService } from "../mcp/plan-server.js";
 import type { AgentRuntimeDeps } from "./runtime-facades.js";
+
+export interface WorkerDispatchSpec extends WorkerInput {
+  role: WorkerRole;
+}
 
 export class AgentOrchestrator {
   /**
@@ -61,91 +66,58 @@ export class AgentOrchestrator {
     let managerStageId: string | undefined;
     let stageScopedWorker: { stageId: string; role: WorkerRole } | undefined;
 
-    switch (role) {
-      case "manager": {
-        const managerInput = input as import("../agents/types.js").ManagerInput;
-        const gateFailure = await assertStageDispatchable(
-          this.runtime.planService,
-          managerInput.stage?.id,
+    if (role === "manager") {
+      const managerInput = input as import("../agents/types.js").ManagerInput;
+      const gateFailure = await assertStageDispatchable(
+        this.runtime.planService,
+        managerInput.stage?.id,
+      );
+      if (gateFailure) {
+        log.warn(
+          `[dispatch-gate] rejected run_manager(${managerInput.stage?.id ?? "?"}): ` +
+            `${gateFailure.code} ${gateFailure.error}`,
         );
-        if (gateFailure) {
-          log.warn(
-            `[dispatch-gate] rejected run_manager(${managerInput.stage?.id ?? "?"}): ` +
-              `${gateFailure.code} ${gateFailure.error}`,
-          );
-          return { kind: "failure", reason: gateFailure };
-        }
-        const managerSpawner = this.createChildSpawner();
-        managerStageId = managerInput.stage?.id;
-        ctx.stageId = managerStageId;
-        await stageRuns.markStageStarted(managerInput.stage, { agentId: ctx.agentId });
-        agent = await ManagerAgent.create(ctx, managerInput, managerSpawner, {
-          abortSignal,
-          onActivity: (agentId) => tracker.agentActivity(agentId),
-          onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
-        });
-        tracker.setCurrentStage(managerStageId ?? null);
-        break;
+        return { kind: "failure", reason: gateFailure };
       }
-
-      case "coder":
-      case "researcher":
-      case "data_agent":
-      case "reviewer":
-      case "designer":
-      case "critic": {
-        const workerInput = normalizeWorkerDispatchInput(input, role);
-        const stageId = workerInput.stageId ?? "unknown-stage";
-        ctx.stageId = workerInput.stageId;
-
-        const isStageScoped = getRoster(role).stageScoped;
-        const cached = isStageScoped ? this.getCachedStageWorker(stageId, role) : undefined;
-        stageScopedWorker = isStageScoped ? { stageId, role } : undefined;
-
-        if (cached) {
-          agent = cached.agent;
-          trackingAgentId = cached.ctx.agentId;
-          runAgent = () => cached.agent.runNext(workerInput);
-        } else {
-          const worker = await WorkerAgent.createWorker(ctx, workerInput, role, {
-            abortSignal,
-            onActivity: (agentId) => tracker.agentActivity(agentId),
-            onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
-          });
-          agent = worker;
-          if (isStageScoped) {
-            this.cacheStageWorker(stageId, role, { agent: worker, ctx });
-          }
-        }
-
-        taskId = workerInput.task?.id;
-        tracker.setCurrentStage(workerInput.stageId);
-        break;
-      }
-
-      case "inspector": {
-        const inspectorInput = input as import("../agents/types.js").InspectorInput;
-        ctx.stageId = tracker.getCurrentStage() ?? undefined;
-        agent = await InspectorAgent.create(ctx, inspectorInput, {
-          abortSignal,
-          onActivity: (agentId) => tracker.agentActivity(agentId),
-          onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
-        });
-        break;
-      }
-
-      case "librarian": {
-        const librarianInput = input as import("../agents/librarian.js").LibrarianInput;
-        agent = await LibrarianAgent.create(ctx, librarianInput, {
-          abortSignal,
-          onActivity: (agentId) => tracker.agentActivity(agentId),
-          onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
-        });
-        break;
-      }
-
-      default:
-        return assertExhaustive(role);
+      const managerSpawner = this.createChildSpawner();
+      managerStageId = managerInput.stage?.id;
+      ctx.stageId = managerStageId;
+      await stageRuns.markStageStarted(managerInput.stage, { agentId: ctx.agentId });
+      agent = await ManagerAgent.create(ctx, managerInput, managerSpawner, {
+        abortSignal,
+        onActivity: (agentId) => tracker.agentActivity(agentId),
+        onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
+      });
+      tracker.setCurrentStage(managerStageId ?? null);
+    } else if (isWorkerRole(role)) {
+      const workerDispatch = await this.runWorkerDispatch({
+        spec: buildWorkerDispatchSpec(role, input),
+        ctx,
+        abortSignal,
+        tracker,
+      });
+      agent = workerDispatch.agent;
+      runAgent = workerDispatch.runAgent;
+      trackingAgentId = workerDispatch.trackingAgentId;
+      taskId = workerDispatch.taskId;
+      stageScopedWorker = workerDispatch.stageScopedWorker;
+    } else if (role === "inspector") {
+      const inspectorInput = input as import("../agents/types.js").InspectorInput;
+      ctx.stageId = tracker.getCurrentStage() ?? undefined;
+      agent = await InspectorAgent.create(ctx, inspectorInput, {
+        abortSignal,
+        onActivity: (agentId) => tracker.agentActivity(agentId),
+        onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
+      });
+    } else if (role === "librarian") {
+      const librarianInput = input as import("../agents/librarian.js").LibrarianInput;
+      agent = await LibrarianAgent.create(ctx, librarianInput, {
+        abortSignal,
+        onActivity: (agentId) => tracker.agentActivity(agentId),
+        onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
+      });
+    } else {
+      return assertExhaustive(role);
     }
 
     if (ctx.stageId && taskId) {
@@ -184,6 +156,55 @@ export class AgentOrchestrator {
       unsubscribeShutdown?.();
       this.runtime.agentRegistry.delete(trackingAgentId);
     }
+  }
+
+  private async runWorkerDispatch(args: {
+    spec: WorkerDispatchSpec;
+    ctx: AgentContext;
+    abortSignal?: { aborted: boolean };
+    tracker: AgentRuntimeDeps["tracker"];
+  }): Promise<{
+    agent: WorkerAgent;
+    runAgent?: () => Promise<AgentResult>;
+    trackingAgentId: string;
+    taskId: string | undefined;
+    stageScopedWorker: { stageId: string; role: WorkerRole } | undefined;
+  }> {
+    const { spec, ctx, abortSignal, tracker } = args;
+    ctx.stageId = spec.stageId;
+
+    const isStageScoped = getRoster(spec.role).stageScoped;
+    const cached = isStageScoped ? this.getCachedStageWorker(spec.stageId, spec.role) : undefined;
+    const stageScopedWorker = isStageScoped ? { stageId: spec.stageId, role: spec.role } : undefined;
+
+    if (cached) {
+      tracker.setCurrentStage(spec.stageId);
+      return {
+        agent: cached.agent,
+        runAgent: () => cached.agent.runNext(spec),
+        trackingAgentId: cached.ctx.agentId,
+        taskId: spec.task.id,
+        stageScopedWorker,
+      };
+    }
+
+    const worker = await WorkerAgent.createWorker(ctx, spec, spec.role, {
+      abortSignal,
+      onActivity: (agentId) => tracker.agentActivity(agentId),
+      onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
+    });
+
+    if (isStageScoped) {
+      this.cacheStageWorker(spec.stageId, spec.role, { agent: worker, ctx });
+    }
+
+    tracker.setCurrentStage(spec.stageId);
+    return {
+      agent: worker,
+      trackingAgentId: ctx.agentId,
+      taskId: spec.task.id,
+      stageScopedWorker,
+    };
   }
 
   private getCachedStageWorker(
@@ -278,10 +299,10 @@ async function assertStageDispatchable(
   return null;
 }
 
-function normalizeWorkerDispatchInput(
+export function buildWorkerDispatchSpec(
+  role: WorkerRole,
   input: unknown,
-  role: DispatchableRole,
-): import("../agents/types.js").WorkerInput {
+): WorkerDispatchSpec {
   const raw = input as Record<string, unknown> | null;
   if (!raw || typeof raw !== "object") {
     throw new Error(`Invalid ${role} dispatch: expected an object input`);
@@ -314,13 +335,18 @@ function normalizeWorkerDispatchInput(
   }
 
   return {
+    role,
     stageId: rawStageId.trim(),
-    task: {
+    task: normalizeTask({
       ...rawTask,
       id: rawTaskId.trim(),
       description,
-    } as Task,
+    }, role),
   };
+}
+
+function isWorkerRole(role: DispatchableRole): role is WorkerRole {
+  return getRoster(role).worker;
 }
 
 function firstNonEmptyString(...values: unknown[]): string | undefined {

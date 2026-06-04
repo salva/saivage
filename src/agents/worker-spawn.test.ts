@@ -4,15 +4,49 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { createChildSpawner, type SaivageRuntime } from "../server/bootstrap.js";
+import { buildWorkerDispatchSpec } from "../server/agent-orchestrator.js";
 import { WorkerAgent } from "./worker.js";
 import type { AgentContext, WorkerInput } from "./types.js";
-import type { Task } from "../types.js";
+import { TaskSchema, type Task } from "../types.js";
 import type { BaseAgent } from "./base.js";
 import { NoteManager } from "../runtime/notes.js";
 import type { RuntimeCancellationSignal } from "../runtime/lifecycle.js";
+import { getRoster, WORKER_ROLES } from "./roster.js";
+import { ROLE_TO_TASK_TYPE } from "./task-report.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe("buildWorkerDispatchSpec", () => {
+  it.each(WORKER_ROLES)("normalizes loose %s dispatch input into a worker spec", (role) => {
+    const spec = buildWorkerDispatchSpec(role, {
+      stage_id: " stage-1 ",
+      task: {
+        task_id: ` ${role}-task `,
+        objective: `Complete ${role} work`,
+        acceptance_criteria: ["done"],
+      },
+    });
+
+    expect(spec.role).toBe(role);
+    expect(spec.stageId).toBe("stage-1");
+    expect(spec.task).toMatchObject({
+      id: `${role}-task`,
+      type: ROLE_TO_TASK_TYPE[role],
+      assigned_to: role,
+      checklist: [{ description: "done", required: true }],
+      status: "pending",
+    });
+    expect(TaskSchema.safeParse(spec.task).success).toBe(true);
+  });
+
+  it("rejects malformed worker dispatch inputs", () => {
+    expect(() => buildWorkerDispatchSpec("coder", null)).toThrow(/expected an object input/);
+    expect(() => buildWorkerDispatchSpec("coder", { task: {} })).toThrow(/missing required stageId/);
+    expect(() => buildWorkerDispatchSpec("coder", { stageId: "stage-1" })).toThrow(/missing required task object/);
+    expect(() => buildWorkerDispatchSpec("coder", { stageId: "stage-1", task: {} })).toThrow(/task.id is required/);
+  });
 });
 
 describe("createChildSpawner worker dispatch", () => {
@@ -98,6 +132,31 @@ describe("createChildSpawner worker dispatch", () => {
       expect((secondAgent as unknown as { turnCount: number }).turnCount).toBe(2);
       const snapshot = secondAgent.getConversationSnapshot();
       expect(snapshot.some((entry) => entry.content.includes(banner))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(WORKER_ROLES.filter((role) => !getRoster(role).stageScoped))("starts a fresh %s worker for each task", async (role) => {
+    const root = mkdtempSync(join(tmpdir(), "saivage-worker-spawn-"));
+    try {
+      const runtime = makeRuntime(root);
+      writeTaskReport(root, makeTaskReport(role, `${role}-1`));
+      writeTaskReport(root, makeTaskReport(role, `${role}-2`));
+      vi.spyOn(WorkerAgent.prototype as unknown as Record<string, () => unknown>, "runLoop").mockResolvedValue({
+        text: JSON.stringify(makeTaskReport(role)),
+        finishReason: "end_turn",
+      });
+      const runNextSpy = vi.spyOn(WorkerAgent.prototype, "runNext");
+      const spawner = createChildSpawner(runtime);
+
+      await spawner(role, makeInput(role, { id: `${role}-1` }), makeParentContext(root));
+      const firstAgent = runtime.agentRegistry.lastSet as WorkerAgent;
+      await spawner(role, makeInput(role, { id: `${role}-2` }), makeParentContext(root));
+      const secondAgent = runtime.agentRegistry.lastSet as WorkerAgent;
+
+      expect(secondAgent).not.toBe(firstAgent);
+      expect(runNextSpy).not.toHaveBeenCalled();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
