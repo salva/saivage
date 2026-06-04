@@ -14,8 +14,9 @@ data has fewer duplicate sources of truth.
 The earlier remediation packet already reduced several large classes and added a
 first-class `StageRunStore`. The remaining complexity is now concentrated in:
 
-- Multiple worker roles that share the same lifecycle but use separate dispatch
-  tools and branches.
+- Multiple worker roles that share the same lifecycle but use separate internal
+  branches. The LLM-facing tools may remain role-specific if that keeps prompts
+  clearer; the implementation should be shared and parameterized.
 - Split stage state across `plan.json`, stage artifact files, and
   `.saivage/events.jsonl`.
 - Store/read-model abstractions that overlap or expose each other's paths.
@@ -32,8 +33,9 @@ first-class `StageRunStore`. The remaining complexity is now concentrated in:
   knowledge/RAG, runtime process state, provider routing.
 - Avoid large storage migrations until there is a concrete operational need.
 - Keep every phase independently shippable, testable, and commit-sized.
-- Remove compatibility code only after current deployments and tests no longer
-  need it.
+- Do not preserve backwards compatibility for old local runtime artifacts unless
+  there is a concrete current deployment need. Prefer clean contracts and simple
+  migrations over compatibility branches.
 
 ## Validation Policy
 
@@ -65,17 +67,20 @@ before removing or consolidating anything.
 ### Work
 
 1. Record the current state of the architecture and data structures in this plan.
-2. Confirm which compatibility paths are still needed by local deployments:
-   `.saivage/plan.json.history`, `.saivage/stages/**` artifacts, old chat logs,
-   and `research/` outside `.saivage/`.
-3. Add or update tests that pin current behavior for stage reads, plan completion,
+2. Confirm which runtime paths are genuine product storage and which are
+   accidental local execution artifacts. Repository-local `.saivage` state is not
+   product source and should be removed from the working tree and repository
+   history if it ever appears there.
+3. Keep `research/` as an operator-visible project artifact path. Do not move it
+   under `.saivage/`.
+4. Add or update tests that pin current behavior for stage reads, plan completion,
    event reads, and API read models.
 
 ### Exit Criteria
 
 - Current persisted files and read paths are documented.
 - Every planned removal has either a test proving it is unused or a migration
-  note explaining why it is safe.
+  note explaining how current state should be regenerated.
 - Full validation passes.
 
 ## Stage 1 - Low-Risk Data Contract Cleanup
@@ -96,16 +101,16 @@ behavior.
    aborted/escalated stages if not every task receives a terminal report.
 4. Normalize defaulted arrays and metadata fields in `TaskSchema` where safe,
    especially `tags`, `dependencies`, and checklist fields.
-5. Decide whether `research/` remains an operator-visible project artifact path
-   or moves under `.saivage/research/`. If moved, introduce a short migration
-   window and update role conventions.
+5. Keep `research/` outside `.saivage/` and update comments/docs if any current
+   text implies it is runtime state.
 
 ### Exit Criteria
 
 - `ProjectContext` exposes one canonical event-log path.
 - Schemas no longer allow unnecessary `undefined | null | value` triples.
 - Stage summary inconsistencies fail validation early.
-- No behavior changes beyond rejecting malformed persisted documents.
+- Old malformed runtime artifacts may be rejected or regenerated; backwards
+  compatibility with accidental historical `.saivage` state is not required.
 
 ## Stage 2 - Stage Execution Ownership Cleanup
 
@@ -119,7 +124,7 @@ preserving the current compatibility file layout.
    `ProjectReadModel` or `StageRunReadModel`.
 3. Ensure HTTP/API route handlers read stage execution data through the read model
    and do not reconstruct stage state directly from raw paths.
-4. Keep stage artifact files as compatibility/readability files for now:
+4. Keep stage artifact files as readability files for now:
    - `.saivage/stages/<stage-id>/tasks.json`
    - `.saivage/stages/<stage-id>/reports/<task-id>.json`
    - `.saivage/stages/<stage-id>/summary.json`
@@ -133,7 +138,7 @@ preserving the current compatibility file layout.
 - Stage execution reads have one public service boundary.
 - Route handlers no longer know stage artifact path details unless they are file
   browsing endpoints.
-- The artifact-plus-event split is documented as intentional compatibility, not
+- The artifact-plus-event split is documented as intentional current storage, not
   an accidental dual source of truth.
 
 ## Stage 3 - Plan History and Stage History Separation
@@ -146,77 +151,85 @@ derivation explicit.
 1. Define the canonical meaning of `plan.json`:
    - `stages`: planned/active queue.
    - `current_stage_id`: active pointer.
-   - `history`: compatibility projection only, not the preferred execution
-     history source.
+   - `history`: current projection for completed stages until the final storage
+     ADR chooses whether to remove it.
 2. Add `StageRunStore.listCompletedRuns()` coverage for all current completion
    paths: completed, failed, escalated, aborted, and knowledge archival.
-3. Change API reads that need completed stage history to prefer
-   `StageRunStore.listCompletedRuns()` and fall back to `plan.history` only for
-   legacy files.
-4. Prepare a migration script that converts historical `plan.history` entries
-   into lifecycle events or derived read-model rows, but do not run it by default.
-5. Decide after deployment observation whether to remove `plan.history` writes or
-   keep them as a compatibility projection.
+3. Change API reads that need completed stage history to use a single read-model
+   method. That method may still compose `plan.history`, events, and artifacts
+   internally until the final storage ADR chooses a canonical model.
+4. Prepare a regeneration/migration script only if the final ADR removes
+   `plan.history` or changes the artifact layout.
+5. Decide after implementation observation whether `plan.history` should be kept
+   as the canonical projection or replaced by derived stage-run history.
 
 ### Exit Criteria
 
-- New code does not rely on `plan.history` as the primary history source.
-- Legacy projects still load and show completed stages.
+- New code reads completed history through one read-model method.
+- Old accidental local runtime state does not drive the design.
 - `PlanService.plan_complete_stage()` has a documented ownership boundary:
   planning transition first, stage history projection second.
 
-## Stage 4 - Generic Worker Dispatch
+## Stage 4 - Shared Parameterized Worker Implementation
 
-**Goal**: Collapse duplicate worker dispatch paths into one generic worker
-lifecycle while preserving role-specific prompts, models, and write conventions.
+**Goal**: Collapse duplicate worker construction and lifecycle code into one
+parameterized implementation while preserving role-specific LLM-facing tools when
+they improve prompt clarity and role selection.
 
 ### Work
 
-1. Introduce a `run_worker` dispatch tool with input:
+1. Introduce an internal `WorkerDispatchSpec` with fields equivalent to:
    - `role`: one of the worker roles.
    - `stage_id`.
    - `task` or `task_id` plus task details.
    - Optional `context` or `expected_artifacts` fields.
-2. Keep existing `run_coder`, `run_researcher`, `run_data_agent`, `run_designer`,
-   `run_critic`, and `run_reviewer` as temporary compatibility aliases.
-3. Update `AgentOrchestrator` to route all worker dispatch through one generic
-   path using `ROSTER` metadata.
+2. Keep existing LLM-facing tools (`run_coder`, `run_researcher`,
+   `run_data_agent`, `run_designer`, `run_critic`, `run_reviewer`) unless a later
+   prompt test shows a single public `run_worker` tool is clearer.
+3. Update `AgentOrchestrator` so every worker dispatch tool maps into
+   `WorkerDispatchSpec` and then routes through one generic path using `ROSTER`
+   metadata.
 4. Update `WorkerAgent.createWorker()` so role differences come from roster
    metadata and worker prompt templates, not separate control flow.
-5. Update manager prompts to prefer `run_worker`.
+5. Keep manager prompts role-specific by default; only change prompt wording where
+   it helps explain the shared lifecycle.
 6. Add tests that prove:
-   - Each worker role can be dispatched through `run_worker`.
+   - Each worker role maps to the same internal worker dispatch path.
    - Stage-scoped roles still preserve conversation state within a stage.
    - Ephemeral roles still start fresh per task.
-   - Compatibility aliases produce the same child-spawner input as `run_worker`.
+   - Role-specific tools produce the expected `WorkerDispatchSpec`.
 
 ### Exit Criteria
 
-- New manager behavior uses `run_worker`.
-- Old role-specific tools still work for existing prompts/tests until the next
-  cleanup stage.
+- Worker construction and lifecycle are shared internally.
+- Role-specific tools remain available unless a later explicit decision removes
+  them.
 - There is one generic worker construction path.
 
-## Stage 5 - Remove Worker Dispatch Compatibility Aliases
+## Stage 5 - Worker Dispatch Surface Decision
 
-**Goal**: Finish the worker simplification after prompts and tests no longer need
-role-specific dispatch tools.
+**Goal**: Decide whether to keep role-specific dispatch tools as the public
+LLM-facing surface or replace them with a single `run_worker` tool after the
+internal implementation has been unified.
 
 ### Work
 
-1. Remove role-specific dispatch schemas and prompt references.
-2. Remove alias handling from dispatcher/orchestrator code.
-3. Update `ROSTER` so dispatch metadata for worker roles is data for
-   `run_worker`, not individual tool names.
-4. Update tool-filter tests and prompt snapshots.
+1. Compare prompt clarity, schema duplication, tool-filter complexity, and test
+   churn between the current role-specific tools and a possible `run_worker`
+   tool.
+2. If role-specific tools remain clearer, keep them and remove only duplicated
+   implementation/schema-generation code.
+3. If `run_worker` is simpler and prompt tests remain strong, replace the public
+   role-specific tools with `run_worker` in one explicit semantic change.
+4. Update tool-filter tests and prompt snapshots for the chosen surface.
 5. Confirm manager prompt still communicates role choice clearly enough for the
-   model to choose the right worker role.
+   model to choose the right worker behavior.
 
 ### Exit Criteria
 
-- There is exactly one worker dispatch tool.
-- `ROSTER` remains the source of truth for worker roles, but not for duplicated
-  dispatch schemas.
+- There is exactly one worker implementation path.
+- The public worker dispatch surface is intentionally chosen and documented.
+- `ROSTER` remains the source of truth for worker roles.
 - Worker prompt and report behavior remains unchanged.
 
 ## Stage 6 - MCP Runtime Split
@@ -272,10 +285,10 @@ composition.
 - Subsystem factories are independently unit-testable.
 - Runtime dependencies have clear ownership and fewer optional fields.
 
-## Stage 8 - Provider Routing and Config Simplification
+## Stage 8 - Config Simplification
 
-**Goal**: Keep provider routing behavior while shrinking the router/config mental
-model.
+**Goal**: Keep provider routing behavior stable while making the config schema
+easier to read.
 
 ### Work
 
@@ -286,18 +299,17 @@ model.
    - RAG
    - auth/channels/runtime settings
 2. Preserve the exported `SaivageConfigSchema` shape for compatibility.
-3. Move pure candidate-selection helpers into a focused module or absorb them into
-   `ModelRouter` if a separate class no longer provides value.
+3. Do not redesign provider routing in this phase. Keep behavior changes out of
+   scope unless a focused test exposes a bug during mechanical extraction.
 4. Keep credential resolution separate; it is a real security/auth boundary.
-5. Add tests for model fallback, sticky failover, quota usage sorting, and account
-   resolution around any moved logic.
+5. Add config-schema tests around defaults and parsing to prove the split is
+   mechanical.
 
 ### Exit Criteria
 
 - Config schema sections can be read independently.
-- Provider routing is still behaviorally identical under existing tests.
-- `ModelRouter` owns fewer unrelated responsibilities or delegates to clearly
-  named policy modules.
+- Provider routing is behaviorally identical under existing tests.
+- Config defaults and parsed output remain stable for current supported config.
 
 ## Stage 9 - Event and History Canonicalization Decision
 
@@ -355,8 +367,8 @@ new architecture is stable.
 
 | Risk | Mitigation |
 | --- | --- |
-| Worker consolidation changes model behavior | Keep aliases first, update prompts gradually, snapshot prompts, and use focused dispatcher/orchestrator tests. |
-| Stage history reads regress for old projects | Keep `plan.history` fallback until migration fixtures prove old projects load. |
+| Worker consolidation changes model behavior | Preserve role-specific LLM-facing tools by default; share only the internal implementation first. |
+| Stage history reads regress after cleanup | Read through one read-model method and regenerate local runtime state when needed. |
 | Event/artifact split remains confusing | Document canonical read order and add partial-state reconciliation tests. |
 | Bootstrap extraction creates import cycles | Extract factories by dependency direction; use type-only imports where possible. |
 | MCP split breaks tool listing or context propagation | Preserve facade until both in-process and external test suites pass. |
@@ -365,7 +377,9 @@ new architecture is stable.
 ## Target End State
 
 - Planner and Manager remain the primary orchestration roles.
-- All worker roles execute through one generic worker dispatch path.
+- All worker roles execute through one shared parameterized implementation path.
+- The public dispatch surface is either role-specific for prompt clarity or a
+  single `run_worker` tool if tests prove that is cleaner.
 - `ROSTER` defines worker capabilities, prompts, model slots, and conventions.
 - Stage execution data has one public owner and one documented read model.
 - `plan.json` is primarily a planning queue, not the main execution-history store.
