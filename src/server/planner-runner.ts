@@ -286,7 +286,7 @@ function resolveAgentRoute(runtime: PlannerRuntimeDeps, role: string): Pick<Agen
   const route = runtime.routing.resolve(role);
   return {
     modelSpec: route.modelSpec,
-    authProfileKey: route.authProfile,
+    authProfileKey: route.authProfileKey,
     accountRef: route.accountRef,
   };
 }
