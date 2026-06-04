@@ -1,9 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentResult } from "../agents/types.js";
+import { PlannerAgent } from "../agents/planner.js";
 import { PlannerControl, type SaivageRuntime } from "./bootstrap.js";
-import { PlannerRunner, RECOVERY_PROMPT } from "./planner-runner.js";
+import { PlannerRunner, RECOVERY_PROMPT, runPlanner } from "./planner-runner.js";
 import type { RuntimeCancellationSignal } from "../runtime/lifecycle.js";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("PlannerRunner", () => {
   it("queues recovery directive after non-plan_done result and reruns planner", async () => {
@@ -74,6 +79,41 @@ describe("PlannerRunner", () => {
     }).runWithRecovery();
 
     expect(result.kind).toBe("abort");
+    expect(process.listenerCount("SIGINT")).toBe(sigintBefore);
+    expect(process.listenerCount("SIGTERM")).toBe(sigtermBefore);
+  });
+
+  it("cancels an active planner through the lifecycle signal", async () => {
+    const signal = makeSignal();
+    const runtime = makeRuntime({ continuousImprovement: false, recoveryDelayMs: 25 });
+    runtime.lifecycle = { signal } as SaivageRuntime["lifecycle"];
+    runtime.routing = {
+      resolve: () => ({ modelSpec: "test/model", authProfile: undefined, accountRef: undefined }),
+    } as unknown as SaivageRuntime["routing"];
+    runtime.tracker = {
+      getCurrentStage: () => null,
+      agentActivity: () => {},
+      agentCompactionUpdate: () => {},
+      agentStarted: () => {},
+      agentStopped: () => {},
+    } as unknown as SaivageRuntime["tracker"];
+    const cancel = vi.fn();
+    const sigintBefore = process.listenerCount("SIGINT");
+    const sigtermBefore = process.listenerCount("SIGTERM");
+
+    vi.spyOn(PlannerAgent, "create").mockImplementation(async (_ctx, _spawner, config) => ({
+      run: async () => {
+        signal.abort();
+        expect(config?.abortSignal?.aborted).toBe(true);
+        return { kind: "abort", reason: "shutdown" };
+      },
+      cancel,
+    } as unknown as PlannerAgent));
+
+    const result = await runPlanner(runtime);
+
+    expect(result.kind).toBe("abort");
+    expect(cancel).toHaveBeenCalledOnce();
     expect(process.listenerCount("SIGINT")).toBe(sigintBefore);
     expect(process.listenerCount("SIGTERM")).toBe(sigtermBefore);
   });

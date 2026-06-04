@@ -180,6 +180,8 @@ export async function runPlanner(
   options: { abortSignal?: { aborted: boolean } } = {},
 ): Promise<AgentResult> {
   const { project, router, mcpRuntime, noteManager, tracker } = runtime;
+  const lifecycleSignal = runtime.lifecycle?.signal;
+  const abortSignal = options.abortSignal ?? (lifecycleSignal ? { aborted: lifecycleSignal.aborted } : undefined);
 
   const ctx: AgentContext = {
     project,
@@ -195,7 +197,7 @@ export async function runPlanner(
 
   const childSpawner = createChildSpawner(runtime);
   const planner = await PlannerAgent.create(ctx, childSpawner, {
-    abortSignal: options.abortSignal,
+    abortSignal,
     onActivity: (agentId) => tracker.agentActivity(agentId),
     onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
   });
@@ -203,13 +205,21 @@ export async function runPlanner(
   tracker.agentStarted(ctx.agentId, "planner");
   runtime.agentRegistry.set(ctx.agentId, planner as import("../agents/base.js").BaseAgent);
 
-  // Handle graceful shutdown
-  const shutdownHandler = () => {
+  const cancelPlanner = () => {
+    if (abortSignal) abortSignal.aborted = true;
+    log.info("[v2] Runtime shutdown requested — cancelling Planner");
+    planner.cancel();
+  };
+  const unsubscribeShutdown = lifecycleSignal?.onAbort(cancelPlanner);
+
+  const shutdownHandler = lifecycleSignal ? undefined : () => {
     log.info("[v2] Received shutdown signal — cancelling Planner");
     planner.cancel();
   };
-  process.on("SIGINT", shutdownHandler);
-  process.on("SIGTERM", shutdownHandler);
+  if (shutdownHandler) {
+    process.on("SIGINT", shutdownHandler);
+    process.on("SIGTERM", shutdownHandler);
+  }
 
   try {
     const result = await planner.run();
@@ -217,8 +227,11 @@ export async function runPlanner(
   } finally {
     tracker.agentStopped(ctx.agentId);
     runtime.agentRegistry.delete(ctx.agentId);
-    process.off("SIGINT", shutdownHandler);
-    process.off("SIGTERM", shutdownHandler);
+    unsubscribeShutdown?.();
+    if (shutdownHandler) {
+      process.off("SIGINT", shutdownHandler);
+      process.off("SIGTERM", shutdownHandler);
+    }
   }
 }
 
