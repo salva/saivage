@@ -2,7 +2,7 @@
 
 **Date**: 2026-06-04
 **Status**: Proposed design
-**Follows**: `v2-architecture-cleanup-plan.md`, commit `8abd147`
+**Follows**: [v2-architecture-cleanup-plan.md](./v2-architecture-cleanup-plan.md), commit `8abd147`
 
 ## Purpose
 
@@ -25,7 +25,7 @@ and services:
 
 Those files are individually understandable, but the aggregate they represent is
 not explicit. The codebase repeatedly reconstructs the same implicit aggregate:
-"what is the lifecycle state of this stage run?"
+the lifecycle state of a stage run.
 
 This document proposes making that aggregate explicit with a `StageRunStore` and
 event-backed lifecycle model. The initial implementation should preserve the
@@ -187,10 +187,11 @@ instead of reading lifecycle events.
 
 ### 5. UI And Debug Reads Encode Storage Layout
 
-`ProjectStore.stageDetails()`, `debugErrors()`, and `debugTimeline()` know the
-stage artifact tree. These are useful read models, but their current inputs are
-raw files rather than a domain-level stage-run view. Any future storage change
-would ripple through UI/debug code unless a stage-run model becomes the seam.
+`ProjectStore.stageDetails()`, `debugErrors()`, and `debugTimeline()` encode
+knowledge of the stage artifact tree. These are useful read models, but their
+current inputs are raw files rather than a domain-level stage-run view. Any
+future storage change would ripple through UI/debug code unless a stage-run model
+becomes the seam.
 
 ## Target Conceptual Model
 
@@ -214,10 +215,25 @@ interface PlanDocumentVNext {
 }
 ```
 
-History should be a read model derived from stage runs, not embedded in the
-planning document. During transition, `PlanService` can continue maintaining
-embedded history while `StageRunStore` becomes the primary read/write seam for
-new code.
+History should eventually be a read model derived from stage runs, not embedded
+in the planning document. During transition, `PlanService` must continue
+maintaining embedded history because `plan_complete_stage()` is part of the
+Planner contract and currently owns stage archival. The first stage-run work
+must not move that ownership. It should only add a stage-run record/event at the
+same boundary.
+
+The intended ownership sequence is:
+
+- Phase 1 and Phase 2: `plan_complete_stage()` remains the archival tool and
+  continues to call knowledge archival.
+- Phase 3: typed artifact tools write tasks, reports, and summaries through
+  `StageRunStore`, but `plan_complete_stage()` still closes the stage.
+- Phase 4A: `plan_complete_stage()` writes embedded plan history and attempts
+  knowledge archival as it does today, then calls
+  `StageRunStore.markStageCompleted()` to record the completed stage-run event
+  and archival outcome.
+- Phase 4B: history views are derived from completed stage runs and embedded
+  history is removed only after a planned format migration.
 
 ### Stage Run Aggregate
 
@@ -253,6 +269,9 @@ interface StageRun {
 The exact persisted shape can differ. The important point is that consumers ask
 for a `StageRun` or `StageRunView`, not for unrelated files.
 
+`tasks_ready` means the stage has a valid `TaskList` artifact. It is produced by
+the `tasks_written` event and is distinct from task execution status.
+
 ### Stage Run Events
 
 Events should be small append-only records, not a framework.
@@ -261,19 +280,25 @@ Example event types:
 
 ```ts
 type StageRunEvent =
-  | { type: "stage_started"; stage_id: string; at: string; agent_id: string }
-  | { type: "tasks_written"; stage_id: string; at: string; task_count: number }
+  | { type: "stage_started"; stage_id: string; at: string; agent_id?: string }
+  | { type: "tasks_written"; stage_id: string; at: string; task_count: number; agent_id?: string }
   | { type: "task_started"; stage_id: string; task_id: string; at: string; agent_id: string }
-  | { type: "task_report_written"; stage_id: string; task_id: string; at: string; status: "completed" | "failed" }
-  | { type: "stage_summary_written"; stage_id: string; at: string; result: StageSummary["result"] }
-  | { type: "stage_archived"; stage_id: string; at: string; result: StageSummary["result"] }
+  | { type: "task_report_written"; stage_id: string; task_id: string; at: string; status: "completed" | "failed"; agent_id?: string }
+  | { type: "stage_summary_written"; stage_id: string; at: string; result: StageSummary["result"]; agent_id?: string }
+  | { type: "stage_completed"; stage_id: string; at: string; result: StageSummary["result"]; agent_id?: string }
+  | { type: "knowledge_archived"; stage_id: string; at: string; outcome: "ok" | "failed" }
   | { type: "stage_recovered"; stage_id: string; at: string; action: string };
 ```
 
-These events can initially live in `.saivage/stages/<stage-id>/events.jsonl` or
-in a single `.saivage/events.jsonl`. A per-stage file keeps the transition local;
-a single global file makes timeline reads cheaper. Either is acceptable if the
-writer API is centralized.
+Events should initially live in one project-wide `.saivage/events.jsonl` file.
+That choice keeps debug timeline reads simple, avoids scanning every historical
+stage directory, and matches the timeline-oriented read model the UI already
+wants. The event records carry `stage_id`, so per-stage views can still be
+derived cheaply enough for v2's expected scale.
+
+The event log is not a separate public write surface. Public artifact methods
+append the corresponding event internally after a successful artifact write.
+Callers should not be able to write a task report and forget its event.
 
 ### Runtime Snapshot
 
@@ -302,7 +327,9 @@ service that should know how stage tasks, reports, summaries, and events are
 stored on disk.
 
 It should not own planner strategy, agent construction, provider routing,
-knowledge, RAG, or HTTP response formatting.
+knowledge, RAG, or HTTP response formatting. It should return domain objects
+such as `StageRun` and `StageRunSummary`; `ProjectStore` remains responsible for
+mapping those objects into API/read-model shapes such as `StageDetailsView`.
 
 ### Initial API
 
@@ -312,26 +339,41 @@ The first pass should be intentionally small:
 interface StageRunStore {
   getStageRun(stageId: string): Promise<StageRun | null>;
   listStageRuns(): Promise<StageRunSummary[]>;
-  getStageDetails(stageId: string): Promise<StageDetailsView>;
 
   markStageStarted(stage: Stage, opts: { agentId: string; at?: string }): Promise<void>;
   writeTaskList(taskList: TaskList, opts?: { agentId?: string; at?: string }): Promise<void>;
   writeTaskReport(report: TaskReport, opts?: { agentId?: string; at?: string }): Promise<void>;
   writeStageSummary(summary: StageSummary, opts?: { agentId?: string; at?: string }): Promise<void>;
+  markStageCompleted(args: {
+    stageId: string;
+    result: StageSummary["result"];
+    agentId?: string;
+    knowledgeArchiveOutcome?: "ok" | "failed";
+    at?: string;
+  }): Promise<void>;
 
-  appendEvent(event: StageRunEvent): Promise<void>;
-  readEvents(stageId: string): Promise<StageRunEvent[]>;
+  readEvents(filter?: { stageId?: string }): Promise<StageRunEvent[]>;
 }
 ```
+
+`at` defaults to `new Date().toISOString()` for every write method. Callers only
+provide it in tests, migrations, or recovery paths that need to preserve an
+existing timestamp.
 
 The first implementation can still write:
 
 - `tasks.json`
 - `reports/<task-id>.json`
 - `summary.json`
-- `events.jsonl`
+- `.saivage/events.jsonl`
 
 This gives the architecture a stable seam before changing physical storage.
+
+`StageRunStore` should serialize write operations with a small in-process
+operation queue, matching the `PlanService` approach. This keeps JSONL appends
+ordered and prevents concurrent report writes from interleaving event writes in a
+surprising order. Cross-process writes remain guarded by the existing runtime
+lock policy; this store is a runtime-owned service, not a multi-writer database.
 
 ### Validation Rules
 
@@ -341,23 +383,53 @@ recovery, and read models:
 - `TaskList.stage_id` must match the target stage directory.
 - Every task ID in a task list must be unique within the stage.
 - `TaskReport.stage_id` must match the stage.
-- `TaskReport.task_id` must match an existing task when a task list exists.
+- `TaskReport.task_id` must match an existing task when a task list exists, or
+  match a `task_started` event during migration/recovery of older stages.
 - `TaskReport.agent` must match the task's `assigned_to` when the task exists.
 - `StageSummary.stage_id` must match the stage.
-- Terminal summaries must include internally consistent task counts.
+- Terminal summaries must include internally consistent task counts. The current
+  `StageSummarySchema` does not enforce cross-field count consistency, so
+  `StageRunStore` must add this check when enough task/report evidence exists.
 - Writes must be atomic.
-- Events must be appended after successful artifact writes, not before.
+- Events must be appended by the same public method that writes the artifact.
+  If the artifact write succeeds and the event append fails, the method must
+  retry the event append once and then throw a typed persistence error that makes
+  the partial state explicit.
 
 These are state-integrity rules. They fit the runtime's hard-boundary role and
 do not reduce agent autonomy over task content.
 
 ### Read Models
 
-`ProjectStore.stageDetails()` can delegate to `StageRunStore.getStageDetails()`.
+`ProjectStore.stageDetails()` can call `StageRunStore.getStageRun()` and map the
+domain object to the existing `StageDetailsView` API shape.
 
 `debugErrors()` and `debugTimeline()` should eventually read stage runs and
 events instead of scanning raw stage directories. During transition, they can use
 the store's compatibility view, which is backed by the current files.
+
+For existing stages that predate `.saivage/events.jsonl`, `StageRunStore` should
+derive a compatibility event view from plan history, `tasks.json`, reports, and
+`summary.json`. The compatibility view is read-only; new writes should always
+append real events.
+
+### Task Status Semantics
+
+`tasks.json` should remain the manager's planning-time task contract. It records
+the intended work, assignment, dependencies, attempts, and manager-provided
+status hints. Runtime task status should move toward being derived from events
+and reports:
+
+- A task with a `task_started` event and no terminal report is running or
+  interrupted.
+- A task with a valid `task_report_written` event and report has the report's
+  terminal status.
+- A task with neither event nor report keeps its planning-time status, usually
+  `pending`.
+
+Recovery should read derived status first. For old stages with no events, it
+should fall back to the current report-scan behavior and may still patch
+`tasks.json` to preserve compatibility.
 
 ## Tool And Agent Boundary Changes
 
@@ -376,7 +448,12 @@ Provide narrow artifact tools or terminal submission tools:
 - `stage_get_run`
 - `stage_list_reports`
 
-The exact MCP names can follow existing Plan/RAG tool registry conventions.
+The exact MCP names can follow existing Plan/RAG tool registry conventions and
+the single-source schema guidance in
+[tool-schema-and-persistence-unification.md](./tool-schema-and-persistence-unification.md).
+The first implementation should add the tools beside Plan MCP rather than
+inventing another framework; a later split into a dedicated `StageRunService` is
+only justified if the tool set grows or Plan MCP becomes unclear.
 
 Agents still receive prompts explaining expected behavior and where artifacts are
 visible. But core persistence should go through tools that call `StageRunStore`.
@@ -458,14 +535,20 @@ Actions:
 - Add `src/store/stage-run-store.ts` or `src/stage-runs/store.ts`.
 - Move stage artifact path helpers from `ProjectStore` into this store.
 - Move task-report and summary validation into the store.
-- Add event append/read helpers, initially per-stage `events.jsonl`.
-- Keep `ProjectStore` as a read-model facade that delegates to `StageRunStore`.
+- Add `.saivage/events.jsonl` read/write helpers, but keep event appends
+  internal to artifact-writing methods.
+- Add a small operation queue for stage-run writes.
+- Keep `ProjectStore` as a read-model facade that maps `StageRun` domain objects
+  to existing API/read-model shapes.
+- Add compatibility reconstruction for stages that have artifacts but no events.
 
 Validation:
 
 - Focused unit tests for valid/missing/invalid task reports and summaries.
 - Recovery tests proving behavior is unchanged.
 - Route/read-model tests proving API responses are unchanged.
+- Regression tests proving old-file reconstruction returns the same timeline and
+  error views as the current `ProjectStore` logic for representative fixtures.
 
 ### Phase 2: Route Runtime Writes Through `StageRunStore`
 
@@ -474,12 +557,16 @@ Actions:
 - Replace direct `ProjectStore.writeStageTaskReport()` and
   `writeStageSummary()` paths with `StageRunStore` calls.
 - Update manager failure/abort summary paths to use the store.
-- Add event writes for stage start, task report write, and summary write.
+- Add event writes for stage start, task report write, and summary write inside
+  the corresponding store methods.
 - Keep prompts unchanged in this phase if that makes the refactor safer.
 
 Validation:
 
-- `npm test -- src/agents/agents.test.ts src/runtime/recovery.test.ts src/store/project.test.ts`
+- `npm test -- src/agents/agents.test.ts src/runtime/runtime.test.ts src/store/project.test.ts`
+- A regression proving `needsArchival: true` behavior is unchanged when a
+  `summary.json` exists for an active stage.
+- A regression proving prompt snapshots remain unchanged in Phase 2.
 - Full `npm test` before committing.
 
 ### Phase 3: Add Typed Artifact Tools
@@ -489,6 +576,8 @@ Actions:
 - Add MCP tools for task list, task report, and stage summary submission.
 - Generate schemas from the existing Zod contracts or a single registry, matching
   the recent Plan/RAG registry cleanup pattern.
+- Place the first tool registry beside Plan MCP so `plan_complete_stage()` and
+  stage artifact submission share one obvious planning/execution tool surface.
 - Change manager and worker prompts to call these tools instead of writing raw
   JSON files.
 - Keep repair prompts for drift, but treat malformed artifacts as tool validation
@@ -506,7 +595,13 @@ Actions:
 
 - Add `StageRunStore.listCompletedRuns()` or equivalent.
 - Build plan history views from stage runs.
-- Narrow `PlanService` to active queue and current pointer.
+- Add `StageRunStore.markStageCompleted()` and call it from
+  `PlanService.plan_complete_stage()` after the plan history write and knowledge
+  archival attempt. The event should record the knowledge archival outcome.
+- Keep `PlanService` as the stage-closing tool until planner contracts and
+  prompt snapshots have been migrated.
+- Narrow `PlanService` to active queue and current pointer only in a later
+  format-migration step after derived history is proven.
 - Keep a temporary history compatibility writer only if a live deployment needs
   it; otherwise remove embedded history in a planned format migration.
 
@@ -515,6 +610,7 @@ Validation:
 - Plan MCP tests for active queue behavior.
 - Debug timeline/history tests.
 - Crash recovery tests for summarized-but-not-archived stages.
+- A test proving `archiveStage()` still runs exactly once per stage close.
 
 ### Phase 5: Reconsider Physical Storage
 
@@ -543,14 +639,17 @@ Validation:
 
 ## Open Questions
 
-- Should stage-run events be per-stage files or one project-wide event log?
-- Should `plan_complete_stage` remain the archival tool, or should a stage-run
-  tool complete the stage and then update the plan queue?
-- Should task status remain mutable in `tasks.json`, or should task status be
-  derived from events and reports?
 - How much history compatibility is required for deployed v2 instances?
 - If SQLite becomes canonical later, what human-readable export should operators
   get by default?
+
+Resolved decisions from this design:
+
+- Stage-run events start as one project-wide `.saivage/events.jsonl` file.
+- `plan_complete_stage()` remains the archival and stage-close tool through the
+  first implementation phases.
+- `tasks.json` remains the planning-time task contract; runtime status is
+  progressively derived from events and reports.
 
 ## Recommendation
 
