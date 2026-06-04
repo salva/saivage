@@ -1,5 +1,5 @@
-import type { SaivageRuntime } from "../bootstrap.js";
 import type { ResolvedModelRoute } from "../../routing/resolver.js";
+import type { ProjectContext } from "../../store/project.js";
 
 export interface SafeResolvedRoute {
   role: string;
@@ -45,7 +45,7 @@ function safeRouteView(route: ResolvedModelRoute): SafeResolvedRoute {
   };
 }
 
-export function safeProjectConfigView(config: SaivageRuntime["project"]["config"]): SafeProjectConfig {
+export function safeProjectConfigView(config: ProjectContext["config"]): SafeProjectConfig {
   return {
     project_name: config.project_name,
     objectives: [...config.objectives],
@@ -54,7 +54,10 @@ export function safeProjectConfigView(config: SaivageRuntime["project"]["config"
   };
 }
 
-export function safeConfigResponse(runtime: Pick<SaivageRuntime, "project" | "routing">): SafeConfigResponse {
+export function safeConfigResponse(runtime: {
+  project: Pick<ProjectContext, "config" | "projectRoot" | "saivageDir">;
+  routing: { resolve(role: "planner" | "chat"): ResolvedModelRoute };
+}): SafeConfigResponse {
   const plannerRoute = runtime.routing.resolve("planner");
   const chatRoute = runtime.routing.resolve("chat");
   return {
@@ -69,7 +72,7 @@ export function safeConfigResponse(runtime: Pick<SaivageRuntime, "project" | "ro
 }
 
 export async function safeProvidersResponse(
-  router: Pick<SaivageRuntime["router"], "listProviders" | "listModels">,
+  router: { listProviders(): string[]; listModels(provider: string): Promise<unknown[]> },
 ): Promise<SafeProvidersResponse> {
   const providers = await Promise.all(router.listProviders().map(async (name) => {
     try {
