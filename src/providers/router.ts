@@ -9,17 +9,12 @@ import type {
   ToolSchema,
 } from "./types.js";
 import { parseModelId } from "./types.js";
-import { PiAiProvider } from "./pi-ai.js";
-import { CopilotProvider } from "./copilot.js";
-import { OllamaProvider } from "./ollama.js";
-import { LlamaCppProvider } from "./llamacpp.js";
-import { NvidiaNimProvider } from "./nvidia-nim.js";
 import { ProviderError, classifyProviderError } from "./error.js";
-import { hasOAuthCredentials } from "../auth/index.js";
 import { log } from "../log.js";
-import type { RuntimeProviderAccountLike, RuntimeProviderConfigLike } from "../routing/resolver.js";
+import type { RuntimeProviderConfigLike } from "../routing/resolver.js";
 import { parseAccountRef } from "../routing/resolver.js";
 import { CredentialResolver, type CredentialRequest } from "./credential-resolver.js";
+import { ProviderRegistry } from "./provider-registry.js";
 import {
   buildCandidateChain,
   buildModelEquivalenceIndex,
@@ -49,100 +44,15 @@ function recordLlmCall(_spec: string, _data: Record<string, unknown>): void {
   // Metrics are logged via the log module; no separate telemetry store needed.
 }
 
-interface ProviderDescriptor<N extends string = string> {
-  readonly name: N;
-  shouldRegister(ctx: { cfg: RuntimeProviderConfigLike | undefined; hasAccounts: boolean }): Promise<boolean>;
-  create(ctx: { providerConfig: RuntimeProviderConfigLike | undefined; accountConfig: RuntimeProviderAccountLike | undefined }): ModelProvider;
-}
-
-function makePiAiDescriptor<N extends string>(
-  name: N,
-  shouldRegister: ProviderDescriptor<N>["shouldRegister"],
-): ProviderDescriptor<N> {
-  return {
-    name,
-    shouldRegister,
-    create: ({ providerConfig, accountConfig }) => {
-      const provider = new PiAiProvider(name);
-      const apiKey = accountConfig?.apiKey ?? providerConfig?.apiKey;
-      if (apiKey) provider.setApiKey(apiKey);
-      return provider;
-    },
-  };
-}
-
-const PROVIDER_DESCRIPTORS = [
-  {
-    name: "github-copilot",
-    shouldRegister: async ({ cfg, hasAccounts }) =>
-      !!cfg || hasAccounts || (await hasOAuthCredentials("github-copilot")),
-    create: ({ providerConfig, accountConfig }) => {
-      const merged = { ...(providerConfig?.headers ?? {}), ...(accountConfig?.headers ?? {}) };
-      const headers = Object.keys(merged).length > 0 ? merged : undefined;
-      const apiKey = accountConfig?.apiKey ?? providerConfig?.apiKey;
-      return new CopilotProvider(apiKey, headers);
-    },
-  },
-  makePiAiDescriptor("anthropic", async ({ cfg, hasAccounts }) =>
-    !!cfg || hasAccounts || (await hasOAuthCredentials("anthropic")) || !!process.env["ANTHROPIC_API_KEY"]),
-  makePiAiDescriptor("openai", async ({ cfg, hasAccounts }) =>
-    !!cfg || hasAccounts || !!process.env["OPENAI_API_KEY"]),
-  makePiAiDescriptor("openai-codex", async ({ cfg, hasAccounts }) =>
-    !!cfg || hasAccounts || (await hasOAuthCredentials("openai-codex")) || !!process.env["OPENAI_CODEX_API_KEY"]),
-  makePiAiDescriptor("opencode", async ({ cfg, hasAccounts }) =>
-    !!cfg || hasAccounts || !!process.env["OPENCODE_API_KEY"]),
-  makePiAiDescriptor("opencode-go", async ({ cfg, hasAccounts }) =>
-    !!cfg || hasAccounts || !!process.env["OPENCODE_API_KEY"]),
-  {
-    name: "ollama",
-    shouldRegister: async () => true,
-    create: ({ providerConfig, accountConfig }) =>
-      new OllamaProvider(
-        accountConfig?.baseUrl ?? providerConfig?.baseUrl,
-        providerConfig?.defaultContextWindow,
-      ),
-  },
-  {
-    name: "llamacpp",
-    shouldRegister: async ({ cfg, hasAccounts }) =>
-      !!cfg || hasAccounts || !!process.env["LLAMACPP_BASE_URL"],
-    create: ({ providerConfig, accountConfig }) =>
-      new LlamaCppProvider(
-        accountConfig?.baseUrl ?? providerConfig?.baseUrl ?? process.env["LLAMACPP_BASE_URL"],
-        providerConfig?.defaultContextWindow,
-      ),
-  },
-  {
-    name: "nvidia-nim",
-    shouldRegister: async ({ cfg, hasAccounts }) =>
-      !!cfg
-      || hasAccounts
-      || !!process.env["NVIDIA_API_KEY"]
-      || !!process.env["NVIDIA_NIM_API_KEY"],
-    create: ({ providerConfig, accountConfig }) =>
-      new NvidiaNimProvider(
-        accountConfig?.apiKey ?? providerConfig?.apiKey,
-        accountConfig?.baseUrl ?? providerConfig?.baseUrl,
-        providerConfig?.defaultContextWindow,
-      ),
-  },
-] as const satisfies readonly ProviderDescriptor[];
-
-type ProviderName = (typeof PROVIDER_DESCRIPTORS)[number]["name"];
-
-const PROVIDER_DESCRIPTORS_BY_NAME: ReadonlyMap<ProviderName, ProviderDescriptor<ProviderName>> =
-  new Map(
-    PROVIDER_DESCRIPTORS.map((d) => [d.name, d as ProviderDescriptor<ProviderName>]),
-  );
-
 export class ModelRouter {
-  private providers = new Map<string, ModelProvider>();
+  private readonly providers: Map<string, ModelProvider>;
   private readonly config: SaivageConfig;
   private failoverChains: Record<string, string[]>;
   private modelEquivalents: Map<string, string[]>;
   private modelAssignments: Record<string, string | string[] | undefined>;
   private providerConfigs: Record<string, RuntimeProviderConfigLike>;
   private readonly credentialResolver: CredentialResolver;
+  private readonly providerRegistry: ProviderRegistry;
   private readonly stickyFailovers = new StickyFailoverManager();
   private usageSnapshots = new Map<string, UsageSnapshot>();
   private readonly healthTracker = new ModelHealthTracker();
@@ -153,6 +63,8 @@ export class ModelRouter {
     this.modelAssignments = config.models as Record<string, string | string[] | undefined>;
     this.providerConfigs = config.providers as Record<string, RuntimeProviderConfigLike>;
     this.credentialResolver = new CredentialResolver(this.providerConfigs);
+    this.providerRegistry = new ProviderRegistry(this.providerConfigs, this.credentialResolver);
+    this.providers = this.providerRegistry.providerMapForTests();
     // Equivalence index defaults to empty; populated by init() once
     // providers are registered (init reads OAuth state, so it must be
     // async).
@@ -166,7 +78,7 @@ export class ModelRouter {
    * depends on the populated provider map.
    */
   async init(): Promise<void> {
-    await this.initProviders(this.config);
+    await this.providerRegistry.initBaseProviders();
 
     // Build equivalence index: manual entries + autodiscovered from providers
     const manualEquivs = buildModelEquivalenceIndex(this.config.modelEquivalents);
@@ -191,9 +103,9 @@ export class ModelRouter {
     // return. Calling provider.listModels() directly bypasses OAuth and
     // hits providers with an empty apiKey, returning [] and leaving caches
     // empty (which then causes "no context window" at first chat).
-    const providerNames = [...this.providers.keys()].filter((name) => !name.includes("#"));
+    const providerNames = this.providerRegistry.listBaseProviders();
     for (const name of providerNames) {
-      const provider = this.providers.get(name);
+      const provider = this.providerRegistry.get(name);
       if (!provider?.listModels) continue;
       try {
         const models = await this.listModels(name);
@@ -202,16 +114,6 @@ export class ModelRouter {
         const msg = err instanceof Error ? err.message : String(err);
         log.warn(`[router] warmup: ${name}.listModels() failed: ${msg}`);
       }
-    }
-  }
-
-  private async initProviders(_config: SaivageConfig): Promise<void> {
-    for (const descriptor of PROVIDER_DESCRIPTORS) {
-      const cfg = this.providerConfigs[descriptor.name];
-      const hasAccounts = Object.keys(cfg?.accounts ?? {}).length > 0;
-      if (!(await descriptor.shouldRegister({ cfg, hasAccounts }))) continue;
-      const provider = descriptor.create({ providerConfig: cfg, accountConfig: undefined });
-      this.providers.set(descriptor.name, provider);
     }
   }
 
@@ -224,7 +126,7 @@ export class ModelRouter {
     // model-id → list of provider/model specs
     const modelToSpecs = new Map<string, string[]>();
 
-    for (const [providerName, provider] of this.providers) {
+    for (const [providerName, provider] of this.providerRegistry.entries()) {
       if (!provider.listModels) continue;
       try {
         const models = provider.listModels();
@@ -276,12 +178,12 @@ export class ModelRouter {
 
   /** Get provider instance by name */
   getProvider(name: string): ModelProvider | undefined {
-    return this.providers.get(name);
+    return this.providerRegistry.get(name);
   }
 
   /** List all registered providers */
   listProviders(): string[] {
-    return [...this.providers.keys()];
+    return this.providerRegistry.listProviders();
   }
 
   /** Inspect provider/account usage once at startup and cache routing weights. */
@@ -568,12 +470,12 @@ export class ModelRouter {
       now: Date.now(),
       failoverChains: this.failoverChains,
       modelEquivalents: this.modelEquivalents,
-      providerNames: [...this.providers.keys()],
+      providerNames: this.providerRegistry.listProviders(),
       providerCanServeModel: (providerName, model) => this.providerCanServeModel(providerName, model),
       compareProviderOrder: (a, b) => this.compareProviderOrder(a, b),
       expandProviderModelCandidates: (providerName, model, candidateRequest) =>
         this.expandProviderModelCandidates(providerName, model, candidateRequest),
-      isProviderName,
+      isProviderName: (value) => this.providerRegistry.hasDescriptor(value),
       onPrimaryRetryAfterStickyCooldown: (stickySpec, primarySpec) => {
         log.info(`Model switch: ${stickySpec} -> ${primarySpec} (retrying primary after cooldown)`);
       },
@@ -613,7 +515,7 @@ export class ModelRouter {
     const configuredModels = this.providerConfigs[providerName]?.models;
     if (configuredModels?.length) return configuredModels.includes(model);
 
-    const provider = this.providers.get(providerName);
+    const provider = this.providerRegistry.get(providerName);
     if (provider?.listModels) {
       try {
         const models = provider.listModels();
@@ -656,7 +558,7 @@ export class ModelRouter {
 
   private listUsageCandidateKeys(): { providerName: string; accountName?: string; key: string }[] {
     const candidates: { providerName: string; accountName?: string; key: string }[] = [];
-    for (const providerName of this.providers.keys()) {
+    for (const providerName of this.providerRegistry.listBaseProviders()) {
       if (providerName.includes("#")) continue;
       const accounts = Object.keys(this.providerConfigs[providerName]?.accounts ?? {});
       if (accounts.length === 0) {
@@ -731,36 +633,10 @@ export class ModelRouter {
     }
   }
 
-  private createProvider(providerName: string, accountName?: string): ModelProvider | undefined {
-    const descriptor = PROVIDER_DESCRIPTORS_BY_NAME.get(providerName as ProviderName);
-    if (!descriptor) return undefined;
-    const accountConfig = accountName ? this.getAccountConfig(providerName, accountName) : undefined;
-    const providerConfig = this.providerConfigs[providerName];
-    return descriptor.create({ providerConfig, accountConfig });
-  }
-
   private getProviderForRequest(
     providerName: string,
     request?: CredentialRequest,
   ): ModelProvider | undefined {
-    const accountName = this.credentialResolver.resolveRequestedAccountName(providerName, request);
-    if (!accountName) return this.providers.get(providerName);
-
-    const key = `${providerName}#${accountName}`;
-    const existing = this.providers.get(key);
-    if (existing) return existing;
-
-    const provider = this.createProvider(providerName, accountName);
-    if (!provider) return this.providers.get(providerName);
-    this.providers.set(key, provider);
-    return provider;
+    return this.providerRegistry.getForRequest(providerName, request);
   }
-
-  private getAccountConfig(providerName: string, accountName: string): RuntimeProviderAccountLike | undefined {
-    return this.providerConfigs[providerName]?.accounts?.[accountName];
-  }
-}
-
-function isProviderName(value: string): boolean {
-  return PROVIDER_DESCRIPTORS_BY_NAME.has(value as ProviderName);
 }
