@@ -22,7 +22,6 @@ export async function makeTestStore(projectRoot: string): Promise<KnowledgeStore
   return {
     sidecar,
     ragManager: stubRag(),
-    ragDatasets: [],
     projectRoot,
     reingestKind: async () => { /* best-effort no-op in tests */ },
   };

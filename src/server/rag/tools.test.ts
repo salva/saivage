@@ -30,7 +30,6 @@ function makeService(over: Partial<RagService> = {}): RagService {
   } as unknown as RagService["manager"];
   return {
     manager,
-    datasets: [],
     watchStatus: new Map(),
     adminRoles: new Set(),
     control: { busy: false },
@@ -131,23 +130,12 @@ describe("ragDrop", () => {
     expect(out).toMatchObject({ ok: false, code: "RAG_PROTECTED_DATASET" });
   });
 
-  it("splices the dataset and clears watch state on success", async () => {
+  it("drops through the manager and clears watch state on success", async () => {
     const svc = makeService();
-    const cfg = {
-      id: "d",
-      source: "doc" as const,
-      provider: { kind: "openai" as const, model: "text-embedding-3-small" as const, dim: 256 as const },
-      store: { kind: "sqlite-vec" as const },
-      chunker: { kind: "markdown" as const },
-      exclusions: [],
-      sources: [],
-      watch: false as const,
-    };
-    svc.datasets.push(cfg);
     svc.watchStatus.set("d", "off");
     const out = await ragDrop(svc, { collection_id: "d" });
     expect(out).toEqual({ dropped: true, persisted: false });
-    expect(svc.datasets).toHaveLength(0);
+    expect(svc.manager.drop).toHaveBeenCalledWith("d");
     expect(svc.watchStatus.has("d")).toBe(false);
   });
 });
@@ -250,7 +238,9 @@ describe("ragRegister", () => {
       sources: [{ root: "data" }],
     });
     expect(out).toMatchObject({ collection: { id: "d" }, persisted: false });
-    expect(svc.datasets[0]?.provider).toEqual({ kind: "openai", model: "mxbai-embed-large", dim: 1024 });
+    expect(svc.manager.register).toHaveBeenCalledWith(expect.objectContaining({
+      provider: { kind: "openai", model: "mxbai-embed-large", dim: 1024 },
+    }));
   });
 
   it("rejects root that escapes the project", async () => {
@@ -288,10 +278,10 @@ describe("ragRegister", () => {
       persisted: false,
       watch: "off",
     });
-    expect(svc.datasets.map((d) => d.id)).toEqual(["d"]);
+    expect(svc.manager.register).toHaveBeenCalledWith(expect.objectContaining({ id: "d" }));
   });
 
-  it("rolls back array push on manager.register failure", async () => {
+  it("does not ingest on manager.register failure", async () => {
     const svc = makeService({ projectRoot });
     (svc.manager.register as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("boom"));
     await expect(
@@ -302,6 +292,6 @@ describe("ragRegister", () => {
         sources: [{ root: "data" }],
       }),
     ).rejects.toThrow("boom");
-    expect(svc.datasets).toEqual([]);
+    expect(svc.manager.ingest).not.toHaveBeenCalled();
   });
 });

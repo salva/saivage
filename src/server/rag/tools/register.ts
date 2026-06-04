@@ -6,7 +6,8 @@
  */
 import * as path from "node:path";
 import { promises as fs } from "node:fs";
-import type { RagService, RuntimeRagDatasetConfig } from "../service.js";
+import type { RagService } from "../service.js";
+import type { DatasetConfig } from "../../../rag/types.js";
 import type { IngestReport, ChunkerRef, WatchConfig } from "../../../rag/types.js";
 import { saveSaivageConfig } from "../persist.js";
 import { shouldSkipPath } from "../../../rag/security/secrets.js";
@@ -81,7 +82,7 @@ export async function ragRegister(
   if (firstSource.include) sourceEntry.include = firstSource.include;
   if (firstSource.exclude) sourceEntry.exclude = firstSource.exclude;
 
-  const newConfig: RuntimeRagDatasetConfig = {
+  const newConfig: Omit<DatasetConfig, "projectId"> = {
     id: input.collection_id,
     source: input.source,
     provider: {
@@ -97,8 +98,6 @@ export async function ragRegister(
   };
 
   const persist = input.persist === true;
-  const beforeDatasets = persist ? null : null;
-
   if (persist) {
     await saveSaivageConfig(service.projectRoot, (cfg) => ({
       ...cfg,
@@ -109,18 +108,9 @@ export async function ragRegister(
     }));
   }
 
-  // Push to the shared array BEFORE manager.register so that
-  // manager.register's lookup of the dataset succeeds. Snapshot it for
-  // rollback.
-  const arraySnapshot = [...service.datasets];
-  service.datasets.push(newConfig);
-
   try {
     await service.manager.register(newConfig);
   } catch (err) {
-    // Rollback array push.
-    service.datasets.length = 0;
-    service.datasets.push(...arraySnapshot);
     if (persist) {
       await saveSaivageConfig(service.projectRoot, (cfg) => ({
         ...cfg,
@@ -134,8 +124,6 @@ export async function ragRegister(
     }
     throw err;
   }
-
-  void beforeDatasets;
 
   // Initial ingest using the resolved root.
   const ingestInput: Parameters<typeof service.manager.ingest>[1] = {

@@ -23,7 +23,6 @@ async function makeStore(projectRoot: string): Promise<TestStore> {
   const wrapper = {
     sidecar,
     ragManager: {} as KnowledgeStore["ragManager"],
-    ragDatasets: [] as KnowledgeStore["ragDatasets"],
     projectRoot,
     reingestCalls: 0,
     reingestKind: vi.fn(),

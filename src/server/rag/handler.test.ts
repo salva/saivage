@@ -19,7 +19,6 @@ function makeService(over: Partial<RagService> = {}): RagService {
   } as unknown as RagService["manager"];
   return {
     manager,
-    datasets: [],
     watchStatus: new Map(),
     adminRoles: new Set<import("../../agents/types.js").AgentRole>(),
     control: { busy: false },
@@ -97,7 +96,9 @@ describe("makeRagHandler", () => {
       baseCtx,
     );
     expect(r.content).toMatchObject({ ok: true });
-    expect(svc.datasets[0]?.provider).toEqual({ kind: "openai", model: "custom-embedding-model", dim: 768 });
+    expect(svc.manager.register).toHaveBeenCalledWith(expect.objectContaining({
+      provider: { kind: "openai", model: "custom-embedding-model", dim: 768 },
+    }));
   });
 
   it("rag_register rejects empty model and non-positive dimensions", async () => {

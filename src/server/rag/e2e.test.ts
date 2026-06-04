@@ -36,17 +36,15 @@ async function buildService(projectRoot: string): Promise<RagService> {
     path.join(projectRoot, ".saivage", "saivage.json"),
     JSON.stringify({ rag: { enabled: true, datasets: [] } }),
   );
-  const datasets: RagService["datasets"] = [];
   const manager = await createRagManager({
     projectRoot,
     projectId: "e2e",
     enabled: true,
-    datasets,
+    datasets: [],
     providerOptions: providerOptions(1536),
   });
   return {
     manager,
-    datasets,
     watchStatus: new Map(),
     adminRoles: new Set(["planner"]),
     control: { busy: false },

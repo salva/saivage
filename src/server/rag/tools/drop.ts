@@ -1,9 +1,9 @@
 /**
  * F02 B05 — rag_drop
  *
- * Order under rag.controlMutex: snapshot, persist write (if persist),
- * manager.drop, splice array, clear watch status. On manager failure
- * roll back config best-effort.
+ * Order under rag.controlMutex: snapshot persisted config, persist write (if
+ * persist), manager.drop, clear watch status. On manager failure roll back
+ * config best-effort.
  */
 import type { RagService } from "../service.js";
 import { saveSaivageConfig } from "../persist.js";
@@ -24,17 +24,19 @@ export async function ragDrop(
     return ragErr("RAG_PROTECTED_DATASET", `dataset ${input.collection_id} is protected`);
   }
   const persist = input.persist === true;
-  const idx = service.datasets.findIndex((d) => d.id === input.collection_id);
-  const arraySnapshot = [...service.datasets];
+  let persistedDatasetSnapshot: unknown[] = [];
 
   if (persist) {
-    await saveSaivageConfig(service.projectRoot, (cfg) => ({
-      ...cfg,
-      rag: {
-        ...cfg.rag,
-        datasets: cfg.rag.datasets.filter((d) => d.id !== input.collection_id),
-      },
-    }));
+    await saveSaivageConfig(service.projectRoot, (cfg) => {
+      persistedDatasetSnapshot = cfg.rag.datasets;
+      return {
+        ...cfg,
+        rag: {
+          ...cfg.rag,
+          datasets: cfg.rag.datasets.filter((d) => d.id !== input.collection_id),
+        },
+      };
+    });
   }
 
   try {
@@ -46,7 +48,7 @@ export async function ragDrop(
         ...cfg,
         rag: {
           ...cfg.rag,
-          datasets: arraySnapshot as (typeof cfg.rag.datasets)[number][],
+          datasets: persistedDatasetSnapshot as (typeof cfg.rag.datasets)[number][],
         },
       })).catch((rb) =>
         log.warn(
@@ -58,7 +60,6 @@ export async function ragDrop(
     throw err;
   }
 
-  if (idx >= 0) service.datasets.splice(idx, 1);
   service.watchStatus.delete(input.collection_id);
   return { dropped: true, persisted: persist };
 }

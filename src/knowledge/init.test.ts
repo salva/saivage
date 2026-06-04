@@ -36,7 +36,7 @@ describe("initKnowledgeStore", () => {
   it("throws when rag is disabled", async () => {
     const { mgr } = fakeManager();
     await expect(
-      initKnowledgeStore({ projectRoot, ragManager: mgr, ragDatasets: [], ragEnabled: false }),
+      initKnowledgeStore({ projectRoot, ragManager: mgr, ragEnabled: false }),
     ).rejects.toThrow(/rag\.enabled/);
   });
 
@@ -45,7 +45,6 @@ describe("initKnowledgeStore", () => {
     const store = await initKnowledgeStore({
       projectRoot,
       ragManager: mgr,
-      ragDatasets: [],
       ragEnabled: true,
     });
     expect(store.sidecar.db.pragma("user_version", { simple: true })).toBe(1);
@@ -66,7 +65,6 @@ describe("reingestKind", () => {
     const store = await initKnowledgeStore({
       projectRoot,
       ragManager: mgr,
-      ragDatasets: [],
       ragEnabled: true,
     });
     // initKnowledgeStore upserts bundled builtin skills and reingests them;
@@ -98,7 +96,6 @@ describe("runBootDivergenceSweep", () => {
     const store = await initKnowledgeStore({
       projectRoot,
       ragManager: mgr,
-      ragDatasets: [],
       ragEnabled: true,
     });
     calls.length = 0;

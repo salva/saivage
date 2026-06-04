@@ -380,18 +380,15 @@ async function initializeKnowledgeAndRag(
   ragManager: import("../rag/index.js").RagManager;
   knowledgeStore: import("../knowledge/init.js").KnowledgeStore;
 }> {
-  // F02 B07 — RagService shares the mutable datasets array with the manager.
-  const ragDatasets = [...config.rag.datasets];
   const { createRagManager } = await import("../rag/index.js");
   const ragManager = await createRagManager({
     projectRoot: project.projectRoot,
     projectId: project.config.project_name,
     enabled: config.rag.enabled,
-    datasets: ragDatasets,
+    datasets: config.rag.datasets,
   });
   const ragService: import("./rag/service.js").RagService = {
     manager: ragManager,
-    datasets: ragDatasets,
     watchStatus: new Map(),
     // Static admin-role membership derived from the roster: the librarian is
     // the only non-operator role with admin access to RAG tools.
@@ -404,7 +401,6 @@ async function initializeKnowledgeAndRag(
   const knowledgeStore = await initKnowledgeStore({
     projectRoot: project.projectRoot,
     ragManager: ragService.manager,
-    ragDatasets: ragService.datasets,
     ragEnabled: ragService.enabled,
   });
   return { ragService, ragManager, knowledgeStore };

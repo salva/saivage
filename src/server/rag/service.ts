@@ -7,22 +7,12 @@
  */
 
 import type { RagManager } from "../../rag/manager.js";
-import type { DatasetConfig } from "../../rag/types.js";
 import type { AgentRole } from "../../agents/types.js";
 import type { ToolCallContext } from "../../mcp/toolContext.js";
 
-/** Runtime view of a dataset config (no `projectId`; bootstrap supplies it). */
-export type RuntimeRagDatasetConfig = Omit<DatasetConfig, "projectId">;
-
-/** Mutable runtime state shared by the handler and per-tool implementations. */
+/** Runtime state shared by the handler and per-tool implementations. */
 export interface RagService {
   manager: RagManager;
-  /**
-   * The same array reference that was passed to `createRagManager`. The
-   * manager closes over it for lookups, so all runtime mutations done by
-   * `rag_register` and `rag_drop` MUST land here.
-   */
-  datasets: RuntimeRagDatasetConfig[];
   /** Per-dataset watcher state (`"off"` until `rag_admin watch_arm`). */
   watchStatus: Map<string, "off" | "armed">;
   /** Roles that may invoke admin-scope tools without operator context. */

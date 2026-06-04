@@ -91,6 +91,7 @@ export async function createRagManager(opts: RagManagerOptions): Promise<RagMana
 
   const cache = new Map<string, Dataset>();
   const { projectRoot, projectId, providerOptions } = opts;
+  const configs = [...opts.datasets];
 
   async function checkDrift(
     prior: RegistryEntry | undefined,
@@ -123,7 +124,7 @@ export async function createRagManager(opts: RagManagerOptions): Promise<RagMana
   }
 
   async function get(id: string): Promise<Dataset> {
-    const config = opts.datasets.find((d) => d.id === id);
+    const config = configs.find((d) => d.id === id);
     if (!config) throw new RagError("dataset_not_found", `dataset not found: ${id}`, { datasetId: id });
     return openDataset(config);
   }
@@ -156,6 +157,9 @@ export async function createRagManager(opts: RagManagerOptions): Promise<RagMana
         createdAt: prior?.createdAt ?? new Date().toISOString(),
       };
       await upsertRegistryEntry(projectRoot, entry);
+      const idx = configs.findIndex((d) => d.id === config.id);
+      if (idx >= 0) configs[idx] = config;
+      else configs.push(config);
       return ds;
     },
 
@@ -178,6 +182,8 @@ export async function createRagManager(opts: RagManagerOptions): Promise<RagMana
       const ds = await get(id);
       await ds.drop();
       cache.delete(id);
+      const idx = configs.findIndex((d) => d.id === id);
+      if (idx >= 0) configs.splice(idx, 1);
       await removeRegistryEntry(projectRoot, id);
     },
 

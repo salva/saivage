@@ -185,7 +185,7 @@ describe("F01 B08 — built-in skills", () => {
   it("initKnowledgeStore persists the 3 bundled origin='builtin' skills", async () => {
     const { mgr } = fakeRagWithCalls();
     const store = await initKnowledgeStore({
-      projectRoot, ragManager: mgr, ragDatasets: [], ragEnabled: true,
+      projectRoot, ragManager: mgr, ragEnabled: true,
     });
     try {
       const builtinRows = store.sidecar.db
@@ -202,7 +202,7 @@ describe("F01 B08 — built-in skills", () => {
   it("upsertBuiltinSkills is idempotent (no duplicate records on repeated calls)", async () => {
     const { mgr } = fakeRagWithCalls();
     const store = await initKnowledgeStore({
-      projectRoot, ragManager: mgr, ragDatasets: [], ragEnabled: true,
+      projectRoot, ragManager: mgr, ragEnabled: true,
     });
     try {
       const countBuiltins = () => (store.sidecar.db
@@ -224,7 +224,7 @@ describe("F01 B08 — recovery via runBootDivergenceSweep", () => {
     // healthy sidecar with builtin + project rows.
     const phase1 = fakeRagWithCalls();
     const store1 = await initKnowledgeStore({
-      projectRoot, ragManager: phase1.mgr, ragDatasets: [], ragEnabled: true,
+      projectRoot, ragManager: phase1.mgr, ragEnabled: true,
     });
     await createSkill(store1, {
       name: "phase1", description: "d", body: "b",
@@ -236,7 +236,7 @@ describe("F01 B08 — recovery via runBootDivergenceSweep", () => {
     // "row committed, RAG reingest never ran". Sweep must re-publish 'skill'.
     const phase2 = fakeRagWithCalls();
     const store2 = await initKnowledgeStore({
-      projectRoot, ragManager: phase2.mgr, ragDatasets: [], ragEnabled: true,
+      projectRoot, ragManager: phase2.mgr, ragEnabled: true,
     });
     const now = new Date().toISOString();
     store2.sidecar.db.prepare(
