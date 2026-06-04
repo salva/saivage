@@ -9,11 +9,12 @@ import type {
   ToolSchema,
 } from "./types.js";
 import { parseModelId } from "./types.js";
-import { ProviderError, classifyProviderError } from "./error.js";
+import { ProviderError } from "./error.js";
 import { log } from "../log.js";
 import type { RuntimeProviderConfigLike } from "../routing/resolver.js";
 import { parseAccountRef } from "../routing/resolver.js";
 import { CredentialResolver, type CredentialRequest } from "./credential-resolver.js";
+import { ProviderCaller } from "./provider-caller.js";
 import { ProviderRegistry } from "./provider-registry.js";
 import {
   buildCandidateChain,
@@ -52,6 +53,7 @@ export class ModelRouter {
   private modelAssignments: Record<string, string | string[] | undefined>;
   private providerConfigs: Record<string, RuntimeProviderConfigLike>;
   private readonly credentialResolver: CredentialResolver;
+  private readonly providerCaller: ProviderCaller;
   private readonly providerRegistry: ProviderRegistry;
   private readonly stickyFailovers = new StickyFailoverManager();
   private usageSnapshots = new Map<string, UsageSnapshot>();
@@ -63,6 +65,7 @@ export class ModelRouter {
     this.modelAssignments = config.models as Record<string, string | string[] | undefined>;
     this.providerConfigs = config.providers as Record<string, RuntimeProviderConfigLike>;
     this.credentialResolver = new CredentialResolver(this.providerConfigs);
+    this.providerCaller = new ProviderCaller(PROVIDER_REQUEST_TIMEOUT_MS, recordLlmCall);
     this.providerRegistry = new ProviderRegistry(this.providerConfigs, this.credentialResolver);
     this.providers = this.providerRegistry.providerMapForTests();
     // Equivalence index defaults to empty; populated by init() once
@@ -316,7 +319,7 @@ export class ModelRouter {
       if (spec === request.modelSpec) attemptedPrimary = true;
 
       // Attempt the call
-      const result = await this.callProvider(spec, provider, model, candidateRequest);
+      const result = await this.providerCaller.call(spec, provider, model, candidateRequest);
 
       if (result.ok) {
         const sticky = this.stickyFailovers.getSticky(request.modelSpec);
@@ -373,66 +376,6 @@ export class ModelRouter {
       });
     }
     throw new ProviderError({ kind: "transient", message: summary });
-  }
-
-  // ── Provider call ─────────────────────────────────────────────────────
-
-  /**
-   * Single provider call with timeout.
-   * Returns a result object — never throws for retryable errors.
-   */
-  private async callProvider(
-    spec: string,
-    provider: ModelProvider,
-    model: string,
-    request: ChatRequest & { modelSpec: string },
-  ): Promise<{ ok: true; response: ChatResponse } | { ok: false; error: Error; nonRetryable?: boolean }> {
-    try {
-      const t0 = Date.now();
-      const controller = new AbortController();
-      let timeoutId: ReturnType<typeof setTimeout> | undefined;
-      const response = await Promise.race([
-        provider.chat({ ...request, model, signal: controller.signal }),
-        new Promise<never>((_, reject) => {
-          timeoutId = setTimeout(() => {
-            controller.abort();
-            reject(new Error(`Request timed out after ${PROVIDER_REQUEST_TIMEOUT_MS / 1000}s`));
-          }, PROVIDER_REQUEST_TIMEOUT_MS);
-        }),
-      ]).finally(() => {
-        if (timeoutId) clearTimeout(timeoutId);
-      });
-      recordLlmCall(spec, {
-        inputTokens: response.usage?.inputTokens,
-        outputTokens: response.usage?.outputTokens,
-        latencyMs: Date.now() - t0,
-      });
-      const { provider: providerName } = parseModelId(spec);
-      return {
-        ok: true,
-        response: {
-          ...response,
-          provider: providerName,
-          model,
-          modelSpec: spec,
-          requestedModelSpec: request.modelSpec,
-        },
-      };
-    } catch (err) {
-      const errorRaw = err instanceof Error ? err : new Error(String(err));
-      const errMsg = errorRaw.message;
-      recordLlmCall(spec, { error: true, timeout: errMsg.includes("timed out") });
-      log.warn(`[router] ${spec} failed: ${errMsg}`);
-
-      const classified = errorRaw instanceof ProviderError
-        ? errorRaw
-        : classifyProviderError(errorRaw, provider.name);
-
-      const nonRetryable =
-        classified.kind === "non_retryable" || classified.kind === "context_overflow";
-
-      return { ok: false, error: classified, nonRetryable };
-    }
   }
 
   // ── Model health ──────────────────────────────────────────────────────
