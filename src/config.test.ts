@@ -104,6 +104,30 @@ describe("config", () => {
 
       await expect(loadConfig(projectRoot)).rejects.toThrow(/unknownBlock/);
     });
+
+    it("rejects unsupported per-dataset RAG provider secrets", async () => {
+      const saivageRoot = join(projectRoot, ".saivage");
+      mkdirSync(saivageRoot, { recursive: true });
+      writeFileSync(join(saivageRoot, "saivage.json"), JSON.stringify({
+        rag: {
+          enabled: true,
+          datasets: [{
+            id: "docs",
+            source: "doc",
+            provider: {
+              kind: "openai",
+              model: "text-embedding-3-small",
+              dim: 1536,
+              apiKey: "secret",
+            },
+            chunker: { kind: "markdown" },
+            sources: [{ root: "docs" }],
+          }],
+        },
+      }, null, 2));
+
+      await expect(loadConfig(projectRoot)).rejects.toThrow(/apiKey/);
+    });
   });
 
   describe("mcp timing envelope validation", () => {

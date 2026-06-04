@@ -222,13 +222,13 @@ export const SaivageConfigSchema = z.object({
           z.object({
             id: z.string().min(1),
             source: z.enum(["skill", "memory", "doc", "code"]),
-            provider: z.object({
-              kind: z.literal("openai"),
-              model: z.string().min(1).default("text-embedding-3-small"),
-              dim: z.number().int().positive().default(1536),
-              baseUrl: z.string().min(1).optional(),
-              apiKey: z.string().min(1).optional(),
-            }),
+            provider: z
+              .object({
+                kind: z.literal("openai"),
+                model: z.string().min(1).default("text-embedding-3-small"),
+                dim: z.number().int().positive().default(1536),
+              })
+              .strict(),
             store: z
               .object({
                 kind: z.literal("sqlite-vec").default("sqlite-vec"),

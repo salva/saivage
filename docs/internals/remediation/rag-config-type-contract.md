@@ -10,10 +10,10 @@ This makes the codebase fail its first correctness gate and reveals a broader
 contract issue: config schemas and runtime types are not generated from the same
 source of truth.
 
-Current working-tree note: `src/config.ts` is already partially widened to accept
-custom `provider.model`, arbitrary positive `provider.dim`, and optional
-`provider.baseUrl` / `provider.apiKey`. That change is directionally correct but
-incomplete until the downstream RAG contracts below are widened too.
+Current working-tree note: `src/config.ts` is already widened to accept custom
+`provider.model` and arbitrary positive `provider.dim`. Per-dataset
+`provider.baseUrl` / `provider.apiKey` are intentionally not part of the RAG
+dataset contract because runtime ownership for those overrides is not wired.
 
 ## Options Considered
 
@@ -37,9 +37,8 @@ the existing drift checks should reject incompatible index reuse.
 
 - Keep `SaivageConfigSchema.rag.datasets[*].provider.model` as `z.string().min(1)`.
 - Keep `SaivageConfigSchema.rag.datasets[*].provider.dim` as a positive integer.
-- Keep optional `provider.baseUrl` and `provider.apiKey` in config if the runtime
-  supports per-dataset embedding-provider overrides; treat `apiKey` as sensitive
-  in all API/debug surfaces.
+- Keep per-dataset `provider.baseUrl` and `provider.apiKey` out of config until
+  runtime ownership for embedding-provider overrides is explicitly implemented.
 - Change RAG dataset/provider types so `provider.model` is `string`, not a
   literal.
 - Change RAG dataset/provider types so `provider.dim` is `number`, not the

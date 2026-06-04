@@ -3,7 +3,7 @@
  * mutex semantics, schema validation, and operator-context bypass.
  */
 import { describe, it, expect, vi } from "vitest";
-import { makeRagHandler } from "./handler.js";
+import { makeRagHandler, RAG_TOOL_DEFINITIONS } from "./handler.js";
 import type { RagService } from "./service.js";
 import type { ToolCallContext } from "../../mcp/toolContext.js";
 
@@ -116,6 +116,12 @@ describe("makeRagHandler", () => {
       baseCtx,
     );
     expect(r.content).toMatchObject({ ok: false, code: "RAG_INVALID_ARGS" });
+  });
+
+  it("RAG tool schemas do not expose raw provider secrets", () => {
+    const schemas = JSON.stringify(RAG_TOOL_DEFINITIONS.map((tool) => tool.inputSchema));
+    expect(schemas).not.toContain("apiKey");
+    expect(schemas).not.toContain("baseUrl");
   });
 
   it("RAG_CONTROL_BUSY when control mutex is held", async () => {

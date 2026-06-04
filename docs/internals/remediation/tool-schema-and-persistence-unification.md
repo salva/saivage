@@ -120,7 +120,7 @@ Decision required before implementation:
 
 ### Option B — Remove unsupported config fields
 
-- Delete `baseUrl`/`apiKey` from config schema and docs.
+- Delete per-dataset RAG provider `baseUrl`/`apiKey` from config schema and docs.
 - Use a single runtime/provider environment source.
 
 Recommendation: choose Option A only if there is a current deployment need for per-dataset embedding backends. Otherwise choose Option B to keep v2 simple.
@@ -200,7 +200,7 @@ If deriving query filter allowlists immediately is too much churn, add a drift t
 
 ### Step 4 — RAG provider config decision
 
-- Implement Option A or B with explicit docs.
+- Implement Option B with explicit docs unless a current deployment needs per-dataset embedding-provider overrides.
 - Add redaction tests if Option A is chosen.
 - Add tests that generated MCP schemas do not expose raw `apiKey` fields.
 
