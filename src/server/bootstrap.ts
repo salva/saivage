@@ -156,27 +156,7 @@ export async function bootstrap(
   mcpRuntime.startMonitoring();
 
   // 5. Register Plan MCP service (in-process)
-  const planService = new PlanService(project.saivageDir);
-  await planService.init();
-  planService.setGitCommit(async (files: string[], message: string) => {
-    // Use MCP git service to commit
-    const result = await mcpRuntime.callTool("git", "git_commit", { files, message }, {
-      role: "planner",
-      agentId: "runtime:plan-service",
-      projectRoot: project.projectRoot,
-      operatorContext: true,
-      author: "runtime:plan-service",
-    });
-    return { sha: (result as { sha?: string })?.sha ?? "unknown" };
-  });
-
-  const planTools = PlanService.getToolSchemas();
-  mcpRuntime.registerInProcess(
-    "plan",
-    planTools,
-    (toolName: string, args: Record<string, unknown>, _ctx?: import("../mcp/toolContext.js").ToolCallContext) =>
-      planService.handleToolCall(toolName, args),
-  );
+  const planService = await initializePlanMcpService(project, mcpRuntime);
 
   // 6. Single-instance guard: PID-liveness check (fast path) plus an
   // O_CREAT|O_EXCL lockfile that closes the TOCTOU between the check and
@@ -354,6 +334,35 @@ async function initializeModelRouter(config: SaivageConfig): Promise<ModelRouter
   await router.warmupProviderCaches();
   log.info(`[v2] Providers: ${router.listProviders().join(", ")}`);
   return router;
+}
+
+async function initializePlanMcpService(
+  project: ProjectContext,
+  mcpRuntime: McpRuntime,
+): Promise<PlanService> {
+  const planService = new PlanService(project.saivageDir);
+  await planService.init();
+  planService.setGitCommit(async (files: string[], message: string) => {
+    // Use MCP git service to commit.
+    const result = await mcpRuntime.callTool("git", "git_commit", { files, message }, {
+      role: "planner",
+      agentId: "runtime:plan-service",
+      projectRoot: project.projectRoot,
+      operatorContext: true,
+      author: "runtime:plan-service",
+    });
+    return { sha: (result as { sha?: string })?.sha ?? "unknown" };
+  });
+
+  const planTools = PlanService.getToolSchemas();
+  mcpRuntime.registerInProcess(
+    "plan",
+    planTools,
+    (toolName: string, args: Record<string, unknown>, _ctx?: import("../mcp/toolContext.js").ToolCallContext) =>
+      planService.handleToolCall(toolName, args),
+  );
+
+  return planService;
 }
 
 async function initializeKnowledgeAndRag(
