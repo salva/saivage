@@ -12,6 +12,7 @@
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import type { ProviderStamp, RagSource } from "./types.js";
+import { writeAtomicJson } from "../store/atomic-json.js";
 
 export interface RegistryEntry {
   id: string;
@@ -43,11 +44,8 @@ export async function loadRegistry(projectRoot: string): Promise<RegistryEntry[]
 
 export async function saveRegistry(projectRoot: string, entries: RegistryEntry[]): Promise<void> {
   const file = registryPath(projectRoot);
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   const payload: RegistryFile = { entries };
-  await fs.writeFile(tmp, JSON.stringify(payload, null, 2));
-  await fs.rename(tmp, file);
+  await writeAtomicJson(file, payload);
 }
 
 export async function upsertRegistryEntry(
