@@ -1,15 +1,12 @@
-import { readFileSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { listDocs, pathExists, readDocLenient, readDocOrNull, writeDoc } from "./documents.js";
+import { listDocs, pathExists, readDocOrNull } from "./documents.js";
+import { StageRunStore } from "./stage-run-store.js";
 import {
   ChatLogSchema,
   InspectionReportSchema,
   PlanDocumentSchema,
   RuntimeStateSchema,
-  StageSummarySchema,
-  TaskListSchema,
-  TaskReportSchema,
   type ActivePlanView,
   type ChatLog,
   type InspectionReport,
@@ -64,7 +61,11 @@ export type ChatLogReadResult =
   | { kind: "not-persisted"; chatLog: ChatLog };
 
 export class ProjectStore {
-  constructor(private readonly project: Pick<ProjectContext, "paths">) {}
+  private readonly stageRuns: StageRunStore;
+
+  constructor(private readonly project: Pick<ProjectContext, "paths">) {
+    this.stageRuns = new StageRunStore(project);
+  }
 
   async readPlan(): Promise<PlanDocument | null> {
     return readDocOrNull(this.project.paths.plan, PlanDocumentSchema);
@@ -90,22 +91,13 @@ export class ProjectStore {
   }
 
   async stageDetails(stageId: string): Promise<StageDetailsView> {
-    const stageDir = join(this.project.paths.stages, stageId);
-
-    const [tasks, summary] = await Promise.all([
-      readDocLenient(join(stageDir, "tasks.json"), TaskListSchema),
-      readDocLenient(join(stageDir, "summary.json"), StageSummarySchema),
-    ]);
-
-    const reportsDir = join(stageDir, "reports");
-    const reportFiles = await listDocs(reportsDir);
-    const reports = (
-      await Promise.all(
-        reportFiles.map((file) => readDocLenient(join(reportsDir, file), TaskReportSchema)),
-      )
-    ).filter((report): report is TaskReport => report !== null);
-
-    return { stage_id: stageId, tasks, summary, reports };
+    const run = await this.stageRuns.getStageRun(stageId);
+    return {
+      stage_id: stageId,
+      tasks: run?.tasks ?? null,
+      summary: run?.summary ?? null,
+      reports: run?.reports ?? [],
+    };
   }
 
   async inspectionReports(): Promise<InspectionReport[]> {
@@ -171,11 +163,11 @@ export class ProjectStore {
   }
 
   stageTaskReportPath(stageId: string, taskId: string): string {
-    return join(this.project.paths.stages, stageId, "reports", `${taskId}.json`);
+    return this.stageRuns.stageTaskReportPath(stageId, taskId);
   }
 
   stageSummaryPath(stageId: string): string {
-    return join(this.project.paths.stages, stageId, "summary.json");
+    return this.stageRuns.stageSummaryPath(stageId);
   }
 
   readExpectedStageTaskReport(opts: {
@@ -183,47 +175,19 @@ export class ProjectStore {
     taskId: string;
     agent: TaskReport["agent"];
   }): ArtifactReadResult<TaskReport> {
-    const path = this.stageTaskReportPath(opts.stageId, opts.taskId);
-    const raw = readArtifactJson(path);
-    if (raw.kind !== "read") return raw;
-
-    const parsed = TaskReportSchema.safeParse(raw.value);
-    if (!parsed.success) {
-      return { kind: "invalid", path, reason: parsed.error.issues[0]?.message ?? "schema validation failed" };
-    }
-    if (parsed.data.stage_id !== opts.stageId) {
-      return { kind: "invalid", path, reason: `stage_id ${parsed.data.stage_id} does not match ${opts.stageId}` };
-    }
-    if (parsed.data.task_id !== opts.taskId) {
-      return { kind: "invalid", path, reason: `task_id ${parsed.data.task_id} does not match ${opts.taskId}` };
-    }
-    if (parsed.data.agent !== opts.agent) {
-      return { kind: "invalid", path, reason: `agent ${parsed.data.agent} does not match ${opts.agent}` };
-    }
-    return { kind: "valid", path, artifact: parsed.data };
+    return this.stageRuns.readExpectedStageTaskReport(opts);
   }
 
   readExpectedStageSummary(stageId: string): ArtifactReadResult<StageSummary> {
-    const path = this.stageSummaryPath(stageId);
-    const raw = readArtifactJson(path);
-    if (raw.kind !== "read") return raw;
-
-    const parsed = StageSummarySchema.safeParse(raw.value);
-    if (!parsed.success) {
-      return { kind: "invalid", path, reason: parsed.error.issues[0]?.message ?? "schema validation failed" };
-    }
-    if (parsed.data.stage_id !== stageId) {
-      return { kind: "invalid", path, reason: `stage_id ${parsed.data.stage_id} does not match ${stageId}` };
-    }
-    return { kind: "valid", path, artifact: parsed.data };
+    return this.stageRuns.readExpectedStageSummary(stageId);
   }
 
   async writeStageTaskReport(report: TaskReport): Promise<void> {
-    await writeDoc(this.stageTaskReportPath(report.stage_id, report.task_id), report, TaskReportSchema);
+    await this.stageRuns.writeTaskReport(report);
   }
 
   async writeStageSummary(summary: StageSummary): Promise<void> {
-    await writeDoc(this.stageSummaryPath(summary.stage_id), summary, StageSummarySchema);
+    await this.stageRuns.writeStageSummary(summary);
   }
 
   async debugErrors(): Promise<DebugErrorEntry[]> {
@@ -377,19 +341,5 @@ async function readLenientDebugJson(path: string): Promise<unknown | null> {
     return JSON.parse(await readFile(path, "utf-8"));
   } catch {
     return null;
-  }
-}
-
-function readArtifactJson(path: string):
-  | { kind: "read"; value: unknown }
-  | { kind: "missing"; path: string }
-  | { kind: "invalid"; path: string; reason: string } {
-  try {
-    return { kind: "read", value: JSON.parse(readFileSync(path, "utf-8")) };
-  } catch (err) {
-    const code = err instanceof Error && "code" in err ? (err as NodeJS.ErrnoException).code : undefined;
-    if (code === "ENOENT") return { kind: "missing", path };
-    const reason = err instanceof Error ? err.message : String(err);
-    return { kind: "invalid", path, reason };
   }
 }
