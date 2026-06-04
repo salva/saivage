@@ -55,6 +55,7 @@ export class ModelRouter {
   private readonly credentialResolver: CredentialResolver;
   private readonly providerCaller: ProviderCaller;
   private readonly providerRegistry: ProviderRegistry;
+  private modelEligibility = new Map<string, Set<string> | null>();
   private readonly stickyFailovers = new StickyFailoverManager();
   private usageSnapshots = new Map<string, UsageSnapshot>();
   private readonly healthTracker = new ModelHealthTracker();
@@ -87,6 +88,7 @@ export class ModelRouter {
     const manualEquivs = buildModelEquivalenceIndex(this.config.modelEquivalents);
     const discovered = this.discoverModelEquivalents();
     this.modelEquivalents = mergeEquivalenceIndexes(manualEquivs, discovered);
+    this.refreshModelEligibilitySnapshot();
   }
 
   /**
@@ -118,6 +120,10 @@ export class ModelRouter {
         log.warn(`[router] warmup: ${name}.listModels() failed: ${msg}`);
       }
     }
+    const manualEquivs = buildModelEquivalenceIndex(this.config.modelEquivalents);
+    const discovered = this.discoverModelEquivalents();
+    this.modelEquivalents = mergeEquivalenceIndexes(manualEquivs, discovered);
+    this.refreshModelEligibilitySnapshot();
   }
 
   /**
@@ -455,6 +461,11 @@ export class ModelRouter {
   }
 
   private providerCanServeModel(providerName: string, model: string): boolean {
+    const eligibleModels = this.modelEligibility.get(providerName);
+    if (eligibleModels !== undefined) {
+      return eligibleModels === null || eligibleModels.has(model);
+    }
+
     const configuredModels = this.providerConfigs[providerName]?.models;
     if (configuredModels?.length) return configuredModels.includes(model);
 
@@ -470,6 +481,42 @@ export class ModelRouter {
 
     const accounts = this.providerConfigs[providerName]?.accounts ?? {};
     return Object.keys(accounts).some((accountName) => this.accountCanServeModel(providerName, accountName, model));
+  }
+
+  private refreshModelEligibilitySnapshot(): void {
+    const snapshot = new Map<string, Set<string> | null>();
+    for (const providerName of this.providerRegistry.listBaseProviders()) {
+      const configuredModels = this.providerConfigs[providerName]?.models;
+      if (configuredModels?.length) {
+        snapshot.set(providerName, new Set(configuredModels));
+        continue;
+      }
+
+      const provider = this.providerRegistry.get(providerName);
+      if (provider?.listModels) {
+        try {
+          const models = provider.listModels();
+          if (Array.isArray(models)) {
+            snapshot.set(providerName, new Set(models));
+            continue;
+          }
+        } catch {
+          // Provider list unavailable — fall through to account metadata.
+        }
+      }
+
+      const accounts = this.providerConfigs[providerName]?.accounts ?? {};
+      const accountModelSets = Object.values(accounts).map((account) => account?.models?.filter(Boolean) ?? []);
+      if (accountModelSets.some((models) => models.length === 0)) {
+        snapshot.set(providerName, null);
+        continue;
+      }
+      const accountModels = unique(accountModelSets.flat());
+      if (accountModels.length) {
+        snapshot.set(providerName, new Set(accountModels));
+      }
+    }
+    this.modelEligibility = snapshot;
   }
 
   private accountCanServeModel(providerName: string, accountName: string, model: string): boolean {

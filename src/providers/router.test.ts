@@ -183,6 +183,22 @@ describe("ModelRouter", () => {
     expect(router.getMaxContextTokens("shared-model")).toBe(222);
   });
 
+  it("uses the model eligibility snapshot for provider-independent candidate planning", async () => {
+    const router = new ModelRouter(makeConfig({
+      providers: {
+        openai: { models: ["shared-model"] },
+      },
+    }));
+    await router.init();
+    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
+    const listModels = vi.fn(() => ["shared-model"]);
+    providers.set("openai", { ...makeProvider("openai", vi.fn(async () => successfulResponse("openai"))), listModels });
+
+    await router.chat(makeChatRequest("shared-model"));
+
+    expect(listModels).not.toHaveBeenCalled();
+  });
+
   it("tries the next provider for a model before advancing to the next model", async () => {
     const router = new ModelRouter(makeConfig({
       providers: {
