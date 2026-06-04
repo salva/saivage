@@ -234,13 +234,7 @@ export async function bootstrap(
 
   lifecycle.installFatalHandlers();
 
-  const noteService = new NoteService(project.paths.notes);
-  mcpRuntime.registerInProcess(
-    "notes",
-    NoteService.getToolSchemas(),
-    (toolName: string, args: Record<string, unknown>, _ctx?: import("../mcp/toolContext.js").ToolCallContext) =>
-      noteService.handleToolCall(toolName, args),
-  );
+  registerNoteMcpService(project, mcpRuntime);
 
   supervisor = new RuntimeSupervisor(
     config,
@@ -363,6 +357,19 @@ async function initializePlanMcpService(
   );
 
   return planService;
+}
+
+function registerNoteMcpService(
+  project: ProjectContext,
+  mcpRuntime: McpRuntime,
+): void {
+  const noteService = new NoteService(project.paths.notes);
+  mcpRuntime.registerInProcess(
+    "notes",
+    NoteService.getToolSchemas(),
+    (toolName: string, args: Record<string, unknown>, _ctx?: import("../mcp/toolContext.js").ToolCallContext) =>
+      noteService.handleToolCall(toolName, args),
+  );
 }
 
 async function initializeKnowledgeAndRag(
