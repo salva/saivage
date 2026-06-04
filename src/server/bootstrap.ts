@@ -25,6 +25,7 @@ import { recoverFromCrash, writeRuntimeState, createRuntimeState, isAnotherInsta
 import { RuntimeSupervisor } from "../runtime/supervisor.js";
 import { consumeShutdownHandoff } from "../runtime/shutdown-handoff.js";
 import { RuntimeLifecycle } from "../runtime/lifecycle.js";
+import { StageRunStore } from "../store/stage-run-store.js";
 import type { AgentResult } from "../agents/types.js";
 import type { ServiceEntry } from "../mcp/types.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
@@ -51,6 +52,8 @@ export interface SaivageRuntime {
   mcpRuntime: McpRuntime;
   eventBus: EventBus;
   planService: PlanService;
+  /** Stage-run lifecycle/event store over the project stage artifacts. */
+  stageRuns?: StageRunStore;
   noteManager: NoteManager;
   project: ProjectContext;
   tracker: RuntimeTracker;
@@ -157,6 +160,7 @@ export async function bootstrap(
 
   // 5. Register Plan MCP service (in-process)
   const planService = await initializePlanMcpService(project, mcpRuntime);
+  const stageRuns = new StageRunStore(project);
 
   // 6. Single-instance guard: PID-liveness check (fast path) plus an
   // O_CREAT|O_EXCL lockfile that closes the TOCTOU between the check and
@@ -219,6 +223,7 @@ export async function bootstrap(
     mcpRuntime,
     eventBus,
     planService,
+    stageRuns,
     noteManager,
     project,
     tracker,

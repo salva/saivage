@@ -18,11 +18,13 @@ import { tmpdir } from "node:os";
 
 import { createChildSpawner, type SaivageRuntime } from "./bootstrap.js";
 import { ManagerAgent } from "../agents/manager.js";
+import { WorkerAgent } from "../agents/worker.js";
 import { PlanService } from "../mcp/plan-server.js";
 import { NoteManager } from "../runtime/notes.js";
 import type { AgentContext, ManagerInput } from "../agents/types.js";
 import type { PlanDocument, Stage } from "../types.js";
 import type { BaseAgent } from "../agents/base.js";
+import { StageRunStore } from "../store/stage-run-store.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -41,6 +43,7 @@ async function makeRuntimeWithPlan(
   await planService.init();
 
   const project = makeProject(root);
+  const stageRuns = new StageRunStore(project);
   return {
     config: {} as SaivageRuntime["config"],
     router: {
@@ -64,6 +67,7 @@ async function makeRuntimeWithPlan(
       clear: () => {},
     } as unknown as SaivageRuntime["eventBus"],
     planService,
+    stageRuns,
     project,
     tracker: makeTracker(),
     plannerControl: {} as SaivageRuntime["plannerControl"],
@@ -271,6 +275,39 @@ describe("createChildSpawner — Fix 1 dispatcher gate (manager arm)", () => {
       // setCurrentStage('stage-a') runs during dispatch then reverts to null
       // in the finally block; confirm the 'stage-a' setpoint was observed.
       expect(trackerSet.mock.calls.map((c) => c[0])).toContain("stage-a");
+      await expect(runtime.stageRuns?.readEvents({ stageId: "stage-a" })).resolves.toEqual([
+        expect.objectContaining({ type: "stage_started", stage_id: "stage-a" }),
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("records task_started when a worker is launched", async () => {
+    const root = mkdtempSync(join(tmpdir(), "gate-task-started-"));
+    try {
+      const runtime = await makeRuntimeWithPlan(root, {
+        updated_at: "2026-05-29T00:00:00.000Z",
+        current_stage_id: "stage-a",
+        stages: [makeStage("stage-a")],
+        history: [],
+      });
+      vi.spyOn(WorkerAgent, "createWorker").mockResolvedValue({
+        id: "coder-1",
+        run: async () => ({ kind: "success", data: {} }),
+        cancel: () => {},
+      } as unknown as WorkerAgent);
+
+      const result = await createChildSpawner(runtime)(
+        "coder",
+        { stageId: "stage-a", task: { id: "task-a", description: "implement task" } },
+        makeParentContext(root),
+      );
+
+      expect(result.kind).toBe("success");
+      await expect(runtime.stageRuns?.readEvents({ stageId: "stage-a" })).resolves.toEqual([
+        expect.objectContaining({ type: "task_started", stage_id: "stage-a", task_id: "task-a" }),
+      ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

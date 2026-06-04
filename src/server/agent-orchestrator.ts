@@ -7,7 +7,9 @@ import { formatAgentResultReason } from "../agents/types.js";
 import { assertExhaustive, getRoster } from "../agents/roster.js";
 import type { DispatchableRole, WorkerRole } from "../agents/roster.js";
 import type { AgentState, Task } from "../types.js";
+import { StageSummarySchema } from "../types.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
+import { StageRunStore } from "../store/stage-run-store.js";
 import { agentId } from "../ids.js";
 import { log } from "../log.js";
 import type { EventBus } from "../events/bus.js";
@@ -38,6 +40,7 @@ export class AgentOrchestrator {
     _parentCtx: AgentContext,
   ): Promise<AgentResult> {
     const { project, router, mcpRuntime, noteManager, eventBus, tracker } = this.runtime;
+    const stageRuns = this.runtime.stageRuns ?? new StageRunStore(project);
     const lifecycleSignal = this.runtime.lifecycle?.signal;
     const abortSignal = lifecycleSignal ? { aborted: lifecycleSignal.aborted } : undefined;
 
@@ -75,6 +78,7 @@ export class AgentOrchestrator {
         const managerSpawner = this.createChildSpawner();
         managerStageId = managerInput.stage?.id;
         ctx.stageId = managerStageId;
+        await stageRuns.markStageStarted(managerInput.stage, { agentId: ctx.agentId });
         agent = await ManagerAgent.create(ctx, managerInput, managerSpawner, {
           abortSignal,
           onActivity: (agentId) => tracker.agentActivity(agentId),
@@ -144,6 +148,10 @@ export class AgentOrchestrator {
         return assertExhaustive(role);
     }
 
+    if (ctx.stageId && taskId) {
+      await stageRuns.markTaskStarted({ stageId: ctx.stageId, taskId, agentId: trackingAgentId });
+    }
+
     tracker.agentStarted(trackingAgentId, role as AgentState["agent_type"], taskId);
     this.runtime.agentRegistry.set(trackingAgentId, agent as unknown as import("../agents/base.js").BaseAgent);
     const unsubscribeShutdown = lifecycleSignal?.onAbort(() => {
@@ -157,6 +165,7 @@ export class AgentOrchestrator {
       // Publish events for significant results
       if (role === "manager") {
         const stageId = (input as import("../agents/types.js").ManagerInput).stage?.id;
+        await persistManagerTerminalSummary(stageRuns, result);
         await publishAgentResult(eventBus, role, stageId, result);
       } else if (role === "inspector") {
         await publishAgentResult(eventBus, role, undefined, result);
@@ -207,6 +216,16 @@ export class AgentOrchestrator {
   private evictStage(stageId: string): void {
     this.stageWorkers.delete(stageId);
   }
+}
+
+async function persistManagerTerminalSummary(
+  stageRuns: StageRunStore,
+  result: AgentResult,
+): Promise<void> {
+  if (result.kind !== "failure" && result.kind !== "abort") return;
+  const parsed = StageSummarySchema.safeParse(result.partial);
+  if (!parsed.success) return;
+  await stageRuns.writeStageSummary(parsed.data);
 }
 
 export function createChildSpawner(runtime: AgentRuntimeDeps): ChildSpawner {

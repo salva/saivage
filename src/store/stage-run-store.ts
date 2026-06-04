@@ -226,6 +226,19 @@ export class StageRunStore {
     });
   }
 
+  async markTaskStarted(args: { stageId: string; taskId: string; agentId?: string; at?: string }): Promise<void> {
+    await this.enqueueWrite(async () => {
+      await this.appendEvent({
+        event_id: randomUUID(),
+        type: "task_started",
+        stage_id: args.stageId,
+        task_id: args.taskId,
+        at: args.at ?? new Date().toISOString(),
+        agent_id: args.agentId,
+      });
+    });
+  }
+
   async writeTaskReport(report: TaskReport, opts: { agentId?: string; at?: string } = {}): Promise<void> {
     await this.enqueueWrite(async () => {
       await writeDoc(this.stageTaskReportPath(report.stage_id, report.task_id), report, TaskReportSchema);

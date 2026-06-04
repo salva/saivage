@@ -99,6 +99,28 @@ describe("StageRunStore events", () => {
     const eventTypes = (await store.readEvents()).map((event) => event.type);
     expect(eventTypes).toEqual(["task_report_written", "stage_summary_written"]);
   });
+
+  it("appends runtime-observed task start events", async () => {
+    const project = await seedProject(projectRoot, { name: "p", objectives: [] });
+    const store = new StageRunStore(project);
+
+    await store.markTaskStarted({
+      stageId: "stage-1",
+      taskId: "task-1",
+      agentId: "coder-1",
+      at: "2026-01-01T00:00:01.000Z",
+    });
+
+    expect(await store.readEvents()).toEqual([
+      expect.objectContaining({
+        type: "task_started",
+        stage_id: "stage-1",
+        task_id: "task-1",
+        agent_id: "coder-1",
+        at: "2026-01-01T00:00:01.000Z",
+      }),
+    ]);
+  });
 });
 
 describe("StageRunStore aggregate and ProjectStore compatibility", () => {

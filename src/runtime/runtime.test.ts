@@ -1597,5 +1597,11 @@ describe("Crash Recovery", () => {
     expect(result.needsArchival).toBe(true);
     expect(result.summary).toBeDefined();
     expect(result.summary?.result).toBe("completed");
+    const plan = await planService.plan_get();
+    expect("code" in plan).toBe(false);
+    if (!("code" in plan)) {
+      expect(plan.current_stage_id).toBe("stg-1");
+      expect(plan.stages.map((stage) => stage.id)).toContain("stg-1");
+    }
   });
 });
