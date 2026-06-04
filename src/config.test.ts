@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { loadConfig, expandHome } from "./config.js";
+import { loadConfig, expandHome, SaivageConfigSchema } from "./config.js";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir, homedir } from "node:os";
@@ -127,6 +127,41 @@ describe("config", () => {
       }, null, 2));
 
       await expect(loadConfig(projectRoot)).rejects.toThrow(/apiKey/);
+    });
+
+    it("parses a representative config across split schema sections", () => {
+      const config = SaivageConfigSchema.parse({
+        models: { default: "openai/gpt-5", coder: ["openai/gpt-5", "anthropic/claude"] },
+        providers: {
+          openai: {
+            defaultAccount: "main",
+            accounts: {
+              main: { authProfile: "openai-main", priority: 10, models: ["gpt-5"] },
+            },
+          },
+        },
+        mcp: { shellTimeoutMs: 1_200_000, shellTimeoutFloorMs: 600_000 },
+        mcpServers: {
+          fixture: { command: "node", args: ["server.js"], env: { A: "B" } },
+        },
+        rag: {
+          enabled: true,
+          datasets: [{
+            id: "docs",
+            source: "doc",
+            provider: { kind: "openai" },
+            chunker: { kind: "markdown" },
+            sources: [{ root: "docs", include: ["**/*.md"] }],
+          }],
+        },
+        security: { envScrubber: { credentialLexemes: ["TOKEN"], configPointerSuffixes: ["_TOKEN"] } },
+      });
+
+      expect(config.models.coder).toEqual(["openai/gpt-5", "anthropic/claude"]);
+      expect(config.providers.openai?.accounts.main?.priority).toBe(10);
+      expect(config.mcpServers.fixture?.transport).toBe("stdio");
+      expect(config.rag.datasets[0]?.provider.dim).toBe(1536);
+      expect(config.security.envScrubber.credentialLexemes).toEqual(["TOKEN"]);
     });
   });
 
