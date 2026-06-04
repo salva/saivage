@@ -12,8 +12,7 @@ export default defineConfig({
   splitting: false,
   shims: false,
   async onSuccess() {
-    // FR-31a: ship built-in skills alongside the bundle so the deployed
-    // runtime can seed `<projectRoot>/.saivage/skills/project/` on first launch.
+    // Ship built-in skills alongside the bundle for the knowledge sidecar loader.
     await mkdir("dist/skills", { recursive: true });
     await cp("skills/builtin", "dist/skills/builtin", { recursive: true });
     // F18: ship the prompts/ directory so the deployed runtime can render

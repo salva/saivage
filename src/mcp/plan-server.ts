@@ -32,10 +32,8 @@ import { activePlanView, planHistoryView } from "../store/plan-read-models.js";
 import type { StageRunStore } from "../store/stage-run-store.js";
 import { archiveStage } from "../knowledge/lifecycle.js";
 import { log } from "../log.js";
-import { dispatchPlanToolCall } from "./plan-dispatch.js";
-import { getPlanToolSchemas } from "./plan-schemas.js";
 export { PLAN_READER_TOOLS, PLAN_WRITER_TOOLS } from "./plan-registry.js";
-import { PLAN_WRITER_TOOLS } from "./plan-registry.js";
+import { dispatchPlanToolCall, getPlanToolSchemas, PLAN_WRITER_TOOLS } from "./plan-registry.js";
 
 /** Error codes returned by the Plan MCP service. */
 export type PlanErrorCode =

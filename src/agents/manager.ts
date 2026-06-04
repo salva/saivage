@@ -1,8 +1,7 @@
 /**
  * Saivage — Manager Agent
- * Receives a stage, decomposes into tasks, dispatches via run_coder(),
- * run_researcher(), run_data_agent(), run_designer(), run_critic(), run_reviewer(), processes TaskReports, handles failures,
- * writes StageSummary.
+ * Receives a stage, decomposes it into tasks, dispatches worker roles, processes
+ * TaskReports, handles failures, and writes StageSummary.
  */
 
 import { BaseAgent, type BaseAgentConfig } from "./base.js";

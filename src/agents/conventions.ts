@@ -98,18 +98,6 @@ export function decideRolePathMutation(
 }
 
 /**
- * Compatibility wrapper for older convention tests/callers.
- * Returns a violation message if denied, null if OK.
- */
-export function checkConvention(
-  role: AgentRole,
-  filePath: string,
-): string | null {
-  const decision = decideRolePathMutation(role, filePath);
-  return decision.ok ? null : decision.reason;
-}
-
-/**
  * Get the convention rule for a role (if any).
  */
 export function getConvention(role: AgentRole): ConventionRule | null {

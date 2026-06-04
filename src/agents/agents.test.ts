@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { checkConvention, decidePathMutation, getConvention } from "./conventions.js";
+import { decidePathMutation, decideRolePathMutation, getConvention } from "./conventions.js";
 import { ChatAgent } from "./chat.js";
 import { ManagerAgent } from "./manager.js";
 import { WorkerAgent } from "./worker.js";
@@ -114,6 +114,11 @@ describe("Conventions", () => {
     if (!decision.ok) expect(decision.reason).toContain("BLOCKED_PATH");
   });
 });
+
+function checkConvention(role: AgentContext["role"], filePath: string): string | null {
+  const decision = decideRolePathMutation(role, filePath);
+  return decision.ok ? null : decision.reason;
+}
 
 describe("reviewer worker role", () => {
   it("keeps prior review reports visible for follow-up reviews", async () => {
