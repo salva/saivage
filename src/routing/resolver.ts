@@ -76,11 +76,15 @@ export interface RuntimeRoutingConfigLike {
 
 export interface ResolvedModelRoute {
   role: string;
+  requestedModelSpec: string;
   modelSpec: string;
-  provider: string;
+  provider: string | null;
   model: string;
+  authProfileKey?: string;
   authProfile?: string;
   accountRef?: string;
+  preferredAccountRefs: string[];
+  allowedAccountRefs?: string[];
   preferredModels: string[];
   preferredAccounts: string[];
   source: "routing" | "runtime-default";
@@ -149,19 +153,24 @@ export class ModelRoutingResolver {
     if (!candidate) throw new MissingModelForRoleError([role], configPath());
     const modelSpec = candidate;
     const parsed = tryParseModelSpec(modelSpec);
-    const provider = parsed?.provider ?? "";
+    const provider = parsed?.provider ?? null;
     const model = parsed?.model ?? modelSpec;
-    const preferredAccounts = parsed ? this.resolvePreferredAccounts(role, provider, merged) : [];
+    const preferredAccountRefs = this.resolvePreferredAccountRefs(role, provider, merged);
+    const allowedAccountRefs = this.resolveAllowedAccountRefs(provider, merged);
 
     return {
       role,
+      requestedModelSpec: modelSpec,
       modelSpec,
       provider,
       model,
+      authProfileKey: merged.authProfile,
       authProfile: merged.authProfile,
-      accountRef: preferredAccounts[0],
+      accountRef: preferredAccountRefs[0],
+      preferredAccountRefs,
+      allowedAccountRefs,
       preferredModels,
-      preferredAccounts,
+      preferredAccounts: preferredAccountRefs,
       source: this.resolveSource(merged),
       profileName: roleRule.profileName,
     };
@@ -256,8 +265,15 @@ export class ModelRoutingResolver {
     throw new NoAllowedRouteMatchError("model", role, candidates, allowed, configPath());
   }
 
-  private resolvePreferredAccounts(role: string, provider: string, rule: NormalizedRule): string[] {
+  private resolvePreferredAccountRefs(role: string, provider: string | null, rule: NormalizedRule): string[] {
     if (rule.authProfile) return [];
+
+    if (!provider) {
+      return unique([
+        ...(rule.account ? [rule.account] : []),
+        ...rule.preferredAccounts,
+      ]);
+    }
 
     const explicit = unique([
       ...(rule.account ? [normalizeAccountRef(provider, rule.account)] : []),
@@ -291,6 +307,13 @@ export class ModelRoutingResolver {
     if (normalizedDefault && allowedSet.has(normalizedDefault)) return [normalizedDefault];
 
     throw new NoAllowedRouteMatchError("account", role, candidates, allowed, configPath());
+  }
+
+  private resolveAllowedAccountRefs(provider: string | null, rule: NormalizedRule): string[] | undefined {
+    if (rule.authProfile || !rule.allowedAccounts?.length) return undefined;
+    return provider
+      ? unique(rule.allowedAccounts.map((entry) => normalizeAccountRef(provider, entry)))
+      : unique(rule.allowedAccounts);
   }
 
   private resolveRuntimeDefaultModels(role: string): string[] {

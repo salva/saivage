@@ -4,7 +4,7 @@ import type { ResolvedModelRoute } from "../../routing/resolver.js";
 export interface SafeResolvedRoute {
   role: string;
   modelSpec: string;
-  provider: string;
+  provider: string | null;
   model: string;
   preferredModels: string[];
   source: ResolvedModelRoute["source"];

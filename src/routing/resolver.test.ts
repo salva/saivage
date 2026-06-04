@@ -59,8 +59,12 @@ describe("ModelRoutingResolver", () => {
     );
 
     expect(resolver.resolve("planner")).toMatchObject({
+      requestedModelSpec: "github-copilot/gpt-5.4",
       modelSpec: "github-copilot/gpt-5.4",
+      provider: "github-copilot",
+      model: "gpt-5.4",
       accountRef: "github-copilot.main",
+      preferredAccountRefs: ["github-copilot.main"],
       preferredAccounts: ["github-copilot.main"],
       profileName: "safe_coding",
       source: "routing",
@@ -91,9 +95,64 @@ describe("ModelRoutingResolver", () => {
 
     expect(resolver.resolve("chat")).toMatchObject({
       modelSpec: "github-copilot/gpt-5.4",
+      authProfileKey: "github-copilot-work",
       authProfile: "github-copilot-work",
       accountRef: undefined,
+      preferredAccountRefs: [],
+      allowedAccountRefs: undefined,
       source: "routing",
+    });
+  });
+
+  it("keeps provider-independent route fields unresolved for candidate expansion", () => {
+    const resolver = new ModelRoutingResolver(
+      {
+        routing: routing({
+          roles: {
+            coder: {
+              model: "gpt-5.4",
+              account: "main",
+              preferred_accounts: ["github-copilot.backup", "secondary"],
+              allowed_accounts: ["main", "github-copilot.backup"],
+            },
+          },
+        }),
+      },
+      {},
+    );
+
+    expect(resolver.resolve("coder")).toMatchObject({
+      requestedModelSpec: "gpt-5.4",
+      modelSpec: "gpt-5.4",
+      provider: null,
+      model: "gpt-5.4",
+      accountRef: "main",
+      preferredAccountRefs: ["main", "github-copilot.backup", "secondary"],
+      allowedAccountRefs: ["main", "github-copilot.backup"],
+      source: "routing",
+    });
+  });
+
+  it("normalizes account constraints when the route has a provider", () => {
+    const resolver = new ModelRoutingResolver(
+      {
+        routing: routing({
+          roles: {
+            coder: {
+              model: "github-copilot/gpt-5.4",
+              account: "main",
+              allowed_accounts: ["main", "github-copilot.backup"],
+            },
+          },
+        }),
+      },
+      {},
+    );
+
+    expect(resolver.resolve("coder")).toMatchObject({
+      accountRef: "github-copilot.main",
+      preferredAccountRefs: ["github-copilot.main"],
+      allowedAccountRefs: ["github-copilot.main", "github-copilot.backup"],
     });
   });
 
