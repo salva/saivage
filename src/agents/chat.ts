@@ -12,7 +12,7 @@ import type {
   ChatInput,
   Agent,
 } from "./types.js";
-import type { ActivePlanView, PlanDocument, PlanHistoryView, SystemEvent, ChatMessage, ChatLog } from "../types.js";
+import type { SystemEvent, ChatMessage, ChatLog } from "../types.js";
 import type { ChatChannel } from "../channels/types.js";
 import type { EventBus, EventFilter } from "../events/bus.js";
 import { chatSessionId } from "../ids.js";
@@ -34,19 +34,7 @@ import {
   dispatchLocalCommand,
   type LocalCommandContext,
 } from "../chat/localCommands.js";
-
-function activePlanView(doc: PlanDocument | null): ActivePlanView | null {
-  if (!doc) return null;
-  return {
-    updated_at: doc.updated_at,
-    current_stage_id: doc.current_stage_id,
-    stages: doc.stages,
-  };
-}
-
-function historyView(doc: PlanDocument | null): PlanHistoryView | null {
-  return doc ? { stages: doc.history } : null;
-}
+import { activePlanView, planHistoryView } from "../store/plan-read-models.js";
 
 
 /**
@@ -336,7 +324,7 @@ export class ChatAgent extends BaseAgent implements Agent {
 
   private async cmdHistory(args: string): Promise<string> {
     const n = parseInt(args, 10) || 5;
-    const history = historyView(await readDocLenient(this.ctx.project.paths.plan, PlanDocumentSchema));
+    const history = planHistoryView(await readDocLenient(this.ctx.project.paths.plan, PlanDocumentSchema));
     if (!history || history.stages.length === 0) return "No completed stages yet.";
 
     const recent = history.stages.slice(-n);

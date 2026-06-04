@@ -1,25 +1,13 @@
 import type { ActivePlanView, PlanDocument, PlanHistoryView } from "../../types.js";
 import type { ProjectContext } from "../../store/project.js";
 import { safeProjectConfigView, type SafeProjectConfig } from "./config.js";
+import { activePlanView, planHistoryView } from "../../store/plan-read-models.js";
 
 export interface SafeDebugStateResponse {
   runtime: unknown;
   plan: ActivePlanView | null;
   history: PlanHistoryView | null;
   config: SafeProjectConfig;
-}
-
-function activePlanView(doc: PlanDocument | null): ActivePlanView | null {
-  if (!doc) return null;
-  return {
-    updated_at: doc.updated_at,
-    current_stage_id: doc.current_stage_id,
-    stages: doc.stages,
-  };
-}
-
-function historyView(doc: PlanDocument | null): PlanHistoryView | null {
-  return doc ? { stages: doc.history } : null;
 }
 
 export function safeDebugStateResponse(args: {
@@ -30,7 +18,7 @@ export function safeDebugStateResponse(args: {
   return {
     runtime: args.runtimeState,
     plan: activePlanView(args.planDoc),
-    history: historyView(args.planDoc),
+    history: planHistoryView(args.planDoc),
     config: safeProjectConfigView(args.projectConfig),
   };
 }

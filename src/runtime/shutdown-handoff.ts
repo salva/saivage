@@ -13,6 +13,7 @@ import {
 } from "../types.js";
 import type { ProjectContext } from "../store/project.js";
 import { readDocOrNull, renameDoc, writeDoc } from "../store/documents.js";
+import { planHistoryView } from "../store/plan-read-models.js";
 import { log } from "../log.js";
 import type { z, ZodTypeAny } from "zod";
 
@@ -36,6 +37,7 @@ export async function writeShutdownSummary(project: ProjectContext): Promise<Shu
   const request = await readOptionalDoc(project.paths.shutdownRequest, ShutdownRequestSchema, "shutdown request");
   const runtimeState = await readOptionalDoc(project.paths.runtimeState, RuntimeStateSchema, "runtime state");
   const planDoc = await readOptionalDoc(project.paths.plan, PlanDocumentSchema, "plan");
+  const history = planHistoryView(planDoc);
   const reason = request?.reason ?? DEFAULT_SHUTDOWN_REASON;
   const requestedAt = request?.requested_at ?? null;
   const runtimeStartedAtMs = runtimeState?.started_at ? Date.parse(runtimeState.started_at) : NaN;
@@ -64,7 +66,7 @@ export async function writeShutdownSummary(project: ProjectContext): Promise<Shu
     plan: planDoc ? {
       current_stage_id: planDoc.current_stage_id,
       pending_stages: planDoc.stages.length,
-      history_stages: planDoc.history.length,
+      history_stages: history?.stages.length ?? 0,
     } : null,
   };
 

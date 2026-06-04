@@ -214,20 +214,33 @@ describe("StageRunStore aggregate reads", () => {
     ]);
   });
 
-  it("lists completed runs from completion events when embedded history is absent", async () => {
+  it("lists all terminal runs from completion events when embedded history is absent", async () => {
     const project = await seedProject(projectRoot, { name: "p", objectives: [] });
     const store = new StageRunStore(project);
 
-    await store.markStageCompleted({
-      stageId: "event-only-stage",
-      result: "aborted",
-      knowledgeArchiveOutcome: "failed",
-      at: "2026-01-01T00:04:00.000Z",
-    });
+    await Promise.all(
+      (["completed", "failed", "escalated", "aborted"] as const).map((result, index) =>
+        store.markStageCompleted({
+          stageId: `event-only-stage-${index + 1}`,
+          result,
+          knowledgeArchiveOutcome: index === 0 ? "ok" : index === 3 ? "failed" : undefined,
+          at: `2026-01-01T00:0${index + 1}:00.000Z`,
+        }),
+      ),
+    );
 
     await expect(store.listCompletedRuns()).resolves.toMatchObject([
-      { stage_id: "event-only-stage", status: "aborted", completed_at: "2026-01-01T00:04:00.000Z" },
+      { stage_id: "event-only-stage-1", status: "completed", completed_at: "2026-01-01T00:01:00.000Z" },
+      { stage_id: "event-only-stage-2", status: "failed", completed_at: "2026-01-01T00:02:00.000Z" },
+      { stage_id: "event-only-stage-3", status: "escalated", completed_at: "2026-01-01T00:03:00.000Z" },
+      { stage_id: "event-only-stage-4", status: "aborted", completed_at: "2026-01-01T00:04:00.000Z" },
     ]);
+    await expect(store.getStageRun("event-only-stage-1")).resolves.toMatchObject({
+      events: expect.arrayContaining([expect.objectContaining({ type: "knowledge_archived", outcome: "ok" })]),
+    });
+    await expect(store.getStageRun("event-only-stage-4")).resolves.toMatchObject({
+      events: expect.arrayContaining([expect.objectContaining({ type: "knowledge_archived", outcome: "failed" })]),
+    });
   });
 });
 

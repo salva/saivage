@@ -54,7 +54,7 @@ state, not application source; commit only intentional project artifacts.
 |------|----------|------------|-------------------|-------|
 | `.saivage/config.json` | Operator (`saivage init`) | yes | yes | Source of objectives. |
 | `.saivage/saivage.json` | Operator (`saivage init`) | yes | yes | Runtime config, provider/model routing, MCP/RAG settings. |
-| `.saivage/plan.json` | Plan MCP service | yes | yes | Authoritative plan and embedded history. |
+| `.saivage/plan.json` | Plan MCP service | yes | yes | Authoritative planning queue. `stages` and `current_stage_id` describe pending/active work; `history` is the current completed-stage projection until the storage ADR chooses whether to keep or replace it. |
 | `.saivage/telegram-subscriptions.json` | Telegram bot | yes | yes | Notification destinations. |
 | `.saivage/notes/*` | CLI / Chat agent | yes | yes | Cleaned up by runtime after Planner ack. |
 | `.saivage/stages/<id>/tasks.json` | Manager | yes | yes | One per active stage. |

@@ -1,6 +1,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { listDocs, pathExists, readDocOrNull } from "./documents.js";
+import { activePlanView, planHistoryView } from "./plan-read-models.js";
 import { StageRunStore } from "./stage-run-store.js";
 import {
   ChatLogSchema,
@@ -73,17 +74,12 @@ export class ProjectStore {
 
   async activePlanView(): Promise<ActivePlanView | null> {
     const doc = await this.readPlan();
-    if (!doc) return null;
-    return {
-      updated_at: doc.updated_at,
-      current_stage_id: doc.current_stage_id,
-      stages: doc.stages,
-    };
+    return activePlanView(doc);
   }
 
   async planHistoryView(): Promise<PlanHistoryView | null> {
     const doc = await this.readPlan();
-    return doc ? { stages: doc.history } : null;
+    return planHistoryView(doc);
   }
 
   async runtimeState(): Promise<RuntimeState | null> {

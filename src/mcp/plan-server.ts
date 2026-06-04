@@ -28,6 +28,7 @@ import {
   type TaskReport,
   type StageSummary,
 } from "../types.js";
+import { activePlanView, planHistoryView } from "../store/plan-read-models.js";
 import type { StageRunStore } from "../store/stage-run-store.js";
 import { archiveStage } from "../knowledge/lifecycle.js";
 import { log } from "../log.js";
@@ -102,15 +103,11 @@ export class PlanService {
   }
 
   private activeView(doc: PlanDocument): ActivePlanView {
-    return {
-      updated_at: doc.updated_at,
-      current_stage_id: doc.current_stage_id,
-      stages: doc.stages,
-    };
+    return activePlanView(doc) as ActivePlanView;
   }
 
   private historyView(doc: PlanDocument): PlanHistoryView {
-    return { stages: doc.history };
+    return planHistoryView(doc) as PlanHistoryView;
   }
 
   private async writeDoc(nextDoc: PlanDocument): Promise<void> {
@@ -144,7 +141,7 @@ export class PlanService {
     if (!this.doc) return planError("PLAN_NOT_FOUND", "plan.json does not exist.");
     const stage = this.doc.stages.find((s) => s.id === stageId);
     if (stage) return { ...structuredClone(stage), source: "active" as const };
-    const completed = this.doc.history.find((s) => s.id === stageId);
+    const completed = this.historyView(this.doc).stages.find((s) => s.id === stageId);
     if (completed) return { ...structuredClone(completed), source: "history" as const };
     return planError("STAGE_NOT_FOUND", `Stage '${stageId}' not found in active plan or history`);
   }
@@ -368,7 +365,7 @@ export class PlanService {
   async plan_get_history(lastN?: number): Promise<PlanHistoryView | PlanError> {
     if (!this.doc) return planError("PLAN_NOT_FOUND", "plan.json does not exist.");
     if (lastN !== undefined && lastN > 0) {
-      return { stages: structuredClone(this.doc.history.slice(-lastN)) };
+      return structuredClone(planHistoryView(this.doc, lastN) as PlanHistoryView);
     }
     return structuredClone(this.historyView(this.doc));
   }
