@@ -275,7 +275,7 @@ describe("createChildSpawner — Fix 1 dispatcher gate (manager arm)", () => {
       // setCurrentStage('stage-a') runs during dispatch then reverts to null
       // in the finally block; confirm the 'stage-a' setpoint was observed.
       expect(trackerSet.mock.calls.map((c) => c[0])).toContain("stage-a");
-      await expect(runtime.stageRuns?.readEvents({ stageId: "stage-a" })).resolves.toEqual([
+      await expect(runtime.stageRuns.readEvents({ stageId: "stage-a" })).resolves.toEqual([
         expect.objectContaining({ type: "stage_started", stage_id: "stage-a" }),
       ]);
     } finally {
@@ -305,7 +305,7 @@ describe("createChildSpawner — Fix 1 dispatcher gate (manager arm)", () => {
       );
 
       expect(result.kind).toBe("success");
-      await expect(runtime.stageRuns?.readEvents({ stageId: "stage-a" })).resolves.toEqual([
+      await expect(runtime.stageRuns.readEvents({ stageId: "stage-a" })).resolves.toEqual([
         expect.objectContaining({ type: "task_started", stage_id: "stage-a", task_id: "task-a" }),
       ]);
     } finally {

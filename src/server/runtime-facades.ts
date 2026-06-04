@@ -20,7 +20,7 @@ export interface AgentRuntimeDeps {
   noteManager: NoteManager;
   eventBus: EventBus;
   planService: PlanService;
-  stageRuns?: StageRunStore;
+  stageRuns: StageRunStore;
   tracker: RuntimeTracker;
   agentRegistry: Map<string, BaseAgent>;
   lifecycle?: Pick<RuntimeLifecycle, "signal">;

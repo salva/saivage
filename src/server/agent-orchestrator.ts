@@ -10,7 +10,7 @@ import type { DispatchableRole, WorkerRole } from "../agents/roster.js";
 import type { AgentState } from "../types.js";
 import { StageSummarySchema } from "../types.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
-import { StageRunStore } from "../store/stage-run-store.js";
+import type { StageRunStore } from "../store/stage-run-store.js";
 import { agentId } from "../ids.js";
 import { log } from "../log.js";
 import type { EventBus } from "../events/bus.js";
@@ -45,7 +45,7 @@ export class AgentOrchestrator {
     _parentCtx: AgentContext,
   ): Promise<AgentResult> {
     const { project, router, mcpRuntime, noteManager, eventBus, tracker } = this.runtime;
-    const stageRuns = this.runtime.stageRuns ?? new StageRunStore(project);
+    const { stageRuns } = this.runtime;
     const lifecycleSignal = this.runtime.lifecycle?.signal;
     const abortSignal = lifecycleSignal ? { aborted: lifecycleSignal.aborted } : undefined;
 

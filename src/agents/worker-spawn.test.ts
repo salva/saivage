@@ -10,6 +10,7 @@ import type { AgentContext, WorkerInput } from "./types.js";
 import { TaskSchema, type Task } from "../types.js";
 import type { BaseAgent } from "./base.js";
 import { NoteManager } from "../runtime/notes.js";
+import { StageRunStore } from "../store/stage-run-store.js";
 import type { RuntimeCancellationSignal } from "../runtime/lifecycle.js";
 import { getRoster, WORKER_ROLES } from "./roster.js";
 import { ROLE_TO_TASK_TYPE } from "./task-report.js";
@@ -272,6 +273,7 @@ function makeRuntime(root: string): SaivageRuntime & {
       clear: () => {},
     } as unknown as SaivageRuntime["eventBus"],
     planService: {} as SaivageRuntime["planService"],
+    stageRuns: new StageRunStore(project),
     project,
     tracker,
     plannerControl: {} as SaivageRuntime["plannerControl"],

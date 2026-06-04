@@ -53,7 +53,7 @@ export interface SaivageRuntime {
   eventBus: EventBus;
   planService: PlanService;
   /** Stage-run lifecycle/event store over the project stage artifacts. */
-  stageRuns?: StageRunStore;
+  stageRuns: StageRunStore;
   noteManager: NoteManager;
   project: ProjectContext;
   tracker: RuntimeTracker;
@@ -72,6 +72,29 @@ export interface SaivageRuntime {
   knowledgeStore: import("../knowledge/init.js").KnowledgeStore;
   /** Stop the runtime gracefully. */
   shutdown: () => Promise<void>;
+}
+
+interface KnowledgeAndRagServices {
+  ragService: import("./rag/service.js").RagService;
+  ragManager: import("../rag/index.js").RagManager;
+  knowledgeStore: import("../knowledge/init.js").KnowledgeStore;
+}
+
+interface PersistenceServices {
+  stageRuns: StageRunStore;
+  noteManager: NoteManager;
+}
+
+interface ToolRuntimeServices {
+  mcpRuntime: McpRuntime;
+  planService: PlanService;
+}
+
+interface AgentRuntimeServices {
+  agentRegistry: Map<string, import("../agents/base.js").BaseAgent>;
+  plannerControl: PlannerControl;
+  plannerStartupDirectives: string[];
+  supervisor: RuntimeSupervisor;
 }
 
 export interface PlannerRestartRequest {
@@ -137,30 +160,18 @@ export async function bootstrap(
   // 2. Load project-local runtime config
   const config = await loadConfig(project.projectRoot);
   log.info("[v2] Config loaded");
-  const routing = new ModelRoutingResolver(project.config, {
-    ...config,
-    supervisorModel: config.supervisor.model,
-  });
+  const { routing, router } = await createRoutingAndRouter(project, config);
 
-  validateModelCoverage(config, routing, configPath(project.projectRoot));
+  // 3. Initialize knowledge/RAG and persistence services used by tools and agents.
+  const { ragService, ragManager, knowledgeStore } = await createKnowledgeAndRag(project, config);
+  const { stageRuns, noteManager } = createPersistenceServices(project);
 
-  // 3. Initialize model router (OAuth credentials are resolved lazily on first use)
-  const router = await initializeModelRouter(config);
-
-  // 4. Initialize MCP runtime + builtin services
-  const mcpRuntime = new McpRuntime(config);
-  const { ragService, ragManager, knowledgeStore } = await initializeKnowledgeAndRag(project, config);
-  registerBuiltinServices(mcpRuntime, config.mcp, config.security, {
+  // 4. Initialize MCP runtime and in-process services.
+  const { mcpRuntime, planService } = await createToolRuntime(
     project,
-    rag: ragService,
-    knowledge: knowledgeStore,
-  });
-  await startConfiguredMcpServers(mcpRuntime, config);
-  mcpRuntime.startMonitoring();
-
-  // 5. Register Plan MCP service (in-process)
-  const stageRuns = new StageRunStore(project);
-  const planService = await initializePlanMcpService(project, mcpRuntime, stageRuns);
+    config,
+    { ragService, knowledgeStore, stageRuns },
+  );
 
   // 6. Single-instance guard: PID-liveness check (fast path) plus an
   // O_CREAT|O_EXCL lockfile that closes the TOCTOU between the check and
@@ -182,13 +193,7 @@ export async function bootstrap(
   }
 
   // 7b. Clean up stale/expired notes from previous runs
-  const noteManager = new NoteManager(project.paths.notes);
-  {
-    const cleaned = await noteManager.cleanupStaleNotes(config.runtime.notes.volatileTtlMs);
-    if (cleaned > 0) {
-      log.info(`[v2] Cleaned ${cleaned} stale/expired notes from previous run`);
-    }
-  }
+  await cleanupStaleNotes(noteManager, config);
 
   // 8. Event bus
   const eventBus = new EventBus();
@@ -202,10 +207,12 @@ export async function bootstrap(
 
   // Runtime tracker for agent lifecycle → dashboard
   const tracker = new RuntimeTracker(project.paths.runtimeState);
-  const agentRegistry = new Map<string, import("../agents/base.js").BaseAgent>();
-  const plannerControl = new PlannerControl();
-  let supervisor: RuntimeSupervisor | null = null;
-  const lifecycle = new RuntimeLifecycle({
+  const { agentRegistry, plannerControl, plannerStartupDirectives, supervisor } = createAgentRuntime(
+    config,
+    router,
+    routing,
+  );
+  const lifecycle = createRuntimeLifecycle({
     project,
     tracker,
     mcpRuntime,
@@ -213,7 +220,7 @@ export async function bootstrap(
     ragManager,
     eventBus,
     runtimeLock,
-    getSupervisor: () => supervisor,
+    supervisor,
   });
 
   const runtime: SaivageRuntime = {
@@ -228,9 +235,9 @@ export async function bootstrap(
     project,
     tracker,
     plannerControl,
-    plannerStartupDirectives: [],
+    plannerStartupDirectives,
     agentRegistry,
-    supervisor: null,
+    supervisor,
     lifecycle,
     ragService,
     knowledgeStore,
@@ -239,14 +246,6 @@ export async function bootstrap(
 
   lifecycle.installFatalHandlers();
 
-  registerNoteMcpService(project, mcpRuntime);
-
-  supervisor = new RuntimeSupervisor(
-    config,
-    { router, agentRegistry },
-    config.supervisor.enabled ? routing.resolve("supervisor").modelSpec : undefined,
-  );
-  runtime.supervisor = supervisor;
   supervisor.start();
 
   const shutdownHandoff = await consumeShutdownHandoff(project);
@@ -290,6 +289,99 @@ export async function runPlannerWithRecovery(
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
+
+async function createRoutingAndRouter(
+  project: ProjectContext,
+  config: SaivageConfig,
+): Promise<{ routing: ModelRoutingResolver; router: ModelRouter }> {
+  const routing = new ModelRoutingResolver(project.config, {
+    ...config,
+    supervisorModel: config.supervisor.model,
+  });
+  validateModelCoverage(config, routing, configPath(project.projectRoot));
+  const router = await initializeModelRouter(config);
+  return { routing, router };
+}
+
+function createPersistenceServices(project: ProjectContext): PersistenceServices {
+  const stageRuns = new StageRunStore(project);
+  const noteManager = new NoteManager(project.paths.notes);
+  return { stageRuns, noteManager };
+}
+
+async function cleanupStaleNotes(
+  noteManager: NoteManager,
+  config: SaivageConfig,
+): Promise<void> {
+  const cleaned = await noteManager.cleanupStaleNotes(config.runtime.notes.volatileTtlMs);
+  if (cleaned > 0) {
+    log.info(`[v2] Cleaned ${cleaned} stale/expired notes from previous run`);
+  }
+}
+
+async function createToolRuntime(
+  project: ProjectContext,
+  config: SaivageConfig,
+  deps: {
+    ragService: KnowledgeAndRagServices["ragService"];
+    knowledgeStore: KnowledgeAndRagServices["knowledgeStore"];
+    stageRuns: StageRunStore;
+  },
+): Promise<ToolRuntimeServices> {
+  const mcpRuntime = new McpRuntime(config);
+  registerBuiltinServices(mcpRuntime, config.mcp, config.security, {
+    project,
+    rag: deps.ragService,
+    knowledge: deps.knowledgeStore,
+  });
+  await startConfiguredMcpServers(mcpRuntime, config);
+  mcpRuntime.startMonitoring();
+  const planService = await initializePlanMcpService(project, mcpRuntime, deps.stageRuns);
+  registerNoteMcpService(project, mcpRuntime);
+  return { mcpRuntime, planService };
+}
+
+function createRuntimeLifecycle(deps: {
+  project: ProjectContext;
+  tracker: RuntimeTracker;
+  mcpRuntime: McpRuntime;
+  knowledgeStore: KnowledgeAndRagServices["knowledgeStore"];
+  ragManager: KnowledgeAndRagServices["ragManager"];
+  eventBus: EventBus;
+  runtimeLock: Awaited<ReturnType<typeof acquireRuntimeLock>>;
+  supervisor: RuntimeSupervisor;
+}): RuntimeLifecycle {
+  return new RuntimeLifecycle({
+    project: deps.project,
+    tracker: deps.tracker,
+    mcpRuntime: deps.mcpRuntime,
+    knowledgeStore: deps.knowledgeStore,
+    ragManager: deps.ragManager,
+    eventBus: deps.eventBus,
+    runtimeLock: deps.runtimeLock,
+    getSupervisor: () => deps.supervisor,
+  });
+}
+
+function createAgentRuntime(
+  config: SaivageConfig,
+  router: ModelRouter,
+  routing: ModelRoutingResolver,
+): AgentRuntimeServices {
+  const agentRegistry = new Map<string, import("../agents/base.js").BaseAgent>();
+  const plannerControl = new PlannerControl();
+  const supervisor = new RuntimeSupervisor(
+    config,
+    { router, agentRegistry },
+    config.supervisor.enabled ? routing.resolve("supervisor").modelSpec : undefined,
+  );
+  return {
+    agentRegistry,
+    plannerControl,
+    plannerStartupDirectives: [],
+    supervisor,
+  };
+}
 
 async function startConfiguredMcpServers(
   mcpRuntime: McpRuntime,
@@ -378,14 +470,10 @@ function registerNoteMcpService(
   );
 }
 
-async function initializeKnowledgeAndRag(
+async function createKnowledgeAndRag(
   project: ProjectContext,
   config: SaivageConfig,
-): Promise<{
-  ragService: import("./rag/service.js").RagService;
-  ragManager: import("../rag/index.js").RagManager;
-  knowledgeStore: import("../knowledge/init.js").KnowledgeStore;
-}> {
+): Promise<KnowledgeAndRagServices> {
   const { createRagManager } = await import("../rag/index.js");
   const ragManager = await createRagManager({
     projectRoot: project.projectRoot,
