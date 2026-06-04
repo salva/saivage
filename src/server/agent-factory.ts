@@ -46,6 +46,7 @@ export class AgentFactory {
       };
 
       let agent: Agent;
+      let runAgent: (() => Promise<AgentResult>) | undefined;
       let trackingAgentId = ctx.agentId;
       let taskId: string | undefined;
 
@@ -89,10 +90,7 @@ export class AgentFactory {
           if (cached) {
             agent = cached.agent;
             trackingAgentId = cached.ctx.agentId;
-            // Update the bound input on the cached worker before dispatch so the
-            // post-loop branch below routes to `runNext(...)`.
-            (agent as WorkerAgent & { input: import("../agents/types.js").WorkerInput }).input =
-              workerInput;
+            runAgent = () => cached.agent.runNext(workerInput);
           } else {
             const worker = await WorkerAgent.createWorker(ctx, workerInput, role, {
               onActivity: (agentId) => tracker.agentActivity(agentId),
@@ -136,11 +134,7 @@ export class AgentFactory {
       this.runtime.agentRegistry.set(trackingAgentId, agent as unknown as import("../agents/base.js").BaseAgent);
 
       try {
-        // Stage-scoped workers reuse one instance across follow-up dispatches;
-        // `WorkerAgent.run()` handles both the first turn and follow-up turns
-        // uniformly based on its internal `turnCount`, so the dispatcher does
-        // not need a per-role branch here.
-        const result = await agent.run();
+        const result = await (runAgent ?? (() => agent.run()))();
 
         // Publish events for significant results
         if (role === "manager") {

@@ -81,6 +81,7 @@ describe("createChildSpawner worker dispatch", () => {
         finishReason: "end_turn",
       });
       const spawner = createChildSpawner(runtime);
+      const runNextSpy = vi.spyOn(WorkerAgent.prototype, "runNext");
 
       await spawner(role, makeInput(role, { id: `${role}-1` }), makeParentContext(root));
       const firstAgent = runtime.agentRegistry.lastSet as WorkerAgent;
@@ -88,6 +89,11 @@ describe("createChildSpawner worker dispatch", () => {
       const secondAgent = runtime.agentRegistry.lastSet as WorkerAgent;
 
       expect(secondAgent).toBe(firstAgent);
+      expect(runNextSpy).toHaveBeenCalledOnce();
+      expect(runNextSpy).toHaveBeenCalledWith(expect.objectContaining({
+        stageId: "stage-1",
+        task: expect.objectContaining({ id: `${role}-2` }),
+      }));
       expect((secondAgent as unknown as { turnCount: number }).turnCount).toBe(2);
       const snapshot = secondAgent.getConversationSnapshot();
       expect(snapshot.some((entry) => entry.content.includes(banner))).toBe(true);
