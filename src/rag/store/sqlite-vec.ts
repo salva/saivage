@@ -10,7 +10,6 @@ import * as sqliteVec from "sqlite-vec";
 
 import { RagError } from "../errors.js";
 import type {
-  ChunkMetadata,
   ProviderStamp,
   QueryFilter,
   StoredChunk,
@@ -18,16 +17,21 @@ import type {
 } from "../types.js";
 import type { VectorStore } from "./index.js";
 import { compileFilter, isPreFilterEligible } from "./sql.js";
+import {
+  CHUNK_METADATA_DDL,
+  CHUNK_METADATA_INSERT_BINDINGS,
+  CHUNK_METADATA_INSERT_COLUMNS,
+  CHUNK_METADATA_SELECT_COLUMNS,
+  CHUNK_METADATA_UPDATE_ASSIGNMENTS,
+  metadataToSqlParams,
+  rowToMetadata,
+} from "./metadata.js";
 
 const POST_FILTER_OVERSHOOT = 4;
 
-// Columns of `chunk` table, in stable order, that map to ChunkMetadata.
-const META_COLS = [
-  "path", "source", "chunkIndex", "startLine", "endLine",
-  "contentHash", "sourceHash", "mtimeMs", "language", "headingPath",
-  "symbolName", "symbolKind", "scope", "scopeRef", "role",
-  "lifecycleStatus", "createdAt", "supersedes",
-] as const;
+const CHUNK_INSERT_COLUMNS = ["id", ...CHUNK_METADATA_INSERT_COLUMNS, "text"].join(", ");
+const CHUNK_INSERT_BINDINGS = ["@id", ...CHUNK_METADATA_INSERT_BINDINGS, "@text"].join(", ");
+const CHUNK_UPDATE_ASSIGNMENTS = [...CHUNK_METADATA_UPDATE_ASSIGNMENTS, "text=excluded.text"].join(",\n        ");
 
 function toBuffer(v: Float32Array): Buffer {
   return Buffer.from(v.buffer, v.byteOffset, v.byteLength);
@@ -42,29 +46,6 @@ function bufferToFloat32(b: Buffer | Uint8Array): Float32Array {
 
 function stampToString(s: ProviderStamp): string {
   return `${s.provider}/${s.model}@dim=${s.dim}#${s.releaseFingerprint}`;
-}
-
-function rowToMetadata(row: Record<string, unknown>): ChunkMetadata {
-  return {
-    path: row["path"] as string,
-    source: row["source"] as ChunkMetadata["source"],
-    chunkIndex: row["chunkIndex"] as number,
-    startLine: (row["startLine"] as number | null) ?? undefined,
-    endLine: (row["endLine"] as number | null) ?? undefined,
-    contentHash: row["contentHash"] as string,
-    sourceHash: row["sourceHash"] as string,
-    mtimeMs: row["mtimeMs"] as number,
-    language: (row["language"] as string | null) ?? undefined,
-    headingPath: (row["headingPath"] as string | null) ?? undefined,
-    symbolName: (row["symbolName"] as string | null) ?? undefined,
-    symbolKind: (row["symbolKind"] as string | null) ?? undefined,
-    scope: (row["scope"] as string | null) ?? undefined,
-    scopeRef: (row["scopeRef"] as string | null) ?? undefined,
-    role: (row["role"] as string | null) ?? undefined,
-    lifecycleStatus: (row["lifecycleStatus"] as string | null) ?? undefined,
-    createdAt: (row["createdAt"] as number | null) ?? undefined,
-    supersedes: (row["supersedes"] as string | null) ?? undefined,
-  };
 }
 
 export class SqliteVecStore implements VectorStore {
@@ -168,24 +149,7 @@ export class SqliteVecStore implements VectorStore {
       );
       CREATE TABLE IF NOT EXISTS chunk (
         id              TEXT PRIMARY KEY,
-        path            TEXT NOT NULL,
-        source          TEXT NOT NULL,
-        chunkIndex      INTEGER NOT NULL,
-        startLine       INTEGER,
-        endLine         INTEGER,
-        contentHash     TEXT NOT NULL,
-        sourceHash      TEXT NOT NULL,
-        mtimeMs         INTEGER NOT NULL,
-        language        TEXT,
-        headingPath     TEXT,
-        symbolName      TEXT,
-        symbolKind      TEXT,
-        scope           TEXT,
-        scopeRef        TEXT,
-        role            TEXT,
-        lifecycleStatus TEXT,
-        createdAt       INTEGER,
-        supersedes      TEXT,
+        ${CHUNK_METADATA_DDL.join(",\n        ")},
         text            TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS chunk_path_idx        ON chunk(path);
@@ -233,26 +197,9 @@ export class SqliteVecStore implements VectorStore {
     const db = this.d;
     const stamp = this.stamp;
     const insertChunk = db.prepare(`
-      INSERT INTO chunk (
-        id, path, source, chunkIndex, startLine, endLine,
-        contentHash, sourceHash, mtimeMs, language, headingPath,
-        symbolName, symbolKind, scope, scopeRef, role,
-        lifecycleStatus, createdAt, supersedes, text
-      ) VALUES (
-        @id, @path, @source, @chunkIndex, @startLine, @endLine,
-        @contentHash, @sourceHash, @mtimeMs, @language, @headingPath,
-        @symbolName, @symbolKind, @scope, @scopeRef, @role,
-        @lifecycleStatus, @createdAt, @supersedes, @text
-      )
+      INSERT INTO chunk (${CHUNK_INSERT_COLUMNS}) VALUES (${CHUNK_INSERT_BINDINGS})
       ON CONFLICT(id) DO UPDATE SET
-        path=excluded.path, source=excluded.source, chunkIndex=excluded.chunkIndex,
-        startLine=excluded.startLine, endLine=excluded.endLine,
-        contentHash=excluded.contentHash, sourceHash=excluded.sourceHash, mtimeMs=excluded.mtimeMs,
-        language=excluded.language, headingPath=excluded.headingPath,
-        symbolName=excluded.symbolName, symbolKind=excluded.symbolKind,
-        scope=excluded.scope, scopeRef=excluded.scopeRef, role=excluded.role,
-        lifecycleStatus=excluded.lifecycleStatus, createdAt=excluded.createdAt,
-        supersedes=excluded.supersedes, text=excluded.text
+        ${CHUNK_UPDATE_ASSIGNMENTS}
     `);
     const deleteVec = db.prepare("DELETE FROM vec_chunk WHERE id = ?");
     const insertVec = db.prepare("INSERT INTO vec_chunk(id, embedding) VALUES (?, ?)");
@@ -268,24 +215,7 @@ export class SqliteVecStore implements VectorStore {
         }
         insertChunk.run({
           id: r.id,
-          path: r.metadata.path,
-          source: r.metadata.source,
-          chunkIndex: r.metadata.chunkIndex,
-          startLine: r.metadata.startLine ?? null,
-          endLine: r.metadata.endLine ?? null,
-          contentHash: r.metadata.contentHash,
-          sourceHash: r.metadata.sourceHash,
-          mtimeMs: r.metadata.mtimeMs,
-          language: r.metadata.language ?? null,
-          headingPath: r.metadata.headingPath ?? null,
-          symbolName: r.metadata.symbolName ?? null,
-          symbolKind: r.metadata.symbolKind ?? null,
-          scope: r.metadata.scope ?? null,
-          scopeRef: r.metadata.scopeRef ?? null,
-          role: r.metadata.role ?? null,
-          lifecycleStatus: r.metadata.lifecycleStatus ?? null,
-          createdAt: r.metadata.createdAt ?? null,
-          supersedes: r.metadata.supersedes ?? null,
+          ...metadataToSqlParams(r.metadata),
           text: r.text,
         });
         deleteVec.run(r.id);
@@ -371,7 +301,7 @@ export class SqliteVecStore implements VectorStore {
       where += ` AND ${c.sql}`;
       params.push(...c.params);
     }
-    const cols = ["id", "text", ...META_COLS].join(", ");
+    const cols = ["id", "text", ...CHUNK_METADATA_SELECT_COLUMNS].join(", ");
     const rows = db.prepare(`SELECT ${cols} FROM chunk WHERE ${where}`).all(...params) as Array<Record<string, unknown>>;
     const byId = new Map<string, Record<string, unknown>>();
     for (const r of rows) byId.set(r["id"] as string, r);

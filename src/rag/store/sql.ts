@@ -11,23 +11,15 @@
 
 import type { QueryFilter } from "../types.js";
 import { RagError } from "../errors.js";
+import { ALLOWED_FILTER_COLUMNS, PREFILTER_ELIGIBLE_COLUMNS } from "./metadata.js";
 
 export interface Compiled {
   sql: string;
   params: Array<string | number | null>;
 }
 
-const ALLOWED_COLS = new Set<string>([
-  "id", "path", "source", "chunkIndex", "startLine", "endLine",
-  "contentHash", "sourceHash", "mtimeMs", "language", "headingPath",
-  "symbolName", "symbolKind", "scope", "scopeRef", "role",
-  "lifecycleStatus", "createdAt", "supersedes",
-]);
-
-const INDEXED_COLS = new Set<string>([
-  "path", "source", "language", "role", "scope", "scopeRef",
-  "contentHash", "createdAt",
-]);
+const ALLOWED_COLS = new Set<string>(ALLOWED_FILTER_COLUMNS);
+const INDEXED_COLS = new Set<string>(PREFILTER_ELIGIBLE_COLUMNS);
 
 function assertCol(col: string, filter: QueryFilter): void {
   if (!ALLOWED_COLS.has(col)) {
