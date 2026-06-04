@@ -159,8 +159,8 @@ export async function bootstrap(
   mcpRuntime.startMonitoring();
 
   // 5. Register Plan MCP service (in-process)
-  const planService = await initializePlanMcpService(project, mcpRuntime);
   const stageRuns = new StageRunStore(project);
+  const planService = await initializePlanMcpService(project, mcpRuntime, stageRuns);
 
   // 6. Single-instance guard: PID-liveness check (fast path) plus an
   // O_CREAT|O_EXCL lockfile that closes the TOCTOU between the check and
@@ -338,8 +338,9 @@ async function initializeModelRouter(config: SaivageConfig): Promise<ModelRouter
 async function initializePlanMcpService(
   project: ProjectContext,
   mcpRuntime: McpRuntime,
+  stageRuns: StageRunStore,
 ): Promise<PlanService> {
-  const planService = new PlanService(project.saivageDir);
+  const planService = new PlanService(project.saivageDir, stageRuns);
   await planService.init();
   planService.setGitCommit(async (files: string[], message: string) => {
     // Use MCP git service to commit.
@@ -357,8 +358,8 @@ async function initializePlanMcpService(
   mcpRuntime.registerInProcess(
     "plan",
     planTools,
-    (toolName: string, args: Record<string, unknown>, _ctx?: import("../mcp/toolContext.js").ToolCallContext) =>
-      planService.handleToolCall(toolName, args),
+    (toolName: string, args: Record<string, unknown>, ctx?: import("../mcp/toolContext.js").ToolCallContext) =>
+      planService.handleToolCall(toolName, args, { agentId: ctx?.agentId }),
   );
 
   return planService;

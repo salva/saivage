@@ -18,9 +18,9 @@ Complete the coder task
 - [REQUIRED] first acceptance check
 
 ### Instructions
-Write the report to: .saivage/stages/stage-1/reports/coder-task.json
+Call task_write_report({ report }) with a TaskReport object for .saivage/stages/stage-1/reports/coder-task.json
 Commit using git with message prefix: [coder-task] if you modify files.
-After writing the report, return a concise final response. Do not include the full TaskReport JSON in the final response."
+After submitting the report, return a concise final response. Do not include the full TaskReport JSON in the final response."
 `;
 
 exports[`buildInitialMessage > renders critic assignment 1`] = `
@@ -45,9 +45,9 @@ Read the design artifacts named in the task and any referenced source/docs neede
 Write a standalone critique document at the project-relative path that best fits the artifact under review (e.g. research/design/critiques/<artifact-id>.md, docs/critiques/<artifact-id>.md, or .saivage/stages/<stage-id>/critiques/<task-id>.md).
 Do not rewrite the design yourself; tell the Designer what to fix via issues_found[] and the critique document.
 Write optional detailed notes to: .saivage/stages/stage-1/critiques/
-Write the report to: .saivage/stages/stage-1/reports/critic-task.json
+Call task_write_report({ report }) with a TaskReport object for .saivage/stages/stage-1/reports/critic-task.json
 Commit using git with message prefix: [critic-task] if you modify files.
-After writing the report, return a concise final response. Do not include the full TaskReport JSON in the final response."
+After submitting the report, return a concise final response. Do not include the full TaskReport JSON in the final response."
 `;
 
 exports[`buildInitialMessage > renders data-agent assignment 1`] = `
@@ -71,9 +71,9 @@ Complete the data_agent task
 Write downloaded artifacts to the project-relative path that best fits the task; data/ is common but not mandatory.
 Write provenance notes under research/data-sources/ or another clearly named research/provenance path.
 Use retries, fallback source URLs, alternate access methods, and an attempt manifest when downloads are unreliable.
-Write the report to: .saivage/stages/stage-1/reports/data_agent-task.json
+Call task_write_report({ report }) with a TaskReport object for .saivage/stages/stage-1/reports/data_agent-task.json
 Commit using git with message prefix: [data_agent-task] if you modify files.
-After writing the report, return a concise final response. Do not include the full TaskReport JSON in the final response."
+After submitting the report, return a concise final response. Do not include the full TaskReport JSON in the final response."
 `;
 
 exports[`buildInitialMessage > renders designer assignment 1`] = `
@@ -96,9 +96,9 @@ Complete the designer task
 ### Instructions
 Produce design artifacts that are concrete enough for implementation and review.
 Write optional detailed notes to: .saivage/stages/stage-1/design-notes/
-Write the report to: .saivage/stages/stage-1/reports/designer-task.json
+Call task_write_report({ report }) with a TaskReport object for .saivage/stages/stage-1/reports/designer-task.json
 Commit using git with message prefix: [designer-task] if you modify files.
-After writing the report, return a concise final response. Do not include the full TaskReport JSON in the final response."
+After submitting the report, return a concise final response. Do not include the full TaskReport JSON in the final response."
 `;
 
 exports[`buildInitialMessage > renders researcher assignment 1`] = `
@@ -120,9 +120,9 @@ Complete the researcher task
 
 ### Instructions
 Write findings under: research/
-Write the report to: .saivage/stages/stage-1/reports/researcher-task.json
+Call task_write_report({ report }) with a TaskReport object for .saivage/stages/stage-1/reports/researcher-task.json
 Commit using git with message prefix: [researcher-task] if you modify files.
-After writing the report, return a concise final response. Do not include the full TaskReport JSON in the final response."
+After submitting the report, return a concise final response. Do not include the full TaskReport JSON in the final response."
 `;
 
 exports[`buildInitialMessage > renders reviewer assignment 1`] = `
@@ -146,9 +146,9 @@ Complete the reviewer task
 Review the stage objectives, expected outcomes, acceptance criteria, task list, worker reports, changed artifacts, and any existing summary drafts.
 For data-heavy or ML/research stages, validate data provenance/suitability, leakage controls, statistical acceptance, benchmark comparison, and whether conclusions are supported.
 Write optional detailed notes to: .saivage/stages/stage-1/reviews/
-Write the report to: .saivage/stages/stage-1/reports/reviewer-task.json
+Call task_write_report({ report }) with a TaskReport object for .saivage/stages/stage-1/reports/reviewer-task.json
 Commit using git with message prefix: [reviewer-task] if you modify files.
-After writing the report, return a concise final response. Do not include the full TaskReport JSON in the final response."
+After submitting the report, return a concise final response. Do not include the full TaskReport JSON in the final response."
 `;
 
 exports[`buildInitialMessage > renders reviewer follow-up assignment 1`] = `
@@ -173,7 +173,7 @@ This is a follow-up review in the same stage-scoped reviewer session. Your previ
 Review the stage objectives, expected outcomes, acceptance criteria, task list, worker reports, changed artifacts, and any existing summary drafts.
 For data-heavy or ML/research stages, validate data provenance/suitability, leakage controls, statistical acceptance, benchmark comparison, and whether conclusions are supported.
 Write optional detailed notes to: .saivage/stages/stage-1/reviews/
-Write the report to: .saivage/stages/stage-1/reports/reviewer-task.json
+Call task_write_report({ report }) with a TaskReport object for .saivage/stages/stage-1/reports/reviewer-task.json
 Commit using git with message prefix: [reviewer-task] if you modify files.
-After writing the report, return a concise final response. Do not include the full TaskReport JSON in the final response."
+After submitting the report, return a concise final response. Do not include the full TaskReport JSON in the final response."
 `;

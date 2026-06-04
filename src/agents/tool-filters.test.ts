@@ -23,11 +23,13 @@ describe("applyToolFilter — per-kind dispatch", () => {
   it("worker allows write_file but excludes plan_get", () => {
     expect(applyToolFilter("worker", t("write_file"))).toBe(true);
     expect(applyToolFilter("worker", t("plan_get", "plan"))).toBe(false);
+    expect(applyToolFilter("worker", t("task_write_report", "plan"))).toBe(true);
   });
 
   it("reviewer allows read_file and run_command but excludes write_file", () => {
     expect(applyToolFilter("reviewer", t("read_file"))).toBe(true);
     expect(applyToolFilter("reviewer", t("run_command", "shell"))).toBe(true);
+    expect(applyToolFilter("reviewer", t("task_write_report", "plan"))).toBe(true);
     expect(applyToolFilter("reviewer", t("write_file"))).toBe(false);
   });
 

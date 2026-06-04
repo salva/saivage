@@ -1,0 +1,36 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`buildManagerMessage > instructs managers to submit stage artifacts through MCP tools 1`] = `
+"## Stage Assignment
+
+## Shared Project Context
+[FIXTURE HANDOFF]
+
+**Stage ID:** stage-1
+**Objective:** Implement the fixture stage
+
+### Starting Points
+- README.md
+
+### Expected Outcomes
+- Outcome A
+
+### Acceptance Criteria
+- Criterion A
+
+### References
+- docs/spec.md
+
+### Tags
+fixture
+
+### Instructions
+1. Read the referenced documents to understand the context.
+2. Decompose this stage into tasks and call stage_write_tasks({ task_list }) with a TaskList object for .saivage/stages/stage-1/tasks.json containing stage_id, created_at, updated_at, and tasks. Do not submit a bare JSON array.
+3. Dispatch tasks to Coder, Researcher, and Data Agent workers as appropriate.
+4. After main work completes, dispatch a Reviewer to validate the stage against objective, outcomes, acceptance criteria, and artifacts.
+5. If the Reviewer finds blockers or important issues, plan targeted correction tasks, dispatch them, and rerun review after material fixes. In each follow-up review, summarize the corrective tasks, new TaskReports, changed files, and previous issues the Reviewer should recheck. Continue this review/fix/re-review loop until blockers are resolved, warnings are accepted as residual risk, or escalation is justified.
+6. Process results, handle failures, and prepare the summary.
+7. Call stage_write_summary({ summary }) with a StageSummary object for .saivage/stages/stage-1/summary.json.
+8. After submitting the summary, return a concise final response. Do not include the full StageSummary JSON in the final response."
+`;

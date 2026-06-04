@@ -21,6 +21,11 @@ const PLAN_TOOLS = new Set<string>([
   "plan_get_history", "plan_init", "plan_commit", "plan_done",
 ]);
 
+const STAGE_ARTIFACT_TOOLS = new Set<string>([
+  "stage_write_tasks", "task_write_report", "stage_write_summary",
+  "stage_get_run", "stage_list_reports",
+]);
+
 const WORKER_EXCLUDED_TOOLS = new Set<string>([
   ...PLAN_TOOLS,
   "create_skill", "update_skill",
@@ -40,9 +45,9 @@ const LIBRARIAN_TOOLS = new Set<string>([
 ]);
 
 const TOOL_FILTERS: Record<ToolFilterKind, (name: string) => boolean> = {
-  planner: (n) => PLAN_TOOLS.has(n) || READ_ONLY_TOOLS.has(n) || n === READ_STASH,
+  planner: (n) => PLAN_TOOLS.has(n) || STAGE_ARTIFACT_TOOLS.has(n) || READ_ONLY_TOOLS.has(n) || n === READ_STASH,
   worker: (n) => !WORKER_EXCLUDED_TOOLS.has(n),
-  reviewer: (n) => READ_ONLY_TOOLS.has(n) || n === "run_command" || n === READ_STASH,
+  reviewer: (n) => READ_ONLY_TOOLS.has(n) || STAGE_ARTIFACT_TOOLS.has(n) || n === "run_command" || n === READ_STASH,
   inspector: (n) =>
     READ_ONLY_TOOLS.has(n) || n === "run_command" || n === READ_STASH || WEB_TOOLS.has(n),
   chat: (n) =>

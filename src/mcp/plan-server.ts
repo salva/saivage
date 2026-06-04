@@ -15,13 +15,20 @@ import {
   PlanDocumentSchema,
   StageSchema,
   CompletedStageSchema,
+  TaskListSchema,
+  TaskReportSchema,
+  StageSummarySchema,
   type ActivePlanView,
   type PlanDocument,
   type PlanHistoryView,
   type Stage,
   type CompletedStage,
   type Escalation,
+  type TaskList,
+  type TaskReport,
+  type StageSummary,
 } from "../types.js";
+import type { StageRunStore } from "../store/stage-run-store.js";
 import { archiveStage } from "../knowledge/lifecycle.js";
 import { log } from "../log.js";
 import { dispatchPlanToolCall } from "./plan-dispatch.js";
@@ -73,7 +80,7 @@ export class PlanService {
   /** SHA of last commit for noop detection. */
   private lastCommitSha: string | null = null;
 
-  constructor(projectSaivageDir: string) {
+  constructor(projectSaivageDir: string, private readonly stageRuns?: StageRunStore) {
     this.docPath = join(projectSaivageDir, "plan.json");
     this.projectRoot = join(projectSaivageDir, "..");
   }
@@ -421,6 +428,58 @@ export class PlanService {
     return { ok: true };
   }
 
+  /** stage_write_tasks — Submit the manager-created task list for a stage. */
+  async stage_write_tasks(args: { task_list: TaskList }, opts: { agentId?: string } = {}): Promise<{ ok: true; path: string } | PlanError> {
+    if (!this.stageRuns) return planError("IO_ERROR", "StageRunStore is not configured");
+    try {
+      const taskList = TaskListSchema.parse(args.task_list);
+      await this.stageRuns.writeTaskList(taskList, { agentId: opts.agentId });
+      return { ok: true, path: this.stageRuns.stageTaskListPath(taskList.stage_id) };
+    } catch (err) {
+      return planError("VALIDATION_ERROR", err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** task_write_report — Submit a worker TaskReport artifact. */
+  async task_write_report(args: { report: TaskReport }, opts: { agentId?: string } = {}): Promise<{ ok: true; path: string } | PlanError> {
+    if (!this.stageRuns) return planError("IO_ERROR", "StageRunStore is not configured");
+    try {
+      const report = TaskReportSchema.parse(args.report);
+      await this.stageRuns.writeTaskReport(report, { agentId: opts.agentId });
+      return { ok: true, path: this.stageRuns.stageTaskReportPath(report.stage_id, report.task_id) };
+    } catch (err) {
+      return planError("VALIDATION_ERROR", err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** stage_write_summary — Submit the manager-created stage summary. */
+  async stage_write_summary(args: { summary: StageSummary }, opts: { agentId?: string } = {}): Promise<{ ok: true; path: string } | PlanError> {
+    if (!this.stageRuns) return planError("IO_ERROR", "StageRunStore is not configured");
+    try {
+      const summary = StageSummarySchema.parse(args.summary);
+      await this.stageRuns.writeStageSummary(summary, { agentId: opts.agentId });
+      return { ok: true, path: this.stageRuns.stageSummaryPath(summary.stage_id) };
+    } catch (err) {
+      return planError("VALIDATION_ERROR", err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** stage_get_run — Read the reconstructed StageRun aggregate. */
+  async stage_get_run(args: { stage_id: string }): Promise<unknown | PlanError> {
+    if (!this.stageRuns) return planError("IO_ERROR", "StageRunStore is not configured");
+    if (typeof args.stage_id !== "string" || args.stage_id.trim() === "") {
+      return planError("VALIDATION_ERROR", "stage_get_run requires a non-empty stage_id");
+    }
+    return this.stageRuns.getStageRun(args.stage_id);
+  }
+
+  /** stage_list_reports — Read valid TaskReports for a stage. */
+  async stage_list_reports(args: { stage_id: string }): Promise<{ reports: TaskReport[] } | PlanError> {
+    const run = await this.stage_get_run(args);
+    if (run && typeof run === "object" && "code" in run && "error" in run) return run as PlanError;
+    return { reports: (run as { reports?: TaskReport[] } | null)?.reports ?? [] };
+  }
+
   // ─── MCP Tool Handler ──────────────────────────────────────────────────
 
   /**
@@ -430,11 +489,12 @@ export class PlanService {
   async handleToolCall(
     toolName: string,
     args: Record<string, unknown>,
+    opts: { agentId?: string } = {},
   ): Promise<{ content: unknown; isError: boolean }> {
     if (PLAN_WRITER_TOOLS.has(toolName)) {
-      return this.serializeOp(() => dispatchPlanToolCall(this, toolName, args));
+      return this.serializeOp(() => dispatchPlanToolCall(this, toolName, args, opts));
     }
-    return dispatchPlanToolCall(this, toolName, args);
+    return dispatchPlanToolCall(this, toolName, args, opts);
   }
 
   private async serializeOp<T>(fn: () => Promise<T>): Promise<T> {

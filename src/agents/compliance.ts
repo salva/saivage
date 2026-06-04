@@ -26,7 +26,7 @@ export function checkWorkerCompletion(opts: {
   return {
     conventionId: "worker-report-evidence",
     message,
-    repairPrompt: `${message} Write the required TaskReport artifact JSON to the expected .saivage/stages/<stage>/reports/<task>.json path with concrete evidence, then return a concise final response.`,
+    repairPrompt: `${message} Call task_write_report({ report }) with the required TaskReport artifact for the expected .saivage/stages/<stage>/reports/<task>.json path and concrete evidence, then return a concise final response.`,
     fatal: false,
   };
 }
@@ -52,7 +52,7 @@ export function checkManagerCompletion(opts: {
     return {
       conventionId: "manager-summary-evidence",
       message,
-      repairPrompt: `${message} Write .saivage/stages/<stage>/summary.json after worker and reviewer evidence exists, then return a concise final response.`,
+      repairPrompt: `${message} Call stage_write_summary({ summary }) after worker and reviewer evidence exists so .saivage/stages/<stage>/summary.json is written, then return a concise final response.`,
       fatal: false,
     };
   }

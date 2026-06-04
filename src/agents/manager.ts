@@ -148,7 +148,7 @@ function normalizeStage(raw: Record<string, unknown>): Stage {
   };
 }
 
-async function buildManagerMessage(ctx: AgentContext, input: ManagerInput): Promise<string> {
+export async function buildManagerMessage(ctx: AgentContext, input: ManagerInput): Promise<string> {
   const stage = input.stage;
   const outcomes = (stage.expected_outcomes ?? [])
     .map((o) => `- ${o}`)
@@ -176,13 +176,13 @@ async function buildManagerMessage(ctx: AgentContext, input: ManagerInput): Prom
     `### Tags\n${(stage.tags ?? []).join(", ") || "(none)"}\n\n` +
     `### Instructions\n` +
     `1. Read the referenced documents to understand the context.\n` +
-    `2. Decompose this stage into tasks and write .saivage/stages/${stage.id}/tasks.json as a TaskList object with stage_id, created_at, updated_at, and tasks. Do not write a bare JSON array.\n` +
+    `2. Decompose this stage into tasks and call stage_write_tasks({ task_list }) with a TaskList object for .saivage/stages/${stage.id}/tasks.json containing stage_id, created_at, updated_at, and tasks. Do not submit a bare JSON array.\n` +
     `3. Dispatch tasks to Coder, Researcher, and Data Agent workers as appropriate.\n` +
     `4. After main work completes, dispatch a Reviewer to validate the stage against objective, outcomes, acceptance criteria, and artifacts.\n` +
     `5. If the Reviewer finds blockers or important issues, plan targeted correction tasks, dispatch them, and rerun review after material fixes. In each follow-up review, summarize the corrective tasks, new TaskReports, changed files, and previous issues the Reviewer should recheck. Continue this review/fix/re-review loop until blockers are resolved, warnings are accepted as residual risk, or escalation is justified.\n` +
-    `6. Process results, handle failures, write the summary.\n` +
-    `7. Write .saivage/stages/${stage.id}/summary.json.\n` +
-    `8. After writing the summary, return a concise final response. Do not include the full StageSummary JSON in the final response.`
+    `6. Process results, handle failures, and prepare the summary.\n` +
+    `7. Call stage_write_summary({ summary }) with a StageSummary object for .saivage/stages/${stage.id}/summary.json.\n` +
+    `8. After submitting the summary, return a concise final response. Do not include the full StageSummary JSON in the final response.`
   );
 }
 

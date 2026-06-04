@@ -67,12 +67,12 @@ export async function buildInitialMessage(
     instructions.push(`Write optional detailed notes to: ${meta.notesDir(input.stageId)}`);
   }
   instructions.push(
-    `Write the report to: .saivage/stages/${input.stageId}/reports/${input.task.id}.json`,
+    `Call task_write_report({ report }) with a TaskReport object for .saivage/stages/${input.stageId}/reports/${input.task.id}.json`,
   );
   instructions.push(
     `Commit using git with message prefix: [${input.task.id}] if you modify files.`,
   );
-  instructions.push("After writing the report, return a concise final response. Do not include the full TaskReport JSON in the final response.");
+  instructions.push("After submitting the report, return a concise final response. Do not include the full TaskReport JSON in the final response.");
 
   return (
     `## ${meta.heading}${headingSuffix}\n\n` +

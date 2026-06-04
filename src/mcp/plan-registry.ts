@@ -1,4 +1,4 @@
-import type { Stage } from "../types.js";
+import type { Stage, StageSummary, TaskList, TaskReport } from "../types.js";
 import type { PlanService } from "./plan-server.js";
 
 export type PlanToolSchema = {
@@ -11,7 +11,7 @@ export type PlanToolAccess = "reader" | "writer";
 
 type PlanToolEntry = PlanToolSchema & {
   access: PlanToolAccess;
-  handler(service: PlanService, args: Record<string, unknown>): Promise<unknown>;
+  handler(service: PlanService, args: Record<string, unknown>, opts: { agentId?: string }): Promise<unknown>;
 };
 
 export const PLAN_TOOL_REGISTRY = [
@@ -150,6 +150,76 @@ export const PLAN_TOOL_REGISTRY = [
     },
     handler: (service, args) => service.plan_done(args as { reason: string }),
   },
+  {
+    name: "stage_write_tasks",
+    access: "writer",
+    description: "Submit a validated TaskList artifact for a stage; persists .saivage/stages/<stage-id>/tasks.json.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task_list: {
+          type: "object",
+          description: "TaskList object with stage_id, created_at, updated_at, and tasks.",
+        },
+      },
+      required: ["task_list"],
+    },
+    handler: (service, args, opts) => service.stage_write_tasks(args as { task_list: TaskList }, opts),
+  },
+  {
+    name: "task_write_report",
+    access: "writer",
+    description: "Submit a validated TaskReport artifact; persists .saivage/stages/<stage-id>/reports/<task-id>.json.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        report: {
+          type: "object",
+          description: "TaskReport object for the completed or failed worker task.",
+        },
+      },
+      required: ["report"],
+    },
+    handler: (service, args, opts) => service.task_write_report(args as { report: TaskReport }, opts),
+  },
+  {
+    name: "stage_write_summary",
+    access: "writer",
+    description: "Submit a validated StageSummary artifact; persists .saivage/stages/<stage-id>/summary.json.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        summary: {
+          type: "object",
+          description: "StageSummary object for the stage result.",
+        },
+      },
+      required: ["summary"],
+    },
+    handler: (service, args, opts) => service.stage_write_summary(args as { summary: StageSummary }, opts),
+  },
+  {
+    name: "stage_get_run",
+    access: "reader",
+    description: "Read the reconstructed StageRun aggregate for a stage.",
+    inputSchema: {
+      type: "object",
+      properties: { stage_id: { type: "string", description: "Stage ID to inspect" } },
+      required: ["stage_id"],
+    },
+    handler: (service, args) => service.stage_get_run(args as { stage_id: string }),
+  },
+  {
+    name: "stage_list_reports",
+    access: "reader",
+    description: "List valid TaskReport artifacts for a stage.",
+    inputSchema: {
+      type: "object",
+      properties: { stage_id: { type: "string", description: "Stage ID to inspect" } },
+      required: ["stage_id"],
+    },
+    handler: (service, args) => service.stage_list_reports(args as { stage_id: string }),
+  },
 ] as const satisfies readonly PlanToolEntry[];
 
 export const PLAN_WRITER_TOOLS: ReadonlySet<string> = new Set(
@@ -168,13 +238,14 @@ export async function dispatchPlanToolCall(
   service: PlanService,
   toolName: string,
   args: Record<string, unknown>,
+  opts: { agentId?: string } = {},
 ): Promise<{ content: unknown; isError: boolean }> {
   const tool = PLAN_TOOL_REGISTRY.find((entry) => entry.name === toolName);
   if (!tool) {
     return { content: { code: "VALIDATION_ERROR", error: `Unknown plan tool: ${toolName}` }, isError: true };
   }
 
-  const result = await tool.handler(service, args);
+  const result = await tool.handler(service, args, opts);
   const isError = !!(result && typeof result === "object" && "code" in result && "error" in result);
   return { content: result, isError };
 }
