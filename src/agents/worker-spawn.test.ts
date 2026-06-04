@@ -9,6 +9,7 @@ import type { AgentContext, WorkerInput } from "./types.js";
 import type { Task } from "../types.js";
 import type { BaseAgent } from "./base.js";
 import { NoteManager } from "../runtime/notes.js";
+import type { RuntimeCancellationSignal } from "../runtime/lifecycle.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -132,6 +133,41 @@ describe("createChildSpawner worker dispatch", () => {
       expect(third.kind).toBe("success");
       expect(failedAgent).toBe(firstAgent);
       expect(thirdAgent).not.toBe(firstAgent);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("cancels child agents through the lifecycle signal", async () => {
+    const root = mkdtempSync(join(tmpdir(), "saivage-worker-spawn-"));
+    try {
+      const runtime = makeRuntime(root);
+      const signal = makeSignal();
+      runtime.lifecycle = { signal } as SaivageRuntime["lifecycle"];
+      let capturedAbortSignal: { aborted: boolean } | undefined;
+      const cancel = vi.fn();
+      vi.spyOn(WorkerAgent, "createWorker").mockImplementation(async (_ctx, _input, _role, config) => {
+        capturedAbortSignal = config?.abortSignal;
+        return {
+          id: "worker-1",
+          role: "coder",
+          run: async () => {
+            signal.abort();
+            return { kind: "abort", reason: "shutdown" };
+          },
+          cancel,
+        } as unknown as WorkerAgent;
+      });
+
+      const result = await createChildSpawner(runtime)(
+        "coder",
+        makeInput("coder"),
+        makeParentContext(root),
+      );
+
+      expect(result.kind).toBe("abort");
+      expect(capturedAbortSignal?.aborted).toBe(true);
+      expect(cancel).toHaveBeenCalledOnce();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -311,6 +347,29 @@ function makeTaskReport(role: WorkerInput["task"]["assigned_to"], taskId = `${ro
     started_at: new Date().toISOString(),
     completed_at: new Date().toISOString(),
     duration_ms: 1,
+  };
+}
+
+function makeSignal(): RuntimeCancellationSignal & { abort: () => void } {
+  let aborted = false;
+  const listeners = new Set<() => void>();
+  return {
+    get aborted() {
+      return aborted;
+    },
+    onAbort(listener: () => void) {
+      if (aborted) {
+        listener();
+        return () => {};
+      }
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    abort() {
+      if (aborted) return;
+      aborted = true;
+      for (const listener of listeners) listener();
+    },
   };
 }
 

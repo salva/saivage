@@ -21,11 +21,11 @@ export interface AgentRuntimeDeps {
   planService: PlanService;
   tracker: RuntimeTracker;
   agentRegistry: Map<string, BaseAgent>;
+  lifecycle?: Pick<RuntimeLifecycle, "signal">;
 }
 
 export interface PlannerRuntimeDeps extends AgentRuntimeDeps {
   config: Pick<SaivageConfig, "runtime">;
   plannerControl: PlannerControl;
   plannerStartupDirectives: string[];
-  lifecycle?: Pick<RuntimeLifecycle, "signal">;
 }

@@ -38,6 +38,8 @@ export class AgentOrchestrator {
     _parentCtx: AgentContext,
   ): Promise<AgentResult> {
     const { project, router, mcpRuntime, noteManager, eventBus, tracker } = this.runtime;
+    const lifecycleSignal = this.runtime.lifecycle?.signal;
+    const abortSignal = lifecycleSignal ? { aborted: lifecycleSignal.aborted } : undefined;
 
     const ctx: AgentContext = {
       project,
@@ -74,6 +76,7 @@ export class AgentOrchestrator {
         managerStageId = managerInput.stage?.id;
         ctx.stageId = managerStageId;
         agent = await ManagerAgent.create(ctx, managerInput, managerSpawner, {
+          abortSignal,
           onActivity: (agentId) => tracker.agentActivity(agentId),
           onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
         });
@@ -101,6 +104,7 @@ export class AgentOrchestrator {
           runAgent = () => cached.agent.runNext(workerInput);
         } else {
           const worker = await WorkerAgent.createWorker(ctx, workerInput, role, {
+            abortSignal,
             onActivity: (agentId) => tracker.agentActivity(agentId),
             onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
           });
@@ -119,6 +123,7 @@ export class AgentOrchestrator {
         const inspectorInput = input as import("../agents/types.js").InspectorInput;
         ctx.stageId = tracker.getCurrentStage() ?? undefined;
         agent = await InspectorAgent.create(ctx, inspectorInput, {
+          abortSignal,
           onActivity: (agentId) => tracker.agentActivity(agentId),
           onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
         });
@@ -128,6 +133,7 @@ export class AgentOrchestrator {
       case "librarian": {
         const librarianInput = input as import("../agents/librarian.js").LibrarianInput;
         agent = await LibrarianAgent.create(ctx, librarianInput, {
+          abortSignal,
           onActivity: (agentId) => tracker.agentActivity(agentId),
           onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
         });
@@ -140,6 +146,10 @@ export class AgentOrchestrator {
 
     tracker.agentStarted(trackingAgentId, role as AgentState["agent_type"], taskId);
     this.runtime.agentRegistry.set(trackingAgentId, agent as unknown as import("../agents/base.js").BaseAgent);
+    const unsubscribeShutdown = lifecycleSignal?.onAbort(() => {
+      if (abortSignal) abortSignal.aborted = true;
+      agent.cancel();
+    });
 
     try {
       const result = await (runAgent ?? (() => agent.run()))();
@@ -162,6 +172,7 @@ export class AgentOrchestrator {
         tracker.setCurrentStage(null);
         if (managerStageId) this.evictStage(managerStageId);
       }
+      unsubscribeShutdown?.();
       this.runtime.agentRegistry.delete(trackingAgentId);
     }
   }
