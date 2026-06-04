@@ -53,6 +53,8 @@ export class AgentOrchestrator {
     let runAgent: (() => Promise<AgentResult>) | undefined;
     let trackingAgentId = ctx.agentId;
     let taskId: string | undefined;
+    let managerStageId: string | undefined;
+    let stageScopedWorker: { stageId: string; role: WorkerRole } | undefined;
 
     switch (role) {
       case "manager": {
@@ -69,12 +71,13 @@ export class AgentOrchestrator {
           return { kind: "failure", reason: gateFailure };
         }
         const managerSpawner = this.createChildSpawner();
-        ctx.stageId = managerInput.stage?.id;
+        managerStageId = managerInput.stage?.id;
+        ctx.stageId = managerStageId;
         agent = await ManagerAgent.create(ctx, managerInput, managerSpawner, {
           onActivity: (agentId) => tracker.agentActivity(agentId),
           onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
         });
-        tracker.setCurrentStage(managerInput.stage?.id ?? null);
+        tracker.setCurrentStage(managerStageId ?? null);
         break;
       }
 
@@ -90,6 +93,7 @@ export class AgentOrchestrator {
 
         const isStageScoped = getRoster(role).stageScoped;
         const cached = isStageScoped ? this.getCachedStageWorker(stageId, role) : undefined;
+        stageScopedWorker = isStageScoped ? { stageId, role } : undefined;
 
         if (cached) {
           agent = cached.agent;
@@ -147,12 +151,16 @@ export class AgentOrchestrator {
       } else if (role === "inspector") {
         await publishAgentResult(eventBus, role, undefined, result);
       }
+      if (stageScopedWorker && (result.kind === "failure" || result.kind === "abort")) {
+        this.evictStageWorker(stageScopedWorker.stageId, stageScopedWorker.role);
+      }
 
       return result;
     } finally {
       tracker.agentStopped(trackingAgentId);
       if (role === "manager") {
         tracker.setCurrentStage(null);
+        if (managerStageId) this.evictStage(managerStageId);
       }
       this.runtime.agentRegistry.delete(trackingAgentId);
     }
@@ -176,6 +184,17 @@ export class AgentOrchestrator {
       this.stageWorkers.set(stageId, perStage);
     }
     perStage.set(role, entry);
+  }
+
+  private evictStageWorker(stageId: string, role: WorkerRole): void {
+    const perStage = this.stageWorkers.get(stageId);
+    if (!perStage) return;
+    perStage.delete(role);
+    if (perStage.size === 0) this.stageWorkers.delete(stageId);
+  }
+
+  private evictStage(stageId: string): void {
+    this.stageWorkers.delete(stageId);
   }
 }
 

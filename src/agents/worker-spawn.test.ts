@@ -101,6 +101,41 @@ describe("createChildSpawner worker dispatch", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("evicts a stage-scoped worker after a failed follow-up", async () => {
+    const root = mkdtempSync(join(tmpdir(), "saivage-worker-spawn-"));
+    try {
+      const runtime = makeRuntime(root);
+      writeTaskReport(root, makeTaskReport("reviewer", "reviewer-1"));
+      writeTaskReport(root, makeTaskReport("reviewer", "reviewer-3"));
+      vi.spyOn(WorkerAgent.prototype as unknown as Record<string, () => unknown>, "runLoop")
+        .mockResolvedValueOnce({
+          text: JSON.stringify(makeTaskReport("reviewer", "reviewer-1")),
+          finishReason: "end_turn",
+        })
+        .mockResolvedValueOnce({ text: "reviewer failed", finishReason: "error" })
+        .mockResolvedValueOnce({
+          text: JSON.stringify(makeTaskReport("reviewer", "reviewer-3")),
+          finishReason: "end_turn",
+        });
+      const spawner = createChildSpawner(runtime);
+
+      const first = await spawner("reviewer", makeInput("reviewer", { id: "reviewer-1" }), makeParentContext(root));
+      const firstAgent = runtime.agentRegistry.lastSet as WorkerAgent;
+      const failed = await spawner("reviewer", makeInput("reviewer", { id: "reviewer-2" }), makeParentContext(root));
+      const failedAgent = runtime.agentRegistry.lastSet as WorkerAgent;
+      const third = await spawner("reviewer", makeInput("reviewer", { id: "reviewer-3" }), makeParentContext(root));
+      const thirdAgent = runtime.agentRegistry.lastSet as WorkerAgent;
+
+      expect(first.kind).toBe("success");
+      expect(failed.kind).toBe("failure");
+      expect(third.kind).toBe("success");
+      expect(failedAgent).toBe(firstAgent);
+      expect(thirdAgent).not.toBe(firstAgent);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 class CapturingRegistry extends Map<string, BaseAgent> {
