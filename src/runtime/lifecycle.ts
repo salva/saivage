@@ -1,12 +1,10 @@
-import { writeFileSync } from "node:fs";
-
 import type { EventBus } from "../events/bus.js";
 import type { KnowledgeStore } from "../knowledge/init.js";
 import type { McpRuntime } from "../mcp/runtime.js";
 import type { RagManager } from "../rag/index.js";
 import { log } from "../log.js";
 import type { ProjectContext } from "../store/project.js";
-import { createRuntimeState, writeRuntimeState, type RuntimeLock, type RuntimeTracker } from "./recovery.js";
+import { createRuntimeState, writeRuntimeState, writeRuntimeStateSync, type RuntimeLock, type RuntimeTracker } from "./recovery.js";
 import { writeShutdownSummary } from "./shutdown-handoff.js";
 import type { RuntimeSupervisor } from "./supervisor.js";
 
@@ -87,12 +85,8 @@ export class RuntimeLifecycle {
       try {
         const failState = createRuntimeState();
         failState.status = "error";
-        // Sync write: fatal handlers cannot reliably await async persistence.
-        writeFileSync(
-          project.paths.runtimeState,
-          JSON.stringify(failState, null, 2),
-          "utf-8",
-        );
+        // Fatal handlers cannot reliably await async persistence.
+        writeRuntimeStateSync(project.paths.runtimeState, failState);
       } catch (writeErr) {
         log.warn(`[fatal] Failed to mark runtime state as error: ${writeErr instanceof Error ? writeErr.message : String(writeErr)}`);
       }

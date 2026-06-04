@@ -5,6 +5,7 @@
  */
 
 import { dirname, join } from "node:path";
+import { writeFileSync } from "node:fs";
 import { readDocOrNull, writeDoc, sweepStaleTempFiles, pathExists } from "../store/documents.js";
 import {
   RuntimeStateSchema,
@@ -210,6 +211,14 @@ export async function writeRuntimeState(
   state: RuntimeState,
 ): Promise<void> {
   await writeDoc(path, state, RuntimeStateSchema);
+}
+
+/**
+ * Best-effort fatal-path runtime state write. Kept in this recovery module so
+ * normal runtime modules stay free of sync filesystem primitives.
+ */
+export function writeRuntimeStateSync(path: string, state: RuntimeState): void {
+  writeFileSync(path, JSON.stringify(state, null, 2), "utf-8");
 }
 
 /**
