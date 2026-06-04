@@ -154,34 +154,7 @@ export async function bootstrap(
 
   // 4. Initialize MCP runtime + builtin services
   const mcpRuntime = new McpRuntime(config);
-  // F02 B07 — construct RagService (shares mutable datasets array with the manager).
-  const ragDatasets = [...config.rag.datasets];
-  const { createRagManager } = await import("../rag/index.js");
-  const ragManager = await createRagManager({
-    projectRoot: project.projectRoot,
-    projectId: project.config.project_name,
-    enabled: config.rag.enabled,
-    datasets: ragDatasets,
-  });
-  const ragService: import("./rag/service.js").RagService = {
-    manager: ragManager,
-    datasets: ragDatasets,
-    watchStatus: new Map(),
-    // Static admin-role membership derived from the roster: the librarian is
-    // the only non-operator role with admin access to RAG tools.
-    adminRoles: new Set(["librarian"]),
-    control: { busy: false },
-    enabled: config.rag.enabled,
-    projectRoot: project.projectRoot,
-  };
-  // TODO(F01 B07): construct KnowledgeStore here and pass via { knowledge }
-  const { initKnowledgeStore } = await import("../knowledge/init.js");
-  const knowledgeStore = await initKnowledgeStore({
-    projectRoot: project.projectRoot,
-    ragManager: ragService.manager,
-    ragDatasets: ragService.datasets,
-    ragEnabled: ragService.enabled,
-  });
+  const { ragService, ragManager, knowledgeStore } = await initializeKnowledgeAndRag(project, config);
   registerBuiltinServices(mcpRuntime, config.mcp, config.security, {
     project,
     rag: ragService,
@@ -376,4 +349,42 @@ async function startConfiguredMcpServers(
       log.warn(`[mcp] External MCP "${name}" unavailable: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+}
+
+async function initializeKnowledgeAndRag(
+  project: ProjectContext,
+  config: SaivageConfig,
+): Promise<{
+  ragService: import("./rag/service.js").RagService;
+  ragManager: import("../rag/index.js").RagManager;
+  knowledgeStore: import("../knowledge/init.js").KnowledgeStore;
+}> {
+  // F02 B07 — RagService shares the mutable datasets array with the manager.
+  const ragDatasets = [...config.rag.datasets];
+  const { createRagManager } = await import("../rag/index.js");
+  const ragManager = await createRagManager({
+    projectRoot: project.projectRoot,
+    projectId: project.config.project_name,
+    enabled: config.rag.enabled,
+    datasets: ragDatasets,
+  });
+  const ragService: import("./rag/service.js").RagService = {
+    manager: ragManager,
+    datasets: ragDatasets,
+    watchStatus: new Map(),
+    // Static admin-role membership derived from the roster: the librarian is
+    // the only non-operator role with admin access to RAG tools.
+    adminRoles: new Set(["librarian"]),
+    control: { busy: false },
+    enabled: config.rag.enabled,
+    projectRoot: project.projectRoot,
+  };
+  const { initKnowledgeStore } = await import("../knowledge/init.js");
+  const knowledgeStore = await initKnowledgeStore({
+    projectRoot: project.projectRoot,
+    ragManager: ragService.manager,
+    ragDatasets: ragService.datasets,
+    ragEnabled: ragService.enabled,
+  });
+  return { ragService, ragManager, knowledgeStore };
 }
