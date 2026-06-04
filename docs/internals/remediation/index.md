@@ -45,6 +45,7 @@ from its stated contract.
 | 14 | Runtime lifecycle | [Runtime lifecycle and orchestration](./runtime-lifecycle-and-orchestration.md) | Design for one lifecycle owner, one agent orchestrator, narrow runtime facades, and generic `BaseAgent` boundaries. |
 | 15 | Provider route ownership | [Provider routing unification](./provider-routing-unification.md) | Design for canonical provider/account route objects and a thinner `ModelRouter` facade. |
 | 16 | Tool and persistence contracts | [Tool schema and persistence unification](./tool-schema-and-persistence-unification.md) | Design for single-source Plan/RAG tool definitions, prompt fragments, RAG provider config ownership, shared atomic JSON writes, and SQLite metadata descriptors. |
+| 17 | Stage execution data model | [Stage run data model](./stage-run-data-model.md) | Design for making stage execution a first-class aggregate, adding `StageRunStore`, typed artifact submission tools, lifecycle events, and eventually deriving history from stage runs. |
 
 ## Relationship To Existing Remediation Notes
 
