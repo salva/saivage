@@ -1,12 +1,20 @@
 # Saivage v2 Architecture Cleanup Plan
 
 **Date**: 2026-06-04
-**Status**: Draft for implementation
+**Status**: Implemented through Phase 5 cleanup pass on 2026-06-04
 **Follows**: `v2-simplification-plan.md`, commit `9705346`
 
 ## Purpose
 
 This plan turns the post-simplification architecture review into an ordered cleanup program. The ordering starts with deeper structural changes because they determine the seams for later small cleanups. The only exceptions are prerequisite edits that remove misleading coupling before a deeper refactor starts.
+
+## Implementation Notes
+
+- Phases 0-4 are implemented in incremental commits through `536cdb7`.
+- Phase 5 route/read-model narrowing removed full-runtime imports from config and debug read models/routes. Remaining `SaivageRuntime` consumers are top-level composition, CLI, Telegram, and tests.
+- RAG provider dataset config uses the simpler Option B from the tool/persistence design: unsupported per-dataset `baseUrl`/`apiKey` fields are rejected until runtime ownership is explicitly implemented.
+- RAG mutable dataset config is owned by `RagManager`, not a shared `RagService.datasets` array.
+- RAG registry and config writes use the shared atomic JSON helper; SQLite chunk metadata mapping derives from one descriptor.
 
 ## Priority Rules
 
