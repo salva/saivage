@@ -60,148 +60,154 @@ const sourcesSchema = z.array(
   }),
 );
 
-const SCHEMAS = {
-  rag_list: z.object({}).strict(),
-  rag_stats: z.object({ collection_id: z.string().min(1) }).strict(),
-  rag_query: z
-    .object({
-      collection_id: z.string().min(1),
-      text: z.string().min(1),
-      topK: z.number().int().positive().max(100).optional(),
-      filter: queryFilterSchema.optional(),
-    })
-    .strict(),
-  rag_register: z
-    .object({
-      collection_id: z.string().min(1),
-      source: z.enum(["doc", "code"]),
-      provider: z
-        .object({
-          model: z.string().min(1).optional(),
-          dim: z.number().int().positive().optional(),
-        })
-        .optional(),
-      chunker: chunkerSchema,
-      exclusions: z.array(z.string()).optional(),
-      sources: sourcesSchema,
-      watch: watchSchema.optional(),
-      persist: z.boolean().optional(),
-    })
-    .strict(),
-  rag_ingest: z.object({ collection_id: z.string().min(1) }).strict(),
-  rag_drop: z
-    .object({ collection_id: z.string().min(1), persist: z.boolean().optional() })
-    .strict(),
-  rag_admin: z
-    .object({
-      collection_id: z.string().min(1),
-      action: z.enum(["reconcile", "watch_arm", "watch_disarm"]),
-    })
-    .strict(),
-} as const;
-
-type SchemaMap = typeof SCHEMAS;
-type ToolName = keyof SchemaMap;
-
-const IMPL: {
-  [K in ToolName]: (service: RagService, args: z.infer<SchemaMap[K]>, ctx: ToolCallContext) => Promise<unknown>;
-} = {
-  rag_list: async (svc) => ragList(svc),
-  rag_stats: async (svc, args) => ragStats(svc, args),
-  rag_query: async (svc, args) =>
-    ragQuery(svc, args as Parameters<typeof ragQuery>[1]),
-  rag_register: async (svc, args) =>
-    ragRegister(svc, args as Parameters<typeof ragRegister>[1]),
-  rag_ingest: async (svc, args) => ragIngest(svc, args),
-  rag_drop: async (svc, args) => ragDrop(svc, args),
-  rag_admin: async (svc, args) =>
-    ragAdmin(svc, args as Parameters<typeof ragAdmin>[1]),
+type RagToolRegistryEntry = {
+  schema: z.ZodType;
+  definition: ToolEntry;
+  impl(service: RagService, args: unknown, ctx: ToolCallContext): Promise<unknown>;
 };
 
-export const RAG_TOOL_DEFINITIONS: ToolEntry[] = [
-  {
-    name: "rag_list",
-    description: "List registered RAG collections.",
-    inputSchema: { type: "object", properties: {}, required: [] },
-  },
-  {
-    name: "rag_stats",
-    description: "Read stats for a collection.",
-    inputSchema: {
-      type: "object",
-      properties: { collection_id: { type: "string" } },
-      required: ["collection_id"],
+const RAG_TOOL_REGISTRY = {
+  rag_list: {
+    schema: z.object({}).strict(),
+    definition: {
+      name: "rag_list",
+      description: "List registered RAG collections.",
+      inputSchema: { type: "object", properties: {}, required: [] },
     },
+    impl: async (svc) => ragList(svc),
   },
-  {
-    name: "rag_query",
-    description: "Semantic search a collection.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        collection_id: { type: "string" },
-        text: { type: "string" },
-        topK: { type: "number" },
-        filter: { type: "object" },
+  rag_stats: {
+    schema: z.object({ collection_id: z.string().min(1) }).strict(),
+    definition: {
+      name: "rag_stats",
+      description: "Read stats for a collection.",
+      inputSchema: {
+        type: "object",
+        properties: { collection_id: { type: "string" } },
+        required: ["collection_id"],
       },
-      required: ["collection_id", "text"],
     },
+    impl: async (svc, args) => ragStats(svc, args as Parameters<typeof ragStats>[1]),
   },
-  {
-    name: "rag_register",
-    description: "Register a new RAG collection (admin-only).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        collection_id: { type: "string" },
-        source: { type: "string", enum: ["doc", "code"] },
-        chunker: { type: "object" },
-        sources: { type: "array" },
-        provider: {
-          type: "object",
-          properties: {
-            model: { type: "string", minLength: 1 },
-            dim: { type: "integer", minimum: 1 },
-          },
+  rag_query: {
+    schema: z
+      .object({
+        collection_id: z.string().min(1),
+        text: z.string().min(1),
+        topK: z.number().int().positive().max(100).optional(),
+        filter: queryFilterSchema.optional(),
+      })
+      .strict(),
+    definition: {
+      name: "rag_query",
+      description: "Semantic search a collection.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          collection_id: { type: "string" },
+          text: { type: "string" },
+          topK: { type: "number" },
+          filter: { type: "object" },
         },
-        exclusions: { type: "array" },
-        watch: {},
-        persist: { type: "boolean" },
+        required: ["collection_id", "text"],
       },
-      required: ["collection_id", "source", "chunker", "sources"],
     },
+    impl: async (svc, args) => ragQuery(svc, args as Parameters<typeof ragQuery>[1]),
   },
-  {
-    name: "rag_ingest",
-    description: "Ingest into a registered collection (admin-only).",
-    inputSchema: {
-      type: "object",
-      properties: { collection_id: { type: "string" } },
-      required: ["collection_id"],
-    },
-  },
-  {
-    name: "rag_drop",
-    description: "Drop a registered collection (admin-only).",
-    inputSchema: {
-      type: "object",
-      properties: { collection_id: { type: "string" }, persist: { type: "boolean" } },
-      required: ["collection_id"],
-    },
-  },
-  {
-    name: "rag_admin",
-    description: "Control-plane actions on a collection (admin-only).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        collection_id: { type: "string" },
-        action: { type: "string", enum: ["reconcile", "watch_arm", "watch_disarm"] },
+  rag_register: {
+    schema: z
+      .object({
+        collection_id: z.string().min(1),
+        source: z.enum(["doc", "code"]),
+        provider: z
+          .object({
+            model: z.string().min(1).optional(),
+            dim: z.number().int().positive().optional(),
+          })
+          .optional(),
+        chunker: chunkerSchema,
+        exclusions: z.array(z.string()).optional(),
+        sources: sourcesSchema,
+        watch: watchSchema.optional(),
+        persist: z.boolean().optional(),
+      })
+      .strict(),
+    definition: {
+      name: "rag_register",
+      description: "Register a new RAG collection (admin-only).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          collection_id: { type: "string" },
+          source: { type: "string", enum: ["doc", "code"] },
+          chunker: { type: "object" },
+          sources: { type: "array" },
+          provider: {
+            type: "object",
+            properties: {
+              model: { type: "string", minLength: 1 },
+              dim: { type: "integer", minimum: 1 },
+            },
+          },
+          exclusions: { type: "array" },
+          watch: {},
+          persist: { type: "boolean" },
+        },
+        required: ["collection_id", "source", "chunker", "sources"],
       },
-      required: ["collection_id", "action"],
     },
+    impl: async (svc, args) => ragRegister(svc, args as Parameters<typeof ragRegister>[1]),
   },
-];
+  rag_ingest: {
+    schema: z.object({ collection_id: z.string().min(1) }).strict(),
+    definition: {
+      name: "rag_ingest",
+      description: "Ingest into a registered collection (admin-only).",
+      inputSchema: {
+        type: "object",
+        properties: { collection_id: { type: "string" } },
+        required: ["collection_id"],
+      },
+    },
+    impl: async (svc, args) => ragIngest(svc, args as Parameters<typeof ragIngest>[1]),
+  },
+  rag_drop: {
+    schema: z.object({ collection_id: z.string().min(1), persist: z.boolean().optional() }).strict(),
+    definition: {
+      name: "rag_drop",
+      description: "Drop a registered collection (admin-only).",
+      inputSchema: {
+        type: "object",
+        properties: { collection_id: { type: "string" }, persist: { type: "boolean" } },
+        required: ["collection_id"],
+      },
+    },
+    impl: async (svc, args) => ragDrop(svc, args as Parameters<typeof ragDrop>[1]),
+  },
+  rag_admin: {
+    schema: z
+      .object({
+        collection_id: z.string().min(1),
+        action: z.enum(["reconcile", "watch_arm", "watch_disarm"]),
+      })
+      .strict(),
+    definition: {
+      name: "rag_admin",
+      description: "Control-plane actions on a collection (admin-only).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          collection_id: { type: "string" },
+          action: { type: "string", enum: ["reconcile", "watch_arm", "watch_disarm"] },
+        },
+        required: ["collection_id", "action"],
+      },
+    },
+    impl: async (svc, args) => ragAdmin(svc, args as Parameters<typeof ragAdmin>[1]),
+  },
+} as const satisfies Record<string, RagToolRegistryEntry>;
+
+export const RAG_TOOL_DEFINITIONS: ToolEntry[] = Object.values(RAG_TOOL_REGISTRY).map((tool) => tool.definition);
 
 /**
  * Build the in-process MCP handler for the `rag` service. Returns the
@@ -230,32 +236,26 @@ export function makeRagHandler(service: RagService): InProcessToolHandler {
       return wrap(ragErr("RAG_UNAUTHORIZED_ROLE", `role=${ctx.role} cannot ${toolName}`));
     }
 
-    const schema = (SCHEMAS as Record<string, z.ZodType | undefined>)[toolName];
-    if (!schema) {
+    const tool = (RAG_TOOL_REGISTRY as Record<string, RagToolRegistryEntry | undefined>)[toolName];
+    if (!tool) {
       return wrap(ragErr("RAG_INTERNAL", `unknown tool ${toolName}`));
     }
-    const parsed = schema.safeParse(args);
+    const parsed = tool.schema.safeParse(args);
     if (!parsed.success) {
       return wrap(
         ragErr("RAG_INVALID_ARGS", parsed.error.message, { issues: parsed.error.issues }),
       );
     }
 
-    const fn = IMPL[toolName as ToolName] as (
-      service: RagService,
-      args: unknown,
-      ctx: ToolCallContext,
-    ) => Promise<unknown>;
-
     try {
       if (requiresControlMutex(toolName)) {
-        const slot = tryRunExclusive(service.control, () => fn(service, parsed.data, ctx));
+        const slot = tryRunExclusive(service.control, () => tool.impl(service, parsed.data, ctx));
         if (!slot.ok) {
           return wrap(ragErr("RAG_CONTROL_BUSY", "another control operation is in progress"));
         }
         return wrap(await unwrapResult(slot.value));
       }
-      return wrap(await unwrapResult(fn(service, parsed.data, ctx)));
+      return wrap(await unwrapResult(tool.impl(service, parsed.data, ctx)));
     } catch (err) {
       const m = mapRagError(err);
       return wrap(ragErr(m.code, m.message, m.details));
