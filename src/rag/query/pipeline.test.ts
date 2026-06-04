@@ -8,7 +8,6 @@ import { createVectorStore, type VectorStore } from "../store/index.js";
 import type { EmbeddingProvider } from "../provider/index.js";
 import { MarkdownChunker } from "../chunker/markdown.js";
 import type { ProviderStamp } from "../types.js";
-import { EmbeddingDriftError } from "../errors.js";
 
 const STAMP: ProviderStamp = {
   provider: "openai",
@@ -84,10 +83,10 @@ describe("runQuery", () => {
     expect(hits.every((h) => h.metadata.path === "docs/a.md")).toBe(true);
   });
 
-  it("throws EmbeddingDriftError when provider stamp no longer matches the store", async () => {
+  it("throws embedding drift when provider stamp no longer matches the store", async () => {
     const driftedProvider = provider({ ...STAMP, releaseFingerprint: "OTHER" });
     await expect(
       runQuery({ store, provider: driftedProvider, text: "cats" }),
-    ).rejects.toBeInstanceOf(EmbeddingDriftError);
+    ).rejects.toMatchObject({ kind: "embedding_drift" });
   });
 });

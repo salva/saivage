@@ -5,7 +5,6 @@ import type {
   ChatRequest,
   ChatResponse,
   ModelProvider,
-  UsageStatus,
   Message,
   ToolSchema,
 } from "./types.js";
@@ -20,34 +19,29 @@ import { getOAuthApiKey, getProfileByKey, hasOAuthCredentials } from "../auth/in
 import { log } from "../log.js";
 import type { RuntimeProviderAccountLike, RuntimeProviderConfigLike } from "../routing/resolver.js";
 import { parseAccountRef } from "../routing/resolver.js";
-import { buildCandidateChain, type CandidatePlanRequest, type ChatCandidate } from "./candidate-planner.js";
+import {
+  buildCandidateChain,
+  buildModelEquivalenceIndex,
+  mergeEquivalenceIndexes,
+  type CandidatePlanRequest,
+  type ChatCandidate,
+} from "./candidate-planner.js";
+import {
+  compareUsageSnapshots,
+  describeRequestedModel,
+  firstModel,
+  normalizeUsageSnapshot,
+  tryParseModelId,
+  unique,
+  type UsageSnapshot,
+} from "./router-utils.js";
+import { ModelHealthTracker } from "./health-tracker.js";
+import { StickyFailoverManager } from "./sticky-failover.js";
 
 const PROVIDER_REQUEST_TIMEOUT_MS = 300_000;
 const PRIMARY_RETRY_BASE_DELAY_MS = 30_000;
 const PRIMARY_RETRY_BACKOFF_MULT = 1.5;
 const PRIMARY_RETRY_MAX_DELAY_MS = 20 * 60_000;
-
-interface StickyFailoverState {
-  spec: string;
-  retryDelayMs: number;
-  nextPrimaryRetryAt: number;
-}
-
-/** Per-model health state for exponential recovery. */
-interface ModelHealth {
-  consecutiveFailures: number;
-  disabledUntil: number;   // epoch ms — model is skipped until this time
-  backoffMs: number;       // current backoff duration (grows × BACKOFF_MULTIPLIER each failure)
-}
-
-interface UsageSnapshot {
-  usedTokens: number | null;
-  totalTokens: number | null;
-  remainingTokens: number | null;
-  remainingRatio: number | null;
-  resetAt: Date | null;
-  source: "provider" | "config" | "rate-limit" | "unknown";
-}
 
 /** Lightweight LLM call metrics (replaces v1 telemetry module). */
 function recordLlmCall(_spec: string, _data: Record<string, unknown>): void {
@@ -147,18 +141,9 @@ export class ModelRouter {
   private modelEquivalents: Map<string, string[]>;
   private modelAssignments: Record<string, string | string[] | undefined>;
   private providerConfigs: Record<string, RuntimeProviderConfigLike>;
-  private stickyFailovers = new Map<string, StickyFailoverState>();
+  private readonly stickyFailovers = new StickyFailoverManager();
   private usageSnapshots = new Map<string, UsageSnapshot>();
-
-  // ── Model health tracking (exponential recovery) ──────────────────────
-  private modelHealth = new Map<string, ModelHealth>();
-
-  /** Initial cooldown after a model's first failure. */
-  private static readonly INITIAL_BACKOFF_MS = 15_000;
-  /** Backoff multiplier after each subsequent failure. */
-  private static readonly BACKOFF_MULTIPLIER = 1.5;
-  /** Maximum cooldown duration (10 minutes). */
-  private static readonly MAX_BACKOFF_MS = 10 * 60 * 1000;
+  private readonly healthTracker = new ModelHealthTracker();
 
   constructor(config: SaivageConfig) {
     this.config = config;
@@ -453,9 +438,9 @@ export class ModelRouter {
       const result = await this.callProvider(spec, provider, model, candidateRequest);
 
       if (result.ok) {
-        const sticky = this.stickyFailovers.get(request.modelSpec);
+        const sticky = this.stickyFailovers.getSticky(request.modelSpec);
         if (spec === request.modelSpec && sticky) {
-          this.stickyFailovers.delete(request.modelSpec);
+          this.stickyFailovers.clearStickyFailover(request.modelSpec);
           log.info(`Model switch: ${sticky.spec} -> ${request.modelSpec} (primary recovered after cooldown)`);
         }
 
@@ -469,7 +454,7 @@ export class ModelRouter {
               previousDelay > 0 ? previousDelay * PRIMARY_RETRY_BACKOFF_MULT : PRIMARY_RETRY_BASE_DELAY_MS,
               PRIMARY_RETRY_MAX_DELAY_MS,
             );
-            this.stickyFailovers.set(request.modelSpec, {
+            this.stickyFailovers.setSticky(request.modelSpec, {
               spec,
               retryDelayMs,
               nextPrimaryRetryAt: Date.now() + retryDelayMs,
@@ -571,42 +556,22 @@ export class ModelRouter {
 
   // ── Model health ──────────────────────────────────────────────────────
 
-  private getHealth(spec: string): ModelHealth {
-    let h = this.modelHealth.get(spec);
-    if (!h) {
-      h = { consecutiveFailures: 0, disabledUntil: 0, backoffMs: ModelRouter.INITIAL_BACKOFF_MS };
-      this.modelHealth.set(spec, h);
-    }
-    return h;
+  private getHealth(spec: string) {
+    return this.healthTracker.getHealth(spec);
   }
 
-  private recordFailure(spec: string, health: ModelHealth): void {
-    health.consecutiveFailures++;
-    health.disabledUntil = Date.now() + health.backoffMs;
-    log.warn(
-      `[router] ${spec} disabled for ${Math.round(health.backoffMs / 1000)}s ` +
-      `(${health.consecutiveFailures} consecutive failure${health.consecutiveFailures > 1 ? "s" : ""})`,
-    );
-    // Grow backoff for next time
-    health.backoffMs = Math.min(
-      health.backoffMs * ModelRouter.BACKOFF_MULTIPLIER,
-      ModelRouter.MAX_BACKOFF_MS,
-    );
+  private recordFailure(spec: string, health: ReturnType<ModelHealthTracker["getHealth"]>): void {
+    this.healthTracker.recordFailure(spec, health);
   }
 
   private resetHealth(spec: string): void {
-    this.modelHealth.delete(spec);
+    this.healthTracker.resetHealth(spec);
   }
 
   /** Force-reset health for all models in a failover chain (used by agent retry logic). */
   resetModelHealth(modelSpec: string): void {
     const chain = this.buildCandidateChain(modelSpec);
-    for (const candidate of chain) {
-      if (this.modelHealth.has(candidate.healthKey)) {
-        log.info(`[router] Resetting health for ${candidate.healthKey}`);
-        this.modelHealth.delete(candidate.healthKey);
-      }
-    }
+    this.healthTracker.resetModelHealth(chain);
   }
 
   private buildChain(modelSpec: string): string[] {
@@ -620,7 +585,7 @@ export class ModelRouter {
     return buildCandidateChain({
       modelSpec,
       request,
-      sticky: this.stickyFailovers.get(modelSpec),
+      sticky: this.stickyFailovers.getSticky(modelSpec),
       now: Date.now(),
       failoverChains: this.failoverChains,
       modelEquivalents: this.modelEquivalents,
@@ -781,11 +746,10 @@ export class ModelRouter {
   }
   /** Reset sticky failover for a model */
   clearStickyFailover(modelSpec: string): void {
-    const was = this.stickyFailovers.get(modelSpec);
+    const was = this.stickyFailovers.clearStickyFailover(modelSpec);
     if (was) {
       log.info(`Model switch: ${was.spec} -> ${modelSpec} (retrying primary after cooldown)`);
     }
-    this.stickyFailovers.delete(modelSpec);
   }
 
   private createProvider(providerName: string, accountName?: string): ModelProvider | undefined {
@@ -841,107 +805,6 @@ export class ModelRouter {
   }
 }
 
-function describeRequestedModel(modelSpec: string): string {
-  const parsed = tryParseModelId(modelSpec);
-  if (!parsed) return `model "${modelSpec}"`;
-  const { provider, model } = parsed;
-  return `model "${model}" via provider "${provider}"`;
-}
-
-function tryParseModelId(modelSpec: string): { provider: string; model: string } | undefined {
-  return modelSpec.includes("/") ? parseModelId(modelSpec) : undefined;
-}
-
 function isProviderName(value: string): boolean {
   return PROVIDER_DESCRIPTORS_BY_NAME.has(value as ProviderName);
-}
-
-function firstModel(value: string | string[] | undefined): string | undefined {
-  if (!value) return undefined;
-  return Array.isArray(value) ? value[0] : value;
-}
-
-function compareUsageSnapshots(a: UsageSnapshot | undefined, b: UsageSnapshot | undefined): number {
-  const remainingTokens = compareNullableNumbersDesc(a?.remainingTokens, b?.remainingTokens);
-  if (remainingTokens !== 0) return remainingTokens;
-  return compareNullableNumbersDesc(a?.remainingRatio, b?.remainingRatio);
-}
-
-function compareNullableNumbersDesc(a: number | null | undefined, b: number | null | undefined): number {
-  const aKnown = typeof a === "number" && Number.isFinite(a);
-  const bKnown = typeof b === "number" && Number.isFinite(b);
-  if (aKnown && bKnown) return b - a;
-  if (aKnown) return -1;
-  if (bKnown) return 1;
-  return 0;
-}
-
-function normalizeUsageSnapshot(status: UsageStatus | null, source: UsageSnapshot["source"]): UsageSnapshot {
-  if (!status) return unknownUsageSnapshot();
-  const usedTokens = finiteOrNull(status.usedTokens);
-  const totalTokens = finiteOrNull(status.totalTokens);
-  const explicitRemainingTokens = finiteOrNull(status.remainingTokens);
-  const remainingTokens = explicitRemainingTokens ??
-    (totalTokens !== null && usedTokens !== null ? Math.max(totalTokens - usedTokens, 0) : null);
-  const explicitRemainingRatio = finiteOrNull(status.remainingRatio);
-  const remainingRatio = explicitRemainingRatio ??
-    (totalTokens && remainingTokens !== null ? clamp01(remainingTokens / totalTokens) : null);
-
-  if (usedTokens === null && totalTokens === null && remainingTokens === null && remainingRatio === null) {
-    return unknownUsageSnapshot();
-  }
-
-  return {
-    usedTokens,
-    totalTokens,
-    remainingTokens,
-    remainingRatio,
-    resetAt: status.resetAt ?? null,
-    source,
-  };
-}
-
-function unknownUsageSnapshot(): UsageSnapshot {
-  return {
-    usedTokens: null,
-    totalTokens: null,
-    remainingTokens: null,
-    remainingRatio: null,
-    resetAt: null,
-    source: "unknown",
-  };
-}
-
-function finiteOrNull(value: number | null | undefined): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function clamp01(value: number): number {
-  return Math.max(0, Math.min(1, value));
-}
-
-function buildModelEquivalenceIndex(groups: Record<string, string[]>): Map<string, string[]> {
-  const index = new Map<string, string[]>();
-  for (const [primary, alternatives] of Object.entries(groups)) {
-    const members = unique([primary, ...alternatives]);
-    for (const member of members) {
-      const existing = index.get(member) ?? [];
-      index.set(member, unique([...existing, ...members.filter((candidate) => candidate !== member)]));
-    }
-  }
-  return index;
-}
-
-/** Merge two equivalence indexes, combining entries for the same spec. */
-function mergeEquivalenceIndexes(a: Map<string, string[]>, b: Map<string, string[]>): Map<string, string[]> {
-  const merged = new Map(a);
-  for (const [spec, equivalents] of b) {
-    const existing = merged.get(spec) ?? [];
-    merged.set(spec, unique([...existing, ...equivalents]));
-  }
-  return merged;
-}
-
-function unique(values: string[]): string[] {
-  return [...new Set(values.filter(Boolean))];
 }

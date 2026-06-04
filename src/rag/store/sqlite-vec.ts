@@ -8,10 +8,7 @@ import { mkdir } from "node:fs/promises";
 import DatabaseConstructor, { type Database } from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 
-import {
-  CorruptedStoreError,
-  EmbeddingDriftError,
-} from "../errors.js";
+import { RagError } from "../errors.js";
 import type {
   ChunkMetadata,
   ProviderStamp,
@@ -41,6 +38,10 @@ function bufferToFloat32(b: Buffer | Uint8Array): Float32Array {
   const copy = new Uint8Array(b.byteLength);
   copy.set(b);
   return new Float32Array(copy.buffer);
+}
+
+function stampToString(s: ProviderStamp): string {
+  return `${s.provider}/${s.model}@dim=${s.dim}#${s.releaseFingerprint}`;
 }
 
 function rowToMetadata(row: Record<string, unknown>): ChunkMetadata {
@@ -91,15 +92,22 @@ export class SqliteVecStore implements VectorStore {
 
   async open(stamp: ProviderStamp): Promise<void> {
     if (existsSync(this.corruptedSentinelPath())) {
-      throw new CorruptedStoreError({
-        path: this.path,
-        reason: ".corrupted sentinel present from a previous open",
-      });
+      const detail = { path: this.path, reason: ".corrupted sentinel present from a previous open" };
+      throw new RagError(
+        "corrupted_store",
+        `corrupted vector store at ${detail.path}: ${detail.reason}`,
+        detail,
+      );
     }
     await mkdir(dirname(this.path), { recursive: true });
     const markCorrupted = (reason: string, cause?: unknown): never => {
       try { writeFileSync(this.corruptedSentinelPath(), `${reason}\n`); } catch { /* ignore */ }
-      throw new CorruptedStoreError({ path: this.path, reason, cause });
+      throw new RagError(
+        "corrupted_store",
+        `corrupted vector store at ${this.path}: ${reason}`,
+        { path: this.path, reason },
+        { cause },
+      );
     };
     let db: Database;
     try {
@@ -126,7 +134,7 @@ export class SqliteVecStore implements VectorStore {
         markCorrupted(`PRAGMA integrity_check: ${JSON.stringify(check)}`);
       }
     } catch (cause) {
-      if (cause instanceof CorruptedStoreError) throw cause;
+      if (cause instanceof RagError && cause.kind === "corrupted_store") throw cause;
       try { db.close(); } catch { /* ignore */ }
       markCorrupted(`PRAGMA integrity_check threw: ${(cause as Error).message}`, cause);
     }
@@ -142,7 +150,12 @@ export class SqliteVecStore implements VectorStore {
         expected.releaseFingerprint !== stamp.releaseFingerprint
       ) {
         db.close();
-        throw new EmbeddingDriftError({ expected, actual: stamp });
+        throw new RagError(
+          "embedding_drift",
+          `embedding provider stamp drift: expected ${stampToString(expected)} ` +
+            `actual ${stampToString(stamp)}`,
+          { expected, actual: stamp },
+        );
       }
     }
 
@@ -246,11 +259,12 @@ export class SqliteVecStore implements VectorStore {
     const tx = db.transaction((rs: StoredChunk[]) => {
       for (const r of rs) {
         if (r.embedding.length !== stamp.dim) {
-          throw new EmbeddingDriftError({
-            expected: stamp,
-            actual: { ...stamp, dim: r.embedding.length, releaseFingerprint: "<runtime-mismatch>" },
-            message: `chunk ${r.id}: embedding dim ${r.embedding.length} does not match store dim ${stamp.dim}`,
-          });
+          const actual = { ...stamp, dim: r.embedding.length, releaseFingerprint: "<runtime-mismatch>" };
+          throw new RagError(
+            "embedding_drift",
+            `chunk ${r.id}: embedding dim ${r.embedding.length} does not match store dim ${stamp.dim}`,
+            { expected: stamp, actual },
+          );
         }
         insertChunk.run({
           id: r.id,
@@ -314,11 +328,12 @@ export class SqliteVecStore implements VectorStore {
     const db = this.d;
     const stamp = this.stamp;
     if (vector.length !== stamp.dim) {
-      throw new EmbeddingDriftError({
-        expected: stamp,
-        actual: { ...stamp, dim: vector.length, releaseFingerprint: "<runtime-mismatch>" },
-        message: `query vector dim ${vector.length} does not match store dim ${stamp.dim}`,
-      });
+      const actual = { ...stamp, dim: vector.length, releaseFingerprint: "<runtime-mismatch>" };
+      throw new RagError(
+        "embedding_drift",
+        `query vector dim ${vector.length} does not match store dim ${stamp.dim}`,
+        { expected: stamp, actual },
+      );
     }
     const usePreFilter = filter !== undefined && isPreFilterEligible(filter);
     const fetchK = filter === undefined || usePreFilter ? topK : topK * POST_FILTER_OVERSHOOT;

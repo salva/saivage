@@ -1,61 +1,63 @@
 import { describe, it, expect } from "vitest";
-import {
-  ConfigDriftError,
-  CorruptedStoreError,
-  DatasetNotFoundError,
-  EmbeddingDriftError,
-  IngestLockedError,
-  InvalidQueryFilterError,
-  ProviderUnavailableError,
-  WatcherUnavailableError,
-} from "../../rag/errors.js";
+import { RagError } from "../../rag/errors.js";
 import { SaivagePersistError } from "./persist.js";
 import { mapRagError } from "./errors.js";
 
 describe("mapRagError", () => {
-  it("maps DatasetNotFoundError → RAG_DATASET_NOT_FOUND", () => {
-    const m = mapRagError(new DatasetNotFoundError({ datasetId: "x" }));
+  it("maps dataset not found → RAG_DATASET_NOT_FOUND", () => {
+    const m = mapRagError(new RagError("dataset_not_found", "dataset not found: x", { datasetId: "x" }));
     expect(m.code).toBe("RAG_DATASET_NOT_FOUND");
     expect(m.details).toEqual({ datasetId: "x" });
   });
 
-  it("maps ProviderUnavailableError → RAG_PROVIDER_UNAVAILABLE", () => {
-    const m = mapRagError(new ProviderUnavailableError({ provider: "openai", attempts: 3 }));
+  it("maps provider unavailable → RAG_PROVIDER_UNAVAILABLE", () => {
+    const m = mapRagError(
+      new RagError(
+        "provider_unavailable",
+        'embedding provider "openai" unavailable after 3 attempts',
+        { provider: "openai", attempts: 3 },
+      ),
+    );
     expect(m.code).toBe("RAG_PROVIDER_UNAVAILABLE");
     expect(m.details).toEqual({ provider: "openai", attempts: 3 });
   });
 
-  it("maps EmbeddingDriftError → RAG_EMBEDDING_DRIFT", () => {
+  it("maps embedding drift → RAG_EMBEDDING_DRIFT", () => {
     const stamp = { provider: "openai", model: "m", dim: 256, releaseFingerprint: "x" };
-    const m = mapRagError(new EmbeddingDriftError({ expected: stamp, actual: stamp }));
+    const m = mapRagError(new RagError("embedding_drift", "embedding provider stamp drift", { expected: stamp, actual: stamp }));
     expect(m.code).toBe("RAG_EMBEDDING_DRIFT");
   });
 
-  it("maps ConfigDriftError → RAG_CONFIG_DRIFT", () => {
+  it("maps config drift → RAG_CONFIG_DRIFT", () => {
     const m = mapRagError(
-      new ConfigDriftError({ datasetId: "x", field: "dim", previous: 256, current: 512 }),
+      new RagError("config_drift", "dataset x: config field dim drifted", {
+        datasetId: "x",
+        field: "dim",
+        previous: 256,
+        current: 512,
+      }),
     );
     expect(m.code).toBe("RAG_CONFIG_DRIFT");
     expect(m.details).toMatchObject({ datasetId: "x", field: "dim" });
   });
 
-  it("maps CorruptedStoreError → RAG_CORRUPTED_STORE", () => {
-    const m = mapRagError(new CorruptedStoreError({ path: "/x", reason: "bad" }));
+  it("maps corrupted store → RAG_CORRUPTED_STORE", () => {
+    const m = mapRagError(new RagError("corrupted_store", "corrupted vector store at /x: bad", { path: "/x", reason: "bad" }));
     expect(m.code).toBe("RAG_CORRUPTED_STORE");
   });
 
-  it("maps IngestLockedError → RAG_INGEST_LOCKED", () => {
-    const m = mapRagError(new IngestLockedError({ datasetId: "x", lockPath: "/y" }));
+  it("maps ingest locked → RAG_INGEST_LOCKED", () => {
+    const m = mapRagError(new RagError("ingest_locked", "dataset x: ingest is locked (/y)", { datasetId: "x", lockPath: "/y" }));
     expect(m.code).toBe("RAG_INGEST_LOCKED");
   });
 
-  it("maps WatcherUnavailableError → RAG_WATCHER_UNAVAILABLE", () => {
-    const m = mapRagError(new WatcherUnavailableError("boom"));
+  it("maps watcher unavailable → RAG_WATCHER_UNAVAILABLE", () => {
+    const m = mapRagError(new RagError("watcher_unavailable", "boom"));
     expect(m.code).toBe("RAG_WATCHER_UNAVAILABLE");
   });
 
-  it("maps InvalidQueryFilterError → RAG_INVALID_QUERY_FILTER", () => {
-    const m = mapRagError(new InvalidQueryFilterError({ filter: {}, reason: "bad" }));
+  it("maps invalid query filter → RAG_INVALID_QUERY_FILTER", () => {
+    const m = mapRagError(new RagError("invalid_query_filter", "invalid query filter: bad", { filter: {}, reason: "bad" }));
     expect(m.code).toBe("RAG_INVALID_QUERY_FILTER");
   });
 

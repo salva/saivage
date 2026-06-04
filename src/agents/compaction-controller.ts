@@ -1,5 +1,4 @@
 import type { Message, ToolSchema } from "../providers/types.js";
-import type { ModelRouter } from "../providers/router.js";
 import { log } from "../log.js";
 import { buildSurvivorBlock } from "../knowledge/eagerLoader.js";
 import type { KnowledgeAgentRole } from "../knowledge/types.js";
@@ -10,14 +9,14 @@ import {
   type CompactionConfig,
   type CompactionState,
 } from "../runtime/compaction.js";
-import type { AgentRole, InputChannel } from "./types.js";
+import type { AgentRole, InputChannel, LlmClient } from "./types.js";
 import type { ConversationEntry } from "./conversation-state.js";
 
 interface CompactionControllerConfig {
   agentId: string;
   role: AgentRole;
   projectRoot: string;
-  router: ModelRouter;
+  router: LlmClient;
   modelSpec: string;
   systemPrompt: string;
   compactionConfig: CompactionConfig;

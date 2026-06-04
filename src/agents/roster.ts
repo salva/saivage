@@ -10,6 +10,7 @@
 
 import type { ConventionRule } from "./conventions.js";
 import type { RolePromptName } from "./prompt-keys.js";
+import { workerInitTemplates } from "./worker-init-templates.js";
 
 export type ToolFilterKind =
   | "planner"
@@ -127,15 +128,7 @@ export const ROSTER = [
     displayName: "Coder",
     summary:
       "A one-shot coding agent. Receives a task, writes/modifies code, runs tests, commits changes, and returns a `TaskReport`. Does not plan or coordinate — executes.",
-    workerInit: {
-      heading: "Task Assignment",
-      extraInstructionLines: [],
-      notesDir: null,
-      followUpInstruction: null,
-      promptKey: "coder",
-      invalidFinalResponseMessage:
-        "Invalid final task response: you have not used any tools for this task yet.",
-    },
+    workerInit: workerInitTemplates.coder,
   },
   {
     role: "researcher",
@@ -155,15 +148,7 @@ export const ROSTER = [
     displayName: "Researcher",
     summary:
       "A one-shot information-gathering agent. Searches the web, reads documentation, organizes findings under `research/`, and returns a `TaskReport`. Does not write code.",
-    workerInit: {
-      heading: "Research Task Assignment",
-      extraInstructionLines: ["Write findings under: research/"],
-      notesDir: null,
-      followUpInstruction: null,
-      promptKey: "researcher",
-      invalidFinalResponseMessage:
-        "Invalid final task response: you have not used any tools for this research task yet.",
-    },
+    workerInit: workerInitTemplates.researcher,
   },
   {
     role: "data_agent",
@@ -184,19 +169,7 @@ export const ROSTER = [
     displayName: "Data Agent",
     summary:
       "A one-shot data acquisition specialist. Searches for data sources, downloads files or API data, validates artifacts, records provenance, and returns a `TaskReport`.",
-    workerInit: {
-      heading: "Data Acquisition Task Assignment",
-      extraInstructionLines: [
-        "Write downloaded artifacts to the project-relative path that best fits the task; data/ is common but not mandatory.",
-        "Write provenance notes under research/data-sources/ or another clearly named research/provenance path.",
-        "Use retries, fallback source URLs, alternate access methods, and an attempt manifest when downloads are unreliable.",
-      ],
-      notesDir: null,
-      followUpInstruction: null,
-      promptKey: "data-agent",
-      invalidFinalResponseMessage:
-        "Invalid final task response: you have not used any tools for this data task yet.",
-    },
+    workerInit: workerInitTemplates.data_agent,
   },
   {
     role: "reviewer",
@@ -217,19 +190,7 @@ export const ROSTER = [
     displayName: "Reviewer",
     summary:
       "A stage-scoped quality gate. Reviews worker outputs at end of stage and persists across the stage so follow-up review requests build on earlier findings. Returns a `TaskReport`.",
-    workerInit: {
-      heading: "Stage Review Task Assignment",
-      extraInstructionLines: [
-        "Review the stage objectives, expected outcomes, acceptance criteria, task list, worker reports, changed artifacts, and any existing summary drafts.",
-        "For data-heavy or ML/research stages, validate data provenance/suitability, leakage controls, statistical acceptance, benchmark comparison, and whether conclusions are supported.",
-      ],
-      notesDir: (stageId: string) => `.saivage/stages/${stageId}/reviews/`,
-      followUpInstruction:
-        "This is a follow-up review in the same stage-scoped reviewer session. Your previous reports and reasoning are above in this conversation. Focus first on the new corrective-task results, then verify whether earlier issues are resolved or still open.",
-      promptKey: "reviewer",
-      invalidFinalResponseMessage:
-        "Invalid final review response: you have not used any tools to inspect evidence yet.",
-    },
+    workerInit: workerInitTemplates.reviewer,
   },
   {
     role: "designer",
@@ -250,18 +211,7 @@ export const ROSTER = [
     displayName: "Designer",
     summary:
       "A one-shot design agent. Produces product, UX, interface, information-architecture, and system-design artifacts that make ambiguous implementation work concrete before coding starts. Returns a `TaskReport`.",
-    workerInit: {
-      heading: "Design Task Assignment",
-      extraInstructionLines: [
-        "Produce design artifacts that are concrete enough for implementation and review.",
-      ],
-      notesDir: (stageId: string) => `.saivage/stages/${stageId}/design-notes/`,
-      followUpInstruction:
-        "This is a follow-up design turn in the same stage-scoped designer session. Your prior design artifacts and reasoning are above in this conversation. Build on them: extend or revise, do not start over. If this turn responds to critique, address each issue explicitly.",
-      promptKey: "designer",
-      invalidFinalResponseMessage:
-        "Invalid final design response: you have not used any tools for this design task yet.",
-    },
+    workerInit: workerInitTemplates.designer,
   },
   {
     role: "critic",
@@ -286,20 +236,7 @@ export const ROSTER = [
     displayName: "Critic",
     summary:
       "A one-shot reviewer of design documents. Reads specs, briefs, and architecture docs produced by the Designer, writes a standalone critique document, and returns a `TaskReport` with actionable issues. Does not review code, tests, or data — that is the Reviewer.",
-    workerInit: {
-      heading: "Design Critique Task Assignment",
-      extraInstructionLines: [
-        "Read the design artifacts named in the task and any referenced source/docs needed to judge them in context.",
-        "Write a standalone critique document at the project-relative path that best fits the artifact under review (e.g. research/design/critiques/<artifact-id>.md, docs/critiques/<artifact-id>.md, or .saivage/stages/<stage-id>/critiques/<task-id>.md).",
-        "Do not rewrite the design yourself; tell the Designer what to fix via issues_found[] and the critique document.",
-      ],
-      notesDir: (stageId: string) => `.saivage/stages/${stageId}/critiques/`,
-      followUpInstruction:
-        "This is a follow-up critique turn in the same stage-scoped critic session. Your previous critique documents and reasoning are above in this conversation. Focus first on whether the Designer addressed your previous issues, then look for new problems introduced by the revisions.",
-      promptKey: "critic",
-      invalidFinalResponseMessage:
-        "Invalid final critique response: you have not used any tools to inspect the design artifacts yet.",
-    },
+    workerInit: workerInitTemplates.critic,
   },
   {
     role: "inspector",

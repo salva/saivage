@@ -3,7 +3,7 @@
 // Responsibilities:
 //   - Materialise a `Dataset` per configured entry (when `rag.enabled`).
 //   - Validate the registered config against the registry + the on-disk
-//     store stamp on `register()`; throw `ConfigDriftError` when the
+//     store stamp on `register()`; throw config drift when the
 //     provider's `dim` or the chunker's `kind` changed without a rebuild.
 //   - Maintain `<projectRoot>/.saivage/rag/registry.json` as the
 //     operator-visible cache.
@@ -20,7 +20,7 @@ import {
   removeRegistryEntry,
   type RegistryEntry,
 } from "./registry.js";
-import { ConfigDriftError, DatasetNotFoundError } from "./errors.js";
+import { RagError } from "./errors.js";
 import type {
   DatasetConfig,
   DatasetStats,
@@ -53,7 +53,9 @@ export interface RagManager {
 
 function noopManager(): RagManager {
   const disabled = (): never => {
-    throw new DatasetNotFoundError({ datasetId: "<rag disabled>" });
+    throw new RagError("dataset_not_found", "dataset not found: <rag disabled>", {
+      datasetId: "<rag disabled>",
+    });
   };
   return {
     enabled: false,
@@ -96,12 +98,18 @@ export async function createRagManager(opts: RagManagerOptions): Promise<RagMana
   ): Promise<void> {
     if (!prior) return;
     if (prior.providerStamp.dim !== config.provider.dim) {
-      throw new ConfigDriftError({
+      const detail = {
         datasetId: config.id,
         field: "provider.dim",
         previous: prior.providerStamp.dim,
         current: config.provider.dim,
-      });
+      };
+      throw new RagError(
+        "config_drift",
+        `dataset ${detail.datasetId}: config field "${detail.field}" drifted ` +
+          `(previous=${JSON.stringify(detail.previous)} current=${JSON.stringify(detail.current)})`,
+        detail,
+      );
     }
   }
 
@@ -116,7 +124,7 @@ export async function createRagManager(opts: RagManagerOptions): Promise<RagMana
 
   async function get(id: string): Promise<Dataset> {
     const config = opts.datasets.find((d) => d.id === id);
-    if (!config) throw new DatasetNotFoundError({ datasetId: id });
+    if (!config) throw new RagError("dataset_not_found", `dataset not found: ${id}`, { datasetId: id });
     return openDataset(config);
   }
 

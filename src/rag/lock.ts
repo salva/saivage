@@ -1,6 +1,6 @@
 // F01 B07 — Per-dataset cross-process ingest lock.
 //
-// Thin wrapper over `proper-lockfile`. Throws `IngestLockedError` when the
+// Thin wrapper over `proper-lockfile`. Throws ingest-locked RAG errors when the
 // lock is held by another process. A stale lock (no activity for `stale` ms)
 // is retried once after a 50 ms pause; the second failure is reported.
 //
@@ -8,7 +8,7 @@
 // directory; we expect it to exist by the time `acquireIngestLock` is called.
 
 import { lock as plLock, unlock as plUnlock } from "proper-lockfile";
-import { IngestLockedError } from "./errors.js";
+import { RagError } from "./errors.js";
 
 export interface IngestLockOptions {
   datasetId: string;
@@ -49,10 +49,11 @@ export async function acquireIngestLock(opts: IngestLockOptions): Promise<Ingest
     try {
       release = await tryAcquire();
     } catch {
-      throw new IngestLockedError({
-        datasetId: opts.datasetId,
-        lockPath: opts.lockfilePath,
-      });
+      throw new RagError(
+        "ingest_locked",
+        `dataset ${opts.datasetId}: ingest is locked (${opts.lockfilePath})`,
+        { datasetId: opts.datasetId, lockPath: opts.lockfilePath },
+      );
     }
   }
   return {

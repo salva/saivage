@@ -36,31 +36,6 @@ import { log } from "../log.js";
 import { checkWorkerCompletion } from "./compliance.js";
 import { ProjectStore } from "../store/project-store.js";
 
-type WorkerCtor = new (
-  ctx: AgentContext,
-  input: WorkerInput,
-  role: WorkerRole,
-  eagerSkillBlock: string,
-  initialMessage: string,
-  config?: Partial<BaseAgentConfig>,
-) => WorkerAgent;
-
-const WORKER_CTORS = new Map<WorkerRole, WorkerCtor>();
-
-export function registerWorkerCtor(role: WorkerRole, ctor: WorkerCtor): void {
-  WORKER_CTORS.set(role, ctor);
-}
-
-export function hasWorkerCtor(role: WorkerRole): boolean {
-  return WORKER_CTORS.has(role);
-}
-
-function getWorkerCtor(role: WorkerRole): WorkerCtor {
-  const ctor = WORKER_CTORS.get(role);
-  if (!ctor) throw new Error(`No worker ctor registered for role "${role}"`);
-  return ctor;
-}
-
 export interface BuildInitialMessageOpts {
   headingSuffix?: string;
   prependFollowUp?: boolean;
@@ -112,7 +87,7 @@ export async function buildInitialMessage(
   );
 }
 
-export abstract class WorkerAgent extends BaseAgent implements Agent {
+export class WorkerAgent extends BaseAgent implements Agent {
   protected input: WorkerInput;
   protected readonly workerRole: WorkerRole;
   private readonly invalidFinalResponseMessage: string;
@@ -146,12 +121,12 @@ export abstract class WorkerAgent extends BaseAgent implements Agent {
     this.invalidFinalResponseMessage = meta.invalidFinalResponseMessage;
   }
 
-  static async createWorker<T extends WorkerAgent>(
+  static async createWorker(
     ctx: AgentContext,
     input: WorkerInput,
     role: WorkerRole,
     config?: Partial<BaseAgentConfig>,
-  ): Promise<T> {
+  ): Promise<WorkerAgent> {
     const initialMessage = await buildInitialMessage(ctx, input, role);
     const eagerSkillBlock = await buildEagerBlock(
       ctx.project.projectRoot,
@@ -159,8 +134,7 @@ export abstract class WorkerAgent extends BaseAgent implements Agent {
       input.task.description,
       input.task.tags ?? [],
     );
-    const ctor = getWorkerCtor(role);
-    return new ctor(ctx, input, role, eagerSkillBlock, initialMessage, config) as T;
+    return new WorkerAgent(ctx, input, role, eagerSkillBlock, initialMessage, config);
   }
 
   async run(): Promise<AgentResult> {

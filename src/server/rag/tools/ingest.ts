@@ -6,7 +6,7 @@
  */
 import type { RagService } from "../service.js";
 import type { IngestInput, IngestReport } from "../../../rag/types.js";
-import { DatasetNotFoundError } from "../../../rag/errors.js";
+import { RagError } from "../../../rag/errors.js";
 import { ragErr, type RagErrEnvelope } from "../envelope.js";
 import { isProtected } from "./list.js";
 
@@ -25,7 +25,7 @@ export async function ragIngest(
   try {
     dataset = await service.manager.get(input.collection_id);
   } catch (err) {
-    if (err instanceof DatasetNotFoundError) {
+    if (err instanceof RagError && err.kind === "dataset_not_found") {
       return ragErr("RAG_DATASET_NOT_FOUND", input.collection_id);
     }
     throw err;

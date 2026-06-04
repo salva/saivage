@@ -5,8 +5,6 @@ import { tmpdir } from "node:os";
 
 import { createChildSpawner, type SaivageRuntime } from "../server/bootstrap.js";
 import { WorkerAgent } from "./worker.js";
-import { CoderAgent } from "./coder.js";
-import { ReviewerAgent } from "./reviewer.js";
 import type { AgentContext, WorkerInput } from "./types.js";
 import type { Task } from "../types.js";
 import type { BaseAgent } from "./base.js";
@@ -35,7 +33,7 @@ describe("createChildSpawner worker dispatch", () => {
 
       expect(result.kind).toBe("success");
       expect(runLoop).toHaveBeenCalledOnce();
-      expect(runtime.agentRegistry.lastSet).toBeInstanceOf(CoderAgent);
+      expect(runtime.agentRegistry.lastSet?.role).toBe("coder");
       expect((runtime.agentRegistry.lastSet as unknown as { input: { task: { type: string } } }).input.task.type).toBe("code");
       expect(runtime.tracker.activityIds).toContain((runtime.agentRegistry.lastSet as BaseAgent).id);
     } finally {
@@ -61,7 +59,7 @@ describe("createChildSpawner worker dispatch", () => {
       );
 
       expect(result.kind).toBe("success");
-      expect(runtime.agentRegistry.lastSet).toBeInstanceOf(ReviewerAgent);
+      expect(runtime.agentRegistry.lastSet?.role).toBe("reviewer");
       expect(runSpy).toHaveBeenCalledOnce();
     } finally {
       rmSync(root, { recursive: true, force: true });

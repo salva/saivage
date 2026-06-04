@@ -8,10 +8,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { checkConvention, decidePathMutation, getConvention } from "./conventions.js";
-import { ReviewerAgent } from "./reviewer.js";
 import { ChatAgent } from "./chat.js";
-import { CoderAgent } from "./coder.js";
-import { DesignerAgent } from "./designer.js";
 import { ManagerAgent } from "./manager.js";
 import { WorkerAgent } from "./worker.js";
 import { EventBus } from "../events/bus.js";
@@ -118,7 +115,7 @@ describe("Conventions", () => {
   });
 });
 
-describe("ReviewerAgent", () => {
+describe("reviewer worker role", () => {
   it("keeps prior review reports visible for follow-up reviews", async () => {
     const calls: ChatRequest[] = [];
     const router = {
@@ -167,7 +164,7 @@ describe("ReviewerAgent", () => {
       callTool: async () => ({ ok: true }),
     });
     const firstInput = makeReviewInput("review-1", "Initial review");
-    const agent = await WorkerAgent.createWorker<ReviewerAgent>(ctx, firstInput, "reviewer");
+    const agent = await WorkerAgent.createWorker(ctx, firstInput, "reviewer");
 
     await agent.run();
     await agent.runNext(makeReviewInput("review-2", "Recheck blocker after corrective task t2"));
@@ -241,7 +238,7 @@ describe("ReviewerAgent", () => {
       callTool: async () => ({ ok: true }),
     });
     const firstInput = makeReviewInput("review-1", "Initial review");
-    const agent = await WorkerAgent.createWorker<ReviewerAgent>(ctx, firstInput, "reviewer");
+    const agent = await WorkerAgent.createWorker(ctx, firstInput, "reviewer");
 
     await agent.run();
     await agent.runNext(makeReviewInput("review-2", "Recheck"));
@@ -463,7 +460,7 @@ describe("Execution guards", () => {
       },
     };
 
-    const agent = await WorkerAgent.createWorker<CoderAgent>(
+    const agent = await WorkerAgent.createWorker(
       makeReviewerContext(tmpDir, router, {
         getAllTools: () => [{ name: "test_tool", description: "test", inputSchema: {}, service: "test" }],
         callTool: async () => ({ ok: true }),
@@ -556,7 +553,7 @@ describe("Execution guards", () => {
       },
     };
 
-    const agent = await WorkerAgent.createWorker<CoderAgent>(
+    const agent = await WorkerAgent.createWorker(
       makeReviewerContext(tmpDir, router, {
         getAllTools: () => [{ name: "test_tool", description: "test", inputSchema: {}, service: "test" }],
         callTool: async () => ({ ok: true }),
@@ -595,7 +592,7 @@ describe("Execution guards", () => {
       },
     };
 
-    const agent = await WorkerAgent.createWorker<CoderAgent>(
+    const agent = await WorkerAgent.createWorker(
       makeReviewerContext(tmpDir, router, {
         getAllTools: () => [{ name: "test_tool", description: "test", inputSchema: {}, service: "test" }],
         callTool: async () => ({ ok: true }),
@@ -654,7 +651,7 @@ describe("Execution guards", () => {
       },
     };
 
-    const agent = await WorkerAgent.createWorker<CoderAgent>(
+    const agent = await WorkerAgent.createWorker(
       makeReviewerContext(tmpDir, router, {
         getAllTools: () => [{ name: "test_tool", description: "test", inputSchema: {}, service: "test" }],
         callTool: async () => ({ ok: true }),
@@ -878,7 +875,7 @@ describe("Execution guards", () => {
       },
     };
 
-    const agent = await WorkerAgent.createWorker<CoderAgent>(
+    const agent = await WorkerAgent.createWorker(
       makeReviewerContext(tmpDir, router, {
         getAllTools: () => [{ name: "list_dir", description: "list", inputSchema: {}, service: "filesystem" }],
         callTool: async () => ({ ok: true }),
@@ -897,7 +894,7 @@ describe("Execution guards", () => {
   });
 });
 
-describe("DesignerAgent", () => {
+describe("designer worker role", () => {
   it("runs a design task and returns a Designer TaskReport", async () => {
     const router = {
       getMaxContextTokens: () => 200_000,
@@ -961,7 +958,7 @@ describe("DesignerAgent", () => {
       },
     };
 
-    const agent = await WorkerAgent.createWorker<DesignerAgent>(
+    const agent = await WorkerAgent.createWorker(
       makeReviewerContext(tmpDir, router2, {
         getAllTools: () => [
           { name: "test_tool", description: "test", inputSchema: {}, service: "test" },

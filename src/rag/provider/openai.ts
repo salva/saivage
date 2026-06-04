@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import OpenAI from "openai";
 
-import { ProviderUnavailableError } from "../errors.js";
+import { RagError } from "../errors.js";
 import type { EmbeddingProviderRef, ProviderStamp } from "../types.js";
 import type {
   EmbeddingProvider,
@@ -100,11 +100,11 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
   async embedQuery(text: string): Promise<Float32Array> {
     const [v] = await this.embedDocuments([text]);
     if (!v) {
-      throw new ProviderUnavailableError({
-        provider: "openai",
-        attempts: 1,
-        message: "openai embeddings returned no vector for query",
-      });
+      throw new RagError(
+        "provider_unavailable",
+        "openai embeddings returned no vector for query",
+        { provider: "openai", attempts: 1 },
+      );
     }
     return v;
   }
@@ -143,10 +143,11 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
         await sleep(backoff);
       }
     }
-    throw new ProviderUnavailableError({
-      provider: "openai",
-      attempts: this.maxAttempts,
-      cause: lastErr,
-    });
+    throw new RagError(
+      "provider_unavailable",
+      `embedding provider "openai" unavailable after ${this.maxAttempts} attempts`,
+      { provider: "openai", attempts: this.maxAttempts },
+      { cause: lastErr },
+    );
   }
 }

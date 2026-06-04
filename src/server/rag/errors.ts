@@ -1,5 +1,5 @@
 /**
- * F02 B04 — Map `RagError` subclasses (and `SaivagePersistError`) to the
+ * F02 B04 — Map `RagError` kinds (and `SaivagePersistError`) to the
  * canonical RAG envelope codes (analysis §5).
  *
  * `RAG_WATCH_DISABLED` and `RAG_DISABLED` are produced exclusively by
@@ -7,16 +7,7 @@
  * them. `RAG_SECRET_DROPPED` is reserved for future per-ingest reporting.
  */
 
-import {
-  ConfigDriftError,
-  CorruptedStoreError,
-  DatasetNotFoundError,
-  EmbeddingDriftError,
-  IngestLockedError,
-  InvalidQueryFilterError,
-  ProviderUnavailableError,
-  WatcherUnavailableError,
-} from "../../rag/errors.js";
+import { RagError } from "../../rag/errors.js";
 import { SaivagePersistError } from "./persist.js";
 
 export interface MappedRagError {
@@ -25,66 +16,69 @@ export interface MappedRagError {
   details?: Record<string, unknown>;
 }
 
+function detailRecord(err: RagError): Record<string, unknown> {
+  return err.detail && typeof err.detail === "object" && !Array.isArray(err.detail)
+    ? (err.detail as Record<string, unknown>)
+    : {};
+}
+
 export function mapRagError(err: unknown): MappedRagError {
-  if (err instanceof DatasetNotFoundError) {
-    return {
-      code: "RAG_DATASET_NOT_FOUND",
-      message: err.message,
-      details: { datasetId: err.datasetId },
-    };
-  }
-  if (err instanceof ProviderUnavailableError) {
-    return {
-      code: "RAG_PROVIDER_UNAVAILABLE",
-      message: err.message,
-      details: { provider: err.provider, attempts: err.attempts },
-    };
-  }
-  if (err instanceof EmbeddingDriftError) {
-    return {
-      code: "RAG_EMBEDDING_DRIFT",
-      message: err.message,
-      details: { expected: err.expected, actual: err.actual },
-    };
-  }
-  if (err instanceof ConfigDriftError) {
-    return {
-      code: "RAG_CONFIG_DRIFT",
-      message: err.message,
-      details: {
-        datasetId: err.datasetId,
-        field: err.field,
-        previous: err.previous,
-        current: err.current,
-      },
-    };
-  }
-  if (err instanceof CorruptedStoreError) {
-    return {
-      code: "RAG_CORRUPTED_STORE",
-      message: err.message,
-      details: { path: err.path, reason: err.reason },
-    };
-  }
-  if (err instanceof IngestLockedError) {
-    return {
-      code: "RAG_INGEST_LOCKED",
-      message: err.message,
-      details: { datasetId: err.datasetId, lockPath: err.lockPath },
-    };
-  }
-  if (err instanceof WatcherUnavailableError) {
-    return {
-      code: "RAG_WATCHER_UNAVAILABLE",
-      message: err.message,
-    };
-  }
-  if (err instanceof InvalidQueryFilterError) {
-    return {
-      code: "RAG_INVALID_QUERY_FILTER",
-      message: err.message,
-      details: { reason: err.reason },
-    };
+  if (err instanceof RagError && err.kind) {
+    const details = detailRecord(err);
+    switch (err.kind) {
+      case "dataset_not_found":
+        return {
+          code: "RAG_DATASET_NOT_FOUND",
+          message: err.message,
+          details: { datasetId: details.datasetId },
+        };
+      case "provider_unavailable":
+        return {
+          code: "RAG_PROVIDER_UNAVAILABLE",
+          message: err.message,
+          details: { provider: details.provider, attempts: details.attempts },
+        };
+      case "embedding_drift":
+        return {
+          code: "RAG_EMBEDDING_DRIFT",
+          message: err.message,
+          details: { expected: details.expected, actual: details.actual },
+        };
+      case "config_drift":
+        return {
+          code: "RAG_CONFIG_DRIFT",
+          message: err.message,
+          details: {
+            datasetId: details.datasetId,
+            field: details.field,
+            previous: details.previous,
+            current: details.current,
+          },
+        };
+      case "corrupted_store":
+        return {
+          code: "RAG_CORRUPTED_STORE",
+          message: err.message,
+          details: { path: details.path, reason: details.reason },
+        };
+      case "ingest_locked":
+        return {
+          code: "RAG_INGEST_LOCKED",
+          message: err.message,
+          details: { datasetId: details.datasetId, lockPath: details.lockPath },
+        };
+      case "watcher_unavailable":
+        return {
+          code: "RAG_WATCHER_UNAVAILABLE",
+          message: err.message,
+        };
+      case "invalid_query_filter":
+        return {
+          code: "RAG_INVALID_QUERY_FILTER",
+          message: err.message,
+          details: { reason: details.reason },
+        };
+    }
   }
   if (err instanceof SaivagePersistError) {
     return {

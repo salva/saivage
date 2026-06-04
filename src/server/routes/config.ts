@@ -1,11 +1,10 @@
 import type { FastifyInstance } from "fastify";
-import type { SaivageRuntime } from "../bootstrap.js";
 import { safeConfigResponse, safeProvidersResponse } from "../read-models/config.js";
 
 export interface ConfigRouteDeps {
-  runtime: Pick<SaivageRuntime, "project" | "routing">;
-  router: Pick<SaivageRuntime["router"], "listProviders" | "listModels">;
-  mcpRuntime: Pick<SaivageRuntime["mcpRuntime"], "listAllToolsForApi">;
+  runtime: Parameters<typeof safeConfigResponse>[0];
+  router: Parameters<typeof safeProvidersResponse>[0];
+  mcpRuntime: { listAllToolsForApi(): unknown[] };
 }
 
 export function registerConfigRoutes(app: FastifyInstance, deps: ConfigRouteDeps): void {

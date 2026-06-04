@@ -52,7 +52,9 @@ describe("makeRagHandler", () => {
   it("operatorContext bypasses admin role check", async () => {
     const svc = makeService();
     (svc.manager.drop as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new (await import("../../rag/errors.js")).DatasetNotFoundError({ datasetId: "x" }),
+      new (await import("../../rag/errors.js")).RagError("dataset_not_found", "dataset not found: x", {
+        datasetId: "x",
+      }),
     );
     const h = makeRagHandler(svc);
     const r = await h("rag_drop", { collection_id: "x" }, { ...baseCtx, operatorContext: true });

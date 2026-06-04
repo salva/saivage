@@ -8,11 +8,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { RagService } from "./service.js";
-import {
-  DatasetNotFoundError,
-  WatcherUnavailableError,
-  IngestLockedError,
-} from "../../rag/errors.js";
+import { RagError } from "../../rag/errors.js";
 import { ragList } from "./tools/list.js";
 import { ragStats } from "./tools/stats.js";
 import { ragQuery } from "./tools/query.js";
@@ -107,24 +103,24 @@ describe("ragIngest", () => {
     expect(out).toMatchObject({ ok: false, code: "RAG_PROTECTED_DATASET" });
   });
 
-  it("maps DatasetNotFoundError → RAG_DATASET_NOT_FOUND", async () => {
+  it("maps dataset not found → RAG_DATASET_NOT_FOUND", async () => {
     const svc = makeService();
     (svc.manager.get as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new DatasetNotFoundError({ datasetId: "x" }),
+      new RagError("dataset_not_found", "dataset not found: x", { datasetId: "x" }),
     );
     const out = await ragIngest(svc, { collection_id: "x" });
     expect(out).toMatchObject({ ok: false, code: "RAG_DATASET_NOT_FOUND" });
   });
 
-  it("propagates IngestLockedError", async () => {
+  it("propagates ingest locked", async () => {
     const svc = makeService();
     (svc.manager.get as ReturnType<typeof vi.fn>).mockResolvedValue({
       config: { sources: [{ root: "/tmp/x", include: ["**/*"] }] },
     });
     (svc.manager.ingest as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new IngestLockedError({ datasetId: "x", lockPath: "/x" }),
+      new RagError("ingest_locked", "dataset x: ingest is locked (/x)", { datasetId: "x", lockPath: "/x" }),
     );
-    await expect(ragIngest(svc, { collection_id: "x" })).rejects.toBeInstanceOf(IngestLockedError);
+    await expect(ragIngest(svc, { collection_id: "x" })).rejects.toMatchObject({ kind: "ingest_locked" });
   });
 });
 
@@ -164,11 +160,11 @@ describe("ragAdmin", () => {
     expect(out).toMatchObject({ ok: false, code: "RAG_WATCH_DISABLED" });
   });
 
-  it("watch_arm maps WatcherUnavailableError → RAG_WATCHER_UNAVAILABLE", async () => {
+  it("watch_arm maps watcher unavailable → RAG_WATCHER_UNAVAILABLE", async () => {
     const svc = makeService();
     (svc.manager.get as ReturnType<typeof vi.fn>).mockResolvedValue({
       config: { watch: true },
-      watch: vi.fn().mockRejectedValue(new WatcherUnavailableError("no fs events")),
+      watch: vi.fn().mockRejectedValue(new RagError("watcher_unavailable", "no fs events")),
     });
     const out = await ragAdmin(svc, { collection_id: "d", action: "watch_arm" });
     expect(out).toMatchObject({ ok: false, code: "RAG_WATCHER_UNAVAILABLE" });
@@ -185,10 +181,10 @@ describe("ragAdmin", () => {
     expect(svc.watchStatus.get("d")).toBe("armed");
   });
 
-  it("watch_arm DatasetNotFoundError → RAG_DATASET_NOT_FOUND", async () => {
+  it("watch_arm dataset not found → RAG_DATASET_NOT_FOUND", async () => {
     const svc = makeService();
     (svc.manager.get as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new DatasetNotFoundError({ datasetId: "x" }),
+      new RagError("dataset_not_found", "dataset not found: x", { datasetId: "x" }),
     );
     const out = await ragAdmin(svc, { collection_id: "x", action: "watch_arm" });
     expect(out).toMatchObject({ ok: false, code: "RAG_DATASET_NOT_FOUND" });

@@ -5,7 +5,7 @@
  * watch_arm flow per design 02-design-r6.md §A.9.
  */
 import type { RagService } from "../service.js";
-import { DatasetNotFoundError, WatcherUnavailableError } from "../../../rag/errors.js";
+import { RagError } from "../../../rag/errors.js";
 import { ragErr, type RagErrEnvelope } from "../envelope.js";
 import { isProtected } from "./list.js";
 
@@ -32,7 +32,7 @@ export async function ragAdmin(
     try {
       dataset = await service.manager.get(input.collection_id);
     } catch (err) {
-      if (err instanceof DatasetNotFoundError) {
+      if (err instanceof RagError && err.kind === "dataset_not_found") {
         return ragErr("RAG_DATASET_NOT_FOUND", input.collection_id);
       }
       throw err;
@@ -43,7 +43,7 @@ export async function ragAdmin(
     try {
       await dataset.watch();
     } catch (err) {
-      if (err instanceof WatcherUnavailableError) {
+      if (err instanceof RagError && err.kind === "watcher_unavailable") {
         return ragErr("RAG_WATCHER_UNAVAILABLE", err.message);
       }
       throw err;
@@ -57,7 +57,7 @@ export async function ragAdmin(
     try {
       dataset = await service.manager.get(input.collection_id);
     } catch (err) {
-      if (err instanceof DatasetNotFoundError) {
+      if (err instanceof RagError && err.kind === "dataset_not_found") {
         return ragErr("RAG_DATASET_NOT_FOUND", input.collection_id);
       }
       throw err;
@@ -72,7 +72,7 @@ export async function ragAdmin(
   try {
     dataset = await service.manager.get(input.collection_id);
   } catch (err) {
-    if (err instanceof DatasetNotFoundError) {
+    if (err instanceof RagError && err.kind === "dataset_not_found") {
       return ragErr("RAG_DATASET_NOT_FOUND", input.collection_id);
     }
     throw err;

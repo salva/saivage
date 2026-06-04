@@ -1,4 +1,5 @@
 import { parseModelId } from "./types.js";
+import { unique } from "./router-utils.js";
 
 export interface ChatCandidate {
   spec: string;
@@ -109,4 +110,26 @@ function expandProviderIndependentCandidates(
 
 function tryParseModelId(modelSpec: string): { provider: string; model: string } | undefined {
   return modelSpec.includes("/") ? parseModelId(modelSpec) : undefined;
+}
+
+export function buildModelEquivalenceIndex(groups: Record<string, string[]>): Map<string, string[]> {
+  const index = new Map<string, string[]>();
+  for (const [primary, alternatives] of Object.entries(groups)) {
+    const members = unique([primary, ...alternatives]);
+    for (const member of members) {
+      const existing = index.get(member) ?? [];
+      index.set(member, unique([...existing, ...members.filter((candidate) => candidate !== member)]));
+    }
+  }
+  return index;
+}
+
+/** Merge two equivalence indexes, combining entries for the same spec. */
+export function mergeEquivalenceIndexes(a: Map<string, string[]>, b: Map<string, string[]>): Map<string, string[]> {
+  const merged = new Map(a);
+  for (const [spec, equivalents] of b) {
+    const existing = merged.get(spec) ?? [];
+    merged.set(spec, unique([...existing, ...equivalents]));
+  }
+  return merged;
 }

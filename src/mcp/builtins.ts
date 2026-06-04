@@ -10,7 +10,7 @@ import type { McpRuntime } from "./runtime.js";
 import { createBuiltinContext } from "./builtins/context.js";
 import { makeFilesystemService } from "./builtins/filesystem.js";
 import { makeGitService } from "./builtins/git.js";
-import { registerKnowledgeServices } from "./builtins/knowledge.js";
+import { registerKnowledgeServices } from "../knowledge/mcp-tools.js";
 import { registerRagService } from "./builtins/rag.js";
 import { makeShellService } from "./builtins/shell.js";
 import { makeDataService } from "./builtins/web.js";

@@ -2,7 +2,7 @@
 //
 // `runQuery` is the single entry point for "embed a string and KNN it against
 // a dataset". Drift detection lives on the store seam (`open(stamp)` throws
-// `EmbeddingDriftError` if the stamp on disk no longer matches the provider
+// embedding-drift `RagError` if the stamp on disk no longer matches the provider
 // the caller wired in); we just propagate. Filter overshoot for post-filter
 // queries is owned by the store implementation (sqlite-vec uses 4×); the
 // pipeline does not double up.
@@ -25,7 +25,7 @@ export async function runQuery(args: RunQueryArgs): Promise<QueryHit[]> {
   const topK = options?.topK ?? DEFAULT_TOP_K;
   const filter: QueryFilter | undefined = options?.filter;
 
-  await store.open(provider.stamp); // throws EmbeddingDriftError on stamp mismatch
+  await store.open(provider.stamp); // throws embedding-drift RagError on stamp mismatch
   const vector = await provider.embedQuery(text);
   const hits = await store.query(vector, topK, filter);
   return hits

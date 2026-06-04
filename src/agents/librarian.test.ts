@@ -1,7 +1,7 @@
 /**
  * Saivage — LibrarianAgent tests (F03 B03).
  *
- * Mirrors the DesignerAgent / ReviewerAgent harness in `agents.test.ts`:
+ * Mirrors the designer/reviewer worker-role harness in `agents.test.ts`:
  * a mocked router/mcpRuntime drives `LibrarianAgent.run()` through the
  * three terminal paths returned by `BaseAgent.runLoop()`.
  */

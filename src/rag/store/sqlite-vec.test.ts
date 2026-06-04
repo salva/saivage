@@ -5,11 +5,7 @@ import { tmpdir } from "node:os";
 
 import { createVectorStore, type VectorStore } from "./index.js";
 import { compileFilter, isPreFilterEligible } from "./sql.js";
-import {
-  CorruptedStoreError,
-  EmbeddingDriftError,
-  InvalidQueryFilterError,
-} from "../errors.js";
+import { RagError } from "../errors.js";
 import type {
   ChunkMetadata,
   ProviderStamp,
@@ -77,10 +73,20 @@ describe("sql.compileFilter", () => {
     expect(c.params).toEqual([1, 10]);
   });
   it("rejects unknown column", () => {
-    expect(() => compileFilter({ eq: { nope: "x" } })).toThrow(InvalidQueryFilterError);
+    expect(() => compileFilter({ eq: { nope: "x" } })).toThrow(RagError);
+    try {
+      compileFilter({ eq: { nope: "x" } });
+    } catch (err) {
+      expect(err).toMatchObject({ kind: "invalid_query_filter" });
+    }
   });
   it("rejects empty IN list", () => {
-    expect(() => compileFilter({ in: { source: [] } })).toThrow(InvalidQueryFilterError);
+    expect(() => compileFilter({ in: { source: [] } })).toThrow(RagError);
+    try {
+      compileFilter({ in: { source: [] } });
+    } catch (err) {
+      expect(err).toMatchObject({ kind: "invalid_query_filter" });
+    }
   });
   it("isPreFilterEligible only on indexed eq/in/and", () => {
     expect(isPreFilterEligible({ eq: { path: "a" } })).toBe(true);
@@ -99,24 +105,24 @@ describe("SqliteVecStore — open / drift / corruption", () => {
     expect(store.stamp.dim).toBe(4);
   });
 
-  it("reopen with mismatched stamp throws EmbeddingDriftError", async () => {
+  it("reopen with mismatched stamp throws embedding drift", async () => {
     await store.close();
     const s2 = await createVectorStore({ kind: "sqlite-vec" }, store.path);
-    await expect(s2.open(STAMP_B)).rejects.toBeInstanceOf(EmbeddingDriftError);
+    await expect(s2.open(STAMP_B)).rejects.toMatchObject({ kind: "embedding_drift" });
   });
 
-  it("integrity-check failure on a truncated file throws CorruptedStoreError and writes .corrupted", async () => {
+  it("integrity-check failure on a truncated file throws corrupted store and writes .corrupted", async () => {
     await store.close();
     // Truncate file to a few bytes (still > 0 so open() does not fail with cantopen).
     const fd = openSync(store.path, "r+");
     ftruncateSync(fd, 16);
     closeSync(fd);
     const s2 = await createVectorStore({ kind: "sqlite-vec" }, store.path);
-    await expect(s2.open(STAMP_A)).rejects.toBeInstanceOf(CorruptedStoreError);
+    await expect(s2.open(STAMP_A)).rejects.toMatchObject({ kind: "corrupted_store" });
     expect(existsSync(`${store.path}.corrupted`)).toBe(true);
     // Subsequent open short-circuits on the sentinel.
     const s3 = await createVectorStore({ kind: "sqlite-vec" }, store.path);
-    await expect(s3.open(STAMP_A)).rejects.toBeInstanceOf(CorruptedStoreError);
+    await expect(s3.open(STAMP_A)).rejects.toMatchObject({ kind: "corrupted_store" });
   });
 });
 
@@ -190,8 +196,8 @@ describe("SqliteVecStore — upsert / query / delete", () => {
   });
 
   it("rejects vectors with wrong dim", async () => {
-    await expect(store.upsert([chunk("a", [1, 0, 0])])).rejects.toBeInstanceOf(EmbeddingDriftError);
-    await expect(store.query(new Float32Array([1, 0, 0]), 1)).rejects.toBeInstanceOf(EmbeddingDriftError);
+    await expect(store.upsert([chunk("a", [1, 0, 0])])).rejects.toMatchObject({ kind: "embedding_drift" });
+    await expect(store.query(new Float32Array([1, 0, 0]), 1)).rejects.toMatchObject({ kind: "embedding_drift" });
   });
 });
 

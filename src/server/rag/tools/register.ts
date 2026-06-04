@@ -10,7 +10,7 @@ import type { RagService, RuntimeRagDatasetConfig } from "../service.js";
 import type { IngestReport, ChunkerRef, WatchConfig } from "../../../rag/types.js";
 import { saveSaivageConfig } from "../persist.js";
 import { shouldSkipPath } from "../../../rag/security/secrets.js";
-import { WatcherUnavailableError } from "../../../rag/errors.js";
+import { RagError } from "../../../rag/errors.js";
 import { ragErr, type RagErrEnvelope } from "../envelope.js";
 import { log } from "../../../log.js";
 import { isProtected } from "./list.js";
@@ -155,7 +155,7 @@ export async function ragRegister(
       watchState = "armed";
       service.watchStatus.set(input.collection_id, "armed");
     } catch (err) {
-      if (err instanceof WatcherUnavailableError) {
+      if (err instanceof RagError && err.kind === "watcher_unavailable") {
         return ragErr("RAG_WATCHER_UNAVAILABLE", err.message);
       }
       throw err;

@@ -10,7 +10,7 @@
 // overshoot. The store decides; callers do not see this knob.
 
 import type { QueryFilter } from "../types.js";
-import { InvalidQueryFilterError } from "../errors.js";
+import { RagError } from "../errors.js";
 
 export interface Compiled {
   sql: string;
@@ -31,10 +31,8 @@ const INDEXED_COLS = new Set<string>([
 
 function assertCol(col: string, filter: QueryFilter): void {
   if (!ALLOWED_COLS.has(col)) {
-    throw new InvalidQueryFilterError({
-      filter,
-      reason: `unknown metadata column "${col}"`,
-    });
+    const detail = { filter, reason: `unknown metadata column "${col}"` };
+    throw new RagError("invalid_query_filter", `invalid query filter: ${detail.reason}`, detail);
   }
 }
 
@@ -60,7 +58,8 @@ export function compileFilter(filter: QueryFilter): Compiled {
     for (const [col, vals] of Object.entries(filter.in)) {
       assertCol(col, filter);
       if (!Array.isArray(vals) || vals.length === 0) {
-        throw new InvalidQueryFilterError({ filter, reason: `empty IN list for "${col}"` });
+        const detail = { filter, reason: `empty IN list for "${col}"` };
+        throw new RagError("invalid_query_filter", `invalid query filter: ${detail.reason}`, detail);
       }
       parts.push(`${col} IN (${vals.map(() => "?").join(", ")})`);
       params.push(...vals);
@@ -77,7 +76,8 @@ export function compileFilter(filter: QueryFilter): Compiled {
   }
   if ("or" in filter) {
     if (filter.or.length === 0) {
-      throw new InvalidQueryFilterError({ filter, reason: "empty OR list" });
+      const detail = { filter, reason: "empty OR list" };
+      throw new RagError("invalid_query_filter", `invalid query filter: ${detail.reason}`, detail);
     }
     const compiled = filter.or.map(compileFilter);
     return {
@@ -101,14 +101,16 @@ export function compileFilter(filter: QueryFilter): Compiled {
       }
     }
     if (parts.length === 0) {
-      throw new InvalidQueryFilterError({ filter, reason: "empty gt/lt filter" });
+      const detail = { filter, reason: "empty gt/lt filter" };
+      throw new RagError("invalid_query_filter", `invalid query filter: ${detail.reason}`, detail);
     }
     return { sql: `(${parts.join(" AND ")})`, params };
   }
   if ("pathGlob" in filter) {
     return { sql: "(path GLOB ?)", params: [filter.pathGlob] };
   }
-  throw new InvalidQueryFilterError({ filter, reason: "unknown discriminant" });
+  const detail = { filter, reason: "unknown discriminant" };
+  throw new RagError("invalid_query_filter", `invalid query filter: ${detail.reason}`, detail);
 }
 
 // Returns true when the filter shape uses only indexed equality / IN

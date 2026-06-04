@@ -17,7 +17,7 @@ import { Debouncer, type DebouncerEvent } from "./debouncer.js";
 import { BUILD_CACHE_EXCLUSIONS } from "./exclusions.js";
 import { detectFlood, DEFAULT_FLOOD_THRESHOLD } from "./flood.js";
 import { reconcile, type ReconcileResult } from "./reconcile.js";
-import { WatcherUnavailableError } from "../errors.js";
+import { RagError } from "../errors.js";
 import type { SourceRoot, WatchConfig, IngestInput, IngestReport } from "../types.js";
 import type { VectorStore } from "../store/index.js";
 
@@ -131,12 +131,19 @@ export class WatcherController {
     try {
       watcher = chokidar.watch(watchPaths, options);
     } catch (err) {
-      throw new WatcherUnavailableError({
+      const detail = {
         datasetId: this.args.datasetId,
         sourceCount: this.args.sources.length,
         fileCountApprox: 0,
-        cause: err,
-      });
+      };
+      throw new RagError(
+        "watcher_unavailable",
+        `watcher unavailable for dataset ${detail.datasetId}: inotify watch limit ` +
+          `reached (see /proc/sys/fs/inotify/max_user_watches) - ` +
+          `${detail.sourceCount} source roots, ~${detail.fileCountApprox} files`,
+        detail,
+        { cause: err },
+      );
     }
 
     watcher.on("error", (...args: unknown[]) => {

@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 
 import { createEmbeddingProvider, type EmbeddingsClient } from "./index.js";
 import { OpenAIEmbeddingProvider } from "./openai.js";
-import { ProviderUnavailableError } from "../errors.js";
 import type { EmbeddingProviderRef } from "../types.js";
 
 const REF: EmbeddingProviderRef = { kind: "openai", model: "text-embedding-3-small", dim: 4 };
@@ -89,7 +88,7 @@ describe("OpenAIEmbeddingProvider — stamp + batching + retry", () => {
       throw Object.assign(new Error("server"), { status: 503 });
     });
     const p = new OpenAIEmbeddingProvider(REF, { client, maxAttempts: 3 });
-    await expect(p.embedDocuments(["a"])).rejects.toBeInstanceOf(ProviderUnavailableError);
+    await expect(p.embedDocuments(["a"])).rejects.toMatchObject({ kind: "provider_unavailable" });
     expect(n).toBe(3);
   });
 
@@ -100,16 +99,18 @@ describe("OpenAIEmbeddingProvider — stamp + batching + retry", () => {
       throw Object.assign(new Error("bad request"), { status: 400 });
     });
     const p = new OpenAIEmbeddingProvider(REF, { client, maxAttempts: 5 });
-    await expect(p.embedDocuments(["a"])).rejects.toBeInstanceOf(ProviderUnavailableError);
+    await expect(p.embedDocuments(["a"])).rejects.toMatchObject({ kind: "provider_unavailable" });
     expect(n).toBe(1);
   });
 
-  it("surfaces ProviderUnavailableError after persistent failure", async () => {
+  it("surfaces provider unavailable after persistent failure", async () => {
     const client = fakeClient(async () => { throw Object.assign(new Error("net"), { code: "ECONNRESET" }); });
     const p = new OpenAIEmbeddingProvider(REF, { client, maxAttempts: 2 });
     const err = await p.embedDocuments(["a"]).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(ProviderUnavailableError);
-    expect((err as ProviderUnavailableError).attempts).toBe(2);
+    expect(err).toMatchObject({
+      kind: "provider_unavailable",
+      detail: { provider: "openai", attempts: 2 },
+    });
   });
 
   it("embedQuery routes through embedDocuments and returns one vector", async () => {
@@ -130,6 +131,6 @@ describe("OpenAIEmbeddingProvider — stamp + batching + retry", () => {
   it("rejects when the SDK returns a wrong-dim vector", async () => {
     const client = fakeClient(async ({ input }) => ({ data: input.map(() => ({ embedding: genEmbedding(8) })) }));
     const p = new OpenAIEmbeddingProvider(REF, { client, maxAttempts: 1 });
-    await expect(p.embedDocuments(["a"])).rejects.toBeInstanceOf(ProviderUnavailableError);
+    await expect(p.embedDocuments(["a"])).rejects.toMatchObject({ kind: "provider_unavailable" });
   });
 });

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRagManager } from "./manager.js";
 import type { OpenAIProviderOptions, EmbeddingsClient } from "./provider/index.js";
-import { ConfigDriftError, DatasetNotFoundError, EmbeddingDriftError } from "./errors.js";
+import { RagError } from "./errors.js";
 
 function fakeEmbeddingsClient(dim: number): EmbeddingsClient {
   return {
@@ -40,7 +40,7 @@ describe("RagManager", () => {
     });
     expect(m.enabled).toBe(false);
     expect(await m.list()).toEqual([]);
-    await expect(m.get("anything")).rejects.toBeInstanceOf(DatasetNotFoundError);
+    await expect(m.get("anything")).rejects.toMatchObject({ kind: "dataset_not_found" });
   });
 
   it("register opens a dataset, writes the registry, and surfaces it via list()", async () => {
@@ -73,7 +73,7 @@ describe("RagManager", () => {
     await m.close();
   });
 
-  it("throws ConfigDriftError when provider.dim changes between sessions", async () => {
+  it("throws config drift when provider.dim changes between sessions", async () => {
     const cfg256 = {
       id: "docs",
       source: "doc" as const,
@@ -99,7 +99,7 @@ describe("RagManager", () => {
       datasets: [cfg1024],
       providerOptions: providerOptions(1024),
     });
-    await expect(m2.register(cfg1024)).rejects.toBeInstanceOf(ConfigDriftError);
+    await expect(m2.register(cfg1024)).rejects.toMatchObject({ kind: "config_drift" });
     await m2.close();
   });
 
@@ -130,7 +130,8 @@ describe("RagManager", () => {
       providerOptions: providerOptions(256),
     });
     await expect(m2.register(drifted)).rejects.toSatisfy(
-      (e: unknown) => e instanceof ConfigDriftError || e instanceof EmbeddingDriftError,
+      (e: unknown) =>
+        e instanceof RagError && (e.kind === "config_drift" || e.kind === "embedding_drift"),
     );
     await m2.close();
   });

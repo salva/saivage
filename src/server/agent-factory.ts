@@ -1,12 +1,4 @@
 import { ManagerAgent } from "../agents/manager.js";
-// Worker subclasses register themselves with `WorkerAgent` via
-// `registerWorkerCtor(...)` as a side effect of being imported.
-import "../agents/coder.js";
-import "../agents/researcher.js";
-import "../agents/data-agent.js";
-import "../agents/reviewer.js";
-import "../agents/designer.js";
-import "../agents/critic.js";
 import { InspectorAgent } from "../agents/inspector.js";
 import { LibrarianAgent } from "../agents/librarian.js";
 import { WorkerAgent } from "../agents/worker.js";
@@ -102,7 +94,7 @@ export class AgentFactory {
             (agent as WorkerAgent & { input: import("../agents/types.js").WorkerInput }).input =
               workerInput;
           } else {
-            const worker = await WorkerAgent.createWorker<WorkerAgent>(ctx, workerInput, role, {
+            const worker = await WorkerAgent.createWorker(ctx, workerInput, role, {
               onActivity: (agentId) => tracker.agentActivity(agentId),
               onCompactionUpdate: tracker.agentCompactionUpdate.bind(tracker),
             });

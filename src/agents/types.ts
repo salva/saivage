@@ -10,9 +10,9 @@ import type {
   Escalation,
 } from "../types.js";
 import type { ProjectContext } from "../store/project.js";
-import type { ModelRouter } from "../providers/router.js";
 import type { McpRuntime } from "../mcp/runtime.js";
 import type { NoteManager } from "../runtime/notes.js";
+import type { ChatRequest, ChatResponse, Message, ToolSchema } from "../providers/types.js";
 
 import type { AgentRole } from "./roster.js";
 export type { AgentRole };
@@ -43,12 +43,19 @@ export function formatAgentResultReason(
   return typeof reason === "string" ? reason : `${reason.code}: ${reason.error}`;
 }
 
+export interface LlmClient {
+  chat(request: ChatRequest & { modelSpec: string }): Promise<ChatResponse>;
+  getMaxContextTokens(modelSpec: string): number;
+  countTokens(modelSpec: string, messages: Message[], system?: string, tools?: ToolSchema[]): number;
+  resetModelHealth(modelSpec: string): void;
+}
+
 /** Context passed to every agent on creation. */
 export interface AgentContext {
   /** Resolved project paths and configuration. */
   project: ProjectContext;
   /** LLM provider router. */
-  router: ModelRouter;
+  router: LlmClient;
   /** MCP service runtime for tool calls. */
   mcpRuntime: McpRuntime;
   /** Shared runtime-owned note lifecycle manager. */

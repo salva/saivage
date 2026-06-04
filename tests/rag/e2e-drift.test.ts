@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRagManager } from "../../src/rag/index.js";
-import { ConfigDriftError, EmbeddingDriftError } from "../../src/rag/errors.js";
+import { RagError } from "../../src/rag/errors.js";
 import type {
   EmbeddingsClient,
   OpenAIProviderOptions,
@@ -64,7 +64,9 @@ describe("F01 B10 — drift detection (offline)", () => {
       datasets: [drifted],
       providerOptions: opts(1024),
     });
-    await expect(m2.register(drifted)).rejects.toBeInstanceOf(ConfigDriftError);
+    await expect(m2.register(drifted)).rejects.toSatisfy(
+      (e: unknown) => e instanceof RagError && e.kind === "config_drift",
+    );
     await m2.close();
   });
 
@@ -88,8 +90,8 @@ describe("F01 B10 — drift detection (offline)", () => {
     await m1.register(base);
     await m1.close();
 
-    // Re-open with a different dim; manager-level drift fires first as ConfigDrift.
-    // Verify both error classes share the RagError ancestry.
+    // Re-open with a different dim; manager-level config drift fires first,
+    // but a store-level embedding drift would also be represented as RagError.
     const drifted = { ...base, provider: { ...base.provider, dim: 1024 as const } };
     const m2 = await createRagManager({
       projectRoot: root,
@@ -99,7 +101,8 @@ describe("F01 B10 — drift detection (offline)", () => {
       providerOptions: opts(1024),
     });
     await expect(m2.register(drifted)).rejects.toSatisfy(
-      (e: unknown) => e instanceof ConfigDriftError || e instanceof EmbeddingDriftError,
+      (e: unknown) =>
+        e instanceof RagError && (e.kind === "config_drift" || e.kind === "embedding_drift"),
     );
     await m2.close();
   });

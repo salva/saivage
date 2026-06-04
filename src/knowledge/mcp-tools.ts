@@ -1,7 +1,7 @@
-import type { KnowledgeStore } from "../../knowledge/init.js";
-import { knowledgeMemoryTools, makeKnowledgeMemoryHandler } from "../knowledgeMemory.js";
-import { knowledgeSkillsTools, makeKnowledgeSkillsHandler } from "../knowledgeSkills.js";
-import type { McpRuntime } from "../runtime.js";
+import type { KnowledgeStore } from "./init.js";
+import { knowledgeMemoryTools, makeKnowledgeMemoryHandler } from "../mcp/knowledgeMemory.js";
+import { knowledgeSkillsTools, makeKnowledgeSkillsHandler } from "../mcp/knowledgeSkills.js";
+import type { McpRuntime } from "../mcp/runtime.js";
 
 export function registerKnowledgeServices(
   mcpRuntime: McpRuntime,
