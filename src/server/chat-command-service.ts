@@ -3,13 +3,30 @@ import { ChatAgent } from "../agents/chat.js";
 import { WebSocketChannel } from "../channels/websocket.js";
 import { chatSessionId, agentId } from "../ids.js";
 import { log } from "../log.js";
-import type { SaivageRuntime } from "./bootstrap.js";
+import type { BaseAgent } from "../agents/base.js";
+import type { AgentContext } from "../agents/types.js";
+import type { EventBus } from "../events/bus.js";
+import type { SaivageConfig } from "../config.js";
+import type { ResolvedModelRoute } from "../routing/resolver.js";
+import type { PlannerControl } from "./bootstrap.js";
 
 export interface ChatCommands {
   startWebSocketChat(socket: WebSocket): Promise<void>;
 }
 
-export function createChatCommands(runtime: SaivageRuntime): ChatCommands {
+export interface ChatCommandRuntime {
+  project: AgentContext["project"];
+  router: AgentContext["router"];
+  mcpRuntime: AgentContext["mcpRuntime"];
+  noteManager: AgentContext["noteManager"];
+  routing: { resolve(role: "chat"): ResolvedModelRoute };
+  config: Pick<SaivageConfig, "notifications">;
+  eventBus: EventBus;
+  plannerControl: PlannerControl;
+  agentRegistry: Map<string, BaseAgent>;
+}
+
+export function createChatCommands(runtime: ChatCommandRuntime): ChatCommands {
   return {
     async startWebSocketChat(socket) {
       const sessionId = chatSessionId();
