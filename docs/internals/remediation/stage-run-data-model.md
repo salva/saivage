@@ -64,6 +64,8 @@ paths.
 
 - `paths.plan`: `.saivage/plan.json`
 - `paths.stages`: `.saivage/stages`
+- no current `paths.events` entry; Phase 1 must add an explicit resolved path
+  for `.saivage/events.jsonl` if events become a first-class project artifact.
 - `paths.runtimeState`: `.saivage/tmp/state/runtime.json`
 - `paths.chats`: `.saivage/tmp/chats`
 - `paths.inspections`: `.saivage/inspections`
@@ -280,14 +282,14 @@ Example event types:
 
 ```ts
 type StageRunEvent =
-  | { type: "stage_started"; stage_id: string; at: string; agent_id?: string }
-  | { type: "tasks_written"; stage_id: string; at: string; task_count: number; agent_id?: string }
-  | { type: "task_started"; stage_id: string; task_id: string; at: string; agent_id: string }
-  | { type: "task_report_written"; stage_id: string; task_id: string; at: string; status: "completed" | "failed"; agent_id?: string }
-  | { type: "stage_summary_written"; stage_id: string; at: string; result: StageSummary["result"]; agent_id?: string }
-  | { type: "stage_completed"; stage_id: string; at: string; result: StageSummary["result"]; agent_id?: string }
-  | { type: "knowledge_archived"; stage_id: string; at: string; outcome: "ok" | "failed" }
-  | { type: "stage_recovered"; stage_id: string; at: string; action: string };
+  | { event_id: string; type: "stage_started"; stage_id: string; at: string; agent_id?: string }
+  | { event_id: string; type: "tasks_written"; stage_id: string; at: string; task_count: number; agent_id?: string }
+  | { event_id: string; type: "task_started"; stage_id: string; task_id: string; at: string; agent_id: string }
+  | { event_id: string; type: "task_report_written"; stage_id: string; task_id: string; at: string; status: "completed" | "failed"; agent_id?: string }
+  | { event_id: string; type: "stage_summary_written"; stage_id: string; at: string; result: StageSummary["result"]; agent_id?: string }
+  | { event_id: string; type: "stage_completed"; stage_id: string; at: string; result: StageSummary["result"]; agent_id?: string }
+  | { event_id: string; type: "knowledge_archived"; stage_id: string; at: string; outcome: "ok" | "failed" }
+  | { event_id: string; type: "stage_recovered"; stage_id: string; at: string; action: string };
 ```
 
 Events should initially live in one project-wide `.saivage/events.jsonl` file.
@@ -299,6 +301,11 @@ derived cheaply enough for v2's expected scale.
 The event log is not a separate public write surface. Public artifact methods
 append the corresponding event internally after a successful artifact write.
 Callers should not be able to write a task report and forget its event.
+
+Each event needs a stable `event_id`. JSONL append failures can be ambiguous: a
+write may reach disk before the caller sees an error. Retried appends therefore
+must be deduplicated by `event_id` when reading, and recovery/backfill code must
+not treat duplicated lines as multiple lifecycle facts.
 
 ### Runtime Snapshot
 
@@ -383,18 +390,22 @@ recovery, and read models:
 - `TaskList.stage_id` must match the target stage directory.
 - Every task ID in a task list must be unique within the stage.
 - `TaskReport.stage_id` must match the stage.
-- `TaskReport.task_id` must match an existing task when a task list exists, or
-  match a `task_started` event during migration/recovery of older stages.
+- Normal task-report writes must match an existing task in `tasks.json`; reports
+  for stages without a task list are compatibility reads, not valid new writes.
 - `TaskReport.agent` must match the task's `assigned_to` when the task exists.
 - `StageSummary.stage_id` must match the stage.
 - Terminal summaries must include internally consistent task counts. The current
   `StageSummarySchema` does not enforce cross-field count consistency, so
   `StageRunStore` must add this check when enough task/report evidence exists.
-- Writes must be atomic.
+- Individual artifact writes must remain atomic, matching the existing tmp-plus-
+  rename `writeDoc()` behavior. The combined artifact-plus-event operation is
+  not fully atomic while storage remains split, so partial states must be
+  explicit and recoverable.
 - Events must be appended by the same public method that writes the artifact.
   If the artifact write succeeds and the event append fails, the method must
-  retry the event append once and then throw a typed persistence error that makes
-  the partial state explicit.
+  retry the event append using the same `event_id` and then throw a typed
+  persistence error that makes the partial state explicit if the retry still
+  fails.
 
 These are state-integrity rules. They fit the runtime's hard-boundary role and
 do not reduce agent autonomy over task content.
@@ -535,6 +546,8 @@ Actions:
 - Add `src/store/stage-run-store.ts` or `src/stage-runs/store.ts`.
 - Move stage artifact path helpers from `ProjectStore` into this store.
 - Move task-report and summary validation into the store.
+- Add `ProjectContext.paths.events` or an equivalent resolved path helper for
+  `.saivage/events.jsonl`; it is not present in the current `ProjectContext`.
 - Add `.saivage/events.jsonl` read/write helpers, but keep event appends
   internal to artifact-writing methods.
 - Add a small operation queue for stage-run writes.
@@ -557,8 +570,10 @@ Actions:
 - Replace direct `ProjectStore.writeStageTaskReport()` and
   `writeStageSummary()` paths with `StageRunStore` calls.
 - Update manager failure/abort summary paths to use the store.
-- Add event writes for stage start, task report write, and summary write inside
-  the corresponding store methods.
+- Add event writes for stage start, task dispatch/start, task report write, and
+  summary write at the runtime boundaries that already observe those facts.
+  Artifact methods can write artifact events; dispatcher/worker-launch code must
+  write `task_started` because artifact methods do not see that transition.
 - Keep prompts unchanged in this phase if that makes the refactor safer.
 
 Validation:
@@ -589,15 +604,17 @@ Validation:
 - Agent prompt snapshot tests.
 - Worker/manager integration tests with stub tool calls.
 
-### Phase 4: Derive History From Stage Runs
+### Phase 4: Record Stage Completion, Then Derive History
 
 Actions:
 
-- Add `StageRunStore.listCompletedRuns()` or equivalent.
-- Build plan history views from stage runs.
 - Add `StageRunStore.markStageCompleted()` and call it from
   `PlanService.plan_complete_stage()` after the plan history write and knowledge
   archival attempt. The event should record the knowledge archival outcome.
+- Add `StageRunStore.listCompletedRuns()` or equivalent once completion events
+  exist for new closes and compatibility reconstruction covers older history.
+- Build plan history views from stage runs only after the completed-run read
+  model is proven against embedded `plan.json` history.
 - Keep `PlanService` as the stage-closing tool until planner contracts and
   prompt snapshots have been migrated.
 - Narrow `PlanService` to active queue and current pointer only in a later
@@ -642,6 +659,24 @@ Validation:
 - How much history compatibility is required for deployed v2 instances?
 - If SQLite becomes canonical later, what human-readable export should operators
   get by default?
+
+## Risks And Mitigations
+
+- Event-log corruption or a truncated final JSONL line could break debug and
+  recovery reads. Readers should skip invalid trailing lines with a diagnostic,
+  while strict tests cover malformed middle lines.
+- Retried event appends can duplicate lifecycle facts. Stable `event_id` values
+  and read-time deduplication are required before events drive decisions.
+- Event timestamps can be non-monotonic if callers supply `at` or the system
+  clock moves. Ordering-sensitive views should prefer file order as the durable
+  sequence and `event_id` for deduplication, using timestamps for display.
+- Moving artifact writes behind tools can make prompts and snapshots churn.
+  Phase 2 intentionally keeps prompts unchanged; Phase 3 should update prompt
+  snapshots together with MCP tool schemas.
+- Deriving plan history too early would conflict with the current Planner
+  contract. `plan_complete_stage()` must keep writing embedded history and
+  running knowledge archival until a separate format migration proves the new
+  read model.
 
 Resolved decisions from this design:
 
