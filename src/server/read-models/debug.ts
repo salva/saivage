@@ -1,5 +1,5 @@
 import type { ActivePlanView, PlanDocument, PlanHistoryView } from "../../types.js";
-import type { SaivageRuntime } from "../bootstrap.js";
+import type { ProjectContext } from "../../store/project.js";
 import { safeProjectConfigView, type SafeProjectConfig } from "./config.js";
 
 export interface SafeDebugStateResponse {
@@ -25,7 +25,7 @@ function historyView(doc: PlanDocument | null): PlanHistoryView | null {
 export function safeDebugStateResponse(args: {
   runtimeState: unknown;
   planDoc: PlanDocument | null;
-  projectConfig: SaivageRuntime["project"]["config"];
+  projectConfig: ProjectContext["config"];
 }): SafeDebugStateResponse {
   return {
     runtime: args.runtimeState,

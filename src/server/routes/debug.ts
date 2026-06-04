@@ -6,8 +6,8 @@ import type {
   DebugErrorEntry,
   DebugTimelineEvent,
 } from "../../store/project-store.js";
+import type { ProjectContext } from "../../store/project.js";
 import type { PlanDocument } from "../../types.js";
-import type { SaivageRuntime } from "../bootstrap.js";
 import { safeDebugStateResponse } from "../read-models/debug.js";
 
 export interface DebugReads {
@@ -21,7 +21,7 @@ export function registerDebugRoutes(
   app: FastifyInstance,
   deps: {
     reads: DebugReads;
-    projectConfig: SaivageRuntime["project"]["config"];
+    projectConfig: ProjectContext["config"];
     knowledgeStore: KnowledgeStore;
   },
 ): void {
