@@ -7,7 +7,7 @@ producer and lifecycle.
 
 ```
 <project>/
-├── .saivage/                       # Saivage-managed (mostly committed)
+├── .saivage/                       # Saivage-managed project/runtime state
 │   ├── config.json                 # ProjectConfig
 │   ├── saivage.json                # SaivageConfig runtime/provider routing
 │   ├── plan.json                   # active PlanDocument with history
@@ -45,7 +45,8 @@ producer and lifecycle.
 
 `saivage.json` and `auth-profiles.json` are project-local under the target
 project's `.saivage/`. `SAIVAGE_ROOT`, when set, points at that project
-`.saivage/` directory.
+`.saivage/` directory. Repository-local `.saivage` runtime state is generated
+state, not application source; commit only intentional project artifacts.
 
 ## Producer / lifecycle table
 

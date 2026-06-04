@@ -78,6 +78,13 @@ describe("StageRunStore artifact reads", () => {
 });
 
 describe("StageRunStore events", () => {
+  it("uses the canonical project events path", async () => {
+    const project = await seedProject(projectRoot, { name: "p", objectives: [] });
+    const store = new StageRunStore(project);
+
+    expect(store.eventsPath).toBe(project.paths.events);
+  });
+
   it("deduplicates event_id values and tolerates an invalid trailing line", async () => {
     const project = await seedProject(projectRoot, { name: "p", objectives: [] });
     const store = new StageRunStore(project);

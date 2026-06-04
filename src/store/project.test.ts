@@ -19,7 +19,7 @@ import { initProjectTree, seedProject } from "./project.js";
 import { ProjectStore } from "./project-store.js";
 import { readDoc } from "./documents.js";
 import { loadConfig, SaivageConfigSchema, type SaivageConfig } from "../config.js";
-import type { PlanDocument, RuntimeState, StageSummary, TaskList, TaskReport } from "../types.js";
+import { TaskListSchema, type PlanDocument, type RuntimeState, type StageSummary, type TaskList, type TaskReport } from "../types.js";
 import {
   DEFAULT_ANTHROPIC_CLIENT_ID,
   DEFAULT_GITHUB_COPILOT_CLIENT_ID,
@@ -291,7 +291,7 @@ describe("ProjectStore dashboard reads", () => {
 
     expect(await store.stageDetails("stage-1")).toEqual({
       stage_id: "stage-1",
-      tasks,
+      tasks: TaskListSchema.parse(tasks),
       summary,
       reports: [report],
     });

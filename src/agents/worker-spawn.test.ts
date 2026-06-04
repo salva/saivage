@@ -286,6 +286,7 @@ function makeProject(root: string): AgentContext["project"] {
     },
     paths: {
       plan: join(saivageDir, "plan.json"),
+      events: join(saivageDir, "events.jsonl"),
       stages: join(saivageDir, "stages"),
       notes: join(saivageDir, "notes"),
       inspections: join(saivageDir, "inspections"),
@@ -294,9 +295,12 @@ function makeProject(root: string): AgentContext["project"] {
       research: join(root, "research"),
       tmp: join(saivageDir, "tmp"),
       runtimeState: join(saivageDir, "tmp", "state", "runtime.json"),
+      shutdownRequest: join(saivageDir, "tmp", "state", "shutdown-request.json"),
+      shutdownSummary: join(saivageDir, "tmp", "state", "shutdown-summary.json"),
       chats: join(saivageDir, "tmp", "chats"),
       inspectorWorkspace: join(saivageDir, "tmp", "inspector-workspace"),
       work: join(saivageDir, "tmp", "work"),
+      telegramSubscriptions: join(saivageDir, "telegram-subscriptions.json"),
     },
   };
 }

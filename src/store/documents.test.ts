@@ -305,6 +305,32 @@ describe("Type schemas", () => {
     expect(() => TaskReportSchema.parse(report)).not.toThrow();
   });
 
+  it("defaults optional task arrays and pending status", () => {
+    const task = TaskSchema.parse({
+      id: "tsk-minimal",
+      type: "code",
+      assigned_to: "coder",
+      description: "Implement the smallest task shape",
+    });
+
+    expect(task).toMatchObject({
+      checklist: [],
+      dependencies: [],
+      status: "pending",
+      tags: [],
+      attempt: 1,
+      max_attempts: 3,
+    });
+  });
+
+  it("rejects null issue metadata fields", () => {
+    expect(() => IssueSchema.parse({
+      severity: "warning",
+      description: "Null file metadata is not distinct from absence",
+      file: null,
+    })).toThrow();
+  });
+
   it("validates a StageSummary with escalation", () => {
     const summary = {
       stage_id: "stg-1",
@@ -329,6 +355,23 @@ describe("Type schemas", () => {
       duration_ms: 60000,
     };
     expect(() => StageSummarySchema.parse(summary)).not.toThrow();
+  });
+
+  it("rejects StageSummary task counts that exceed the total", () => {
+    expect(() => StageSummarySchema.parse({
+      stage_id: "stg-1",
+      result: "failed",
+      summary: "Counts do not add up",
+      tasks_completed: 2,
+      tasks_failed: 2,
+      total_tasks: 3,
+      outcomes_achieved: [],
+      outcomes_missed: [],
+      issues: [],
+      started_at: new Date().toISOString(),
+      completed_at: new Date().toISOString(),
+      duration_ms: 1000,
+    })).toThrow(/tasks_completed plus tasks_failed/);
   });
 });
 

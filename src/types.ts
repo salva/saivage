@@ -126,10 +126,10 @@ export const TaskSchema = z.object({
   type: z.enum(["code", "research", "data", "review", "test", "document", "design", "critique"]),
   assigned_to: z.enum(WORKER_ROLES),
   description: z.string(),
-  checklist: z.array(ChecklistItemSchema),
-  dependencies: z.array(z.string()),
-  status: z.enum(["pending", "in-progress", "completed", "failed", "aborted"]),
-  tags: z.array(z.string()).optional(),
+  checklist: z.array(ChecklistItemSchema).default([]),
+  dependencies: z.array(z.string()).default([]),
+  status: z.enum(["pending", "in-progress", "completed", "failed", "aborted"]).default("pending"),
+  tags: z.array(z.string()).default([]),
   started_at: z.string().optional(),
   completed_at: z.string().optional(),
   attempt: z.number().default(1),
@@ -164,11 +164,11 @@ export type TestResult = z.infer<typeof TestResultSchema>;
 export const IssueSchema = z.object({
   severity: z.enum(["info", "warning", "error"]),
   description: z.string(),
-  file: z.string().nullable().optional(),
-  line: z.number().nullable().optional(),
-  error_output: z.string().nullable().optional(),
-  root_cause: z.string().nullable().optional(),
-  suggestion: z.string().nullable().optional(),
+  file: z.string().optional(),
+  line: z.number().optional(),
+  error_output: z.string().optional(),
+  root_cause: z.string().optional(),
+  suggestion: z.string().optional(),
 });
 export type Issue = z.infer<typeof IssueSchema>;
 
@@ -209,9 +209,9 @@ export const StageSummarySchema = z.object({
   stage_id: z.string(),
   result: z.enum(["completed", "failed", "escalated", "aborted"]),
   summary: z.string(),
-  tasks_completed: z.number(),
-  tasks_failed: z.number(),
-  total_tasks: z.number(),
+  tasks_completed: z.number().int().nonnegative(),
+  tasks_failed: z.number().int().nonnegative(),
+  total_tasks: z.number().int().nonnegative(),
   outcomes_achieved: z.array(z.string()),
   outcomes_missed: z.array(z.string()),
   issues: z.array(IssueSchema),
@@ -220,6 +220,14 @@ export const StageSummarySchema = z.object({
   started_at: z.string(),
   completed_at: z.string(),
   duration_ms: z.number(),
+}).superRefine((summary, ctx) => {
+  if (summary.tasks_completed + summary.tasks_failed > summary.total_tasks) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "tasks_completed plus tasks_failed must not exceed total_tasks",
+      path: ["total_tasks"],
+    });
+  }
 });
 export type StageSummary = z.infer<typeof StageSummarySchema>;
 

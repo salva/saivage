@@ -21,7 +21,7 @@ import type { ArtifactReadResult } from "./project-store.js";
 export type StageRunStatus = "planned" | "running" | "tasks_ready" | "summarized" | "completed" | "failed" | "escalated" | "aborted";
 
 type StageRunStoreProject = {
-  paths: Pick<ProjectContext["paths"], "plan" | "stages"> & Partial<Pick<ProjectContext["paths"], "events">>;
+  paths: Pick<ProjectContext["paths"], "plan" | "stages" | "events">;
 };
 
 export interface StageRunEvent {
@@ -77,7 +77,7 @@ export class StageRunStore {
   constructor(private readonly project: StageRunStoreProject) {}
 
   get eventsPath(): string {
-    return this.project.paths.events ?? join(this.project.paths.stages, "..", "events.jsonl");
+    return this.project.paths.events;
   }
 
   stageDir(stageId: string): string {

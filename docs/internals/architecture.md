@@ -336,9 +336,10 @@ See [knowledge/store](./knowledge/store).
 
 ## 4. Core invariants
 
-1. **Disk is the source of truth.** Every recoverable piece of state is a JSON
-   file under `.saivage/`. LLM conversations are working memory and never
-   durably persisted (the `chats/` directory is informational only).
+1. **Durable artifacts are the source of truth.** Recoverable project state is
+   stored as project-local files under `.saivage/` and, for researcher output,
+   `research/`. LLM conversations are working memory and never durably persisted
+   (the `chats/` directory is informational only).
 2. **Communication via tool calls.** No message queues. A parent invokes a
    child as an LLM tool call; the child's `AgentResult` is returned as the
    tool result. This is implemented by the [Dispatcher](./runtime/dispatcher).
@@ -356,7 +357,8 @@ See [knowledge/store](./knowledge/store).
 
 ### 5.1 Storage layout
 
-All Saivage state lives inside `<project>/.saivage/`. See
+Saivage runtime and stage state lives inside `<project>/.saivage/`; researcher
+output intentionally lives under `<project>/research/`. See
 [data/on-disk-layout](./data/on-disk-layout) for the full tree.
 
 ### 5.2 Data sovereignty rules
@@ -385,8 +387,8 @@ Each data domain has a single owner and a defined access pattern:
   Plan MCP service.
 - No agent calls `git` CLI directly — all git operations go through the Git
   MCP service.
-- Conversations are ephemeral. Disk is the source of truth. On crash, all
-  conversations are lost and reconstructed from files.
+- Conversations are ephemeral. Durable artifacts are the source of truth. On
+  crash, all conversations are lost and reconstructed from files.
 
 ### 5.3 Document relationships
 

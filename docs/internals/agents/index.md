@@ -27,9 +27,9 @@ All project documentation, agent state, runtime config, and auth state live
 **inside the project directory** (e.g. `<project>/.saivage/`). Nothing is stored
 in a global `~/.saivage/`.
 
-Files are separated into two categories:
+Project-local runtime files are separated into two categories:
 
-- **Persistent** (committed to git): plans, history, research, skills, stage
+- **Intentional project artifacts**: plans, history, research, skills, stage
   summaries, inspection reports.
 - **Temporary** (gitignored): runtime state, Inspector workspace, chat logs.
 
@@ -248,7 +248,7 @@ Project-local (inside the project directory, e.g. `<project>/`):
     ├── saivage.json               # Runtime/provider config
     ├── auth-profiles.json         # Provider auth profiles
     │
-    │── [PERSISTENT — committed to git]
+    │── [INTENTIONAL PROJECT ARTIFACTS]
     ├── plan.json                  # Active plan plus terminal stages archive
     ├── notes/                     # User notes from Chat → Planner
     │   └── <note-id>.json         #   (volatile or permanent)
@@ -299,8 +299,8 @@ collisions):
 - **Researcher**: commits files under `research/` + its task report.
 - **Inspector**: commits reports under `inspections/` and persistent tools under
   `tools/inspector/`.
-- **Planner/Manager**: commit `.saivage/` state files (plan files committed via
-  `plan_commit()`, tasks/summaries via git MCP).
+- **Planner/Manager**: persist intentional `.saivage/` project artifacts (plan
+  files via Plan MCP, tasks/summaries via typed artifact tools or git MCP).
 - **Chat**: read-only access to project state. Writes only notes and chat logs.
 
 ## 12. Plan service

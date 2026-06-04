@@ -27,7 +27,7 @@ export interface ProjectContext {
   // Convenience resolved paths
   paths: {
     plan: string;
-    events?: string;
+    events: string;
     stages: string;
     notes: string;
     inspections: string;
