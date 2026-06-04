@@ -142,15 +142,7 @@ export async function bootstrap(
   validateModelCoverage(config, routing, configPath(project.projectRoot));
 
   // 3. Initialize model router (OAuth credentials are resolved lazily on first use)
-  const router = new ModelRouter(config);
-  await router.init();
-  await router.inspectUsageAtStartup();
-  // Warm provider model caches AFTER usage inspection: inspectUsageAtStartup
-  // may call setApiKey() on providers (which resets caches like copilot's
-  // modelsCache). Warming after ensures synchronous capability lookups
-  // (router.getMaxContextTokens) succeed at planner / chat WS startup.
-  await router.warmupProviderCaches();
-  log.info(`[v2] Providers: ${router.listProviders().join(", ")}`);
+  const router = await initializeModelRouter(config);
 
   // 4. Initialize MCP runtime + builtin services
   const mcpRuntime = new McpRuntime(config);
@@ -349,6 +341,19 @@ async function startConfiguredMcpServers(
       log.warn(`[mcp] External MCP "${name}" unavailable: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
+}
+
+async function initializeModelRouter(config: SaivageConfig): Promise<ModelRouter> {
+  const router = new ModelRouter(config);
+  await router.init();
+  await router.inspectUsageAtStartup();
+  // Warm provider model caches AFTER usage inspection: inspectUsageAtStartup
+  // may call setApiKey() on providers (which resets caches like copilot's
+  // modelsCache). Warming after ensures synchronous capability lookups
+  // (router.getMaxContextTokens) succeed at planner / chat WS startup.
+  await router.warmupProviderCaches();
+  log.info(`[v2] Providers: ${router.listProviders().join(", ")}`);
+  return router;
 }
 
 async function initializeKnowledgeAndRag(
