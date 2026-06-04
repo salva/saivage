@@ -41,6 +41,10 @@ from its stated contract.
 | 10 | Provider routing | [Provider router decomposition](./provider-router-decomposition.md) | Decompose routing policies later, only where focused tests need it. |
 | 11 | Legacy cleanup | [Legacy and transition cleanup](./legacy-transition-cleanup.md) | Remove v1/backward-compatible/stub scaffolding where clean v2 no longer needs it. |
 | 12 | Compatibility debt removal | [Compatibility debt removal plan](./compatibility-debt-removal-plan.md) | Concrete assessment and removal plan for remaining compatibility bridges, temporary fallbacks, and dead code candidates. |
+| 13 | Post-simplification cleanup | [Architecture cleanup plan](./v2-architecture-cleanup-plan.md) | Follow-up plan after commit `9705346`, ordered around deeper lifecycle, provider, tool-schema, RAG, and persistence cleanup. |
+| 14 | Runtime lifecycle | [Runtime lifecycle and orchestration](./runtime-lifecycle-and-orchestration.md) | Design for one lifecycle owner, one agent orchestrator, narrow runtime facades, and generic `BaseAgent` boundaries. |
+| 15 | Provider route ownership | [Provider routing unification](./provider-routing-unification.md) | Design for canonical provider/account route objects and a thinner `ModelRouter` facade. |
+| 16 | Tool and persistence contracts | [Tool schema and persistence unification](./tool-schema-and-persistence-unification.md) | Design for single-source Plan/RAG tool definitions, prompt fragments, RAG provider config ownership, shared atomic JSON writes, and SQLite metadata descriptors. |
 
 ## Relationship To Existing Remediation Notes
 
