@@ -47,6 +47,7 @@ from its stated contract.
 | 16 | Tool and persistence contracts | [Tool schema and persistence unification](./tool-schema-and-persistence-unification.md) | Design for single-source Plan/RAG tool definitions, prompt fragments, RAG provider config ownership, shared atomic JSON writes, and SQLite metadata descriptors. |
 | 17 | Stage execution data model | [Stage run data model](./stage-run-data-model.md) | Phases 1-4 implemented: `StageRunStore`, typed artifact tools, lifecycle events, and completion events. Phase 5 decision: keep compatibility files plus `.saivage/events.jsonl`; defer per-stage `run.json` or SQLite until there is a concrete need. |
 | 18 | Architecture/data cleanup | [Architecture and data cleanup master plan](./v2-architecture-data-cleanup-master-plan.md) | Staged plan for schema/path cleanup, stage ownership, plan-history separation, generic worker dispatch, MCP split, bootstrap composition, provider/config simplification, and final legacy removal. |
+| 19 | Event/history canonicalization | [Event and history canonicalization](./event-history-canonicalization.md) | Stage 9 decision: keep stage artifacts canonical, treat events as timelines/read-model evidence, and defer per-stage aggregate/SQLite/event-sourcing migrations until concrete triggers appear. |
 
 ## Relationship To Existing Remediation Notes
 

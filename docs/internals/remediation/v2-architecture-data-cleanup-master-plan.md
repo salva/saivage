@@ -342,6 +342,8 @@ easier to read.
 
 ## Stage 9 - Event and History Canonicalization Decision
 
+**Status**: completed by [Event and history canonicalization](./event-history-canonicalization.md).
+
 **Goal**: Make a final storage decision after the lower-risk cleanups have made
 the current layout easier to observe.
 
