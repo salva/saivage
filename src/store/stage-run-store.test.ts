@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { seedProject } from "./project.js";
-import { ProjectStore } from "./project-store.js";
 import { StageRunStore } from "./stage-run-store.js";
 import type { PlanDocument, StageSummary, TaskList, TaskReport } from "../types.js";
 
@@ -130,7 +129,7 @@ describe("StageRunStore events", () => {
   });
 });
 
-describe("StageRunStore aggregate and ProjectStore compatibility", () => {
+describe("StageRunStore aggregate reads", () => {
   it("reconstructs a stage run from existing task, report, and summary files", async () => {
     const project = await seedProject(projectRoot, { name: "p", objectives: [] });
     const store = new StageRunStore(project);
@@ -148,22 +147,6 @@ describe("StageRunStore aggregate and ProjectStore compatibility", () => {
       summary: { stage_id: "stage-1" },
     });
     expect(run?.events.map((event) => event.type)).toEqual(["tasks_written", "task_report_written", "stage_summary_written"]);
-  });
-
-  it("keeps ProjectStore artifact API behavior compatible", async () => {
-    const project = await seedProject(projectRoot, { name: "p", objectives: [] });
-    const projectStore = new ProjectStore(project);
-    const report = makeTaskReport({ summary: "task artifact" });
-    const summary = makeStageSummary({ summary: "stage artifact" });
-
-    await projectStore.writeStageTaskReport(report);
-    await projectStore.writeStageSummary(summary);
-
-    expect(projectStore.stageTaskReportPath("stage-1", "task-1")).toBe(join(project.paths.stages, "stage-1", "reports", "task-1.json"));
-    expect(projectStore.stageSummaryPath("stage-1")).toBe(join(project.paths.stages, "stage-1", "summary.json"));
-    expect(projectStore.readExpectedStageTaskReport({ stageId: "stage-1", taskId: "task-1", agent: "coder" })).toMatchObject({ kind: "valid", artifact: report });
-    expect(projectStore.readExpectedStageSummary("stage-1")).toMatchObject({ kind: "valid", artifact: summary });
-    expect(await projectStore.stageDetails("stage-1")).toMatchObject({ stage_id: "stage-1", reports: [report], summary });
   });
 
   it("reconstructs completed stage runs from embedded plan history", async () => {

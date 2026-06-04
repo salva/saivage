@@ -20,7 +20,7 @@ import { loadRolePrompt } from "./prompts.js";
 import { buildEagerBlock } from "../knowledge/eagerLoader.js";
 import { getDispatchToolsFor } from "./roster.js";
 import { checkManagerCompletion } from "./compliance.js";
-import { ProjectStore } from "../store/project-store.js";
+import { StageRunStore } from "../store/stage-run-store.js";
 
 
 export class ManagerAgent extends BaseAgent implements Agent {
@@ -131,7 +131,7 @@ export class ManagerAgent extends BaseAgent implements Agent {
   }
 
   private readStageSummaryArtifact() {
-    return new ProjectStore(this.ctx.project).readExpectedStageSummary(this.input.stage.id);
+    return new StageRunStore(this.ctx.project).readExpectedStageSummary(this.input.stage.id);
   }
 }
 

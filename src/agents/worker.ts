@@ -34,7 +34,7 @@ import { buildEagerBlock } from "../knowledge/eagerLoader.js";
 import { buildHandoffContext } from "./handoff.js";
 import { log } from "../log.js";
 import { checkWorkerCompletion } from "./compliance.js";
-import { ProjectStore } from "../store/project-store.js";
+import { StageRunStore } from "../store/stage-run-store.js";
 
 export interface BuildInitialMessageOpts {
   headingSuffix?: string;
@@ -251,7 +251,7 @@ export class WorkerAgent extends BaseAgent implements Agent {
   }
 
   private readTaskReportArtifact() {
-    return new ProjectStore(this.ctx.project).readExpectedStageTaskReport({
+    return new StageRunStore(this.ctx.project).readExpectedStageTaskReport({
       stageId: this.input.stageId,
       taskId: this.input.task.id,
       agent: this.workerRole,

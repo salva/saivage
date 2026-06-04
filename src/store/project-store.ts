@@ -162,34 +162,6 @@ export class ProjectStore {
     };
   }
 
-  stageTaskReportPath(stageId: string, taskId: string): string {
-    return this.stageRuns.stageTaskReportPath(stageId, taskId);
-  }
-
-  stageSummaryPath(stageId: string): string {
-    return this.stageRuns.stageSummaryPath(stageId);
-  }
-
-  readExpectedStageTaskReport(opts: {
-    stageId: string;
-    taskId: string;
-    agent: TaskReport["agent"];
-  }): ArtifactReadResult<TaskReport> {
-    return this.stageRuns.readExpectedStageTaskReport(opts);
-  }
-
-  readExpectedStageSummary(stageId: string): ArtifactReadResult<StageSummary> {
-    return this.stageRuns.readExpectedStageSummary(stageId);
-  }
-
-  async writeStageTaskReport(report: TaskReport): Promise<void> {
-    await this.stageRuns.writeTaskReport(report);
-  }
-
-  async writeStageSummary(summary: StageSummary): Promise<void> {
-    await this.stageRuns.writeStageSummary(summary);
-  }
-
   async debugErrors(): Promise<DebugErrorEntry[]> {
     const errors: DebugErrorEntry[] = [];
 
@@ -210,9 +182,7 @@ export class ProjectStore {
     }
 
     for (const stageId of await this.stageIds()) {
-      const stageDir = join(this.project.paths.stages, stageId);
-
-      const summary = await readLenientDebugJson(join(stageDir, "summary.json"));
+      const summary = await readLenientDebugJson(this.stageRuns.stageSummaryPath(stageId));
       if (summary && typeof summary === "object" && !Array.isArray(summary)) {
         const record = summary as Record<string, unknown>;
         const completedAt = typeof record.completed_at === "string" ? record.completed_at : undefined;
@@ -315,14 +285,14 @@ export class ProjectStore {
     const ids: string[] = [];
     for (const stageId of await readdir(this.project.paths.stages)) {
       try {
-        if ((await stat(join(this.project.paths.stages, stageId))).isDirectory()) ids.push(stageId);
+        if ((await stat(this.stageRuns.stageDir(stageId))).isDirectory()) ids.push(stageId);
       } catch { /* ignore concurrently removed stages */ }
     }
     return ids;
   }
 
   private async readLenientDebugTaskReports(stageId: string): Promise<Array<Record<string, unknown> & { file: string }>> {
-    const reportsDir = join(this.project.paths.stages, stageId, "reports");
+    const reportsDir = this.stageRuns.stageReportsDir(stageId);
     if (!(await pathExists(reportsDir))) return [];
     const reports: Array<Record<string, unknown> & { file: string }> = [];
     for (const file of await readdir(reportsDir)) {
