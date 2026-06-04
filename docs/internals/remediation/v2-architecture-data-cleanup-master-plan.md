@@ -11,6 +11,12 @@ cleanup program. The target is a simpler Saivage v2 architecture where runtime
 state has clear ownership, workers share one generic execution path, and durable
 data has fewer duplicate sources of truth.
 
+This document is the current master sequencing document. Earlier narrower plans,
+including [v2-simplification-plan.md](./v2-simplification-plan.md), remain useful
+as implementation detail references where they describe already-reviewed local
+extractions. If a narrower plan conflicts with this document, this document's
+ordering and ownership decisions take precedence.
+
 The earlier remediation packet already reduced several large classes and added a
 first-class `StageRunStore`. The remaining complexity is now concentrated in:
 
@@ -73,12 +79,17 @@ before removing or consolidating anything.
    history if it ever appears there.
 3. Keep `research/` as an operator-visible project artifact path. Do not move it
    under `.saivage/`.
-4. Add or update tests that pin current behavior for stage reads, plan completion,
+4. Make `ProjectContext.paths.events` required everywhere and remove the fallback
+   in `StageRunStore.eventsPath`; this is a trivial path-contract cleanup and
+   does not need a separate phase.
+5. Update comments/docs if any current text implies `research/` is runtime state.
+6. Add or update tests that pin current behavior for stage reads, plan completion,
    event reads, and API read models.
 
 ### Exit Criteria
 
 - Current persisted files and read paths are documented.
+- `ProjectContext` exposes one canonical event-log path.
 - Every planned removal has either a test proving it is unused or a migration
   note explaining how current state should be regenerated.
 - Full validation passes.
@@ -90,23 +101,18 @@ behavior.
 
 ### Work
 
-1. Make `ProjectContext.paths.events` required everywhere and remove the fallback
-   in `StageRunStore.eventsPath`.
-2. Audit schemas that use `.nullable().optional()` and choose one semantic per
+1. Audit schemas that use `.nullable().optional()` and choose one semantic per
    field:
    - Use `.optional()` when absence is enough.
    - Use `.nullable()` only when explicit `null` carries meaning.
-3. Add `StageSummarySchema` validation for task counts:
+2. Add `StageSummarySchema` validation for task counts:
    `tasks_completed + tasks_failed <= total_tasks`, with explicit handling for
    aborted/escalated stages if not every task receives a terminal report.
-4. Normalize defaulted arrays and metadata fields in `TaskSchema` where safe,
+3. Normalize defaulted arrays and metadata fields in `TaskSchema` where safe,
    especially `tags`, `dependencies`, and checklist fields.
-5. Keep `research/` outside `.saivage/` and update comments/docs if any current
-   text implies it is runtime state.
 
 ### Exit Criteria
 
-- `ProjectContext` exposes one canonical event-log path.
 - Schemas no longer allow unnecessary `undefined | null | value` triples.
 - Stage summary inconsistencies fail validation early.
 - Old malformed runtime artifacts may be rejected or regenerated; backwards
@@ -128,8 +134,11 @@ preserving the current compatibility file layout.
    - `.saivage/stages/<stage-id>/tasks.json`
    - `.saivage/stages/<stage-id>/reports/<task-id>.json`
    - `.saivage/stages/<stage-id>/summary.json`
-5. Classify events as either lifecycle facts or artifact mirrors. Stop adding new
-   mirrored event types unless a current reader needs them.
+5. Classify events as either lifecycle facts or artifact mirrors. Make this
+   enforceable by replacing broad event append inputs with a typed
+   `StageRunEvent` discriminated union and routing all writes through explicit
+   event helpers. Stop adding new mirrored event types unless a current reader
+   needs them.
 6. Add a reconciliation test for the partial-write case: artifact exists, event is
    missing. Reads should remain deterministic and explainable.
 
@@ -166,6 +175,8 @@ derivation explicit.
 ### Exit Criteria
 
 - New code reads completed history through one read-model method.
+- Callers do not read `plan.history` directly; the read-model method owns any
+  composition of `plan.history`, events, and artifacts.
 - Old accidental local runtime state does not drive the design.
 - `PlanService.plan_complete_stage()` has a documented ownership boundary:
   planning transition first, stage history projection second.
@@ -178,7 +189,9 @@ they improve prompt clarity and role selection.
 
 ### Work
 
-1. Introduce an internal `WorkerDispatchSpec` with fields equivalent to:
+1. Introduce an internal `WorkerDispatchSpec` in `src/agents/` or
+   `src/server/agent-orchestrator.ts`, derived from `ROSTER` metadata plus the
+   relevant `TaskSchema` fields. It should have fields equivalent to:
    - `role`: one of the worker roles.
    - `stage_id`.
    - `task` or `task_id` plus task details.
@@ -198,6 +211,8 @@ they improve prompt clarity and role selection.
    - Stage-scoped roles still preserve conversation state within a stage.
    - Ephemeral roles still start fresh per task.
    - Role-specific tools produce the expected `WorkerDispatchSpec`.
+   - `WorkerDispatchSpec` remains compatible with the task/report schemas used by
+     typed stage artifact tools.
 
 ### Exit Criteria
 
@@ -272,6 +287,8 @@ composition.
    - `createPersistenceServices()`
    - `createRuntimeLifecycle()`
    - `createAgentRuntime()`
+   Extract bottom-up by dependency order: persistence and config first, then tool
+   runtime, then lifecycle, then agent runtime, then the final bootstrap wiring.
 2. Keep `bootstrap()` as the high-level composition script.
 3. Narrow `SaivageRuntime` so fields are either public runtime services or route
    dependencies, not every intermediate object.
@@ -292,13 +309,14 @@ easier to read.
 
 ### Work
 
-1. Split `SaivageConfigSchema` into imported sections:
+1. Split `SaivageConfigSchema` into imported sections while keeping one
+   authoritative top-level Zod object for validation and error reporting:
    - provider accounts
    - model routing
    - MCP services
    - RAG
    - auth/channels/runtime settings
-2. Preserve the exported `SaivageConfigSchema` shape for compatibility.
+2. Preserve the exported `SaivageConfigSchema` shape and parsed output.
 3. Do not redesign provider routing in this phase. Keep behavior changes out of
    scope unless a focused test exposes a bug during mechanical extraction.
 4. Keep credential resolution separate; it is a real security/auth boundary.
@@ -350,7 +368,9 @@ new architecture is stable.
 
 ### Work
 
-1. Remove worker dispatch aliases after `run_worker` is established.
+1. If Stage 5 chose `run_worker`, remove role-specific worker dispatch aliases.
+   If Stage 5 kept role-specific tools, remove only duplicated
+   schema-generation or implementation code.
 2. Remove unused path fallbacks and legacy plan-history assumptions.
 3. Delete stale docs that conflict with the new ownership model, or mark them as
    historical provenance.
