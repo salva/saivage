@@ -1,7 +1,7 @@
 # Saivage v2 Stage Run Data Model
 
 **Date**: 2026-06-04
-**Status**: Proposed design
+**Status**: Phases 1-4 implemented; Phase 5 storage decision recorded
 **Follows**: [v2-architecture-cleanup-plan.md](./v2-architecture-cleanup-plan.md), commit `8abd147`
 
 ## Purpose
@@ -27,11 +27,16 @@ Those files are individually understandable, but the aggregate they represent is
 not explicit. The codebase repeatedly reconstructs the same implicit aggregate:
 the lifecycle state of a stage run.
 
-This document proposes making that aggregate explicit with a `StageRunStore` and
-event-backed lifecycle model. The initial implementation should preserve the
-existing on-disk layout so the refactor is low risk. A later migration can change
-the physical storage once callers depend on the explicit model instead of raw
-paths.
+This document originally proposed making that aggregate explicit with a
+`StageRunStore` and event-backed lifecycle model. Phases 1-4 are now implemented:
+Saivage v2 has a `StageRunStore`, stage lifecycle events in
+`.saivage/events.jsonl`, typed stage artifact MCP tools, stage-start/task-start
+events from the orchestrator, and stage-completion events from Plan MCP.
+
+Phase 5 has been resolved as a storage decision: keep the compatibility files and
+project-wide event log for now. Do not migrate to per-stage `run.json` or SQLite
+until there is a concrete performance, concurrency, migration, or operations need
+that outweighs the current readability and compatibility benefits.
 
 ## Goals
 
@@ -64,8 +69,7 @@ paths.
 
 - `paths.plan`: `.saivage/plan.json`
 - `paths.stages`: `.saivage/stages`
-- no current `paths.events` entry; Phase 1 must add an explicit resolved path
-  for `.saivage/events.jsonl` if events become a first-class project artifact.
+- `paths.events`: `.saivage/events.jsonl`
 - `paths.runtimeState`: `.saivage/tmp/state/runtime.json`
 - `paths.chats`: `.saivage/tmp/chats`
 - `paths.inspections`: `.saivage/inspections`
@@ -217,25 +221,24 @@ interface PlanDocumentVNext {
 }
 ```
 
-History should eventually be a read model derived from stage runs, not embedded
-in the planning document. During transition, `PlanService` must continue
+History may eventually become a read model derived from stage runs, not embedded
+in the planning document. For the current v2 format, `PlanService` continues
 maintaining embedded history because `plan_complete_stage()` is part of the
-Planner contract and currently owns stage archival. The first stage-run work
-must not move that ownership. It should only add a stage-run record/event at the
-same boundary.
+Planner contract and owns stage archival. The implemented stage-run work records
+events at the same boundary instead of moving that ownership.
 
-The intended ownership sequence is:
+The implemented ownership sequence is:
 
-- Phase 1 and Phase 2: `plan_complete_stage()` remains the archival tool and
+- Phases 1 and 2: `plan_complete_stage()` remains the archival tool and
   continues to call knowledge archival.
 - Phase 3: typed artifact tools write tasks, reports, and summaries through
   `StageRunStore`, but `plan_complete_stage()` still closes the stage.
-- Phase 4A: `plan_complete_stage()` writes embedded plan history and attempts
-  knowledge archival as it does today, then calls
+- Phase 4: `plan_complete_stage()` writes embedded plan history and attempts
+  knowledge archival as it did before, then calls
   `StageRunStore.markStageCompleted()` to record the completed stage-run event
   and archival outcome.
-- Phase 4B: history views are derived from completed stage runs and embedded
-  history is removed only after a planned format migration.
+- Phase 5: embedded `plan.json.history` remains in place; deriving and removing
+  it is deferred until a separate format-migration need is proven.
 
 ### Stage Run Aggregate
 
@@ -292,9 +295,9 @@ type StageRunEvent =
   | { event_id: string; type: "stage_recovered"; stage_id: string; at: string; action: string };
 ```
 
-Events should initially live in one project-wide `.saivage/events.jsonl` file.
-That choice keeps debug timeline reads simple, avoids scanning every historical
-stage directory, and matches the timeline-oriented read model the UI already
+Events live in one project-wide `.saivage/events.jsonl` file. That choice keeps
+timeline reads simple, avoids scanning every historical stage directory for new
+lifecycle facts, and matches the timeline-oriented read model the UI already
 wants. The event records carry `stage_id`, so per-stage views can still be
 derived cheaply enough for v2's expected scale.
 
@@ -325,7 +328,7 @@ interface RuntimeSnapshot {
 Do not make this file responsible for historical facts. Historical facts belong
 in stage-run events and stage artifacts.
 
-## Proposed `StageRunStore`
+## Implemented `StageRunStore`
 
 ### Responsibility
 
@@ -338,9 +341,9 @@ knowledge, RAG, or HTTP response formatting. It should return domain objects
 such as `StageRun` and `StageRunSummary`; `ProjectStore` remains responsible for
 mapping those objects into API/read-model shapes such as `StageDetailsView`.
 
-### Initial API
+### Implemented API
 
-The first pass should be intentionally small:
+The implemented API is intentionally small:
 
 ```ts
 interface StageRunStore {
@@ -365,27 +368,34 @@ interface StageRunStore {
 
 `at` defaults to `new Date().toISOString()` for every write method. Callers only
 provide it in tests, migrations, or recovery paths that need to preserve an
-existing timestamp.
+existing timestamp. The implementation also includes `markTaskStarted()` so the
+orchestrator can record runtime-observed worker dispatch facts that artifact
+submission methods cannot see.
 
-The first implementation can still write:
+The implementation writes:
 
 - `tasks.json`
 - `reports/<task-id>.json`
 - `summary.json`
 - `.saivage/events.jsonl`
 
-This gives the architecture a stable seam before changing physical storage.
+This gives the architecture a stable seam without changing physical storage.
 
-`StageRunStore` should serialize write operations with a small in-process
-operation queue, matching the `PlanService` approach. This keeps JSONL appends
-ordered and prevents concurrent report writes from interleaving event writes in a
-surprising order. Cross-process writes remain guarded by the existing runtime
-lock policy; this store is a runtime-owned service, not a multi-writer database.
+`StageRunStore` serializes write operations with a small in-process operation
+queue, matching the `PlanService` approach. This keeps JSONL appends ordered and
+prevents concurrent report writes from interleaving event writes in a surprising
+order. Cross-process writes remain guarded by the existing runtime lock policy;
+this store is a runtime-owned service, not a multi-writer database.
 
 ### Validation Rules
 
-`StageRunStore` should enforce invariants now spread across compliance checks,
-recovery, and read models:
+`StageRunStore` enforces the schema-level artifact invariants that were spread
+across compliance checks, recovery, and read models, and centralizes the artifact
+paths used by those callers. The implemented checks include stage/task/agent
+identity validation for expected artifact reads and Zod validation for submitted
+task lists, task reports, summaries, and events.
+
+The original target remains useful for future tightening:
 
 - `TaskList.stage_id` must match the target stage directory.
 - Every task ID in a task list must be unique within the stage.
@@ -412,17 +422,18 @@ do not reduce agent autonomy over task content.
 
 ### Read Models
 
-`ProjectStore.stageDetails()` can call `StageRunStore.getStageRun()` and map the
+`ProjectStore.stageDetails()` now calls `StageRunStore.getStageRun()` and maps the
 domain object to the existing `StageDetailsView` API shape.
 
 `debugErrors()` and `debugTimeline()` should eventually read stage runs and
-events instead of scanning raw stage directories. During transition, they can use
-the store's compatibility view, which is backed by the current files.
+events instead of scanning raw stage directories. They still use compatibility
+raw-file scans for lenient debug/error handling, so this remains the main
+read-model cleanup left after Phases 1-4.
 
-For existing stages that predate `.saivage/events.jsonl`, `StageRunStore` should
-derive a compatibility event view from plan history, `tasks.json`, reports, and
-`summary.json`. The compatibility view is read-only; new writes should always
-append real events.
+For existing stages that predate `.saivage/events.jsonl`, `StageRunStore`
+derives a compatibility event view from plan history, `tasks.json`, reports, and
+`summary.json`. The compatibility view is read-only; new writes append real
+events.
 
 ### Task Status Semantics
 
@@ -444,14 +455,16 @@ should fall back to the current report-scan behavior and may still patch
 
 ## Tool And Agent Boundary Changes
 
-### Current Boundary
+### Implemented Boundary
 
-Current prompts instruct agents to write JSON artifacts directly to fixed paths.
-The runtime validates after the fact.
+Manager, worker, reviewer, and compliance prompts now direct agents to submit
+core stage artifacts through typed tools instead of writing raw JSON as the main
+contract. The compatibility file paths remain visible so operators and agents can
+inspect the persisted artifacts.
 
-### Target Boundary
+### Tool Surface
 
-Provide narrow artifact tools or terminal submission tools:
+The implemented Plan MCP tool surface includes:
 
 - `stage_write_tasks`
 - `task_write_report`
@@ -459,15 +472,15 @@ Provide narrow artifact tools or terminal submission tools:
 - `stage_get_run`
 - `stage_list_reports`
 
-The exact MCP names can follow existing Plan/RAG tool registry conventions and
-the single-source schema guidance in
+The MCP names follow existing Plan/RAG tool registry conventions and the
+single-source schema guidance in
 [tool-schema-and-persistence-unification.md](./tool-schema-and-persistence-unification.md).
-The first implementation should add the tools beside Plan MCP rather than
-inventing another framework; a later split into a dedicated `StageRunService` is
-only justified if the tool set grows or Plan MCP becomes unclear.
+The tools live beside Plan MCP rather than in a separate framework. A later split
+into a dedicated `StageRunService` is only justified if the tool set grows or
+Plan MCP becomes unclear.
 
 Agents still receive prompts explaining expected behavior and where artifacts are
-visible. But core persistence should go through tools that call `StageRunStore`.
+visible. Core persistence goes through tools that call `StageRunStore`.
 
 Example prompt shift:
 
@@ -496,7 +509,10 @@ Cons:
 - Physical duplication remains.
 - Some reconstruction still happens inside `StageRunStore`.
 
-Recommendation: implement this first.
+Decision: keep this as the current canonical physical storage shape. The
+canonical service seam is `StageRunStore`; the canonical operator-visible files
+remain `tasks.json`, `reports/*.json`, `summary.json`, and
+`.saivage/events.jsonl`.
 
 ### Option B: Per-Stage `run.json`
 
@@ -515,7 +531,9 @@ Cons:
 - Requires migration or dual-write during transition.
 - Risk of conflicts if several workers write reports concurrently.
 
-Use only after Option A proves the aggregate API.
+Defer. Do not introduce per-stage `run.json` unless the compatibility-file
+layout creates a concrete recovery or performance problem that cannot be solved
+inside `StageRunStore`.
 
 ### Option C: SQLite Stage Store
 
@@ -534,115 +552,112 @@ Cons:
 - Less transparent than JSON files for operators.
 - Requires backup/export story for human-readable artifacts.
 
-This may be the best long-term shape if v2 continues growing, but it should not
-be the first step.
+Defer. SQLite may become the right shape if v2 needs stronger concurrent writes,
+indexed history/debug queries, or a larger event stream, but the current runtime
+lock and expected v2 scale do not justify the migration cost.
 
-## Migration Plan
+## Implementation Status And Remaining Work
 
 ### Phase 1: Introduce `StageRunStore` Over Existing Files
 
-Actions:
+Status: implemented.
 
-- Add `src/store/stage-run-store.ts` or `src/stage-runs/store.ts`.
-- Move stage artifact path helpers from `ProjectStore` into this store.
-- Move task-report and summary validation into the store.
-- Add `ProjectContext.paths.events` or an equivalent resolved path helper for
-  `.saivage/events.jsonl`; it is not present in the current `ProjectContext`.
-- Add `.saivage/events.jsonl` read/write helpers, but keep event appends
-  internal to artifact-writing methods.
-- Add a small operation queue for stage-run writes.
-- Keep `ProjectStore` as a read-model facade that maps `StageRun` domain objects
-  to existing API/read-model shapes.
-- Add compatibility reconstruction for stages that have artifacts but no events.
+Implemented outcomes:
+
+- `src/store/stage-run-store.ts` exists and owns stage artifact paths.
+- `ProjectContext.paths.events` resolves `.saivage/events.jsonl`.
+- `StageRunStore` reads/writes the project-wide event log and keeps event appends
+  internal to store methods.
+- Stage-run writes are serialized through a small in-process queue.
+- `ProjectStore.stageDetails()` maps `StageRun` back to the existing API shape.
+- Existing stages without real events receive read-only compatibility events from
+  plan history, task lists, reports, and summaries.
 
 Validation:
 
-- Focused unit tests for valid/missing/invalid task reports and summaries.
-- Recovery tests proving behavior is unchanged.
-- Route/read-model tests proving API responses are unchanged.
-- Regression tests proving old-file reconstruction returns the same timeline and
-  error views as the current `ProjectStore` logic for representative fixtures.
+- `src/store/stage-run-store.test.ts`
 
 ### Phase 2: Route Runtime Writes Through `StageRunStore`
 
-Actions:
+Status: implemented.
 
-- Replace direct `ProjectStore.writeStageTaskReport()` and
-  `writeStageSummary()` paths with `StageRunStore` calls.
-- Update manager failure/abort summary paths to use the store.
-- Add event writes for stage start, task dispatch/start, task report write, and
-  summary write at the runtime boundaries that already observe those facts.
-  Artifact methods can write artifact events; dispatcher/worker-launch code must
-  write `task_started` because artifact methods do not see that transition.
-- Keep prompts unchanged in this phase if that makes the refactor safer.
+Implemented outcomes:
+
+- `ProjectStore.writeStageTaskReport()` and `writeStageSummary()` delegate to
+  `StageRunStore`.
+- Artifact writes append `tasks_written`, `task_report_written`, and
+  `stage_summary_written` events.
+- The orchestrator records `stage_started` and `task_started` events at runtime
+  boundaries that observe those transitions.
 
 Validation:
 
-- `npm test -- src/agents/agents.test.ts src/runtime/runtime.test.ts src/store/project.test.ts`
-- A regression proving `needsArchival: true` behavior is unchanged when a
-  `summary.json` exists for an active stage.
-- A regression proving prompt snapshots remain unchanged in Phase 2.
-- Full `npm test` before committing.
+- `src/server/dispatcher-gate.test.ts`
+- `src/store/project.test.ts`
+- runtime/orchestrator coverage that exercises manager and worker dispatch
 
 ### Phase 3: Add Typed Artifact Tools
 
-Actions:
+Status: implemented.
 
-- Add MCP tools for task list, task report, and stage summary submission.
-- Generate schemas from the existing Zod contracts or a single registry, matching
-  the recent Plan/RAG registry cleanup pattern.
-- Place the first tool registry beside Plan MCP so `plan_complete_stage()` and
-  stage artifact submission share one obvious planning/execution tool surface.
-- Change manager and worker prompts to call these tools instead of writing raw
-  JSON files.
-- Keep repair prompts for drift, but treat malformed artifacts as tool validation
-  failures where possible.
+Implemented outcomes:
+
+- Plan MCP includes `stage_write_tasks`, `task_write_report`,
+  `stage_write_summary`, `stage_get_run`, and `stage_list_reports`.
+- The tool registry remains beside Plan MCP.
+- Manager, worker, reviewer, and compliance prompts now point agents to the typed
+  submission tools.
 
 Validation:
 
-- Tool schema tests.
-- Agent prompt snapshot tests.
-- Worker/manager integration tests with stub tool calls.
+- `src/mcp/plan-stage-artifacts.test.ts`
+- `src/agents/manager-initial-message.test.ts`
+- `src/agents/tool-filters.test.ts`
 
-### Phase 4: Record Stage Completion, Then Derive History
+### Phase 4: Record Stage Completion; Keep Embedded History
 
-Actions:
+Status: implemented for the current v2 format; completion is recorded in the
+stage-run event log, and history remains embedded in `plan.json` for
+compatibility.
 
-- Add `StageRunStore.markStageCompleted()` and call it from
-  `PlanService.plan_complete_stage()` after the plan history write and knowledge
-  archival attempt. The event should record the knowledge archival outcome.
-- Add `StageRunStore.listCompletedRuns()` or equivalent once completion events
-  exist for new closes and compatibility reconstruction covers older history.
-- Build plan history views from stage runs only after the completed-run read
-  model is proven against embedded `plan.json` history.
-- Keep `PlanService` as the stage-closing tool until planner contracts and
-  prompt snapshots have been migrated.
-- Narrow `PlanService` to active queue and current pointer only in a later
-  format-migration step after derived history is proven.
-- Keep a temporary history compatibility writer only if a live deployment needs
-  it; otherwise remove embedded history in a planned format migration.
+Implemented outcomes:
+
+- `StageRunStore.markStageCompleted()` records `stage_completed` and optional
+  `knowledge_archived` events.
+- `PlanService.plan_complete_stage()` writes embedded plan history, attempts
+  knowledge archival, then records the stage-run completion event and archival
+  outcome.
+- `StageRunStore.listCompletedRuns()` can list completed runs from real or
+  compatibility events.
+- `PlanService` remains the stage-closing tool and `plan.json.history` remains
+  maintained.
 
 Validation:
 
-- Plan MCP tests for active queue behavior.
-- Debug timeline/history tests.
-- Crash recovery tests for summarized-but-not-archived stages.
-- A test proving `archiveStage()` still runs exactly once per stage close.
+- `src/mcp/plan-stage-completion.test.ts`
+- `src/store/stage-run-store.test.ts`
 
 ### Phase 5: Reconsider Physical Storage
 
-Actions:
+Status: resolved for now.
 
-- Decide between continued compatibility files, per-stage `run.json`, or SQLite.
-- If changing storage, migrate behind `StageRunStore` without changing callers.
-- Preserve operator-visible export files if SQLite becomes canonical.
+Decision:
+
+- Continue with compatibility files plus `.saivage/events.jsonl`.
+- Do not add `.saivage/stages/<stage-id>/run.json` now.
+- Do not migrate stage-run storage to SQLite now.
+- Reopen this only if there is a concrete performance/concurrency need, a proven
+  recovery defect caused by split JSON files, or an operator requirement that the
+  current files cannot satisfy.
 
 Validation:
 
-- Migration tests from current `.saivage/stages` layout.
-- Recovery tests across pre- and post-migration layouts if compatibility is kept.
+- No migration validation is required because no physical migration is being
+  performed.
+- Continue covering the compatibility-file layout in `StageRunStore` and Plan MCP
+  tests.
 
-## Expected Architecture After Phase 3
+## Architecture After Phase 5 Decision
 
 - Planner owns plan intent through Plan MCP tools.
 - Manager owns task decomposition and summary content, but submits them through
@@ -650,13 +665,18 @@ Validation:
 - Workers own task evidence content, but submit reports through validated tools.
 - `StageRunStore` owns stage execution persistence and lifecycle events.
 - `ProjectStore` owns API/read-model composition only.
-- Runtime recovery reads one stage-run abstraction instead of manually stitching
-  plan, tasks, reports, and summary files.
-- Debug timeline reads lifecycle events plus derived stage-run views.
+- Runtime orchestration records stage-start and task-start facts through
+  `StageRunStore` while preserving the existing runtime lock model.
+- Stage details read through one stage-run abstraction instead of manually
+  stitching plan, tasks, reports, and summary files at the API boundary.
+- Debug error and timeline views still include lenient compatibility scans over
+  raw files; migrating those reads fully to stage-run events remains optional
+  cleanup, not a storage-migration prerequisite.
 
 ## Open Questions
 
-- How much history compatibility is required for deployed v2 instances?
+- When, if ever, should `plan.json.history` become a derived view instead of an
+  embedded compatibility field?
 - If SQLite becomes canonical later, what human-readable export should operators
   get by default?
 
@@ -670,27 +690,33 @@ Validation:
 - Event timestamps can be non-monotonic if callers supply `at` or the system
   clock moves. Ordering-sensitive views should prefer file order as the durable
   sequence and `event_id` for deduplication, using timestamps for display.
-- Moving artifact writes behind tools can make prompts and snapshots churn.
-  Phase 2 intentionally keeps prompts unchanged; Phase 3 should update prompt
-  snapshots together with MCP tool schemas.
+- Moving artifact writes behind tools caused prompt and snapshot churn, but the
+  implemented prompt tests now cover the intended tool instructions.
 - Deriving plan history too early would conflict with the current Planner
   contract. `plan_complete_stage()` must keep writing embedded history and
   running knowledge archival until a separate format migration proves the new
   read model.
+- The current physical layout is not fully atomic across artifact write plus
+  event append. The operation queue keeps in-process ordering, but recovery and
+  read models must continue tolerating artifact/event skew.
+- The compatibility-file layout is intentionally not optimized for high-volume
+  event queries or multi-process stage writers. Reconsider SQLite only when that
+  becomes an observed bottleneck.
 
 Resolved decisions from this design:
 
 - Stage-run events start as one project-wide `.saivage/events.jsonl` file.
-- `plan_complete_stage()` remains the archival and stage-close tool through the
-  first implementation phases.
+- `plan_complete_stage()` remains the archival and stage-close tool for the
+  current v2 format.
 - `tasks.json` remains the planning-time task contract; runtime status is
   progressively derived from events and reports.
+- Phase 5 keeps compatibility files plus `.saivage/events.jsonl`; no per-stage
+  `run.json` or SQLite migration is planned without a concrete need.
 
 ## Recommendation
 
-Start with Phase 1 only: introduce `StageRunStore` over the existing files.
-
-This is the smallest change that creates the right architectural seam. It does
-not require a data migration, does not change agent behavior, and does not force
-a physical storage decision. Once the runtime, recovery, and read models depend
-on the explicit stage-run aggregate, deeper cleanup becomes much safer.
+Keep the implemented `StageRunStore` seam and compatibility-file storage. Future
+work should tighten read models and validation behind that seam before revisiting
+physical storage. A per-stage `run.json` or SQLite migration should be justified
+by measured performance, observed concurrency pressure, or a concrete recovery or
+operator-readability requirement.
