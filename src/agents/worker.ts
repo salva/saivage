@@ -236,13 +236,12 @@ export class WorkerAgent extends BaseAgent implements Agent {
     }
   }
 
-  protected override validateFinalResponse(text: string): string | null {
+  protected override validateFinalResponse(_text: string): string | null {
     const artifact = this.readTaskReportArtifact();
     if (artifact.kind === "invalid") {
       return `Invalid TaskReport artifact at ${artifact.path}: ${artifact.reason}. Fix the on-disk TaskReport JSON for stage ${this.input.stageId}, task ${this.input.task.id}.`;
     }
     const violation = checkWorkerCompletion({
-      text,
       hasMeaningfulToolEvidence: this.hasMeaningfulToolEvidence(),
       requiredToolMessage: this.invalidFinalResponseMessage,
       artifactValidated: artifact.kind === "valid",

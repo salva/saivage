@@ -1,5 +1,4 @@
-import { parseModelId } from "./types.js";
-import { unique } from "./router-utils.js";
+import { tryParseModelId, unique } from "./router-utils.js";
 
 export interface ChatCandidate {
   spec: string;
@@ -106,10 +105,6 @@ function expandProviderIndependentCandidates(
     .filter((providerName) => options.providerCanServeModel(providerName, model))
     .sort((a, b) => options.compareProviderOrder(a, b))
     .flatMap((providerName) => options.expandProviderModelCandidates(providerName, model, options.request));
-}
-
-function tryParseModelId(modelSpec: string): { provider: string; model: string } | undefined {
-  return modelSpec.includes("/") ? parseModelId(modelSpec) : undefined;
 }
 
 export function buildModelEquivalenceIndex(groups: Record<string, string[]>): Map<string, string[]> {

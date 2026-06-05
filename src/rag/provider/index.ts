@@ -15,10 +15,6 @@ export interface EmbeddingProvider {
   embedQuery(text: string): Promise<Float32Array>;
 }
 
-export interface ProviderRegistry {
-  resolve(ref: EmbeddingProviderRef): Promise<EmbeddingProvider>;
-}
-
 export interface OpenAIProviderOptions {
   apiKey?: string;
   baseUrl?: string;

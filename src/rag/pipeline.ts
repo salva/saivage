@@ -24,6 +24,7 @@ import type { VectorStore } from "./store/index.js";
 import type {
   IngestInput,
   IngestReport,
+  ChunkMetadata,
   RawChunk,
   StoredChunk,
 } from "./types.js";
@@ -49,13 +50,7 @@ interface InputItem {
   mtimeMs: number;
   sourceHash: string;
   /** Only set for `records` input. */
-  metadataOverlay?: RawChunk["metadata"] extends infer M
-    ? M extends { path: infer _ }
-      ? Partial<Omit<RawChunk["metadata"], "path" | "source" | "chunkIndex" | "contentHash" | "sourceHash" | "mtimeMs">>
-      : never
-    : never;
-  /** For records input, the caller-supplied `id` (used as `path`). */
-  recordId?: string;
+  metadataOverlay?: Partial<Omit<ChunkMetadata, "path" | "source" | "chunkIndex" | "contentHash" | "sourceHash" | "mtimeMs">>;
   /**
    * Caller-declared chunk source. For records-mode ingest the caller
    * already knows whether the item is a skill / memory / doc /
@@ -123,7 +118,6 @@ function buildRecordItems(
       text,
       mtimeMs: it.metadata.mtimeMs ?? Date.now(),
       sourceHash: sha256Hex(text),
-      recordId: it.id,
       declaredSource: it.metadata.source,
       metadataOverlay: {
         language: it.metadata.language,

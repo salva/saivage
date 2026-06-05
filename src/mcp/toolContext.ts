@@ -13,7 +13,6 @@
  */
 
 import type { AgentRole } from "../agents/types.js";
-import type { InProcessToolHandler } from "./runtime.js";
 
 export interface ToolCallContext {
   /** Calling agent's role (planner | manager | coder | …). */
@@ -45,15 +44,6 @@ export interface ToolCallContext {
    * infer operator-ness from `role`.
    */
   operatorContext?: boolean;
-}
-
-/**
- * Wrap an in-process handler so callers may pass a `ToolCallContext`
- * even if the handler signature predates the change. Returns a new
- * handler whose third argument carries the context.
- */
-export function withContext<H extends InProcessToolHandler>(handler: H): InProcessToolHandler {
-  return (toolName, args, ctx?) => handler(toolName, args, ctx);
 }
 
 /**

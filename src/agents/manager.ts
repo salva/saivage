@@ -114,14 +114,13 @@ export class ManagerAgent extends BaseAgent implements Agent {
     }
   }
 
-  protected override validateFinalResponse(text: string): string | null {
+  protected override validateFinalResponse(_text: string): string | null {
     const artifact = this.readStageSummaryArtifact();
     if (artifact.kind === "invalid") {
       return `Invalid StageSummary artifact at ${artifact.path}: ${artifact.reason}. Fix the on-disk StageSummary JSON for stage ${this.input.stage.id}.`;
     }
     const dispatchTools = getDispatchToolsFor("manager");
     const violation = checkManagerCompletion({
-      text,
       hasWorkerEvidence: this.hasMeaningfulToolNamed(...dispatchTools),
       hasReviewerEvidence: this.hasMeaningfulToolNamed("run_reviewer"),
       artifactResult: artifact.kind === "valid" ? artifact.artifact.result : undefined,

@@ -3,7 +3,7 @@ import { ROSTER, type AgentRole } from "./roster.js";
 
 export const TRIVIAL_EVIDENCE_TOOLS = new Set(["list_dir", "read_stash"]);
 
-export const RUN_MANAGER_SCHEMA: ToolSchema = {
+const RUN_MANAGER_SCHEMA: ToolSchema = {
   name: "run_manager",
   description:
     "Dispatch a stage to the Manager agent. The Manager decomposes it into tasks and runs worker agents. Returns a StageSummary on success.",
@@ -29,7 +29,7 @@ export const RUN_MANAGER_SCHEMA: ToolSchema = {
   },
 };
 
-export const RUN_INSPECTOR_SCHEMA: ToolSchema = {
+const RUN_INSPECTOR_SCHEMA: ToolSchema = {
   name: "run_inspector",
   description:
     "Request deep analysis from the Inspector agent. Returns an InspectionReport with findings and recommendations.",
@@ -53,43 +53,43 @@ export const RUN_INSPECTOR_SCHEMA: ToolSchema = {
   },
 };
 
-export const RUN_CODER_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
+const RUN_CODER_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
   "run_coder",
   "Dispatch a coding task to a Coder worker agent. Returns a TaskReport.",
   "The task to execute",
 );
 
-export const RUN_RESEARCHER_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
+const RUN_RESEARCHER_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
   "run_researcher",
   "Dispatch a research task to a Researcher worker agent. Returns a TaskReport.",
   "The research task",
 );
 
-export const RUN_DATA_AGENT_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
+const RUN_DATA_AGENT_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
   "run_data_agent",
   "Dispatch a data acquisition task to a Data Agent. Use for finding, downloading, validating, and documenting external datasets or API data. Returns a TaskReport.",
   "The data acquisition task",
 );
 
-export const RUN_REVIEWER_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
+const RUN_REVIEWER_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
   "run_reviewer",
   "Dispatch a review task to a Reviewer worker agent after stage work is done. Use to validate stage objectives, acceptance criteria, work products, data/statistical quality, and issues before writing StageSummary. Returns a TaskReport.",
   "The review task",
 );
 
-export const RUN_DESIGNER_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
+const RUN_DESIGNER_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
   "run_designer",
   "Dispatch a design task to a Designer worker agent. Use for product, UX, interface, information-architecture, or system-design work that should be settled before coding starts. Returns a TaskReport.",
   "The design task",
 );
 
-export const RUN_CRITIC_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
+const RUN_CRITIC_SCHEMA: ToolSchema = makeWorkerDispatchSchema(
   "run_critic",
   "Dispatch a design-critique task to a Critic worker agent. Use after the Designer produces specs, briefs, architecture docs, or other design artifacts: the Critic reviews them, writes a standalone critique document, and returns a TaskReport with actionable issues. Does not review code, tests, or data.",
   "The design critique task",
 );
 
-export const RUN_LIBRARIAN_SCHEMA: ToolSchema = {
+const RUN_LIBRARIAN_SCHEMA: ToolSchema = {
   name: "run_librarian",
   description:
     "Dispatch a one-shot Librarian agent to investigate or curate the RAG knowledge surface. Returns a markdown report (not a TaskReport). The Librarian may register, ingest, query, or drop unprotected collections and record memories under topic.domain='rag', but does not edit source files, write skills, or mutate plan state.",
@@ -113,7 +113,7 @@ export const RUN_LIBRARIAN_SCHEMA: ToolSchema = {
   },
 };
 
-export function makeWorkerDispatchSchema(
+function makeWorkerDispatchSchema(
   name: string,
   description: string,
   taskDescription: string,
@@ -155,7 +155,7 @@ const DISPATCH_SCHEMA_BY_TOOL: Record<string, ToolSchema> = {
   run_librarian: RUN_LIBRARIAN_SCHEMA,
 };
 
-export const ROLE_DISPATCH_TOOLS: Partial<Record<AgentRole, ToolSchema[]>> = (() => {
+const ROLE_DISPATCH_TOOLS: Partial<Record<AgentRole, ToolSchema[]>> = (() => {
   const map: Partial<Record<AgentRole, ToolSchema[]>> = {};
   for (const entry of ROSTER) {
     if (!entry.dispatchTool) continue;

@@ -1,6 +1,6 @@
 import type { z } from "zod";
-import { existsSync } from "node:fs";          // resolveProjectRoot only
-import { readFile } from "node:fs/promises";   // loadConfig only
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { pathExists } from "./store/documents.js";

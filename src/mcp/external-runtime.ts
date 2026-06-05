@@ -8,9 +8,7 @@ import type { RuntimeToolEntry } from "./in-process-registry.js";
 interface ManagedService {
   entry: ServiceEntry;
   client: McpClient;
-  lastHealthCheck: number;
   crashCount: number;
-  idleSince: number | null;
 }
 
 interface ExternalFailureState {
@@ -65,7 +63,6 @@ export class ExternalMcpRuntime {
 
     const existing = this.services.get(name);
     if (existing?.client.connected) {
-      existing.idleSince = null;
       return existing.client;
     }
 
@@ -83,9 +80,7 @@ export class ExternalMcpRuntime {
       const managed: ManagedService = {
         entry,
         client,
-        lastHealthCheck: Date.now(),
         crashCount: 0,
-        idleSince: null,
       };
       this.services.set(entry.name, managed);
       this.clearExternalFailures(entry.name);
@@ -118,9 +113,6 @@ export class ExternalMcpRuntime {
     }
 
     const client = await this.getRunningService(serviceName);
-    const managed = this.services.get(serviceName);
-    if (managed) managed.idleSince = null;
-
     const result = await client.callTool(toolName, args);
     if (result.isError) {
       throw new Error(
@@ -176,7 +168,6 @@ export class ExternalMcpRuntime {
         log.warn(`Service "${name}" disconnected, attempting restart`);
         await this.restartService(name, managed);
       }
-      managed.lastHealthCheck = Date.now();
     }
   }
 
@@ -202,7 +193,6 @@ export class ExternalMcpRuntime {
       const client = this.clientFactory(managed.entry);
       await client.connect();
       managed.client = client;
-      managed.lastHealthCheck = Date.now();
       this.clearExternalFailures(name);
       log.info(`Service "${name}" restarted successfully`);
     } catch (err) {

@@ -6,7 +6,6 @@ export interface ComplianceViolation {
 }
 
 export function checkWorkerCompletion(opts: {
-  text: string;
   hasMeaningfulToolEvidence: boolean;
   requiredToolMessage: string;
   artifactValidated?: boolean;
@@ -32,7 +31,6 @@ export function checkWorkerCompletion(opts: {
 }
 
 export function checkManagerCompletion(opts: {
-  text: string;
   hasWorkerEvidence: boolean;
   hasReviewerEvidence: boolean;
   artifactResult?: "completed" | "failed" | "escalated" | "aborted";

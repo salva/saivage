@@ -238,11 +238,7 @@ export class PlannerAgent extends BaseAgent implements Agent {
   }
 }
 
-function buildPlannerMessage(ctx: AgentContext): Promise<string> {
-  return buildPlannerMessageImpl(ctx);
-}
-
-async function buildPlannerMessageImpl(ctx: AgentContext): Promise<string> {
+async function buildPlannerMessage(ctx: AgentContext): Promise<string> {
   const config = ctx.project.config;
   const objectives = config.objectives ?? [];
   const startupDirectives = ctx.startupDirectives ?? [];

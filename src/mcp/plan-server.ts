@@ -53,12 +53,6 @@ function planError(code: PlanErrorCode, message: string): PlanError {
   return { code, error: message };
 }
 
-/** Internal factory exported for the admin backfill script (see
- * src/scripts/backfill-plan-history.ts). NOT for general use. */
-export function makePlanError(code: PlanErrorCode, message: string): PlanError {
-  return planError(code, message);
-}
-
 /**
  * Plan MCP Service — manages plan.json, including embedded history.
  * All operations are atomic (tmp + rename).

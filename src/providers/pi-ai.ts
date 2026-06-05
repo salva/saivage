@@ -6,10 +6,7 @@
  * parsing, and retry logic, we delegate everything to pi-ai which already
  * supports 23 providers / 850+ models.
  */
-import {
-  complete,
-  getProviders,
-} from "@mariozechner/pi-ai";
+import { complete } from "@mariozechner/pi-ai";
 import { piGetModel, piGetModels, UnknownModelError } from "./pi-ai-types.js";
 import { classifyProviderError } from "./error.js";
 import type {
@@ -298,10 +295,5 @@ export class PiAiProvider extends BaseProvider {
   /** List model IDs available under this pi-ai provider */
   listModels(): string[] {
     return piGetModels(this.piProvider).map((m) => m.id);
-  }
-
-  /** List all available pi-ai providers */
-  static listPiProviders(): string[] {
-    return getProviders();
   }
 }

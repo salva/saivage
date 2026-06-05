@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const modelAssignmentSchema = z.union([z.string(), z.array(z.string())]);
+const modelAssignmentSchema = z.union([z.string(), z.array(z.string())]);
 
 export const modelsSchema = z
   .object({

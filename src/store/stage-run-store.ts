@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { appendFile, readFile } from "node:fs/promises";
+import { appendFile, readFile, readdir, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { z } from "zod";
@@ -334,7 +334,6 @@ export class StageRunStore {
     for (const stage of plan?.history ?? []) ids.add(stage.id);
     for (const event of await this.readEvents()) ids.add(event.stage_id);
     if (await pathExists(this.project.paths.stages)) {
-      const { readdir, stat } = await import("node:fs/promises");
       for (const stageId of await readdir(this.project.paths.stages)) {
         try {
           if ((await stat(join(this.project.paths.stages, stageId))).isDirectory()) ids.add(stageId);

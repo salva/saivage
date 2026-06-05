@@ -136,17 +136,8 @@ export async function seedProject(
 }
 
 /**
- * Ensure the `.saivage/.gitignore` contains the lines required by FR-21.
- *
- * Pre-F01 this also seeded `.saivage/{skills,memory}/{project,stages,sessions}/`
- * trees with empty `index.json` + `audit.jsonl` files. F01 B07 cut that over
- * to the SQLite sidecar at `.saivage/knowledge/store.sqlite`, which is
- * created on demand by `openSidecar` during knowledge boot.
- *
- * Idempotent: only appends missing `.gitignore` lines.
- *
- * Called from {@link seedProject} during fresh init, and safe to call
- * independently to upgrade a partially-initialized tree.
+ * Ensure `.saivage/` exists and append required `.saivage/.gitignore` lines
+ * without disturbing existing user entries.
  */
 export async function initProjectTree(projectRoot: string): Promise<void> {
   const saivageDir = join(projectRoot, ".saivage");

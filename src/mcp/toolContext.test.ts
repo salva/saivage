@@ -5,7 +5,6 @@
  *   • `ToolCallContext` end-to-end propagation through `McpRuntime.callTool`
  *     into an in-process handler.
  *   • `defaultAuthor` derivation rules.
- *   • `withContext` wrapper preserves handler semantics.
  *
  * Spawner-side propagation (createChildSpawner / runPlanner / web-chat /
  * telegram-chat) is asserted in their respective integration tests; this
@@ -14,7 +13,7 @@
 
 import { describe, expect, it } from "vitest";
 import { McpRuntime, type McpRuntimeOptions } from "./runtime.js";
-import { defaultAuthor, withContext, type ToolCallContext } from "./toolContext.js";
+import { defaultAuthor, type ToolCallContext } from "./toolContext.js";
 import type { ToolEntry } from "./types.js";
 import type { SaivageConfig } from "../config.js";
 
@@ -137,18 +136,5 @@ describe("defaultAuthor", () => {
 
   it("falls back to role:agentId", () => {
     expect(defaultAuthor({ role: "planner", agentId: "p-9" })).toBe("planner:p-9");
-  });
-});
-
-describe("withContext", () => {
-  it("wraps a handler and forwards ctx", async () => {
-    let received: ToolCallContext | undefined;
-    const wrapped = withContext(async (_name, _args, c) => {
-      received = c;
-      return { content: { ok: true }, isError: false };
-    });
-    const result = await wrapped("probe", {}, ctx);
-    expect(result.isError).toBe(false);
-    expect(received).toEqual(ctx);
   });
 });

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const runtimeProviderAccountSchema = z.object({
+const runtimeProviderAccountSchema = z.object({
   apiKey: z.string().optional(),
   baseUrl: z.string().optional(),
   authProfile: z.string().optional(),

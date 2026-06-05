@@ -502,14 +502,6 @@ export class BaseAgent {
     return null;
   }
 
-  protected getToolCallNames(): readonly string[] {
-    return this.toolCallNames;
-  }
-
-  protected hasUsedAnyTool(): boolean {
-    return this.toolCallNames.length > 0;
-  }
-
   protected hasMeaningfulToolEvidence(): boolean {
     return this.meaningfulToolCallNames.length > 0;
   }

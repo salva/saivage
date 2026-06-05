@@ -290,14 +290,4 @@ export class Dispatcher {
 
     return { allowed, rejected };
   }
-
-  /** Reset the consecutive invalid call counter. */
-  resetInvalidCounter(): void {
-    this.consecutiveInvalidCalls = 0;
-  }
-
-  /** Get the current consecutive invalid call count. */
-  get invalidCallCount(): number {
-    return this.consecutiveInvalidCalls;
-  }
 }
