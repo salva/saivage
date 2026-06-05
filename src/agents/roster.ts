@@ -2,8 +2,8 @@
  * Saivage — Agent Roster
  *
  * Single declarative source of truth for every agent role. All schema enums,
- * dispatch maps, tool filters, abort priorities, self-check frequencies,
- * conventions, model-key bindings, and the per-prompt role summary block are
+ * dispatch maps, tool filters, abort priorities, conventions, model-key
+ * bindings, and the per-prompt role summary block are
  * derived from this file. Adding a role here is the only edit needed to make
  * it visible to schemas, the dispatcher, the supervisor, and prompts.
  */
@@ -55,8 +55,6 @@ export interface RosterEntry {
   toolFilter: ToolFilterKind;
   /** Lower numbers are aborted first by the supervisor; null means not abortable. */
   abortPriority: number | null;
-  /** Default self-check frequency (rounds between checks); 0 disables. */
-  selfCheckFrequency: number;
   /** Territory rule for `checkConvention`; null means no convention. */
   convention: ConventionRule | null;
   /** Config `models.<key>` slot this role resolves to. */
@@ -78,7 +76,6 @@ export const ROSTER = [
     dispatchableBy: [],
     toolFilter: "planner",
     abortPriority: null,
-    selfCheckFrequency: 30,
     convention: {
       writeTerritory: [".saivage/plan.json"],
       excludeTerritory: ["src/", "research/"],
@@ -98,7 +95,6 @@ export const ROSTER = [
     dispatchableBy: ["planner"],
     toolFilter: "worker",
     abortPriority: 7,
-    selfCheckFrequency: 20,
     convention: {
       writeTerritory: [".saivage/stages/"],
       excludeTerritory: ["src/", "research/"],
@@ -118,7 +114,6 @@ export const ROSTER = [
     dispatchableBy: ["manager"],
     toolFilter: "worker",
     abortPriority: 4,
-    selfCheckFrequency: 15,
     convention: {
       writeTerritory: ["src/", "tests/", "test/", "package.json", "tsconfig.json"],
       excludeTerritory: ["research/"],
@@ -138,7 +133,6 @@ export const ROSTER = [
     dispatchableBy: ["manager"],
     toolFilter: "worker",
     abortPriority: 5,
-    selfCheckFrequency: 15,
     convention: {
       writeTerritory: ["research/"],
       excludeTerritory: ["src/"],
@@ -158,7 +152,6 @@ export const ROSTER = [
     dispatchableBy: ["manager"],
     toolFilter: "worker",
     abortPriority: 3,
-    selfCheckFrequency: 15,
     convention: {
       writeTerritory: ["data/", "research/data-sources/", ".saivage/stages/"],
       excludeTerritory: ["src/"],
@@ -179,7 +172,6 @@ export const ROSTER = [
     dispatchableBy: ["manager"],
     toolFilter: "reviewer",
     abortPriority: 1,
-    selfCheckFrequency: 15,
     convention: {
       writeTerritory: [".saivage/stages/", "reviews/", "reports/"],
       excludeTerritory: ["src/", "data/", "research/"],
@@ -200,7 +192,6 @@ export const ROSTER = [
     dispatchableBy: ["manager"],
     toolFilter: "worker",
     abortPriority: 6,
-    selfCheckFrequency: 15,
     convention: {
       writeTerritory: ["research/design/", "docs/", ".saivage/stages/"],
       excludeTerritory: ["src/"],
@@ -221,7 +212,6 @@ export const ROSTER = [
     dispatchableBy: ["manager"],
     toolFilter: "reviewer",
     abortPriority: 2,
-    selfCheckFrequency: 15,
     convention: {
       writeTerritory: [
         "research/design/critiques/",
@@ -246,7 +236,6 @@ export const ROSTER = [
     dispatchableBy: ["planner"],
     toolFilter: "inspector",
     abortPriority: null,
-    selfCheckFrequency: 15,
     convention: {
       writeTerritory: [
         ".saivage/inspections/",
@@ -270,7 +259,6 @@ export const ROSTER = [
     dispatchableBy: [],
     toolFilter: "chat",
     abortPriority: null,
-    selfCheckFrequency: 0,
     convention: {
       writeTerritory: [".saivage/notes/", ".saivage/tmp/chats/"],
       excludeTerritory: ["src/", "research/"],
@@ -290,7 +278,6 @@ export const ROSTER = [
     dispatchableBy: ["planner", "manager"],
     toolFilter: "librarian",
     abortPriority: 8,
-    selfCheckFrequency: 20,
     convention: {
       writeTerritory: [".saivage/memory/project/"],
       excludeTerritory: ["src/", "research/"],

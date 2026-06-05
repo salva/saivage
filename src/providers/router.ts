@@ -46,7 +46,6 @@ function recordLlmCall(_spec: string, _data: Record<string, unknown>): void {
 }
 
 export class ModelRouter {
-  private readonly providers: Map<string, ModelProvider>;
   private readonly config: SaivageConfig;
   private failoverChains: Record<string, string[]>;
   private modelEquivalents: Map<string, string[]>;
@@ -68,7 +67,6 @@ export class ModelRouter {
     this.credentialResolver = new CredentialResolver(this.providerConfigs);
     this.providerCaller = new ProviderCaller(PROVIDER_REQUEST_TIMEOUT_MS, recordLlmCall);
     this.providerRegistry = new ProviderRegistry(this.providerConfigs, this.credentialResolver);
-    this.providers = this.providerRegistry.providerMapForTests();
     // Equivalence index defaults to empty; populated by init() once
     // providers are registered (init reads OAuth state, so it must be
     // async).

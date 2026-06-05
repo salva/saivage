@@ -2,8 +2,8 @@
  * Saivage — Roster tests.
  *
  * Verifies the roster is the single source of truth: derived enums, dispatch
- * maps, abort priorities, self-check frequencies, prompt rendering, and SPEC
- * parity all stay aligned with `ROSTER`.
+ * maps, abort priorities, prompt rendering, and SPEC parity all stay aligned
+ * with `ROSTER`.
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -26,7 +26,6 @@ import {
   type DispatchableRole,
 } from "./roster.js";
 import { DISPATCH_ROLE_MAP, DISPATCH_TOOLS } from "../runtime/dispatcher.js";
-import { DEFAULT_SELF_CHECK_FREQUENCY } from "../runtime/self-check.js";
 import { getConvention } from "./conventions.js";
 
 describe("ROSTER — declarative source of truth", () => {
@@ -119,16 +118,6 @@ describe("ROSTER — runtime/dispatcher parity", () => {
       .map((e) => e.dispatchTool as string)
       .sort();
     expect([...DISPATCH_TOOLS].sort()).toEqual(expected);
-  });
-});
-
-describe("ROSTER — self-check frequencies", () => {
-  it("DEFAULT_SELF_CHECK_FREQUENCY reflects every roster entry", () => {
-    for (const entry of ROSTER) {
-      expect(
-        DEFAULT_SELF_CHECK_FREQUENCY[entry.role as AgentRole],
-      ).toBe(entry.selfCheckFrequency);
-    }
   });
 });
 

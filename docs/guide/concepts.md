@@ -115,7 +115,7 @@ See [Provider Router](/internals/providers/router).
 The **runtime** is the singleton that owns model routing, MCP services, event
 delivery, plan services, agent registry, and runtime state. Sub-pieces include
 the **Dispatcher** (tool-call execution), **Compaction** (context shrinking),
-**Self-Check** (loop detection), **Supervisor** (stuck-agent cancellation), and
-**Recovery** (crash recovery).
+**Supervisor** (stuck-agent cancellation), **Abort/Recovery** (planner restart
+and crash recovery), and runtime stuck-handling guardrails.
 
 Continue with the [Quickstart](./quickstart).

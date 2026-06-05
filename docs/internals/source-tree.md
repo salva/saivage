@@ -12,7 +12,7 @@ saivage/
 │   ├── log.ts                  # structured logger (stdout + JSONL file)
 │   ├── ids.ts                  # collision-resistant id generators
 │   ├── agents/                 # one module per agent role + base
-│   ├── runtime/                # dispatcher, compaction, self-check, abort, recovery
+│   ├── runtime/                # dispatcher, compaction, supervisor, abort, recovery
 │   ├── providers/              # LLM provider implementations + router
 │   ├── mcp/                    # MCP runtime, registry, in-process services
 │   ├── auth/                   # OAuth flows and token store

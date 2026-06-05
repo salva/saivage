@@ -133,52 +133,46 @@ describe("ModelRouter", () => {
   it("orders provider-independent model candidates by provider priority", async () => {
     const router = new ModelRouter(makeConfig({
       providers: {
-        alpha: { priority: 20, models: ["shared-model"] },
-        beta: { priority: 10, models: ["shared-model"] },
+        anthropic: { priority: 20, models: ["shared-model"] },
+        openai: { priority: 10, models: ["shared-model"] },
       },
     }));
     await router.init();
-    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
-    providers.clear();
-    providers.set("alpha", makeProvider("alpha", vi.fn(async () => successfulResponse("alpha"))));
-    providers.set("beta", makeProvider("beta", vi.fn(async () => successfulResponse("beta"))));
+    replaceProvider(router, "anthropic", makeProvider("anthropic", vi.fn(async () => successfulResponse("anthropic"))));
+    replaceProvider(router, "openai", makeProvider("openai", vi.fn(async () => successfulResponse("openai"))));
 
     const chain = (router as unknown as { buildChain(modelSpec: string): string[] }).buildChain("shared-model");
 
-    expect(chain).toEqual(["beta/shared-model", "alpha/shared-model"]);
+    expect(chain).toEqual(["openai/shared-model", "anthropic/shared-model"]);
   });
 
   it("prefers provider with more remaining tokens after startup usage inspection", async () => {
     const router = new ModelRouter(makeConfig({
       providers: {
-        alpha: { priority: 10, models: ["shared-model"], quota: { remainingTokens: 100 } },
-        beta: { priority: 20, models: ["shared-model"], quota: { remainingTokens: 1000 } },
+        anthropic: { priority: 10, models: ["shared-model"], quota: { remainingTokens: 100 } },
+        openai: { priority: 20, models: ["shared-model"], quota: { remainingTokens: 1000 } },
       },
     }));
     await router.init();
-    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
-    providers.clear();
-    providers.set("alpha", makeProvider("alpha", vi.fn(async () => successfulResponse("alpha"))));
-    providers.set("beta", makeProvider("beta", vi.fn(async () => successfulResponse("beta"))));
+    replaceProvider(router, "anthropic", makeProvider("anthropic", vi.fn(async () => successfulResponse("anthropic"))));
+    replaceProvider(router, "openai", makeProvider("openai", vi.fn(async () => successfulResponse("openai"))));
 
     await router.inspectUsageAtStartup();
     const chain = (router as unknown as { buildChain(modelSpec: string): string[] }).buildChain("shared-model");
 
-    expect(chain).toEqual(["beta/shared-model", "alpha/shared-model"]);
+    expect(chain).toEqual(["openai/shared-model", "anthropic/shared-model"]);
   });
 
   it("resolves context window for provider-independent model candidates", async () => {
     const router = new ModelRouter(makeConfig({
       providers: {
-        alpha: { priority: 20, models: ["shared-model"] },
-        beta: { priority: 10, models: ["shared-model"] },
+        anthropic: { priority: 20, models: ["shared-model"] },
+        openai: { priority: 10, models: ["shared-model"] },
       },
     }));
     await router.init();
-    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
-    providers.clear();
-    providers.set("alpha", { ...makeProvider("alpha", vi.fn(async () => successfulResponse("alpha"))), modelCapabilities: () => ({ contextWindow: 111, tokenEncoding: "cl100k_base" }) });
-    providers.set("beta", { ...makeProvider("beta", vi.fn(async () => successfulResponse("beta"))), modelCapabilities: () => ({ contextWindow: 222, tokenEncoding: "cl100k_base" }) });
+    replaceProvider(router, "anthropic", { ...makeProvider("anthropic", vi.fn(async () => successfulResponse("anthropic"))), modelCapabilities: () => ({ contextWindow: 111, tokenEncoding: "cl100k_base" }) });
+    replaceProvider(router, "openai", { ...makeProvider("openai", vi.fn(async () => successfulResponse("openai"))), modelCapabilities: () => ({ contextWindow: 222, tokenEncoding: "cl100k_base" }) });
 
     expect(router.getMaxContextTokens("shared-model")).toBe(222);
   });
@@ -190,9 +184,8 @@ describe("ModelRouter", () => {
       },
     }));
     await router.init();
-    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
     const listModels = vi.fn(() => ["shared-model"]);
-    providers.set("openai", { ...makeProvider("openai", vi.fn(async () => successfulResponse("openai"))), listModels });
+    replaceProvider(router, "openai", { ...makeProvider("openai", vi.fn(async () => successfulResponse("openai"))), listModels });
 
     await router.chat(makeChatRequest("shared-model"));
 
@@ -202,40 +195,37 @@ describe("ModelRouter", () => {
   it("tries the next provider for a model before advancing to the next model", async () => {
     const router = new ModelRouter(makeConfig({
       providers: {
-        primary: { priority: 10, models: ["model-a"] },
-        secondary: { priority: 20, models: ["model-a"] },
-        fallback: { priority: 10, models: ["model-b"] },
+        openai: { priority: 10, models: ["model-a"] },
+        anthropic: { priority: 20, models: ["model-a"] },
+        opencode: { priority: 10, models: ["model-b"] },
       },
       failover: {
         "model-a": ["model-b"],
       },
     }));
     await router.init();
-    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
-    providers.clear();
-
     const primaryChat = vi.fn(async () => {
       throw new Error("primary unavailable");
     });
     const secondaryChat = vi.fn(async () => successfulResponse("secondary"));
     const fallbackChat = vi.fn(async () => successfulResponse("fallback"));
-    providers.set("primary", makeProvider("primary", primaryChat));
-    providers.set("secondary", makeProvider("secondary", secondaryChat));
-    providers.set("fallback", makeProvider("fallback", fallbackChat));
+    replaceProvider(router, "openai", makeProvider("openai", primaryChat));
+    replaceProvider(router, "anthropic", makeProvider("anthropic", secondaryChat));
+    replaceProvider(router, "opencode", makeProvider("opencode", fallbackChat));
 
     const response = await router.chat(makeChatRequest("model-a"));
 
     expect(primaryChat).toHaveBeenCalledTimes(1);
     expect(secondaryChat).toHaveBeenCalledTimes(1);
     expect(fallbackChat).not.toHaveBeenCalled();
-    expect(response.modelSpec).toBe("secondary/model-a");
+    expect(response.modelSpec).toBe("anthropic/model-a");
     expect(response.requestedModelSpec).toBe("model-a");
   });
 
   it("orders accounts by priority within a provider", async () => {
     const router = new ModelRouter(makeConfig({
       providers: {
-        gateway: {
+        openai: {
           models: ["shared-model"],
           accounts: {
             primary: { priority: 20, apiKey: "primary-key" },
@@ -245,28 +235,26 @@ describe("ModelRouter", () => {
       },
     }));
     await router.init();
-    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
-    providers.clear();
-
     const baseChat = vi.fn(async () => successfulResponse("base"));
     const primaryChat = vi.fn(async () => successfulResponse("primary"));
     const secondaryChat = vi.fn(async () => successfulResponse("secondary"));
-    providers.set("gateway", makeProvider("gateway", baseChat));
-    providers.set("gateway#primary", makeProvider("gateway#primary", primaryChat));
-    providers.set("gateway#secondary", makeProvider("gateway#secondary", secondaryChat));
+    await router.inspectUsageAtStartup();
+    replaceProvider(router, "openai", makeProvider("openai", baseChat));
+    replaceProvider(router, "openai#primary", makeProvider("openai#primary", primaryChat));
+    replaceProvider(router, "openai#secondary", makeProvider("openai#secondary", secondaryChat));
 
     const response = await router.chat(makeChatRequest("shared-model"));
 
     expect(secondaryChat).toHaveBeenCalledTimes(1);
     expect(primaryChat).not.toHaveBeenCalled();
     expect(baseChat).not.toHaveBeenCalled();
-    expect(response.modelSpec).toBe("gateway/shared-model");
+    expect(response.modelSpec).toBe("openai/shared-model");
   });
 
   it("prefers account with more remaining tokens after startup usage inspection", async () => {
     const router = new ModelRouter(makeConfig({
       providers: {
-        gateway: {
+        openai: {
           models: ["shared-model"],
           accounts: {
             primary: { priority: 10, apiKey: "primary-key", quota: { remainingTokens: 100 } },
@@ -276,21 +264,18 @@ describe("ModelRouter", () => {
       },
     }));
     await router.init();
-    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
-    providers.clear();
-
     const primaryChat = vi.fn(async () => successfulResponse("primary"));
     const secondaryChat = vi.fn(async () => successfulResponse("secondary"));
-    providers.set("gateway", makeProvider("gateway", vi.fn(async () => successfulResponse("base"))));
-    providers.set("gateway#primary", makeProvider("gateway#primary", primaryChat));
-    providers.set("gateway#secondary", makeProvider("gateway#secondary", secondaryChat));
 
     await router.inspectUsageAtStartup();
+    replaceProvider(router, "openai", makeProvider("openai", vi.fn(async () => successfulResponse("base"))));
+    replaceProvider(router, "openai#primary", makeProvider("openai#primary", primaryChat));
+    replaceProvider(router, "openai#secondary", makeProvider("openai#secondary", secondaryChat));
     const response = await router.chat(makeChatRequest("shared-model"));
 
     expect(secondaryChat).toHaveBeenCalledTimes(1);
     expect(primaryChat).not.toHaveBeenCalled();
-    expect(response.modelSpec).toBe("gateway/shared-model");
+    expect(response.modelSpec).toBe("openai/shared-model");
   });
 
   it("expands built-in provider-only failover into provider/model specs", async () => {
@@ -345,14 +330,15 @@ describe("ModelRouter", () => {
   it("returns metadata for the actual provider and model used", async () => {
     const router = new ModelRouter(makeConfig({
       failover: {
-        "primary/model-a": ["fallback/model-b"],
+        "openai/model-a": ["anthropic/model-b"],
+      },
+      providers: {
+        openai: { models: ["model-a"] },
+        anthropic: { models: ["model-b"] },
       },
     }));
     await router.init();
-    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
-    providers.clear();
-
-    providers.set("primary", makeProvider("primary", vi.fn(async () => {
+    replaceProvider(router, "openai", makeProvider("openai", vi.fn(async () => {
       throw new Error("primary unavailable");
     })));
     const fallbackChat = vi.fn(async (request: ChatRequest) => ({
@@ -361,20 +347,20 @@ describe("ModelRouter", () => {
       finishReason: "end_turn" as const,
       usage: { inputTokens: 1, outputTokens: 2 },
     }));
-    providers.set("fallback", makeProvider("fallback", fallbackChat));
+    replaceProvider(router, "anthropic", makeProvider("anthropic", fallbackChat));
 
     const response = await router.chat({
-      modelSpec: "primary/model-a",
+      modelSpec: "openai/model-a",
       model: "model-a",
       system: "system",
       messages: [],
     });
 
     expect(fallbackChat).toHaveBeenCalledWith(expect.objectContaining({ model: "model-b" }));
-    expect(response.provider).toBe("fallback");
+    expect(response.provider).toBe("anthropic");
     expect(response.model).toBe("model-b");
-    expect(response.modelSpec).toBe("fallback/model-b");
-    expect(response.requestedModelSpec).toBe("primary/model-a");
+    expect(response.modelSpec).toBe("anthropic/model-b");
+    expect(response.requestedModelSpec).toBe("openai/model-a");
   });
 
   it("retries the primary model after sticky failover cooldown", async () => {
@@ -383,13 +369,14 @@ describe("ModelRouter", () => {
 
     const router = new ModelRouter(makeConfig({
       failover: {
-        "primary/model-a": ["fallback/model-b"],
+        "openai/model-a": ["anthropic/model-b"],
+      },
+      providers: {
+        openai: { models: ["model-a"] },
+        anthropic: { models: ["model-b"] },
       },
     }));
     await router.init();
-    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
-    providers.clear();
-
     const primaryChat = vi.fn(async () => {
       if (primaryChat.mock.calls.length === 1) {
         throw new Error("primary unavailable");
@@ -407,23 +394,23 @@ describe("ModelRouter", () => {
       finishReason: "end_turn" as const,
       usage: { inputTokens: 1, outputTokens: 1 },
     }));
-    providers.set("primary", makeProvider("primary", primaryChat));
-    providers.set("fallback", makeProvider("fallback", fallbackChat));
+    replaceProvider(router, "openai", makeProvider("openai", primaryChat));
+    replaceProvider(router, "anthropic", makeProvider("anthropic", fallbackChat));
 
-    const first = await router.chat(makeChatRequest("primary/model-a"));
-    expect(first.modelSpec).toBe("fallback/model-b");
+    const first = await router.chat(makeChatRequest("openai/model-a"));
+    expect(first.modelSpec).toBe("anthropic/model-b");
     expect(primaryChat).toHaveBeenCalledTimes(1);
     expect(fallbackChat).toHaveBeenCalledTimes(1);
 
     now += 29_000;
-    const second = await router.chat(makeChatRequest("primary/model-a"));
-    expect(second.modelSpec).toBe("fallback/model-b");
+    const second = await router.chat(makeChatRequest("openai/model-a"));
+    expect(second.modelSpec).toBe("anthropic/model-b");
     expect(primaryChat).toHaveBeenCalledTimes(1);
     expect(fallbackChat).toHaveBeenCalledTimes(2);
 
     now += 1_000;
-    const third = await router.chat(makeChatRequest("primary/model-a"));
-    expect(third.modelSpec).toBe("primary/model-a");
+    const third = await router.chat(makeChatRequest("openai/model-a"));
+    expect(third.modelSpec).toBe("openai/model-a");
     expect(primaryChat).toHaveBeenCalledTimes(2);
     expect(fallbackChat).toHaveBeenCalledTimes(2);
   });
@@ -434,13 +421,14 @@ describe("ModelRouter", () => {
 
     const router = new ModelRouter(makeConfig({
       failover: {
-        "primary/model-a": ["fallback/model-b"],
+        "openai/model-a": ["anthropic/model-b"],
+      },
+      providers: {
+        openai: { models: ["model-a"] },
+        anthropic: { models: ["model-b"] },
       },
     }));
     await router.init();
-    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
-    providers.clear();
-
     const primaryChat = vi.fn(async () => {
       throw new Error("primary unavailable");
     });
@@ -450,33 +438,34 @@ describe("ModelRouter", () => {
       finishReason: "end_turn" as const,
       usage: { inputTokens: 1, outputTokens: 1 },
     }));
-    providers.set("primary", makeProvider("primary", primaryChat));
-    providers.set("fallback", makeProvider("fallback", fallbackChat));
+    replaceProvider(router, "openai", makeProvider("openai", primaryChat));
+    replaceProvider(router, "anthropic", makeProvider("anthropic", fallbackChat));
 
-    await router.chat(makeChatRequest("primary/model-a"));
+    await router.chat(makeChatRequest("openai/model-a"));
     expect(primaryChat).toHaveBeenCalledTimes(1);
 
     now += 30_000;
-    await router.chat(makeChatRequest("primary/model-a"));
+    await router.chat(makeChatRequest("openai/model-a"));
     expect(primaryChat).toHaveBeenCalledTimes(2);
 
     now += 44_000;
-    await router.chat(makeChatRequest("primary/model-a"));
+    await router.chat(makeChatRequest("openai/model-a"));
     expect(primaryChat).toHaveBeenCalledTimes(2);
 
     now += 1_000;
-    await router.chat(makeChatRequest("primary/model-a"));
+    await router.chat(makeChatRequest("openai/model-a"));
     expect(primaryChat).toHaveBeenCalledTimes(3);
     expect(fallbackChat).toHaveBeenCalledTimes(4);
   });
 
   it("reports provider and model separately when all providers fail", async () => {
-    const router = new ModelRouter(makeConfig());
+    const router = new ModelRouter(makeConfig({
+      providers: {
+        "github-copilot": { apiKey: "test-key" },
+      },
+    }));
     await router.init();
-    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
-    providers.clear();
-
-    providers.set("github-copilot", makeProvider("github-copilot", vi.fn(async () => {
+    replaceProvider(router, "github-copilot", makeProvider("github-copilot", vi.fn(async () => {
       throw new Error("service unavailable");
     })));
 
@@ -557,6 +546,12 @@ function makeProvider(name: string, chat: ModelProvider["chat"]): ModelProvider 
     isAvailable: async () => true,
     getRateLimitStatus: () => ({ remaining: null, resetAt: null, limited: false }),
   };
+}
+
+function replaceProvider(router: ModelRouter, name: string, replacement: ModelProvider): void {
+  const provider = router.getProvider(name);
+  if (!provider) throw new Error(`test setup expected provider ${name} to be registered`);
+  Object.assign(provider, replacement);
 }
 
 function successfulResponse(content: string) {

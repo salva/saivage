@@ -49,8 +49,8 @@ When `enabled` is true, a supervisor model must be configured either via
 ### When to disable
 
 For development or short-running tasks. With `enabled: false`, the loop
-never runs and stuck detection falls entirely to in-agent self-check +
-compaction limits.
+never runs and stuck detection falls to in-agent runtime guardrails such as
+compaction limits, invalid-response limits, and planner recovery nudges.
 
 ## Shutdown Handoff
 

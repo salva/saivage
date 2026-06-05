@@ -67,10 +67,11 @@ The shared loop:
 2. Initializes a `Dispatcher` with the MCP runtime and optional parent
   `ChildSpawner`.
 3. Loops: compact if needed → drain input channels → `router.chat()` → execute
-  tool calls → append results → repeat until the model emits no tool calls or
-  a role-specific terminal tool call is detected.
+   tool calls → append results → repeat until the model emits no tool calls or
+   a role-specific terminal tool call is detected.
 4. Tracks token usage; triggers compaction at the configured threshold.
-5. Periodically injects self-check prompts.
+5. Enforces stuck-handling guardrails such as invalid-response limits,
+   compaction limits, and planner recovery nudges.
 6. Returns the loop result; each concrete agent maps it to `AgentResult`.
 
 ## 3. Roster
@@ -320,14 +321,14 @@ enforced on every write.
 ## 13. Related runtime mechanics
 
 See [runtime/details](../runtime/details) for the full runtime mechanics:
-suspend/resume, LLM error handling, compaction timing, self-check injection,
+suspend/resume, LLM error handling, compaction timing, stuck handling,
 task report flow, crash recovery, abort/replanning, and notification delivery.
 Subsystem pages:
 
 - [runtime/dispatcher](../runtime/dispatcher) — suspend/resume + tool dispatch.
 - [runtime/compaction](../runtime/compaction) — context compaction.
-- [runtime/self-check](../runtime/self-check) — periodic self-check injection.
 - [runtime/abort-recovery](../runtime/abort-recovery) — explicit planner
   restart, cancellation, and crash recovery.
-- [runtime/supervisor](../runtime/supervisor) — shutdown handoff.
+- [runtime/supervisor](../runtime/supervisor) — supervisor stuck verdicts and
+  shutdown handoff.
 - [runtime/events](../runtime/events) — event bus for channels.

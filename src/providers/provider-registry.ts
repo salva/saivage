@@ -132,10 +132,6 @@ export class ProviderRegistry {
     return this.providers.entries();
   }
 
-  providerMapForTests(): Map<string, ModelProvider> {
-    return this.providers;
-  }
-
   getForRequest(providerName: string, request?: CredentialRequest): ModelProvider | undefined {
     const accountName = this.credentialResolver.resolveRequestedAccountName(providerName, request);
     if (!accountName) return this.providers.get(providerName);

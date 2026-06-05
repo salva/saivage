@@ -2,13 +2,12 @@
 
 Low-level runtime mechanics that complement the high-level
 [architecture](../architecture). This page specifies suspend / resume, LLM
-error handling, compaction timing, self-check injection, and task report
-flow — the details an implementer needs to build the runtime correctly.
+error handling, compaction timing, stuck handling, and task report flow — the
+details an implementer needs to build the runtime correctly.
 
 Per-topic deep dives:
 [dispatcher](./dispatcher) ·
 [compaction](./compaction) ·
-[self-check](./self-check) ·
 [abort & recovery](./abort-recovery) ·
 [supervisor](./supervisor) ·
 [events](./events).
@@ -234,50 +233,11 @@ from disk:
 The compaction summary explicitly instructs the agent to re-read state —
 this is part of the summary template, not left to the LLM's judgment.
 
-## 4. Self-check helper
+## 4. Stuck handling
 
-### 4.1 Counter
-
-`src/runtime/self-check.ts` defines an in-memory counter of **tool-call
-rounds** per agent conversation. A round = one LLM response that contains
-tool calls, regardless of how many tool calls it contains (parallel calls
-count as 1 round).
-
-| Agent      | Default frequency (N) |
-|------------|----------------------|
-| Planner    | 30                   |
-| Manager    | 20                   |
-| Coder      | 15                   |
-| Researcher | 15                   |
-| Data Agent | 15                   |
-| Reviewer   | 15                   |
-| Designer   | 15                   |
-| Critic     | 15                   |
-| Inspector  | 15                   |
-| Chat       | 0                    |
-| Librarian  | 20                   |
-
-The defaults are derived from `ROSTER.selfCheckFrequency`. The current
-`BaseAgent` loop does not instantiate `SelfCheckState` or inject
-`selfCheckMessage`; live stuck handling comes from compaction limits,
-invalid-response limits, planner nudges, and the Supervisor.
-
-### 4.2 Injection mechanism
-
-The helper's intended injection behavior is:
-
-1. Reset the counter to 0.
-2. Before the next LLM call, inject this progress prompt:
-   > "Self-check: You have completed N tool-call rounds. Briefly assess:
-   > are you making progress toward the objective, or are you stuck in a
-   > loop? If stuck, finish with a failure result. If making progress,
-   > continue."
-3. Process the LLM's response normally.
-
-### 4.3 Stuck detection
-
-Because the helper is not wired into `BaseAgent`, the runtime does **not**
-parse an LLM self-assessment for keywords. Live stuck handling is instead:
+The runtime does **not** inject periodic progress-assessment prompts or parse
+LLM self-assessments for keywords. Live stuck handling comes from hard runtime
+signals:
 
 - Context limits trigger compaction; repeated compactions, fallback
   exhaustion, or an oversized atomic tool round terminate the agent.
@@ -286,7 +246,7 @@ parse an LLM self-assessment for keywords. Live stuck handling is instead:
 - Planner text-only turns are nudged up to 15 times before recovery
   restarts the Planner.
 
-### 4.4 Maximum compactions
+### 4.1 Maximum compactions
 
 If an agent's conversation triggers compaction more than **3 times**
 (configurable), the runtime terminates the agent as stuck. Workers return

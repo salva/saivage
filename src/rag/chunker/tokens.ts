@@ -33,9 +33,3 @@ export function countTokens(text: string): number {
   }
   return Math.ceil(text.length / FALLBACK_FACTOR);
 }
-
-// Test-only: reset the cached encoder.
-export function __resetTokenCache(): void {
-  encoder = null;
-  loadTried = false;
-}

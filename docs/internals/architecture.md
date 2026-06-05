@@ -58,7 +58,6 @@ graph TB
     subgraph "Runtime Core"
         DISP["Dispatcher (suspend/resume)"]
         COMP["Compaction"]
-        SC["Self-Check"]
         ABORT["Abort Handler"]
         REC["Recovery"]
         SUP["Supervisor"]
@@ -97,7 +96,6 @@ graph TB
     DISP --> LLM
     DISP --> MCP
     COMP --> DISP
-    SC --> DISP
     ABORT --> DISP
     REC --> DISP
     SUP --> DISP
@@ -129,8 +127,8 @@ conversation.
 - **Context compaction:** track token usage per conversation, trigger
   compaction when usage exceeds the threshold (default 80%), produce a summary
   message that replaces the conversation history.
-- **Periodic self-check:** inject a progress-assessment prompt after every N
-  tool-call rounds to catch infinite loops.
+- **Stuck handling:** enforce invalid-response limits, compaction limits, and
+  supervisor-driven cancellation of abortable active agents.
 - **Crash recovery:** on startup, detect stale state from a previous crash,
   reconstruct the execution position from disk, and restart the Planner.
 
@@ -150,7 +148,7 @@ conversation.
   result.
 
 See [runtime/details](./runtime/details) for full suspend/resume mechanics,
-compaction timing, self-check injection, and failure handling.
+compaction timing, stuck handling, and failure handling.
 
 ### 2.2 Agent system
 
@@ -323,7 +321,7 @@ See [knowledge/store](./knowledge/store).
 | Daemon config | [`src/config.ts`](https://github.com/salva/saivage/blob/main/src/config.ts) | `SaivageConfig`, env interpolation, defaults. |
 | Document store | [`src/store/documents.ts`](https://github.com/salva/saivage/blob/main/src/store/documents.ts) | Atomic JSON read/write with Zod parsing. |
 | Agents | `src/agents/` | One file per role + `base.ts` orchestrator. |
-| Runtime core | `src/runtime/` | dispatcher, compaction, self-check, abort, recovery, supervisor, notes, stash, shutdown handoff. |
+| Runtime core | `src/runtime/` | dispatcher, compaction, supervisor, abort, recovery, notes, stash, shutdown handoff. |
 | Provider router | `src/providers/` | LLM API multiplexing, retry, failover. |
 | MCP runtime | `src/mcp/` | In-process services + external server bridge. |
 | Auth | `src/auth/` | OAuth flows + token store. |
@@ -486,8 +484,8 @@ Coder/Researcher (task failure)
 ### 6.4 Context compaction
 
 Applies to **all agents** when their conversation approaches the context
-window limit. **Safety net order:** self-check (N rounds) → compaction (80%
-context) → max compactions (3) → forced termination.
+window limit. **Safety net order:** compaction at the configured threshold
+(80% by default) → max compactions (3 by default) → forced termination.
 
 See [runtime/compaction](./runtime/compaction).
 
@@ -625,12 +623,12 @@ failures:
 
 ```mermaid
 graph TB
-    subgraph "Layer 1: Agent Self-Governance"
-        SC["Self-Check<br/><i>Every N tool-call rounds,<br/>agent assesses own progress</i>"]
-    end
-    subgraph "Layer 2: Runtime Guardrails"
+    subgraph "Layer 1: Runtime Guardrails"
         COMP["Context Compaction<br/><i>At 80% context window,<br/>summarize and continue</i>"]
         MAXC["Max Compactions<br/><i>3 compactions per conversation<br/>→ forced termination</i>"]
+    end
+    subgraph "Layer 2: Supervisor"
+        SUP["Stuck Verdicts<br/><i>Repeated stuck verdicts<br/>cancel abortable agents</i>"]
     end
     subgraph "Layer 3: Task-Level Controls"
         RETRY["Task max_attempts<br/><i>2-3 retries before escalation</i>"]
@@ -642,7 +640,7 @@ graph TB
         ABORT["Abort<br/><i>User can force-stop and redirect</i>"]
     end
 
-    SC --> COMP --> MAXC --> RETRY --> ESC --> ABORT
+    COMP --> MAXC --> SUP --> RETRY --> ESC --> ABORT
 ```
 
 ### 10.2 Fault tolerance
@@ -654,7 +652,7 @@ graph TB
 | LLM provider persistently down | Failover to backup provider |
 | Invalid tool call from LLM | Error result returned to LLM (self-corrects); 3 consecutive failures → agent failure |
 | MCP service crash | Health checks restart already-running external services when configured |
-| Agent infinite loop | Self-check → compaction → max compactions → forced termination |
+| Agent infinite loop | Compaction limits, supervisor stuck verdicts, and escalation through abort/recovery |
 | Process crash | Disk-based recovery on restart |
 | Planner restart request | Cancel current Planner turn, queue restart directive, restart from persistent state; no automatic git checkout rollback |
 | Git conflict | Agent reports failure; Manager creates resolution task or escalates |
@@ -677,7 +675,7 @@ The git log provides a complete, append-only timeline of all changes.
 - [Source tree](./source-tree) — directory-level walk.
 - [Agent system](./agents/) — every role in depth.
 - [Runtime dispatcher](./runtime/dispatcher) — suspend/resume mechanics.
-- [Runtime details](./runtime/details) — compaction, self-check, recovery,
+- [Runtime details](./runtime/details) — compaction, stuck handling, recovery,
   abort.
 - [Data types](./data/types) — TypeScript interfaces for every persisted
   document.

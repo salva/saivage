@@ -122,15 +122,13 @@ describe("ModelRouter.getMaxContextTokens — throws on missing caps", () => {
   it("throws with a helpful message referencing MODEL_CAPABILITIES and defaultContextWindow", async () => {
     const router = new ModelRouter(makeConfig({
       providers: {
-        myprov: { priority: 10, models: ["unknown-model"] },
+        openai: { priority: 10, models: ["unknown-model"] },
       },
     }));
     await router.init();
-    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
-    providers.clear();
-    providers.set("myprov", makeProvider("myprov", undefined));
+    replaceProvider(router, "openai", makeProvider("openai", undefined));
 
-    expect(() => router.getMaxContextTokens("myprov/unknown-model")).toThrow(
+    expect(() => router.getMaxContextTokens("openai/unknown-model")).toThrow(
       /unknown-model[\s\S]*MODEL_CAPABILITIES[\s\S]*defaultContextWindow/,
     );
   });
@@ -138,14 +136,12 @@ describe("ModelRouter.getMaxContextTokens — throws on missing caps", () => {
   it("router.countTokens falls back to cl100k_base when caps are missing (no throw)", async () => {
     const router = new ModelRouter(makeConfig({
       providers: {
-        myprov: { priority: 10, models: ["unknown-model"] },
+        openai: { priority: 10, models: ["unknown-model"] },
       },
     }));
     await router.init();
-    const providers = (router as unknown as { providers: Map<string, ModelProvider> }).providers;
-    providers.clear();
     const provider = {
-      name: "myprov",
+      name: "openai",
       modelCapabilities: () => undefined,
       countTokens: (_m: string, msgs2: Message[], system?: string, tools?: unknown) => {
         // Mirror BaseProvider.countTokens fallback path.
@@ -154,14 +150,20 @@ describe("ModelRouter.getMaxContextTokens — throws on missing caps", () => {
       isAvailable: async () => true,
       chat: vi.fn(),
     } as unknown as ModelProvider;
-    providers.set("myprov", provider);
+    replaceProvider(router, "openai", provider);
 
     const spy = vi.spyOn(tokenCounting, "countWithTiktoken").mockReturnValue(0);
-    expect(() => router.countTokens("myprov/unknown-model", msgs)).not.toThrow();
+    expect(() => router.countTokens("openai/unknown-model", msgs)).not.toThrow();
     for (const call of spy.mock.calls) expect(call[3]).toBe("cl100k_base");
     spy.mockRestore();
   });
 });
+
+function replaceProvider(router: ModelRouter, name: string, replacement: ModelProvider): void {
+  const provider = router.getProvider(name);
+  if (!provider) throw new Error(`test setup expected provider ${name} to be registered`);
+  Object.assign(provider, replacement);
+}
 
 describe("ModelRouter — defaultContextWindow propagation for ollama / llamacpp", () => {
   it("ollama defaultContextWindow surfaces through router.getMaxContextTokens", async () => {
