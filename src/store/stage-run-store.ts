@@ -3,7 +3,7 @@ import { appendFile, readFile, readdir, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { z } from "zod";
-import { ensureDir, listDocs, pathExists, readDocLenient, readDocOrNull, writeDoc } from "./documents.js";
+import { ensureDir, listDocs, pathExists, readDocOrNull, writeDoc } from "./documents.js";
 import {
   PlanDocumentSchema,
   StageSummarySchema,
@@ -103,24 +103,22 @@ export class StageRunStore {
   async getStageRun(stageId: string): Promise<StageRun | null> {
     const { definition, completed } = await this.readPlanStage(stageId);
     const [tasks, summary, events] = await Promise.all([
-      readDocLenient(this.stageTaskListPath(stageId), TaskListSchema),
-      readDocLenient(this.stageSummaryPath(stageId), StageSummarySchema),
+      readDocOrNull(this.stageTaskListPath(stageId), TaskListSchema),
+      readDocOrNull(this.stageSummaryPath(stageId), StageSummarySchema),
       this.readEvents({ stageId }),
     ]);
     const reports = await this.readTaskReports(stageId);
     if (!definition && !completed && !tasks && !summary && reports.length === 0 && events.length === 0) return null;
 
-    const validTasks = TaskListSchema.safeParse(tasks).success ? tasks as TaskList : null;
-    const validSummary = StageSummarySchema.safeParse(summary).success ? summary as StageSummary : null;
-    const compatibilityEvents = deriveCompatibilityEvents(stageId, validTasks, reports, validSummary, completed);
+    const compatibilityEvents = deriveCompatibilityEvents(stageId, tasks, reports, summary, completed);
     const effectiveEvents = events.length > 0 ? events : compatibilityEvents;
     const completionEvent = latestCompletionEvent(effectiveEvents);
-    const status = deriveStatus({ completed, completionEvent, summary: validSummary, tasks: validTasks });
+    const status = deriveStatus({ completed, completionEvent, summary, tasks });
     const updatedAt = latestTimestamp([
       ...effectiveEvents.map((event) => event.at),
-      validSummary?.completed_at,
+      summary?.completed_at,
       completed?.completed_at,
-      validTasks?.updated_at,
+      tasks?.updated_at,
       ...reports.map((report) => report.completed_at),
     ]);
 
@@ -128,11 +126,11 @@ export class StageRunStore {
       stage_id: stageId,
       definition,
       status,
-      tasks: validTasks,
+      tasks,
       reports,
-      summary: validSummary,
-      started_at: validSummary?.started_at ?? completed?.started_at ?? definition?.started_at ?? null,
-      completed_at: completed?.completed_at ?? completionEvent?.at ?? validSummary?.completed_at ?? null,
+      summary,
+      started_at: summary?.started_at ?? completed?.started_at ?? definition?.started_at ?? null,
+      completed_at: completed?.completed_at ?? completionEvent?.at ?? summary?.completed_at ?? null,
       updated_at: updatedAt,
       events: effectiveEvents,
     };
@@ -353,10 +351,8 @@ export class StageRunStore {
   private async readTaskReports(stageId: string): Promise<TaskReport[]> {
     const reportsDir = this.stageReportsDir(stageId);
     const reportFiles = await listDocs(reportsDir, (file) => file.endsWith(".json"));
-    const reports = await Promise.all(
-      reportFiles.map((file) => readDocLenient(join(reportsDir, file), TaskReportSchema)),
-    );
-    return reports.filter((report): report is TaskReport => TaskReportSchema.safeParse(report).success);
+    const reports = await Promise.all(reportFiles.map((file) => readDocOrNull(join(reportsDir, file), TaskReportSchema)));
+    return reports.filter((report): report is TaskReport => report !== null);
   }
 
   private async appendEvent(event: StageRunEvent): Promise<void> {

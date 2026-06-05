@@ -50,13 +50,12 @@ describe("runtime.lock ownership", () => {
     await expect(acquireRuntimeLock(saivageDir)).rejects.toThrow("runtime.lock held");
   });
 
-  it("replaces malformed lock files as stale during acquisition", async () => {
+  it("fails fast on malformed lock files", async () => {
     mkdirSync(join(saivageDir, "tmp", "state"), { recursive: true });
     writeFileSync(lockPath(), "not-json", "utf-8");
 
-    expect(readRuntimeLockOwner(saivageDir)).toBeNull();
-    lock = await acquireRuntimeLock(saivageDir);
-    expect(readRuntimeLockOwner(saivageDir)).toMatchObject({ pid: process.pid });
+    expect(() => readRuntimeLockOwner(saivageDir)).toThrow("Malformed runtime.lock");
+    await expect(acquireRuntimeLock(saivageDir)).rejects.toThrow("Malformed runtime.lock");
   });
 
   it("replaces dead-pid lock files as stale during acquisition", async () => {

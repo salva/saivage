@@ -71,7 +71,8 @@ describe("createChildSpawner worker dispatch", () => {
       expect(runLoop).toHaveBeenCalledOnce();
       expect(runtime.agentRegistry.lastSet?.role).toBe("coder");
       expect((runtime.agentRegistry.lastSet as unknown as { input: { task: { type: string } } }).input.task.type).toBe("code");
-      expect(runtime.tracker.activityIds).toContain((runtime.agentRegistry.lastSet as BaseAgent).id);
+      expect(runtime.tracker.started).toContain((runtime.agentRegistry.lastSet as BaseAgent).id);
+      expect(runtime.tracker.stopped).toContain((runtime.agentRegistry.lastSet as BaseAgent).id);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

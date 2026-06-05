@@ -51,23 +51,6 @@ export async function readJsonOrNull(path: string): Promise<unknown | null> {
   return JSON.parse(raw);
 }
 
-/** Read with schema validation, falling back to raw JSON on validation error. */
-export async function readDocLenient<S extends ZodTypeAny>(
-  path: string,
-  schema: S,
-): Promise<z.output<S> | null> {
-  let raw: string;
-  try {
-    raw = await readFile(path, "utf-8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw err;
-  }
-  const data = JSON.parse(raw);
-  const result = schema.safeParse(data);
-  return result.success ? result.data : data;
-}
-
 /**
  * Write a JSON document atomically (tmp + fsync + rename + fsync parent).
  * Validates against the Zod schema before writing.

@@ -1369,6 +1369,18 @@ describe("Crash Recovery", () => {
     expect((await readDoc(statePath, RuntimeStateSchema)).current_stage_id).toBeNull();
   });
 
+  it("RuntimeTracker fails fast for activity from unknown agents", () => {
+    const tracker = new RuntimeTracker(join(tmpDir, "runtime.json"));
+
+    expect(() => tracker.agentActivity("agent-missing")).toThrow("unknown agent");
+    expect(() => tracker.agentCompactionUpdate("agent-missing", {
+      count: 1,
+      summarizerFallbacks: 0,
+      consecutiveFallbacks: 0,
+      oversizedAtomicFallback: false,
+    })).toThrow("unknown agent");
+  });
+
   it("isAnotherInstanceRunning returns false for stale PID", async () => {
     const statePath = join(tmpDir, "runtime.json");
     await writeDoc(
@@ -1497,7 +1509,7 @@ describe("Crash Recovery", () => {
     expect(tasks.tasks[2].status).toBe("completed"); // unchanged
   });
 
-  it("recoverFromCrash ignores malformed task lists", async () => {
+  it("recoverFromCrash fails fast on malformed task lists", async () => {
     const project = makeProjectContext(tmpDir);
     await ensureDir(project.paths.stages);
     await ensureDir(join(project.paths.tmp, "state"));
@@ -1534,9 +1546,7 @@ describe("Crash Recovery", () => {
       "utf-8",
     );
 
-    const result = await recoverFromCrash(project, planService);
-    expect(result.recovered).toBe(true);
-    expect(result.stageId).toBe("stg-1");
+    await expect(recoverFromCrash(project, planService)).rejects.toThrow();
   });
 
   it("recoverFromCrash detects unarchived summary", async () => {

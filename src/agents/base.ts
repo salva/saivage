@@ -149,7 +149,7 @@ export class BaseAgent {
       this.pushMessage({
         role: "user",
         content: config.initialMessage,
-      });
+      }, undefined, undefined, { recordActivity: false });
     }
   }
 
@@ -603,9 +603,14 @@ export class BaseAgent {
     return this.pendingCall ? { ...this.pendingCall } : null;
   }
 
-  protected pushMessage(message: Message, timestamp = new Date().toISOString(), source?: LlmResponseSource): void {
+  protected pushMessage(
+    message: Message,
+    timestamp = new Date().toISOString(),
+    source?: LlmResponseSource,
+    opts: { recordActivity?: boolean } = {},
+  ): void {
     this.conversation.pushMessage(message, timestamp, source);
-    this.recordActivity();
+    if (opts.recordActivity !== false) this.recordActivity();
   }
 
   protected replaceMessages(messages: Message[], timestamp = new Date().toISOString()): void {

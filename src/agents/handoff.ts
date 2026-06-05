@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { readDocLenient } from "../store/documents.js";
+import { readDocOrNull } from "../store/documents.js";
 import { activePlanView, planHistoryView } from "../store/plan-read-models.js";
 import {
   PlanDocumentSchema,
@@ -19,7 +19,7 @@ export async function buildHandoffContext(
   ctx: AgentContext,
   options: HandoffOptions = {},
 ): Promise<string> {
-  const doc = await readDocLenient(ctx.project.paths.plan, PlanDocumentSchema);
+  const doc = await readDocOrNull(ctx.project.paths.plan, PlanDocumentSchema);
   const plan = activePlanView(doc);
   const history = planHistoryView(doc);
   const stage = options.stage ?? findStage(plan, options.stageId);
@@ -83,7 +83,7 @@ export async function buildHandoffContext(
   }
 
   if (options.includeTasks && options.stageId) {
-    const tasks = await readDocLenient(
+    const tasks = await readDocOrNull(
       join(ctx.project.paths.stages, options.stageId, "tasks.json"),
       TaskListSchema,
     );

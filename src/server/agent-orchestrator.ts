@@ -268,8 +268,11 @@ async function persistManagerTerminalSummary(
   result: AgentResult,
 ): Promise<void> {
   if (result.kind !== "failure" && result.kind !== "abort") return;
+  if (result.partial === undefined) return;
   const parsed = StageSummarySchema.safeParse(result.partial);
-  if (!parsed.success) return;
+  if (!parsed.success) {
+    throw new Error(`Manager ${result.kind} returned an invalid partial StageSummary: ${parsed.error.message}`);
+  }
   await stageRuns.writeStageSummary(parsed.data);
 }
 

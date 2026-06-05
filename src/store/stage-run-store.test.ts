@@ -149,6 +149,20 @@ describe("StageRunStore aggregate reads", () => {
     expect(run?.events.map((event) => event.type)).toEqual(["tasks_written", "task_report_written", "stage_summary_written"]);
   });
 
+  it("fails fast when canonical stage artifacts are malformed", async () => {
+    const project = await seedProject(projectRoot, { name: "p", objectives: [] });
+    const store = new StageRunStore(project);
+    mkdirSync(join(project.paths.stages, "stage-1", "reports"), { recursive: true });
+    writeFileSync(join(project.paths.stages, "stage-1", "tasks.json"), JSON.stringify([{ id: "legacy-task" }]), "utf-8");
+
+    await expect(store.getStageRun("stage-1")).rejects.toThrow();
+
+    writeFileSync(join(project.paths.stages, "stage-1", "tasks.json"), JSON.stringify(makeTaskList()), "utf-8");
+    writeFileSync(join(project.paths.stages, "stage-1", "reports", "task-1.json"), JSON.stringify({ task_id: "task-1" }), "utf-8");
+
+    await expect(store.getStageRun("stage-1")).rejects.toThrow();
+  });
+
   it("reconstructs completed stage runs from embedded plan history", async () => {
     const project = await seedProject(projectRoot, { name: "p", objectives: [] });
     const store = new StageRunStore(project);

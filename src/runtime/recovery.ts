@@ -137,14 +137,7 @@ export async function recoverFromCrash(
 
   // Check tasks.json — reset in-progress and aborted tasks
   if (await pathExists(tasksPath)) {
-    let taskList: TaskList | null = null;
-    try {
-      taskList = await readDocOrNull(tasksPath, TaskListSchema);
-    } catch (err) {
-      log.warn(
-        `[recovery] Ignoring malformed task list for stage ${stageId}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    const taskList = await readDocOrNull(tasksPath, TaskListSchema);
     if (taskList) {
       let modified = false;
 
@@ -276,7 +269,7 @@ export class RuntimeTracker {
   /** Persist a heartbeat for an active agent without changing lifecycle state. */
   agentActivity(agentId: string): void {
     if (this.frozen) return;
-    if (!this.agents.has(agentId)) return;
+    this.assertKnownAgent(agentId, "activity");
     this.flush();
   }
 
@@ -291,8 +284,8 @@ export class RuntimeTracker {
     },
   ): void {
     if (this.frozen) return;
-    const agent = this.agents.get(agentId);
-    if (!agent) return;
+    this.assertKnownAgent(agentId, "compaction update");
+    const agent = this.agents.get(agentId)!;
     agent.compaction = {
       count: c.count,
       summarizer_fallbacks: c.summarizerFallbacks,
@@ -333,6 +326,12 @@ export class RuntimeTracker {
     this.inFlight = this.drain();
   }
 
+  private assertKnownAgent(agentId: string, operation: string): void {
+    if (!this.agents.has(agentId)) {
+      throw new Error(`RuntimeTracker ${operation} for unknown agent: ${agentId}`);
+    }
+  }
+
   private snapshot(): RuntimeState {
     return {
       status: "running",
@@ -345,16 +344,15 @@ export class RuntimeTracker {
   }
 
   private async drain(): Promise<void> {
-    while (this.pendingState && !this.frozen) {
-      const next = this.pendingState;
-      this.pendingState = null;
-      try {
+    try {
+      while (this.pendingState && !this.frozen) {
+        const next = this.pendingState;
+        this.pendingState = null;
         await writeRuntimeState(this.statePath, next);
-      } catch (err) {
-        log.warn(`[recovery] RuntimeTracker write failed: ${err instanceof Error ? err.message : String(err)}`);
       }
+    } finally {
+      this.inFlight = null;
     }
-    this.inFlight = null;
   }
 
   /** Wait until all queued writes have been persisted. */

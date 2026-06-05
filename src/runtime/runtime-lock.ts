@@ -20,23 +20,19 @@ export interface RuntimeLockOwner {
   started_at: string;
 }
 
+interface LockReadResult {
+  owner: RuntimeLockOwner | null;
+  malformed: boolean;
+}
+
 function runtimeLockPath(saivageDir: string): string {
   return join(saivageDir, "tmp", "state", "runtime.lock");
 }
 
 export function readRuntimeLockOwner(saivageDir: string): RuntimeLockOwner | null {
-  try {
-    const parsed = JSON.parse(readFileSync(runtimeLockPath(saivageDir), "utf-8")) as {
-      pid?: unknown;
-      started_at?: unknown;
-    };
-    if (typeof parsed.pid !== "number" || typeof parsed.started_at !== "string") {
-      return null;
-    }
-    return { pid: parsed.pid, started_at: parsed.started_at };
-  } catch {
-    return null;
-  }
+  const result = readRuntimeLock(saivageDir);
+  if (result.malformed) throw new Error(`Malformed runtime.lock at ${runtimeLockPath(saivageDir)}`);
+  return result.owner;
 }
 
 export function assertRuntimeLockHeld(saivageDir: string): void {
@@ -81,28 +77,25 @@ export async function acquireRuntimeLock(saivageDir: string): Promise<RuntimeLoc
 
   // Lock exists. Decide whether it's stale.
   let stale = false;
-  try {
-    const raw = readFileSync(lockPath, "utf-8");
-    const parsed = JSON.parse(raw) as { pid?: number; started_at?: string };
-    const pid = typeof parsed.pid === "number" ? parsed.pid : null;
-    const startedMs = parsed.started_at ? Date.parse(parsed.started_at) : NaN;
+  const lock = readRuntimeLock(saivageDir);
+  if (lock.malformed) {
+    throw new Error(`Malformed runtime.lock at ${lockPath}. Investigate the writer before restarting.`);
+  }
 
-    if (!pid) {
-      stale = true;
-    } else {
-      try {
-        process.kill(pid, 0);
-        // Process exists; check the age horizon.
-        if (Number.isFinite(startedMs)) {
-          const ageDays = (Date.now() - startedMs) / (24 * 60 * 60 * 1000);
-          if (ageDays > 14) stale = true;
-        }
-      } catch {
-        stale = true; // PID dead → lock is stale.
+  const owner = lock.owner;
+  if (owner) {
+    const startedMs = Date.parse(owner.started_at);
+    try {
+      process.kill(owner.pid, 0);
+      // Process exists; check the age horizon.
+      if (Number.isFinite(startedMs)) {
+        const ageDays = (Date.now() - startedMs) / (24 * 60 * 60 * 1000);
+        if (ageDays > 14) stale = true;
       }
+    } catch {
+      stale = true; // PID dead → lock is stale.
     }
-  } catch {
-    // Unreadable lock file — treat as stale rather than refusing forever.
+  } else {
     stale = true;
   }
 
@@ -118,6 +111,23 @@ export async function acquireRuntimeLock(saivageDir: string): Promise<RuntimeLoc
     "Another Saivage instance is already running (runtime.lock held). " +
       "Stop it first or delete the stale lock under .saivage/tmp/state/.",
   );
+}
+
+function readRuntimeLock(saivageDir: string): LockReadResult {
+  try {
+    const parsed = JSON.parse(readFileSync(runtimeLockPath(saivageDir), "utf-8")) as {
+      pid?: unknown;
+      started_at?: unknown;
+    };
+    if (typeof parsed.pid !== "number" || typeof parsed.started_at !== "string") {
+      return { owner: null, malformed: true };
+    }
+    return { owner: { pid: parsed.pid, started_at: parsed.started_at }, malformed: false };
+  } catch (err) {
+    const code = err instanceof Error && "code" in err ? (err as NodeJS.ErrnoException).code : undefined;
+    if (code === "ENOENT") return { owner: null, malformed: false };
+    return { owner: null, malformed: true };
+  }
 }
 
 function makeReleaser(lockPath: string): RuntimeLock {

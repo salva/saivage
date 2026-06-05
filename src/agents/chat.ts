@@ -15,7 +15,7 @@ import type { SystemEvent, ChatMessage, ChatLog } from "../types.js";
 import type { ChatChannel } from "../channels/types.js";
 import type { EventBus, EventFilter } from "../events/bus.js";
 import { chatSessionId } from "../ids.js";
-import { writeDoc, readDocOrNull, readDocLenient, ensureDir } from "../store/documents.js";
+import { writeDoc, readDocOrNull, ensureDir } from "../store/documents.js";
 import { createUserNote } from "../runtime/notes.js";
 import { parseSlashCommand, runSlashCommand } from "../chat/slashCommands.js";
 import {
@@ -264,7 +264,7 @@ export class ChatAgent extends BaseAgent {
   private async cmdStatus(): Promise<string> {
     const paths = this.ctx.project.paths;
     const runtime = await readDocOrNull(paths.runtimeState, RuntimeStateSchema);
-    const doc = await readDocLenient(paths.plan, PlanDocumentSchema);
+    const doc = await readDocOrNull(paths.plan, PlanDocumentSchema);
     const plan = activePlanView(doc);
 
     const lines: string[] = ["**System Status**", ""];
@@ -295,7 +295,7 @@ export class ChatAgent extends BaseAgent {
   }
 
   private async cmdPlan(): Promise<string> {
-    const plan = activePlanView(await readDocLenient(this.ctx.project.paths.plan, PlanDocumentSchema));
+    const plan = activePlanView(await readDocOrNull(this.ctx.project.paths.plan, PlanDocumentSchema));
     if (!plan) return "No plan exists yet.";
 
     const lines: string[] = [
@@ -319,7 +319,7 @@ export class ChatAgent extends BaseAgent {
 
   private async cmdHistory(args: string): Promise<string> {
     const n = parseInt(args, 10) || 5;
-    const history = planHistoryView(await readDocLenient(this.ctx.project.paths.plan, PlanDocumentSchema));
+    const history = planHistoryView(await readDocOrNull(this.ctx.project.paths.plan, PlanDocumentSchema));
     if (!history || history.stages.length === 0) return "No completed stages yet.";
 
     const recent = history.stages.slice(-n);
