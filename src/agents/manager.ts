@@ -56,11 +56,6 @@ export class ManagerAgent extends BaseAgent implements Agent {
     super(ctx, {
       systemPrompt: loadRolePrompt("manager"),
       eagerSkillBlock,
-      skillContext: {
-        agentRole: "manager",
-        description: stage.objective,
-        tags: stage.tags,
-      },
       childSpawner,
       initialMessage,
       ...config,

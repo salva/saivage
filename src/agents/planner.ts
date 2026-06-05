@@ -60,10 +60,6 @@ export class PlannerAgent extends BaseAgent implements Agent {
     super(ctx, {
       systemPrompt: loadRolePrompt("planner"),
       eagerSkillBlock,
-      skillContext: {
-        agentRole: "planner",
-        description: "Strategic planning and stage dispatch",
-      },
       childSpawner,
       initialMessage,
       inputChannels: [new NoteChannel(noteManager)],

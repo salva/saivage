@@ -45,10 +45,6 @@ export class LibrarianAgent extends BaseAgent implements Agent {
     super(ctx, {
       systemPrompt: loadRolePrompt("librarian"),
       eagerSkillBlock,
-      skillContext: {
-        agentRole: "librarian",
-        description: input.objective,
-      },
       initialMessage,
       ...config,
     });

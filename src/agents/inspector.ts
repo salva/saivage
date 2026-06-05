@@ -48,10 +48,6 @@ export class InspectorAgent extends BaseAgent implements Agent {
     super(ctx, {
       systemPrompt: loadRolePrompt("inspector"),
       eagerSkillBlock,
-      skillContext: {
-        agentRole: "inspector",
-        description: input.request.scope,
-      },
       initialMessage,
       ...config,
     });

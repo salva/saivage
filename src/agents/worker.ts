@@ -108,11 +108,6 @@ export class WorkerAgent extends BaseAgent implements Agent {
     super(ctx, {
       systemPrompt: loadRolePrompt(meta.promptKey),
       eagerSkillBlock,
-      skillContext: {
-        agentRole: role,
-        description: task.description,
-        tags: task.tags ?? [],
-      },
       initialMessage,
       ...config,
     });

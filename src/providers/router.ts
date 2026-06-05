@@ -33,12 +33,17 @@ import {
   type UsageSnapshot,
 } from "./router-utils.js";
 import { ModelHealthTracker } from "./health-tracker.js";
-import { StickyFailoverManager } from "./sticky-failover.js";
 
 const PROVIDER_REQUEST_TIMEOUT_MS = 300_000;
 const PRIMARY_RETRY_BASE_DELAY_MS = 30_000;
 const PRIMARY_RETRY_BACKOFF_MULT = 1.5;
 const PRIMARY_RETRY_MAX_DELAY_MS = 20 * 60_000;
+
+interface StickyFailoverState {
+  spec: string;
+  retryDelayMs: number;
+  nextPrimaryRetryAt: number;
+}
 
 /** Lightweight LLM call metrics (replaces v1 telemetry module). */
 function recordLlmCall(_spec: string, _data: Record<string, unknown>): void {
@@ -55,7 +60,7 @@ export class ModelRouter {
   private readonly providerCaller: ProviderCaller;
   private readonly providerRegistry: ProviderRegistry;
   private modelEligibility = new Map<string, Set<string> | null>();
-  private readonly stickyFailovers = new StickyFailoverManager();
+  private readonly stickyFailovers = new Map<string, StickyFailoverState>();
   private usageSnapshots = new Map<string, UsageSnapshot>();
   private readonly healthTracker = new ModelHealthTracker();
 
@@ -326,9 +331,9 @@ export class ModelRouter {
       const result = await this.providerCaller.call(spec, provider, model, candidateRequest);
 
       if (result.ok) {
-        const sticky = this.stickyFailovers.getSticky(request.modelSpec);
+        const sticky = this.stickyFailovers.get(request.modelSpec);
         if (spec === request.modelSpec && sticky) {
-          this.stickyFailovers.clearStickyFailover(request.modelSpec);
+          this.stickyFailovers.delete(request.modelSpec);
           log.info(`Model switch: ${sticky.spec} -> ${request.modelSpec} (primary recovered after cooldown)`);
         }
 
@@ -342,7 +347,7 @@ export class ModelRouter {
               previousDelay > 0 ? previousDelay * PRIMARY_RETRY_BACKOFF_MULT : PRIMARY_RETRY_BASE_DELAY_MS,
               PRIMARY_RETRY_MAX_DELAY_MS,
             );
-            this.stickyFailovers.setSticky(request.modelSpec, {
+            this.stickyFailovers.set(request.modelSpec, {
               spec,
               retryDelayMs,
               nextPrimaryRetryAt: Date.now() + retryDelayMs,
@@ -413,7 +418,7 @@ export class ModelRouter {
     return buildCandidateChain({
       modelSpec,
       request,
-      sticky: this.stickyFailovers.getSticky(modelSpec),
+      sticky: this.stickyFailovers.get(modelSpec),
       now: Date.now(),
       failoverChains: this.failoverChains,
       modelEquivalents: this.modelEquivalents,
@@ -615,7 +620,8 @@ export class ModelRouter {
   }
   /** Reset sticky failover for a model */
   clearStickyFailover(modelSpec: string): void {
-    const was = this.stickyFailovers.clearStickyFailover(modelSpec);
+    const was = this.stickyFailovers.get(modelSpec);
+    this.stickyFailovers.delete(modelSpec);
     if (was) {
       log.info(`Model switch: ${was.spec} -> ${modelSpec} (retrying primary after cooldown)`);
     }

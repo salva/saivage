@@ -37,7 +37,6 @@ import { RetryPolicy } from "./retry-policy.js";
 import { CompactionController } from "./compaction-controller.js";
 import type { BaseAgentConfig } from "./base-config.js";
 import { getDispatchToolsForRole, TRIVIAL_EVIDENCE_TOOLS } from "./dispatch-tool-schemas.js";
-import { PendingCallTracker } from "./pending-call-tracker.js";
 
 export type { ConversationEntry, LlmResponseSource } from "./conversation-state.js";
 export type { BaseAgentConfig } from "./base-config.js";
@@ -53,6 +52,8 @@ export interface ActivityStatus {
   } | null;
   last_activity_at: string;
 }
+
+type PendingCall = NonNullable<ActivityStatus["pending_call"]>;
 
 /**
  * Base class for all v2 agents.
@@ -85,7 +86,7 @@ export class BaseAgent {
   private meaningfulToolCallNames: string[] = [];
   private invalidFinalResponseCount = 0;
   private lastActivityAt: string = new Date().toISOString();
-  private pendingCallTracker = new PendingCallTracker();
+  private pendingCall: PendingCall | null = null;
   private beforeCompaction?: () => Promise<void>;
   private readonly inputChannels: InputChannel[];
   private staticInputTokens = 0;
@@ -344,7 +345,7 @@ export class BaseAgent {
    */
   protected async callLLM(): Promise<ChatResponse> {
     const myRoundId = this.conversation.startRound();
-    this.pendingCallTracker.startInFlight(0);
+    this.startPendingCallInFlight(0);
     this.recordActivity();
 
     const tools = this.getToolSchemas();
@@ -357,7 +358,7 @@ export class BaseAgent {
 
     for (let attempt = 0; ; attempt++) {
       if (this.cancelled || this.abortSignal?.aborted) {
-        this.pendingCallTracker.clear();
+        this.clearPendingCall();
         this.conversation.clearPendingRound();
         throw new ProviderError({ kind: "non_retryable", message: "Agent cancelled" });
       }
@@ -379,7 +380,7 @@ export class BaseAgent {
             { source: responseSource(response) },
           );
         }
-        this.pendingCallTracker.clear();
+        this.clearPendingCall();
         this.conversation.recordReportedInputTokens(response.usage?.inputTokens, this.staticInputTokens);
         return response;
       } catch (err) {
@@ -392,7 +393,7 @@ export class BaseAgent {
             const stopReason = this.compactionController.stopReason();
             const failure = `Cannot repair malformed model request: ${stopReason} (${reason}). Aborting this agent so the parent can handle the failure.`;
             this.addDiagnostic("model_issue", failure);
-            this.pendingCallTracker.clear();
+            this.clearPendingCall();
             this.conversation.clearPendingRound();
             throw new ProviderError({ kind: "non_retryable", message: failure, cause: pe });
           }
@@ -414,7 +415,7 @@ export class BaseAgent {
           if (decision.error.kind === "transient") {
             this.addDiagnostic("model_issue", decision.error.message);
           }
-          this.pendingCallTracker.clear();
+          this.clearPendingCall();
           this.conversation.clearPendingRound();
           throw decision.error;
         }
@@ -429,13 +430,13 @@ export class BaseAgent {
         this.ctx.router.resetModelHealth(this.ctx.modelSpec);
 
         const retryAt = new Date(Date.now() + decision.delaySec * 1000).toISOString();
-        this.pendingCallTracker.startBackoff({
+        this.startPendingCallBackoff({
           attempt: decision.attemptNumber,
           reason: decision.pendingReason,
           retryAt,
         });
         await this.sleepWithCancellation(decision.delaySec * 1000);
-        this.pendingCallTracker.startInFlight(decision.attemptNumber);
+        this.startPendingCallInFlight(decision.attemptNumber);
       }
     }
   }
@@ -569,7 +570,7 @@ export class BaseAgent {
   /** Public lifecycle status for the dashboard. */
   public getActivityStatus(): ActivityStatus {
     return {
-      pending_call: this.pendingCallTracker.snapshot(),
+      pending_call: this.snapshotPendingCall(),
       last_activity_at: this.lastActivityAt,
     };
   }
@@ -586,6 +587,34 @@ export class BaseAgent {
   ): void {
     this.conversation.addDiagnostic(kind, content, opts);
     this.recordActivity();
+  }
+
+  private startPendingCallInFlight(attempt: number): void {
+    this.pendingCall = {
+      started_at: new Date().toISOString(),
+      status: "in_flight",
+      attempt,
+      reason: null,
+      retry_at: null,
+    };
+  }
+
+  private startPendingCallBackoff(args: { attempt: number; reason: PendingCall["reason"]; retryAt: string }): void {
+    this.pendingCall = {
+      started_at: this.pendingCall?.started_at ?? new Date().toISOString(),
+      status: "backoff",
+      attempt: args.attempt,
+      reason: args.reason,
+      retry_at: args.retryAt,
+    };
+  }
+
+  private clearPendingCall(): void {
+    this.pendingCall = null;
+  }
+
+  private snapshotPendingCall(): PendingCall | null {
+    return this.pendingCall ? { ...this.pendingCall } : null;
   }
 
   protected pushMessage(message: Message, timestamp = new Date().toISOString(), source?: LlmResponseSource): void {
@@ -646,7 +675,7 @@ export class BaseAgent {
       await new Promise((resolve) => setTimeout(resolve, Math.min(1_000, deadline - Date.now())));
     }
     if (this.cancelled || this.abortSignal?.aborted) {
-      this.pendingCallTracker.clear();
+      this.clearPendingCall();
       this.conversation.clearPendingRound();
       throw new ProviderError({ kind: "non_retryable", message: "Agent cancelled" });
     }

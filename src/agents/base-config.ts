@@ -1,4 +1,3 @@
-import type { SkillMatchContext } from "../knowledge/loader.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
 import type { InputChannel } from "./types.js";
 
@@ -6,8 +5,6 @@ import type { InputChannel } from "./types.js";
 export interface BaseAgentConfig {
   /** System prompt (from prompts/<role>.md). */
   systemPrompt: string;
-  /** Skill matching context (kept for documentation; eager block is pre-built by factories). */
-  skillContext?: SkillMatchContext;
   /** Pre-built §D.6 eager knowledge block to append to the system prompt. */
   eagerSkillBlock?: string;
   /** Child spawner for agent dispatch tools. */

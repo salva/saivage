@@ -86,10 +86,6 @@ export class ChatAgent extends BaseAgent implements Agent {
     super(ctx, {
       systemPrompt: loadRolePrompt("chat"),
       eagerSkillBlock: config?.eagerSkillBlock ?? "",
-      skillContext: {
-        agentRole: "chat",
-        description: "User-facing chat interface",
-      },
       initialMessage: `Chat session started on channel "${input.channel}". Session ID: ${input.sessionId}. Waiting for user messages.`,
       ...config,
     });
