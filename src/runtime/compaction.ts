@@ -6,17 +6,7 @@
 
 import type { Message, ToolSchema } from "../providers/types.js";
 import { log } from "../log.js";
-
-interface CompactionLlmClient {
-  countTokens(modelSpec: string, messages: Message[], system?: string, tools?: ToolSchema[]): number;
-  chat(request: {
-    modelSpec: string;
-    model: string;
-    system: string;
-    messages: Message[];
-    maxTokens?: number;
-  }): Promise<{ content: string }>;
-}
+import type { LlmClient } from "../agents/types.js";
 
 export interface CompactionConfig {
   /** Model context window size in tokens. */
@@ -53,7 +43,7 @@ export type Round = TextRound | ToolRound | DanglingHalf;
 
 export interface SelectOpts {
   config: CompactionConfig;
-  router: CompactionLlmClient;
+  router: LlmClient;
   modelSpec: string;
   systemPrompt: string;
   tools: ToolSchema[] | undefined;
@@ -179,7 +169,7 @@ export function flatten(rounds: Round[]): Message[] {
 export async function compactConversation(
   systemPrompt: string,
   messages: Message[],
-  router: CompactionLlmClient,
+  router: LlmClient,
   config: CompactionConfig,
   state: CompactionState,
   modelSpec: string,

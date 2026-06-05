@@ -8,7 +8,6 @@ import { BaseAgent, type BaseAgentConfig } from "./base.js";
 import type {
   AgentContext,
   AgentResult,
-  Agent,
 } from "./types.js";
 import type { ToolCallResult } from "../providers/types.js";
 import type { ContentBlock } from "../providers/types.js";
@@ -30,7 +29,7 @@ const MAX_NUDGES = 15;
  * The Planner is long-lived. It runs until all stages are complete,
  * the project is done, or it is aborted.
  */
-export class PlannerAgent extends BaseAgent implements Agent {
+export class PlannerAgent extends BaseAgent {
   private noteManager: NoteManager;
   private readonly onCompactionHookComplete?: (writeCount: number) => void;
 

@@ -3,7 +3,8 @@ import { InspectorAgent } from "../agents/inspector.js";
 import { LibrarianAgent } from "../agents/librarian.js";
 import { WorkerAgent } from "../agents/worker.js";
 import { normalizeTask } from "../agents/task-report.js";
-import type { AgentContext, AgentResult, Agent, WorkerInput } from "../agents/types.js";
+import type { BaseAgent } from "../agents/base.js";
+import type { AgentContext, AgentResult, WorkerInput } from "../agents/types.js";
 import { formatAgentResultReason } from "../agents/types.js";
 import { assertExhaustive, getRoster } from "../agents/roster.js";
 import type { DispatchableRole, WorkerRole } from "../agents/roster.js";
@@ -20,6 +21,10 @@ import type { AgentRuntimeDeps } from "./runtime-facades.js";
 export interface WorkerDispatchSpec extends WorkerInput {
   role: WorkerRole;
 }
+
+type RunnableBaseAgent = BaseAgent & {
+  run(): Promise<AgentResult>;
+};
 
 export class AgentOrchestrator {
   /**
@@ -59,7 +64,7 @@ export class AgentOrchestrator {
       ...resolveAgentRoute(this.runtime, role),
     };
 
-    let agent: Agent;
+    let agent: RunnableBaseAgent;
     let runAgent: (() => Promise<AgentResult>) | undefined;
     let trackingAgentId = ctx.agentId;
     let taskId: string | undefined;
@@ -125,7 +130,7 @@ export class AgentOrchestrator {
     }
 
     tracker.agentStarted(trackingAgentId, role as AgentState["agent_type"], taskId);
-    this.runtime.agentRegistry.set(trackingAgentId, agent as unknown as import("../agents/base.js").BaseAgent);
+    this.runtime.agentRegistry.set(trackingAgentId, agent);
     const unsubscribeShutdown = lifecycleSignal?.onAbort(() => {
       if (abortSignal) abortSignal.aborted = true;
       agent.cancel();

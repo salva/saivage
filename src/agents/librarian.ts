@@ -7,7 +7,7 @@
  */
 
 import { BaseAgent, type BaseAgentConfig } from "./base.js";
-import type { AgentContext, AgentResult, Agent } from "./types.js";
+import type { AgentContext, AgentResult } from "./types.js";
 import { loadRolePrompt } from "./prompts.js";
 import { buildEagerBlock } from "../knowledge/eagerLoader.js";
 import { log } from "../log.js";
@@ -18,7 +18,7 @@ export interface LibrarianInput {
   context?: string;
 }
 
-export class LibrarianAgent extends BaseAgent implements Agent {
+export class LibrarianAgent extends BaseAgent {
   private input: LibrarianInput;
 
   static async create(

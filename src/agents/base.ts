@@ -22,10 +22,15 @@ import { applyToolFilter } from "./tool-filters.js";
 import { Dispatcher } from "../runtime/dispatcher.js";
 import type { DispatchResult } from "../runtime/dispatcher.js";
 import {
+  compactConversation,
+  isMaxCompactionsReached,
+  shouldCompact,
   type CompactionConfig,
   type CompactionState,
 } from "../runtime/compaction.js";
 import { stashResult } from "../runtime/stash.js";
+import { buildSurvivorBlock } from "../knowledge/eagerLoader.js";
+import type { KnowledgeAgentRole } from "../knowledge/types.js";
 import type { RuntimeToolEntry } from "../mcp/runtime.js";
 import { log } from "../log.js";
 import {
@@ -34,7 +39,6 @@ import {
   type LlmResponseSource,
 } from "./conversation-state.js";
 import { RetryPolicy } from "./retry-policy.js";
-import { CompactionController } from "./compaction-controller.js";
 import type { BaseAgentConfig } from "./base-config.js";
 import { getDispatchToolsForRole, TRIVIAL_EVIDENCE_TOOLS } from "./dispatch-tool-schemas.js";
 
@@ -78,7 +82,6 @@ export class BaseAgent {
     oversizedAtomicFallback: false,
   };
   private compactionConfig: CompactionConfig;
-  private compactionController: CompactionController;
   private abortSignal?: { aborted: boolean };
   private onActivity?: (agentId: string) => void;
   private onCompactionUpdate?: BaseAgentConfig["onCompactionUpdate"];
@@ -133,23 +136,6 @@ export class BaseAgent {
     this.beforeCompaction = config.beforeCompaction;
     this.inputChannels = config.inputChannels ?? [];
 
-    this.compactionController = new CompactionController({
-      agentId: this.id,
-      role: this.role,
-      projectRoot: this.ctx.project.projectRoot,
-      router: this.ctx.router,
-      modelSpec: this.ctx.modelSpec,
-      systemPrompt: this.systemPrompt,
-      compactionConfig: this.compactionConfig,
-      compactionState: this.compactionState,
-      inputChannels: this.inputChannels,
-      getMessages: () => this.messages,
-      getToolSchemas: () => this.getToolSchemas(),
-      replaceMessages: (messages) => this.replaceMessages(messages),
-      addDiagnostic: (kind, content) => this.addDiagnostic(kind, content),
-      onCompactionUpdate: this.onCompactionUpdate,
-    });
-
     // F07 — precompute static input (system prompt + tools) once.
     this.staticInputTokens = this.ctx.router.countTokens(
       this.ctx.modelSpec,
@@ -189,9 +175,9 @@ export class BaseAgent {
       }
 
       // Check compaction before LLM call
-      if (this.compactionController.shouldCompact(this.conversation.runningInputTokens + this.staticInputTokens)) {
-        if (this.compactionController.isStopReached()) {
-          const stopReason = this.compactionController.stopReason();
+      if (this.shouldCompact(this.conversation.runningInputTokens + this.staticInputTokens)) {
+        if (this.isStopReached()) {
+          const stopReason = this.stopReason();
           log.warn(
             `[agent:${this.role}:${this.id}] Compaction stop reached (${stopReason}) — terminating`,
           );
@@ -389,8 +375,8 @@ export class BaseAgent {
         // Context overflow / orphaned tool result → compact and retry immediately (no backoff)
         if (decision.kind === "repair_context") {
           const { error: pe, reason } = decision;
-          if (this.compactionController.isStopReached()) {
-            const stopReason = this.compactionController.stopReason();
+          if (this.isStopReached()) {
+            const stopReason = this.stopReason();
             const failure = `Cannot repair malformed model request: ${stopReason} (${reason}). Aborting this agent so the parent can handle the failure.`;
             this.addDiagnostic("model_issue", failure);
             this.clearPendingCall();
@@ -642,23 +628,89 @@ export class BaseAgent {
    */
   private async compactWithReinjection(): Promise<void> {
     const pendingRepairPrompt = this.conversation.pendingRepairPrompt;
-    await this.compactionController.compact(
-      this.beforeCompaction
-        ? async () => {
-            try {
-              await this.beforeCompaction?.();
-            } catch (err) {
-              log.warn(
-                `[agent:${this.role}:${this.id}] before-compaction hook failed: ${err instanceof Error ? err.message : String(err)}`,
-              );
-            }
-          }
-        : undefined,
-    );
+    await this.compact();
     if (pendingRepairPrompt) {
       this.pushMessage({ role: "user", content: pendingRepairPrompt });
       this.conversation.setPendingRepairPrompt(pendingRepairPrompt);
     }
+  }
+
+  private shouldCompact(runningTokens: number): boolean {
+    return shouldCompact(runningTokens, this.compactionConfig);
+  }
+
+  private isStopReached(): boolean {
+    return isMaxCompactionsReached(
+      this.compactionState,
+      this.compactionConfig,
+    );
+  }
+
+  private stopReason(): string {
+    if (this.compactionState.oversizedAtomicFallback) {
+      return "oversized atomic tool round (use stash)";
+    }
+    if (this.compactionState.consecutiveFallbacks >= this.compactionConfig.maxConsecutiveFallbacks) {
+      return "summarizer fallback exhausted";
+    }
+    return "max compactions exceeded";
+  }
+
+  private async compact(): Promise<void> {
+    if (this.beforeCompaction) {
+      try {
+        await this.beforeCompaction();
+      } catch (err) {
+        log.warn(
+          `[agent:${this.role}:${this.id}] before-compaction hook failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    const summarized = await compactConversation(
+      this.systemPrompt,
+      this.messages,
+      this.ctx.router,
+      {
+        ...this.compactionConfig,
+        onFallback: (info) => {
+          this.addDiagnostic(
+            "model_repair",
+            `Summarizer fallback (round-parser truncation). keptRounds=${info.keptRounds}${info.oversizedAtomic ? ", oversized atomic round" : ""}.`,
+          );
+        },
+      },
+      this.compactionState,
+      this.ctx.modelSpec,
+      this.getToolSchemas(),
+    );
+
+    let next: Message[] = summarized;
+    try {
+      const block = await buildSurvivorBlock(
+        this.ctx.project.projectRoot,
+        this.role as KnowledgeAgentRole,
+        this.compactionState.compactionCount,
+      );
+      if (block) next = [...summarized, { role: "user", content: block }];
+    } catch (err) {
+      log.warn(
+        `[agent:${this.role}:${this.id}] survivor reinjection failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    this.replaceMessages(next);
+    this.recordCompactionUpdate();
+    for (const ch of this.inputChannels) ch.onContextReset();
+  }
+
+  private recordCompactionUpdate(): void {
+    this.onCompactionUpdate?.(this.id, {
+      count: this.compactionState.compactionCount,
+      summarizerFallbacks: this.compactionState.summarizerFallbacks,
+      consecutiveFallbacks: this.compactionState.consecutiveFallbacks,
+      oversizedAtomicFallback: this.compactionState.oversizedAtomicFallback,
+    });
   }
 
   /** Push pending channel messages into this.messages. Call immediately before any router.chat. */

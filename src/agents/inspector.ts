@@ -9,7 +9,6 @@ import type {
   AgentContext,
   AgentResult,
   InspectorInput,
-  Agent,
 } from "./types.js";
 import { InspectionReportSchema, type InspectionReport } from "../types.js";
 import { parseLlmJsonAs } from "../parse-llm-json.js";
@@ -19,7 +18,7 @@ import { loadRolePrompt } from "./prompts.js";
 import { buildEagerBlock } from "../knowledge/eagerLoader.js";
 
 
-export class InspectorAgent extends BaseAgent implements Agent {
+export class InspectorAgent extends BaseAgent {
   private input: InspectorInput;
 
   static async create(

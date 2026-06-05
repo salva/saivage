@@ -10,7 +10,6 @@ import type {
   AgentContext,
   AgentResult,
   ChatInput,
-  Agent,
 } from "./types.js";
 import type { SystemEvent, ChatMessage, ChatLog } from "../types.js";
 import type { ChatChannel } from "../channels/types.js";
@@ -42,7 +41,7 @@ import { activePlanView, planHistoryView } from "../store/plan-read-models.js";
  * Integrates with the EventBus for push notifications and the channel
  * transport for user message I/O.
  */
-export class ChatAgent extends BaseAgent implements Agent {
+export class ChatAgent extends BaseAgent {
   private static readonly MAX_PENDING_MESSAGES = 5;
   private input: ChatInput;
   private channel: ChatChannel;

@@ -9,7 +9,6 @@ import type {
   AgentContext,
   AgentResult,
   ManagerInput,
-  Agent,
 } from "./types.js";
 import type { StageSummary, Stage } from "../types.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
@@ -22,7 +21,7 @@ import { checkManagerCompletion } from "./compliance.js";
 import { StageRunStore } from "../store/stage-run-store.js";
 
 
-export class ManagerAgent extends BaseAgent implements Agent {
+export class ManagerAgent extends BaseAgent {
   private input: ManagerInput;
 
   static async create(

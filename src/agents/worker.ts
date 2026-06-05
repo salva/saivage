@@ -17,7 +17,6 @@
 
 import { BaseAgent, type BaseAgentConfig } from "./base.js";
 import type {
-  Agent,
   AgentContext,
   AgentResult,
   WorkerInput,
@@ -87,7 +86,7 @@ export async function buildInitialMessage(
   );
 }
 
-export class WorkerAgent extends BaseAgent implements Agent {
+export class WorkerAgent extends BaseAgent {
   protected input: WorkerInput;
   protected readonly workerRole: WorkerRole;
   private readonly invalidFinalResponseMessage: string;
