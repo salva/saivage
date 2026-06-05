@@ -7,7 +7,6 @@
  * when the file-state map matches.
  */
 import type { KnowledgeStore, RecordKind } from "./init.js";
-import { getInternalDataset } from "../rag/internal/datasetAccess.js";
 import {
   listActiveItems,
   pendingReingestKinds,
@@ -37,7 +36,7 @@ export async function runBootDivergenceSweep(
 
   // 2. File-state divergence sweep.
   for (const kind of ["skill", "memory"] as RecordKind[]) {
-    const dataset = getInternalDataset(store.ragManager, KIND_TO_DATASET[kind]);
+    const dataset = store.ragManager.getIfOpen(KIND_TO_DATASET[kind]);
     if (!dataset) continue;
     const storedRaw = await dataset.store.getFileState();
     const stored = new Map(

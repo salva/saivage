@@ -51,6 +51,7 @@ function fakeRagWithCalls(): { mgr: RagManager; calls: IngestCall[] } {
     enabled: true,
     async list() { return []; },
     async get() { throw new Error("not used"); },
+    getIfOpen() { return undefined; },
     async register() { throw new Error("not used"); },
     async ingest(id: string, input: { kind: string; items?: unknown[] }) {
       calls.push({ id, n: input.items?.length ?? 0 });

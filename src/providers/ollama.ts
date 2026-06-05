@@ -1,4 +1,4 @@
-import { OpenAIProvider } from "./openai.js";
+import { OpenAICompatibleProvider } from "./openai.js";
 import type { ModelCapabilities } from "./types.js";
 
 const OLLAMA_MODEL_CAPABILITIES: Array<[RegExp, ModelCapabilities]> = [
@@ -7,10 +7,10 @@ const OLLAMA_MODEL_CAPABILITIES: Array<[RegExp, ModelCapabilities]> = [
 ];
 
 /**
- * Ollama exposes an OpenAI-compatible API, so we reuse OpenAIProvider
+ * Ollama exposes an OpenAI-compatible API, so we reuse OpenAICompatibleProvider
  * with a custom base URL.
  */
-export class OllamaProvider extends OpenAIProvider {
+export class OllamaProvider extends OpenAICompatibleProvider {
   override readonly name = "ollama";
   private readonly defaultContextWindow?: number;
 

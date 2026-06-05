@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { OpenAIProvider } from "./openai.js";
+import { OpenAICompatibleProvider } from "./openai.js";
 import * as tc from "../runtime/token-counting.js";
 import type { Message } from "./types.js";
 
-describe("OpenAIProvider.countTokens", () => {
-  const p = new OpenAIProvider("test-key");
+describe("OpenAICompatibleProvider.countTokens", () => {
+  const p = new OpenAICompatibleProvider("test-key");
   const msgs: Message[] = [{ role: "user", content: "hi" }];
 
   it("selects o200k_base for new-gen models", () => {

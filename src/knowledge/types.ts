@@ -46,6 +46,9 @@ export type KnowledgeScope = z.infer<typeof KnowledgeScopeSchema>;
 export const SkillOriginSchema = z.enum(["builtin", "project"]);
 export type SkillOrigin = z.infer<typeof SkillOriginSchema>;
 
+/** Knowledge record kinds shared by domain and sidecar layers. */
+export type RecordKind = "skill" | "memory";
+
 /** Audit op kinds (design §B.1 AuditEntry). */
 export const AuditOpSchema = z.enum([
   "create",

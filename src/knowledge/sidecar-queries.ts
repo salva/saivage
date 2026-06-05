@@ -6,14 +6,13 @@
  * dependency: these are pure data-access primitives.
  */
 import type {
-  AuditEntry,
   EagerRow,
   IngestItem,
-  RecordKind,
   RecordRow,
+  SidecarAuditRow,
   SidecarHandle,
 } from "./sidecar.js";
-import type { LifecycleStatus } from "./types.js";
+import type { LifecycleStatus, RecordKind } from "./types.js";
 
 export function getRecord(
   sidecar: SidecarHandle,
@@ -189,7 +188,7 @@ export function putRecord(
   sidecar: SidecarHandle,
   row: RecordRow,
   secondary: { kind: "skill"; name: string } | { kind: "memory"; topic: string },
-  audit: AuditEntry,
+  audit: SidecarAuditRow,
 ): void {
   sidecar.db.prepare(
     `INSERT INTO record
@@ -220,7 +219,7 @@ export function putRecord(
 export function updateRecord(
   sidecar: SidecarHandle,
   row: RecordRow,
-  audit: AuditEntry,
+  audit: SidecarAuditRow,
 ): void {
   sidecar.db.prepare(
     `UPDATE record SET
@@ -244,7 +243,7 @@ export function markSuperseded(
   oldId: string,
   newId: string,
   updatedAt: string,
-  audit: AuditEntry,
+  audit: SidecarAuditRow,
 ): void {
   sidecar.db.prepare(
     `UPDATE record SET
@@ -262,7 +261,7 @@ export function markSuperseded(
 export function deleteRecord(
   sidecar: SidecarHandle,
   id: string,
-  audit: AuditEntry,
+  audit: SidecarAuditRow,
 ): void {
   sidecar.db.prepare("DELETE FROM record WHERE id = ?").run(id);
   insertAudit(sidecar, audit);
@@ -305,7 +304,7 @@ export function archiveScope(
 }
 
 /** Insert one audit row. Caller controls transaction scope. */
-export function insertAudit(sidecar: SidecarHandle, audit: AuditEntry): void {
+export function insertAudit(sidecar: SidecarHandle, audit: SidecarAuditRow): void {
   sidecar.db.prepare(
     `INSERT INTO audit
        (record_id, ts, op, actor_role, actor_agent_id, before_json, after_json)

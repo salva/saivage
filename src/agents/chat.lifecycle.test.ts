@@ -11,8 +11,7 @@ import { tmpdir } from "node:os";
 import { ChatAgent } from "./chat.js";
 import { EventBus } from "../events/bus.js";
 import { ensureDir } from "../store/documents.js";
-import type { ChatChannel } from "../channels/types.js";
-import type { WsOutbound } from "../channels/ws-schema.js";
+import type { ChatChannel, ChatEvent } from "../channels/types.js";
 import type { AgentContext } from "./types.js";
 import type { BaseAgent } from "./base.js";
 import type { ChatRequest, ChatResponse } from "../providers/types.js";
@@ -36,7 +35,7 @@ class FakeChannel implements ChatChannel {
     // no-op
   }
 
-  sendEvent(_event: WsOutbound): void {
+  sendEvent(_event: ChatEvent): void {
     // no-op
   }
 

@@ -40,6 +40,7 @@ describe("RagManager", () => {
     });
     expect(m.enabled).toBe(false);
     expect(await m.list()).toEqual([]);
+    expect(m.getIfOpen("anything")).toBeUndefined();
     await expect(m.get("anything")).rejects.toMatchObject({ kind: "dataset_not_found" });
   });
 
@@ -67,9 +68,33 @@ describe("RagManager", () => {
       chunker: { kind: "markdown" },
     });
     expect(ds.id).toBe("docs");
+    expect(m.getIfOpen("docs")).toBe(ds);
     const listed = await m.list();
     expect(listed.map((x) => x.id)).toEqual(["docs"]);
     expect(listed[0]?.providerStamp.dim).toBe(256);
+    await m.close();
+  });
+
+  it("getIfOpen returns only cached datasets and never opens configured datasets", async () => {
+    const m = await createRagManager({
+      projectRoot: root,
+      projectId: "p1",
+      enabled: true,
+      datasets: [
+        {
+          id: "docs",
+          source: "doc",
+          provider: { kind: "openai", model: "text-embedding-3-small", dim: 256 },
+          store: { kind: "sqlite-vec" },
+          chunker: { kind: "markdown" },
+        },
+      ],
+      providerOptions: providerOptions(256),
+    });
+
+    expect(m.getIfOpen("docs")).toBeUndefined();
+    const ds = await m.get("docs");
+    expect(m.getIfOpen("docs")).toBe(ds);
     await m.close();
   });
 

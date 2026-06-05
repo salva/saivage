@@ -18,7 +18,7 @@ export const OPENAI_MODEL_CAPABILITIES: Array<[RegExp, ModelCapabilities]> = [
   [/^gpt-3\.5/, { contextWindow: 16_385, tokenEncoding: "cl100k_base" }],
 ];
 
-export class OpenAIProvider extends BaseProvider {
+export class OpenAICompatibleProvider extends BaseProvider {
   readonly name: string = "openai";
   private client: OpenAI;
 

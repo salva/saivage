@@ -17,9 +17,8 @@ import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import DatabaseConstructor, { type Database } from "better-sqlite3";
 
-import type { LifecycleStatus } from "./types.js";
+import type { LifecycleStatus, RecordKind } from "./types.js";
 
-export type RecordKind = "skill" | "memory";
 export type RecordOrigin = "builtin" | "project";
 
 export interface RecordRow {
@@ -38,7 +37,7 @@ export interface RecordRow {
   pending_reingest: 0 | 1;
 }
 
-export interface AuditEntry {
+export interface SidecarAuditRow {
   record_id: string;
   ts: string;
   op: string;

@@ -12,8 +12,7 @@ import { ChatAgent } from "./chat.js";
 import { ManagerAgent } from "./manager.js";
 import { WorkerAgent } from "./worker.js";
 import { EventBus } from "../events/bus.js";
-import type { ChatChannel } from "../channels/types.js";
-import type { WsOutbound } from "../channels/ws-schema.js";
+import type { ChatChannel, ChatEvent } from "../channels/types.js";
 import type { AgentContext, ManagerInput, WorkerInput } from "./types.js";
 import type { ChatRequest, ChatResponse } from "../providers/types.js";
 import type { PlannerControl } from "../server/bootstrap.js";
@@ -1049,7 +1048,7 @@ class TestChatChannel implements ChatChannel {
     this.sent.push(message);
   }
 
-  sendEvent(event: WsOutbound): void {
+  sendEvent(event: ChatEvent): void {
     if (event.type === "message") this.send(event.content);
   }
 

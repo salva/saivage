@@ -1,11 +1,11 @@
-import { OpenAIProvider } from "./openai.js";
+import { OpenAICompatibleProvider } from "./openai.js";
 import type { ModelCapabilities } from "./types.js";
 
 /**
  * NVIDIA NIM (NVIDIA Inference Microservices) exposes an OpenAI-compatible
  * chat completions API at https://integrate.api.nvidia.com/v1.
  *
- * We reuse OpenAIProvider with a custom base URL.  Auth uses a bearer token
+ * We reuse OpenAICompatibleProvider with a custom base URL.  Auth uses a bearer token
  * (the standard "nvapi-…" key) supplied either via the saivage.json provider
  * config (`apiKey`) or via the `NVIDIA_API_KEY` / `NVIDIA_NIM_API_KEY`
  * environment variables.
@@ -20,7 +20,7 @@ const NVIDIA_NIM_MODEL_CAPABILITIES: Array<[RegExp, ModelCapabilities]> = [
   [/qwen/i, { contextWindow: 128_000, tokenEncoding: "cl100k_base" }],
 ];
 
-export class NvidiaNimProvider extends OpenAIProvider {
+export class NvidiaNimProvider extends OpenAICompatibleProvider {
   override readonly name = "nvidia-nim";
   private readonly defaultContextWindow?: number;
   private readonly hasConfiguredKey: boolean;

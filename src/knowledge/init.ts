@@ -7,8 +7,9 @@
  */
 import type { RagManager } from "../rag/index.js";
 import type { SidecarHandle } from "./sidecar.js";
+import type { RecordKind } from "./types.js";
 
-export type RecordKind = "skill" | "memory";
+export type { RecordKind } from "./types.js";
 
 export interface KnowledgeStore {
   readonly sidecar: SidecarHandle;

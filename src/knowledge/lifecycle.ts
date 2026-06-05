@@ -53,7 +53,7 @@ import {
   updateRecord,
 } from "./sidecar-queries.js";
 import type { KnowledgeStore } from "./init.js";
-import type { AuditEntry as SidecarAudit, RecordRow, SidecarHandle } from "./sidecar.js";
+import type { RecordRow, SidecarAuditRow, SidecarHandle } from "./sidecar.js";
 import { openSidecar } from "./sidecar.js";
 import { isBlockedPath } from "../security/secrets.js";
 import { assertRuntimeLockHeld } from "../runtime/runtime-lock.js";
@@ -141,7 +141,7 @@ function buildAudit(
   reason: string,
   before: unknown,
   after: unknown,
-): SidecarAudit {
+): SidecarAuditRow {
   return {
     record_id: recordId,
     ts: nowIso(),

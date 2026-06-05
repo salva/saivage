@@ -44,6 +44,7 @@ const PROVIDER_DESCRIPTORS = [
   },
   makePiAiDescriptor("anthropic", async ({ cfg, hasAccounts }) =>
     !!cfg || hasAccounts || (await hasOAuthCredentials("anthropic")) || !!process.env["ANTHROPIC_API_KEY"]),
+  // Direct "openai" routing uses pi-ai; OpenAI-compatible local/cloud providers subclass OpenAICompatibleProvider.
   makePiAiDescriptor("openai", async ({ cfg, hasAccounts }) =>
     !!cfg || hasAccounts || !!process.env["OPENAI_API_KEY"]),
   makePiAiDescriptor("openai-codex", async ({ cfg, hasAccounts }) =>

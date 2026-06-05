@@ -1,4 +1,4 @@
-import { OpenAIProvider } from "./openai.js";
+import { OpenAICompatibleProvider } from "./openai.js";
 import type { ModelCapabilities } from "./types.js";
 
 const LLAMACPP_MODEL_CAPABILITIES: Array<[RegExp, ModelCapabilities]> = [
@@ -9,7 +9,7 @@ const LLAMACPP_MODEL_CAPABILITIES: Array<[RegExp, ModelCapabilities]> = [
  * llama.cpp server exposes an OpenAI-compatible chat completions API.
  * By default it listens on http://localhost:8080.
  */
-export class LlamaCppProvider extends OpenAIProvider {
+export class LlamaCppProvider extends OpenAICompatibleProvider {
   override readonly name = "llamacpp";
 
   private serverUrl: string;

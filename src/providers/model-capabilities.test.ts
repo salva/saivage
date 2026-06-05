@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { ModelRouter } from "./router.js";
-import { OpenAIProvider } from "./openai.js";
+import { OpenAICompatibleProvider } from "./openai.js";
 import { OllamaProvider } from "./ollama.js";
 import { LlamaCppProvider } from "./llamacpp.js";
 import { PiAiProvider } from "./pi-ai.js";
@@ -37,8 +37,8 @@ function makeConfig(overrides: Partial<SaivageConfig> = {}): SaivageConfig {
 const msgs: Message[] = [{ role: "user", content: "hi" }];
 
 describe("ModelCapabilities — per-provider direct-class tables", () => {
-  it("OpenAIProvider table", async () => {
-    const p = new OpenAIProvider("k");
+  it("OpenAICompatibleProvider table", async () => {
+    const p = new OpenAICompatibleProvider("k");
     expect(p.modelCapabilities("gpt-5")).toEqual({ contextWindow: 400_000, tokenEncoding: "o200k_base" });
     expect(p.modelCapabilities("o3-mini")).toEqual({ contextWindow: 200_000, tokenEncoding: "o200k_base" });
     expect(p.modelCapabilities("gpt-4o-mini")).toEqual({ contextWindow: 128_000, tokenEncoding: "o200k_base" });

@@ -8,8 +8,7 @@
  * problems of slicing already-escaped text at 4096 bytes.
  */
 import telegramifyMarkdown from "telegramify-markdown";
-import type { ChatChannel } from "./types.js";
-import type { WsOutbound } from "./ws-schema.js";
+import type { ChatChannel, ChatEvent } from "./types.js";
 import { log } from "../log.js";
 
 /** Callback to send a message back to the Telegram user. */
@@ -370,10 +369,10 @@ export class TelegramChannel implements ChatChannel {
   }
 
   /**
-   * Handle typed events from ChatAgent. Only forward human-readable
-   * "message" events; silently discard internal events.
+   * Handle typed events from ChatAgent. Telegram only forwards human-readable
+   * "message" events; transport/control events are intentionally ignored.
    */
-  sendEvent(event: WsOutbound): void {
+  sendEvent(event: ChatEvent): void {
     switch (event.type) {
       case "message":
         void this.send(event.content);

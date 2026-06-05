@@ -43,6 +43,7 @@ export interface RagManager {
   readonly enabled: boolean;
   list(): Promise<RegisteredDataset[]>;
   get(id: string): Promise<Dataset>;
+  getIfOpen(id: string): Dataset | undefined;
   register(config: Omit<DatasetConfig, "projectId">): Promise<Dataset>;
   ingest(id: string, input: IngestInput): Promise<IngestReport>;
   query(id: string, text: string, options?: QueryOptions): Promise<QueryHit[]>;
@@ -64,6 +65,9 @@ function noopManager(): RagManager {
     },
     async get() {
       return disabled();
+    },
+    getIfOpen() {
+      return undefined;
     },
     async register() {
       return disabled();
@@ -144,6 +148,10 @@ export async function createRagManager(opts: RagManagerOptions): Promise<RagMana
 
     get,
 
+    getIfOpen(id) {
+      return cache.get(id);
+    },
+
     async register(config) {
       const entries = await loadRegistry(projectRoot);
       const prior = entries.find((e) => e.id === config.id);
@@ -198,10 +206,6 @@ export async function createRagManager(opts: RagManagerOptions): Promise<RagMana
       cache.clear();
     },
   };
-  // F01 B02 — install the private boot-recovery lookup. Returns the
-  // cached `Dataset` only; recovery never triggers an open.
-  const { installInternalLookup } = await import("./internal/datasetAccess.js");
-  installInternalLookup(manager, (id) => cache.get(id));
   return manager;
 }
 
