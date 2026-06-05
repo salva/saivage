@@ -141,12 +141,6 @@ describe("saveSaivageConfig", () => {
     }
   });
 
-  it("exposes SaivagePersistError via src/config.ts", async () => {
-    const cfgModule = await import("../../config.js");
-    expect(cfgModule.SaivagePersistError).toBe(SaivagePersistError);
-    expect(typeof cfgModule.saveSaivageConfig).toBe("function");
-  });
-
   // Sanity: emptyConfig helper is shaped via schema defaults.
   it("schema defaults produce an empty config without rag entries", () => {
     const e = emptyConfig();

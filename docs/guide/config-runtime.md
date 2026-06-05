@@ -178,6 +178,12 @@ parallelism cap inside a single Manager is enforced separately by the runtime.
 service (F11). `notes.volatileTtlMs` is the lifetime of volatile user notes
 before they are auto-expired (2h default).
 
+`maxServices` is retained for config compatibility but is deprecated and not
+currently enforced. `idleShutdownMs` is accepted for compatibility but is also a
+deprecated no-op in v2: external MCP clients are not lazily restarted after idle
+shutdown, so the runtime keeps them running until they crash, disconnect, or the
+daemon stops.
+
 ### `security`
 
 ```json
@@ -378,6 +384,12 @@ runtime.
 Built-in services (`filesystem`, `shell`, `git`, `data`, `plan`, `notes`,
 `skills`, `memory`, `rag`) are registered programmatically — they don't appear
 in this map.
+
+`transport` accepts both `"stdio"` and `"sse"` for config compatibility, but only
+stdio is implemented in the current runtime. Entries configured with
+`"transport": "sse"` are accepted by the schema and then started through the
+stdio client path; treat `"sse"` as deprecated/no-op until SSE transport support
+is implemented.
 
 ## Environment-variable interpolation
 

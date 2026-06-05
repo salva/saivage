@@ -24,10 +24,12 @@ export const agentSchema = z
 
 export const runtimeSchema = z
   .object({
+    // Deprecated compatibility key: accepted but not currently enforced.
     maxServices: z.number().default(50),
     restartOnCrash: z.boolean().default(true),
     continuousImprovement: z.boolean().default(true),
     healthCheckIntervalMs: z.number().default(30_000),
+    // Deprecated compatibility key: external MCP idle shutdown is disabled in v2.
     idleShutdownMs: z.number().default(300_000),
     recoveryDelayMs: z.number().default(60_000),
     notes: z

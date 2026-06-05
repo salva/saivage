@@ -48,6 +48,7 @@ export const mcpServerSchema = z.object({
   env: z.record(z.string(), z.string()).default({}),
   disabled: z.boolean().default(false),
   autostart: z.boolean().default(true),
+  // "sse" is accepted for config compatibility but currently uses stdio behavior.
   transport: z.enum(["stdio", "sse"]).default("stdio"),
 });
 

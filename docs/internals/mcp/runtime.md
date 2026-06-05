@@ -14,7 +14,9 @@ implementations and supports two service flavors:
 - **External servers** — long-running subprocesses speaking MCP over
   stdio through `McpClient`. Configured under `mcpServers` in
   `saivage.json`. The config schema accepts a `transport` field, but the
-  current client implementation instantiates `StdioClientTransport`.
+  current client implementation instantiates `StdioClientTransport`. The
+  `"sse"` value is retained only for config compatibility and is currently a
+  deprecated no-op.
 
 ## Registry
 
@@ -85,7 +87,10 @@ authorization and audit attribution; external MCP subprocesses ignore it.
 - A periodic `healthCheckIntervalMs` ping verifies that long-running
   services still respond.
 - External idle shutdown is disabled in v2 because tool calls do not lazily
-  restart stopped services; `idleShutdownMs` is ignored for external clients.
+  restart stopped services; `runtime.idleShutdownMs` is accepted but ignored
+  for external clients.
+- `runtime.maxServices` is accepted for config compatibility but is deprecated
+  and not currently enforced by the MCP runtime.
 - Repeated external startup failures are tracked in a short failure window;
   once the threshold is reached, the service enters cooldown and is removed
   from the running-service map.
@@ -121,3 +126,7 @@ Add to `saivage.json`:
 The runtime will spawn it on boot. Calls to non-autostarted external services
 fail until the service is configured with `autostart: true` and the runtime is
 restarted.
+
+`transport: "sse"` remains a valid schema value for older configs, but v2 does
+not implement an SSE MCP client. Use `"stdio"`; `"sse"` is currently ignored and
+the external server is still started through the stdio client path.
