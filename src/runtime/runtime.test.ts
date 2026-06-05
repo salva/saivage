@@ -39,7 +39,7 @@ import type { ProjectContext } from "../store/project.js";
 import { RuntimeSupervisor } from "./supervisor.js";
 import { log } from "../log.js";
 import type { SaivageConfig } from "../config.js";
-import { waitForRecoveryDelay } from "../server/bootstrap.js";
+import { waitForRecoveryDelay } from "../server/planner-runner.js";
 import type { SupervisorRuntimeContext } from "./supervisor.js";
 import type { ChatRequest } from "../providers/types.js";
 

@@ -9,7 +9,7 @@ import { NoteManager } from "../runtime/notes.js";
 import type { AgentContext, AgentResult } from "../agents/types.js";
 import type { DispatchableRole } from "../agents/roster.js";
 import type { ChatRequest, ChatResponse } from "../providers/types.js";
-import { RECOVERY_PROMPT } from "./bootstrap.js";
+import { RECOVERY_PROMPT } from "./planner-runner.js";
 
 let tmpDir: string;
 

@@ -10,7 +10,7 @@ import { describe, it, expect } from "vitest";
 import {
   RECOVERY_PROMPT,
   CONTINUOUS_IMPROVEMENT_PROMPT,
-} from "./bootstrap.js";
+} from "./planner-runner.js";
 
 describe("planner prompt contract (Fix 3) — structural", () => {
   it("RECOVERY_PROMPT names the four-call mutation contract", () => {

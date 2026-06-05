@@ -12,14 +12,33 @@ import type { AgentState } from "../types.js";
 import { StageSummarySchema } from "../types.js";
 import type { ChildSpawner } from "../runtime/dispatcher.js";
 import type { StageRunStore } from "../store/stage-run-store.js";
+import type { ProjectContext } from "../store/project.js";
+import type { McpRuntime } from "../mcp/runtime.js";
 import { agentId } from "../ids.js";
 import { log } from "../log.js";
 import type { EventBus } from "../events/bus.js";
 import type { PlanService } from "../mcp/plan-server.js";
-import type { AgentRuntimeDeps } from "./runtime-facades.js";
+import type { ModelRoutingResolver } from "../routing/resolver.js";
+import type { RuntimeTracker } from "../runtime/recovery.js";
+import type { NoteManager } from "../runtime/notes.js";
+import type { RuntimeLifecycle } from "../runtime/lifecycle.js";
 
 export interface WorkerDispatchSpec extends WorkerInput {
   role: WorkerRole;
+}
+
+export interface AgentRuntimeDeps {
+  project: ProjectContext;
+  router: AgentContext["router"];
+  routing: ModelRoutingResolver;
+  mcpRuntime: McpRuntime;
+  noteManager: NoteManager;
+  eventBus: EventBus;
+  planService: PlanService;
+  stageRuns: StageRunStore;
+  tracker: RuntimeTracker;
+  agentRegistry: Map<string, BaseAgent>;
+  lifecycle?: Pick<RuntimeLifecycle, "signal">;
 }
 
 type RunnableBaseAgent = BaseAgent & {

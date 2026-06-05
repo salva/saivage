@@ -1,12 +1,28 @@
 import { PlannerAgent } from "../agents/planner.js";
 import { buildPlanMutationContract } from "../agents/planner-contract.js";
 import type { AgentContext, AgentResult } from "../agents/types.js";
+import type { SaivageConfig } from "../config.js";
 import { agentId } from "../ids.js";
 import { log } from "../log.js";
 import type { RuntimeCancellationSignal } from "../runtime/lifecycle.js";
-import { createChildSpawner } from "./agent-orchestrator.js";
-import type { PlannerRestartRequest } from "./bootstrap.js";
-import type { PlannerRuntimeDeps } from "./runtime-facades.js";
+import { createChildSpawner, type AgentRuntimeDeps } from "./agent-orchestrator.js";
+
+export interface PlannerRestartRequest {
+  reason: string;
+  requestedBy: string;
+  requestedAt: string;
+}
+
+interface PlannerControlDeps {
+  consumeRestartRequest(): PlannerRestartRequest | null;
+  onRestartRequested(listener: (request: PlannerRestartRequest) => void): () => void;
+}
+
+export interface PlannerRuntimeDeps extends AgentRuntimeDeps {
+  config: Pick<SaivageConfig, "runtime">;
+  plannerControl: PlannerControlDeps;
+  plannerStartupDirectives: string[];
+}
 
 export const RECOVERY_PROMPT =
   `SYSTEM RECOVERY: The planner session ended without completing all objectives. ` +

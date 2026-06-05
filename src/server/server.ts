@@ -32,7 +32,7 @@ export async function startServer(
   options: ServerOptions = { port: 8080, host: "0.0.0.0" },
 ): Promise<{ close: () => Promise<void> }> {
   const app = Fastify({ logger: false });
-  const projectStore = new ProjectStore(runtime.project);
+  const projectStore = new ProjectStore(runtime.project, runtime.stageRuns);
   const fileBrowser = new FileBrowserService(runtime.project);
   const chatCommands = createChatCommands(runtime);
 

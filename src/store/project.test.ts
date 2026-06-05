@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 
 import { initProjectTree, seedProject } from "./project.js";
 import { ProjectStore } from "./project-store.js";
+import { StageRunStore } from "./stage-run-store.js";
 import { readDoc } from "./documents.js";
 import { loadConfig, SaivageConfigSchema, type SaivageConfig } from "../config.js";
 import { TaskListSchema, type PlanDocument, type RuntimeState, type StageSummary, type TaskList, type TaskReport } from "../types.js";
@@ -193,7 +194,7 @@ describe("initProjectTree — idempotence", () => {
 describe("ProjectStore dashboard reads", () => {
   it("returns active plan, history, and runtime state views", async () => {
     const project = await seedProject(projectRoot, { name: "p", objectives: [] });
-    const store = new ProjectStore(project);
+    const store = new ProjectStore(project, new StageRunStore(project));
     const plan = makePlanDocument();
     const runtimeState = makeRuntimeState();
     writeFileSync(project.paths.plan, JSON.stringify(plan), "utf-8");
@@ -210,7 +211,7 @@ describe("ProjectStore dashboard reads", () => {
 
   it("returns stage details without server-side path assembly", async () => {
     const project = await seedProject(projectRoot, { name: "p", objectives: [] });
-    const store = new ProjectStore(project);
+    const store = new ProjectStore(project, new StageRunStore(project));
     const tasks = makeTaskList();
     const summary = makeStageSummary({ summary: "stage summary" });
     const report = makeTaskReport({ summary: "task report" });
@@ -229,7 +230,7 @@ describe("ProjectStore dashboard reads", () => {
 
   it("returns explicit lenient debug errors and timeline entries", async () => {
     const project = await seedProject(projectRoot, { name: "p", objectives: [] });
-    const store = new ProjectStore(project);
+    const store = new ProjectStore(project, new StageRunStore(project));
     writeFileSync(project.paths.plan, JSON.stringify(makePlanDocument()), "utf-8");
     mkdirSync(join(project.paths.stages, "stage-1", "reports"), { recursive: true });
     writeFileSync(

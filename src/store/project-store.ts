@@ -2,7 +2,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { listDocs, pathExists, readDocOrNull } from "./documents.js";
 import { activePlanView, planHistoryView } from "./plan-read-models.js";
-import { StageRunStore } from "./stage-run-store.js";
+import type { StageRunStore } from "./stage-run-store.js";
 import {
   ChatLogSchema,
   InspectionReportSchema,
@@ -62,11 +62,10 @@ export type ChatLogReadResult =
   | { kind: "not-persisted"; chatLog: ChatLog };
 
 export class ProjectStore {
-  private readonly stageRuns: StageRunStore;
-
-  constructor(private readonly project: Pick<ProjectContext, "paths">) {
-    this.stageRuns = new StageRunStore(project);
-  }
+  constructor(
+    private readonly project: Pick<ProjectContext, "paths">,
+    private readonly stageRuns: StageRunStore,
+  ) {}
 
   async readPlan(): Promise<PlanDocument | null> {
     return readDocOrNull(this.project.paths.plan, PlanDocumentSchema);

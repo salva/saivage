@@ -34,14 +34,9 @@ import { ModelRoutingResolver } from "../routing/resolver.js";
 import { createChildSpawner as createAgentOrchestratorChildSpawner } from "./agent-orchestrator.js";
 import {
   PlannerRunner,
+  type PlannerRestartRequest,
   queuePlannerDirective,
   runPlanner as runPlannerFromRunner,
-} from "./planner-runner.js";
-
-export {
-  CONTINUOUS_IMPROVEMENT_PROMPT,
-  RECOVERY_PROMPT,
-  waitForRecoveryDelay,
 } from "./planner-runner.js";
 
 /** Saivage runtime context — returned by bootstrap. */
@@ -95,12 +90,6 @@ interface AgentRuntimeServices {
   plannerControl: PlannerControl;
   plannerStartupDirectives: string[];
   supervisor: RuntimeSupervisor;
-}
-
-export interface PlannerRestartRequest {
-  reason: string;
-  requestedBy: string;
-  requestedAt: string;
 }
 
 export class PlannerControl {

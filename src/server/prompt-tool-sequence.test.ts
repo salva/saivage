@@ -12,7 +12,7 @@ import type { ChatResponse } from "../providers/types.js";
 import {
   CONTINUOUS_IMPROVEMENT_PROMPT,
   RECOVERY_PROMPT,
-} from "./bootstrap.js";
+} from "./planner-runner.js";
 
 let tmpDir: string;
 
