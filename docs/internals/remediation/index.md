@@ -27,6 +27,7 @@ implemented. Current subsystem behavior is documented in the main internals docs
 | Stage execution data | [Stage run data model](./stage-run-data-model.md) | `StageRunStore`, typed artifact tools, lifecycle events, and completion events are implemented. Compatibility files plus `.saivage/events.jsonl` remain the supported storage layout until a concrete migration need appears. |
 | Architecture/data cleanup | [Architecture and data cleanup master plan](./v2-architecture-data-cleanup-master-plan.md) | Records the staged cleanup that simplified schemas, stage ownership, plan-history reads, worker dispatch, MCP runtime structure, bootstrap composition, config schema organization, and final legacy shims. |
 | Event/history storage | [Event and history canonicalization](./event-history-canonicalization.md) | Keeps stage artifacts canonical, treats events as timeline/read-model evidence, and defers per-stage aggregate, SQLite, or event-sourcing migrations until there is a concrete trigger. |
+| Built-in tools | [OpenCode-aligned built-in tool redesign](./opencode-aligned-builtin-tools-plan.md) | Plans a no-backward-compatibility replacement of the model-facing built-in tool surface with `read`, `write`, `edit`, `apply_patch`, `grep`, `glob`, `webfetch`, `websearch`, and `skill`, while keeping built-ins directly implemented in-process. |
 
 ## Current Authority
 
