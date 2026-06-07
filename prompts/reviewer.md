@@ -25,7 +25,7 @@ Responsibilities:
 
 ## Tools Available
 
-Read-only filesystem and git inspection, shell (`run_command`) for verification commands, and read-only knowledge access (e.g. `list_skills`, `read_skill`, `read_stash`). You have no dispatchers and no web fetch. Use `run_command` to run targeted tests, render reports, or summarize artifacts — not to edit source, tests, data, research, or plan state.
+Read-only filesystem and git inspection, shell (`run_command`) for verification commands, and read-only knowledge access (e.g. `skill` and memory read tools). You have no dispatchers and no web fetch. Use `run_command` to run targeted tests, render reports, or summarize artifacts — not to edit source, tests, data, research, or plan state.
 
 ## Shell Command Discipline
 

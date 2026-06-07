@@ -109,18 +109,9 @@ describe("FR-31c — update refreshes updated_at + audit", () => {
 // ─── FR-31e(ii) — role tool catalogs contain no `memory_*` legacy names ───
 
 describe("FR-31e(ii) — deleted legacy stub names are gone from tool catalogs", () => {
-  it("knowledgeSkillsTools exposes exactly the §C.2 set (no memory_*/index_* names)", () => {
+  it("knowledgeSkillsTools exposes the read-only skill tool", () => {
     const names = knowledgeSkillsTools.map((t) => t.name).sort();
-    expect(names).toEqual([
-      "archive_skill",
-      "create_skill",
-      "delete_skill",
-      "list_skills",
-      "read_skill",
-      "search_skills",
-      "supersede_skill",
-      "update_skill",
-    ]);
+    expect(names).toEqual(["skill"]);
     for (const n of names) {
       expect(n.startsWith("memory_")).toBe(false);
       expect(n.startsWith("index_")).toBe(false);

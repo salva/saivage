@@ -6,8 +6,8 @@
  * they hand off to the Planner via an inter-agent message (`/note!`
  * urgent permanent note semantics).
  *
- *   /skills list                 → MCP skills.list_skills
- *   /skills show <name-or-id>    → MCP skills.read_skill
+ *   /skills list                 → MCP skills.skill
+ *   /skills show <name>          → MCP skills.skill
  *   /memories list               → MCP memory.list_memories
  *   /memories show <id-or-topic> → MCP memory.get_memory
  *   /memories search <query>     → MCP memory.search_memories
@@ -90,13 +90,11 @@ export function parseSlashCommand(text: string): ParsedCommand | null {
 export async function runSlashCommand(parsed: ParsedCommand, deps: SlashCommandDeps): Promise<string> {
   switch (parsed.kind) {
     case "skills_list": {
-      const r = await deps.callTool("skills", "list_skills", {});
+      const r = await deps.callTool("skills", "skill", {});
       return formatJson(r);
     }
     case "skills_show": {
-      const arg = parsed.argument;
-      const args: Record<string, unknown> = UUID_RE.test(arg) ? { id: arg } : { name: arg };
-      const r = await deps.callTool("skills", "read_skill", args);
+      const r = await deps.callTool("skills", "skill", { name: parsed.argument });
       return formatJson(r);
     }
     case "memories_list": {

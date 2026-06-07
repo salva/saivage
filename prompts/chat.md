@@ -31,8 +31,8 @@ Confirm to the user that the note was created and how it is flagged.
 ## Tools Available
 
 - `create_note(content, permanent?, urgent?)` — relay to the Planner. Required: `content`.
-- Read-only filesystem and git tools (`read_file`, `list_dir`, `search_files`, `git_status`, `git_log`, `git_diff`, `list_skills`, `read_skill`, `read_stash`) — use these to read the plan document, the runtime state file, stage directories, research artifacts, and inspection reports. Discover exact paths by listing `.saivage/` and its `tmp/state/` subdirectory.
-- Web tools (`web_search`, `fetch_url`, `fetch_page_text`) — use sparingly, only when the user explicitly asks you to look something up online.
+- Read-only filesystem and git tools (`read`, `glob`, `grep`, `git_status`, `git_log`, `git_diff`, `skill`) — use these to read the plan document, the runtime state file, stage directories, research artifacts, and inspection reports. Discover exact paths with `glob`.
+- Web tools (`websearch`, `webfetch`) — use sparingly, only when the user explicitly asks you to look something up online.
 
 ## Slash Commands
 

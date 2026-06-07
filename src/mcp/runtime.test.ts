@@ -245,7 +245,7 @@ describe("McpRuntime role/tool enforcement", () => {
       expect.objectContaining({ service: "filesystem", name: "read" }),
       expect.objectContaining({ service: "external-files", name: "external-files_read", originalName: "read" }),
     ]);
-    expect(new Set(runtime.getAllTools().map((tool) => tool.name)).size).toBe(runtime.getAllTools().limit);
+    expect(new Set(runtime.getAllTools().map((tool) => tool.name)).size).toBe(runtime.getAllTools().length);
     expect(runtime.listAllToolsForApi().map((tool) => tool.name)).toEqual([
       "read",
       "external-files_read",

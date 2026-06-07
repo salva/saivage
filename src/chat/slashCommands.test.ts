@@ -45,23 +45,23 @@ function makeDeps(): SlashCommandDeps & {
 }
 
 describe("runSlashCommand — routing", () => {
-  it("/skills list → callTool(skills, list_skills)", async () => {
+  it("/skills list routes through skill", async () => {
     const deps = makeDeps();
     await runSlashCommand({ kind: "skills_list" }, deps);
-    expect(deps.callTool).toHaveBeenCalledWith("skills", "list_skills", {});
+    expect(deps.callTool).toHaveBeenCalledWith("skills", "skill", {});
     expect(deps.notifyPlanner).not.toHaveBeenCalled();
   });
 
-  it("/skills show <uuid> → read_skill {id}", async () => {
+  it("/skills show <uuid> treats the argument as a skill name", async () => {
     const deps = makeDeps();
     await runSlashCommand({ kind: "skills_show", argument: "11111111-1111-4111-8111-111111111111" }, deps);
-    expect(deps.callTool).toHaveBeenCalledWith("skills", "read_skill", { id: "11111111-1111-4111-8111-111111111111" });
+    expect(deps.callTool).toHaveBeenCalledWith("skills", "skill", { name: "11111111-1111-4111-8111-111111111111" });
   });
 
-  it("/skills show <name> → read_skill {name}", async () => {
+  it("/skills show <name> routes through skill", async () => {
     const deps = makeDeps();
     await runSlashCommand({ kind: "skills_show", argument: "build-web" }, deps);
-    expect(deps.callTool).toHaveBeenCalledWith("skills", "read_skill", { name: "build-web" });
+    expect(deps.callTool).toHaveBeenCalledWith("skills", "skill", { name: "build-web" });
   });
 
   it("/memories list → list_memories", async () => {

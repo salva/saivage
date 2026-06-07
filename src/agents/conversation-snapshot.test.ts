@@ -38,7 +38,7 @@ class TestAgent extends BaseAgent {
 
 let tmpDir: string;
 beforeEach(() => { tmpDir = mkdtempSync(join(tmpdir(), "saivage-snap-")); });
-afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }); });
+afterEach(() => { rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 10 }); });
 
 function makeContext(router: unknown): AgentContext {
   const saivageDir = join(tmpDir, ".saivage");
@@ -127,7 +127,7 @@ describe("BaseAgent.getConversationSnapshot — round id assignment", () => {
     agent.push({ role: "user", content: "go" }, "2024-01-01T00:00:00.000Z");
     agent.push({
       role: "assistant",
-      content: blocks({ type: "tool_use", id: "tu_42", name: "fetch_url", input: {} }),
+      content: blocks({ type: "tool_use", id: "tu_42", name: "webfetch", input: {} }),
     }, "2024-01-01T00:00:01.000Z");
     agent.push({
       role: "user",
@@ -136,7 +136,7 @@ describe("BaseAgent.getConversationSnapshot — round id assignment", () => {
 
     const snap = agent.getConversationSnapshot();
     const result = snap.find((e) => e.kind === "tool_result");
-    expect(result?.toolName).toBe("fetch_url");
+    expect(result?.toolName).toBe("webfetch");
     expect(result?.toolUseId).toBe("tu_42");
   });
 

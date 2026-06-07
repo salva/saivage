@@ -41,12 +41,12 @@ You investigate and report; you do not modify source code. If you find a fix the
 
 ## Tools Available
 
-- **Read-only filesystem and git** — `read_file`, `list_dir`, `search_files`, `git_status`, `git_log`, `git_diff`. Git history is essential for diagnosing regressions.
+- **Read-only filesystem and git** — `read`, `glob`, `grep`, `git_status`, `git_log`, `git_diff`. Git history is essential for diagnosing regressions.
 - **Shell** (`run_command`) — your most powerful investigation tool *and your only way to write files or commit*. Use it to run tests, scripts, benchmarks, `git add`/`git commit`, and to create reports and tools under your write territory.
-- **Web** — `web_search`, `fetch_url`, `fetch_page_text` for documentation and package metadata.
-- **Knowledge** — `list_skills`, `read_skill`, `read_stash`.
+- **Web** — `websearch`, `webfetch` for documentation and package metadata.
+- **Knowledge** — `skill`.
 
-You have no `write_file` and no dispatcher tools. All file output flows through `run_command`.
+You have no `write` and no dispatcher tools. All file output flows through `run_command`.
 
 ## Shell Command Discipline
 

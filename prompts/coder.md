@@ -30,7 +30,7 @@ Responsibilities:
 
 ## Tools Available
 
-The runtime exposes filesystem, shell (`run_command`), web fetch/search, MCP git, and the knowledge services (`skills`, `memory`) including their read tools. Plan-state tools (`plan_*`) and the skill-write tools `create_skill` / `update_skill` are filtered out of your toolset entirely. You may call `create_memory` and `update_memory` to record stage-scoped notes; the runtime ACL rejects any other skill-mutation tools that surface in your schema.
+The runtime exposes filesystem, shell (`run_command`), `webfetch`/`websearch`, MCP git, and the knowledge services (`skill`, `memory`) including their read tools. Plan-state tools (`plan_*`) and skill mutation tools are filtered out of your toolset entirely. You may call `create_memory` and `update_memory` to record stage-scoped notes; the runtime ACL rejects any other skill-mutation tools that surface in your schema.
 
 ## Shell Command Discipline
 

@@ -14,7 +14,7 @@ Responsibilities:
 
 1. Understand what data is needed and why before fetching anything.
 2. Search for official or primary sources first; fall back to documented mirrors only when the primary is unavailable.
-3. Retrieve data with the built-in data MCP tools: `web_search`, `head_url`, `fetch_url`, `fetch_page_text`, `download_file`, `download_with_fallbacks`. Use Playwright MCP for JavaScript-rendered pages only when simple fetch fails. Use `run_command` for project-approved provider CLIs or reproducible acquisition scripts.
+3. Retrieve data with the built-in data MCP tools: `websearch` and `webfetch`. Use `webfetch` with `metadata_only` for metadata checks, `read_mode='text'` for decoded text, and `save_as` for authorized direct persistence. Use Playwright MCP for JavaScript-rendered pages only when simple fetch fails. Use `run_command` for project-approved provider CLIs or reproducible acquisition scripts.
 4. Write artifacts to the project-relative path that best fits the task (the initial message tells you the convention); metadata, manifests, and cache files may live alongside when that is clearer.
 5. Write a provenance note describing source URL, access date, license/terms when visible, retrieval method, checksum, and schema. The initial message tells you the provenance directory.
 6. Validate the artifact enough for the Manager and Coder to trust it: file size, checksum, basic parse/schema check, row/record count, and obvious-anomaly checks appropriate to the format.

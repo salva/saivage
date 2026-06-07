@@ -12,7 +12,7 @@
  *      `{count, collection_id, context}` (no `lastIngestAt`, no path
  *      lists, no chunk hashes).
  *   3. protected-dataset redirect — `knowledge.skills` /
- *      `knowledge.memory` queries go through `search_skills` /
+ *      `knowledge.memory` queries go through `skill` /
  *      `search_memories`, never `rag_query`.
  *   4. no-hit fallback — empty `rag_query` triggers a `rag/policy`
  *      memory write documenting the miss.
@@ -52,9 +52,7 @@ const LIBRARIAN_TOOL_CATALOG: RuntimeToolEntry[] = [
   { service: "memory", name: "search_memories", description: "", inputSchema: {} },
   { service: "memory", name: "create_memory", description: "", inputSchema: {} },
   { service: "memory", name: "update_memory", description: "", inputSchema: {} },
-  { service: "skills", name: "list_skills", description: "", inputSchema: {} },
-  { service: "skills", name: "read_skill", description: "", inputSchema: {} },
-  { service: "skills", name: "search_skills", description: "", inputSchema: {} },
+  { service: "skills", name: "skill", description: "", inputSchema: {} },
   { service: "filesystem", name: "read", description: "", inputSchema: {} },
   { service: "filesystem", name: "glob", description: "", inputSchema: {} },
   { service: "filesystem", name: "grep", description: "", inputSchema: {} },
@@ -287,16 +285,16 @@ describe("LibrarianAgent — decision-tree behaviour (F03 B07)", () => {
     expect(body).not.toHaveProperty("chunk_hashes");
   });
 
-  it("protected-dataset redirect: knowledge.skills / knowledge.memory route via search_skills / search_memories, not rag_query", async () => {
+  it("protected-dataset redirect: knowledge.skills / knowledge.memory route via skill / search_memories, not rag_query", async () => {
     const handlers: Record<string, ToolStub> = {
-      search_skills: () => ({ hits: [{ id: "skill-1", name: "build-web" }] }),
+      skill: () => ({ skills: [{ id: "skill-1", name: "build-web" }] }),
       search_memories: () => ({ hits: [{ id: "mem-1", topic: "rag/policy" }] }),
     };
     const script: ScriptStep[] = [
       {
         content: "Routing protected-dataset query to skills/memory search.",
         toolCalls: [
-          { name: "search_skills", input: { query: "build web", limit: 5 } },
+          { name: "skill", input: { name: "build-web" } },
           { name: "search_memories", input: { query: "rag policy", limit: 5 } },
         ],
       },
@@ -316,7 +314,7 @@ describe("LibrarianAgent — decision-tree behaviour (F03 B07)", () => {
     );
     expect(result.kind).toBe("success");
     const names = calls.map((c) => c.name);
-    expect(names).toContain("search_skills");
+    expect(names).toContain("skill");
     expect(names).toContain("search_memories");
     expect(names).not.toContain("rag_query");
   });

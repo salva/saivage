@@ -6,6 +6,7 @@ import { log } from "../log.js";
 
 export interface RuntimeToolEntry extends ToolEntry {
   service: string;
+  originalName?: string;
 }
 
 export type InProcessToolHandler = (

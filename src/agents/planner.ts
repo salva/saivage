@@ -173,7 +173,7 @@ export class PlannerAgent extends BaseAgent {
     const MAX_TURNS = 5;
     const NUDGE =
       "PRE-COMPACTION MEMORY HOOK: Conversation context is about to be compacted. " +
-      "You have up to 5 tool-call turns to call create_memory / create_skill " +
+      "You have up to 5 tool-call turns to call create_memory " +
       "for anything important that must survive compaction. " +
       "Reply with a final text answer (no tool calls) to skip.";
     this.pushMessage({ role: "user", content: NUDGE });
@@ -209,7 +209,7 @@ export class PlannerAgent extends BaseAgent {
       if (response.content) blocks.push({ type: "text", text: response.content });
       for (const tc of response.toolCalls) {
         blocks.push({ type: "tool_use", id: tc.id, name: tc.name, input: tc.input });
-        if (tc.name === "create_memory" || tc.name === "create_skill") writeCount += 1;
+        if (tc.name === "create_memory") writeCount += 1;
       }
       this.pushMessage({ role: "assistant", content: blocks }, undefined, responseSource(response));
       const dispatchResult = await this.processToolCalls(response.toolCalls);

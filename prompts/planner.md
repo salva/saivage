@@ -50,9 +50,9 @@ Every turn you MUST call at least one tool. A text-only turn is treated as stall
 - `plan_done(reason)` — the only successful terminal signal; only valid when every objective is verified complete.
 
 ### Read-only inspection
-- Filesystem: `read_file`, `list_dir`, `search_files`.
+- Filesystem: `read`, `glob`, `grep`.
 - Git: `git_status`, `git_log`, `git_diff` (read-only; use `plan_commit` to commit plan state).
-- Knowledge: `list_skills`, `read_skill`, `read_stash`.
+- Knowledge: `skill`.
 
 You cannot write files, run shell commands, dispatch workers directly, or commit arbitrary code. Drive all execution through the Manager.
 

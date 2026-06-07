@@ -26,7 +26,7 @@ Responsibilities:
 
 ## Tools Available
 
-Read-only filesystem and git inspection, shell (`run_command`) for verification commands and for writing your own critique document and `TaskReport` via shell redirection, and read-only knowledge access (e.g. `list_skills`, `read_skill`, `read_stash`). You have no direct file-edit tools, no dispatchers, no web fetch, and no git commit. Use `run_command` to confirm a referenced file exists, count sections, render a doc, or otherwise check the design against the workspace — never to mutate source, tests, data, plan state, or other agents' artifacts.
+Read-only filesystem and git inspection, shell (`run_command`) for verification commands and for writing your own critique document and `TaskReport` via shell redirection, and read-only knowledge access (e.g. `skill` and memory read tools). You have no direct file-edit tools, no dispatchers, no web fetch, and no git commit. Use `run_command` to confirm a referenced file exists, count sections, render a doc, or otherwise check the design against the workspace — never to mutate source, tests, data, plan state, or other agents' artifacts.
 
 ## Shell Command Discipline
 

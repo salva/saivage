@@ -4,6 +4,8 @@ import type { ToolCallContext } from "./toolContext.js";
 import type { SaivageConfig } from "../config.js";
 import { log } from "../log.js";
 import type { RuntimeToolEntry } from "./in-process-registry.js";
+import { applyToolFilter } from "../agents/tool-filters.js";
+import { getToolFilter } from "../agents/roster.js";
 
 interface ManagedService {
   entry: ServiceEntry;
@@ -106,13 +108,8 @@ export class ExternalMcpRuntime {
     args: Record<string, unknown>,
     ctx?: ToolCallContext,
   ): Promise<unknown> {
-    if (ctx && ctx.operatorContext !== true) {
-      throw new Error(
-        `UNAUTHORIZED_TOOL: ${ctx.role} cannot call external MCP tool ${serviceName}.${toolName}; operatorContext is required`,
-      );
-    }
-
     const client = await this.getRunningService(serviceName);
+    this.authorizeToolCall(serviceName, client.getTools(), toolName, ctx);
     const result = await client.callTool(toolName, args);
     if (result.isError) {
       throw new Error(
@@ -122,10 +119,22 @@ export class ExternalMcpRuntime {
     return result.content;
   }
 
-  getAllTools(): RuntimeToolEntry[] {
+  getAllTools(reservedNames: Set<string> = new Set()): RuntimeToolEntry[] {
     const tools: RuntimeToolEntry[] = [];
+    const visibleNames = new Set(reservedNames);
     for (const [name, managed] of this.services) {
-      for (const tool of managed.client.getTools()) tools.push({ ...tool, service: name });
+      for (const tool of managed.client.getTools()) {
+        const visibleName = visibleNames.has(tool.name)
+          ? this.aliasToolName(name, tool.name, visibleNames)
+          : tool.name;
+        tools.push({
+          ...tool,
+          name: visibleName,
+          service: name,
+          ...(visibleName === tool.name ? {} : { originalName: tool.name }),
+        });
+        visibleNames.add(visibleName);
+      }
     }
     return tools;
   }
@@ -136,20 +145,12 @@ export class ExternalMcpRuntime {
     description: string;
     inputSchema: unknown;
   }> {
-    const out: Array<{ name: string; service: string; description: string; inputSchema: unknown }> = [];
-    for (const [name, managed] of this.services) {
-      for (const tool of managed.client.getTools()) {
-        if (seen.has(tool.name)) continue;
-        out.push({
-          name: tool.name,
-          service: name,
-          description: tool.description,
-          inputSchema: tool.inputSchema,
-        });
-        seen.add(tool.name);
-      }
-    }
-    return out;
+    return this.getAllTools(seen).map((tool) => ({
+      name: tool.name,
+      service: tool.service,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+    }));
   }
 
   listRunning(): string[] {
@@ -241,5 +242,31 @@ export class ExternalMcpRuntime {
 
   private clearExternalFailures(name: string): void {
     this.externalFailures.delete(name);
+  }
+
+  private authorizeToolCall(
+    serviceName: string,
+    tools: Array<{ name: string }>,
+    toolName: string,
+    ctx?: ToolCallContext,
+  ): void {
+    if (!ctx || ctx.operatorContext === true) return;
+    const tool = tools.find((candidate) => candidate.name === toolName);
+    if (!tool) {
+      throw new Error(`Unknown tool "${toolName}" on service "${serviceName}"`);
+    }
+    const filter = getToolFilter(ctx.role);
+    if (!applyToolFilter(filter, { name: tool.name, service: serviceName })) {
+      throw new Error(`UNAUTHORIZED_TOOL: ${ctx.role} cannot call ${serviceName}.${toolName}`);
+    }
+  }
+
+  private aliasToolName(serviceName: string, toolName: string, visibleNames: Set<string>): string {
+    const baseAlias = `${serviceName}_${toolName}`;
+    if (!visibleNames.has(baseAlias)) return baseAlias;
+
+    let suffix = 2;
+    while (visibleNames.has(`${baseAlias}_${suffix}`)) suffix += 1;
+    return `${baseAlias}_${suffix}`;
   }
 }

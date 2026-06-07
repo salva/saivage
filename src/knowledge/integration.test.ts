@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { McpRuntime } from "../mcp/runtime.js";
 import { knowledgeSkillsTools, makeKnowledgeSkillsHandler } from "../mcp/knowledgeSkills.js";
 import { knowledgeMemoryTools, makeKnowledgeMemoryHandler } from "../mcp/knowledgeMemory.js";
+import { createSkill } from "./lifecycle.js";
 import type { ToolCallContext } from "../mcp/toolContext.js";
 import { initProjectTree } from "../store/project.js";
 import { acquireRuntimeLock, type RuntimeLock } from "../runtime/recovery.js";
@@ -111,14 +112,9 @@ describe("MCP integration — runtime gates UNAUTHORIZED_ROLE per denied cell (�
   type Cell = { role: KnowledgeAgentRole; service: "skills" | "memory"; tool: string; args: Record<string, unknown> };
 
   const DENIED: Cell[] = [
-    { role: "planner", service: "skills", tool: "create_skill", args: { name: "x", description: "d", body: "b", scope: "project", reason: "r" } },
-    { role: "coder", service: "skills", tool: "create_skill", args: { name: "x", description: "d", body: "b", scope: "project", reason: "r" } },
-    { role: "researcher", service: "skills", tool: "create_skill", args: { name: "x", description: "d", body: "b", scope: "project", reason: "r" } },
-    { role: "designer", service: "skills", tool: "create_skill", args: { name: "x", description: "d", body: "b", scope: "project", reason: "r" } },
     { role: "reviewer", service: "memory", tool: "create_memory", args: { topic: { domain: "d", subject: "s" }, body: "b", scope: "project", reason: "r" } },
     { role: "chat", service: "memory", tool: "create_memory", args: { topic: { domain: "d", subject: "s" }, body: "b", scope: "project", reason: "r" } },
     { role: "data_agent", service: "memory", tool: "list_memories", args: {} },
-    { role: "coder", service: "skills", tool: "supersede_skill", args: { old_id: "x", new_record: {}, reason: "r" } },
     { role: "researcher", service: "memory", tool: "archive_memory", args: { id: "x", reason: "r" } },
   ];
 
@@ -130,49 +126,26 @@ describe("MCP integration — runtime gates UNAUTHORIZED_ROLE per denied cell (�
   }
 
   it("requires a ToolCallContext (no ctx → UNAUTHORIZED_ROLE)", async () => {
-    const code = await callExpectingError(rt, "skills", "list_skills", {}, undefined);
+    const code = await callExpectingError(rt, "skills", "skill", {}, undefined);
     expect(code).toBe("UNAUTHORIZED_ROLE");
   });
 });
 
-describe("MCP integration — all 16 tools round-trip through runtime", () => {
-  it("Manager + Inspector cover skill+memory CRUDS plus reads", async () => {
+describe("MCP integration — knowledge tools round-trip through runtime", () => {
+  it("skills read-only surface and memory CRUDS plus reads", async () => {
     const mgr = ctxFor("manager", projectRoot);
     const insp = ctxFor("inspector", projectRoot);
 
-    const s1 = (await rt.callTool("skills", "create_skill", {
+    await createSkill(store, {
       name: "deploy-web", description: "deploy", body: "kubectl apply", scope: "project", reason: "init",
-    }, mgr)) as { id: string };
-    expect(s1.id).toBeTruthy();
+    }, { role: "manager", agent_id: "agent-manager" });
 
-    const s1u = (await rt.callTool("skills", "update_skill", {
-      id: s1.id, description: "updated", reason: "doc",
-    }, mgr)) as { updated_at: string };
-    expect(s1u.updated_at).toBeTruthy();
-
-    const s2 = (await rt.callTool("skills", "supersede_skill", {
-      old_id: s1.id,
-      new_record: { name: "deploy-web", description: "v2", body: "kubectl rollout", scope: "project" },
-      reason: "v2",
-    }, mgr)) as { new_id: string; old_id: string };
-    expect(s2.new_id).toBeTruthy();
-    expect(s2.old_id).toBe(s1.id);
-
-    const s3 = (await rt.callTool("skills", "create_skill", {
-      name: "to-archive", description: "x", body: "b", scope: "project", reason: "init",
-    }, mgr)) as { id: string };
-    await rt.callTool("skills", "archive_skill", { id: s3.id, reason: "obsolete" }, mgr);
-
-    await rt.callTool("skills", "delete_skill", { id: s3.id, reason: "purge" }, insp);
-
-    const sl = (await rt.callTool("skills", "list_skills", {}, mgr)) as { skills: unknown[] };
+    const sl = (await rt.callTool("skills", "skill", {}, mgr)) as { skills: Array<{ name: string }> };
     expect(Array.isArray(sl.skills)).toBe(true);
+    expect(sl.skills.map((s) => s.name)).toContain("deploy-web");
 
-    const sr = (await rt.callTool("skills", "read_skill", { id: s2.new_id }, mgr)) as { body: string };
-    expect(sr.body).toContain("rollout");
-
-    const ss = (await rt.callTool("skills", "search_skills", { query: "deploy" }, mgr)) as { hits: unknown[] };
-    expect(Array.isArray(ss.hits)).toBe(true);
+    const sr = (await rt.callTool("skills", "skill", { name: "deploy-web" }, mgr)) as { body: string };
+    expect(sr.body).toContain("kubectl apply");
 
     const m1 = (await rt.callTool("memory", "create_memory", {
       topic: { domain: "build", subject: "web" }, body: "build memo", scope: "project", reason: "init",
@@ -214,9 +187,9 @@ describe("MCP integration — all 16 tools round-trip through runtime", () => {
 
 describe("MCP integration — §C.3 error taxonomy", () => {
   it("UNAUTHORIZED_ROLE — denied via runtime", async () => {
-    const code = await callExpectingError(rt, "skills", "create_skill", {
-      name: "x", description: "d", body: "b", scope: "project", reason: "r",
-    }, ctxFor("coder", projectRoot, "stg-1"));
+    const code = await callExpectingError(rt, "memory", "create_memory", {
+      topic: { domain: "d", subject: "s" }, body: "b", scope: "project", reason: "r",
+    }, ctxFor("reviewer", projectRoot, "stg-1"));
     expect(code).toBe("UNAUTHORIZED_ROLE");
   });
 
@@ -232,13 +205,6 @@ describe("MCP integration — §C.3 error taxonomy", () => {
       id: "00000000-0000-4000-8000-000000000000",
     }, ctxFor("planner", projectRoot));
     expect(code).toBe("NOT_FOUND");
-  });
-
-  it("EMPTY_REASON — create_skill whitespace reason", async () => {
-    const code = await callExpectingError(rt, "skills", "create_skill", {
-      name: "x", description: "d", body: "b", scope: "project", reason: "   ",
-    }, ctxFor("manager", projectRoot));
-    expect(code).toBe("EMPTY_REASON");
   });
 
   it("NO_RUNTIME_LOCK — writer called without runtime ownership", async () => {
@@ -286,37 +252,9 @@ describe("MCP integration — §C.3 error taxonomy", () => {
     expect(code).toBe("TOPIC_COLLISION");
   });
 
-  it("NAME_COLLISION — duplicate active skill name", async () => {
-    const mgr = ctxFor("manager", projectRoot);
-    await rt.callTool("skills", "create_skill", {
-      name: "dup", description: "d", body: "b1", scope: "project", reason: "r",
-    }, mgr);
-    const code = await callExpectingError(rt, "skills", "create_skill", {
-      name: "dup", description: "d", body: "b2", scope: "project", reason: "r",
-    }, mgr);
-    expect(code).toBe("NAME_COLLISION");
-  });
-
-  it("INVALID_SUPERSEDE_SCOPE — project → stage forbidden", async () => {
-    const mgr = ctxFor("manager", projectRoot);
-    const c = (await rt.callTool("skills", "create_skill", {
-      name: "scope-test", description: "d", body: "b", scope: "project", reason: "r",
-    }, mgr)) as { id: string };
-    const code = await callExpectingError(rt, "skills", "supersede_skill", {
-      old_id: c.id,
-      new_record: { name: "scope-test", description: "d", body: "b2", scope: "stage", scope_ref: "stg-1" },
-      reason: "r2",
-    }, mgr);
-    expect(code).toBe("INVALID_SUPERSEDE_SCOPE");
-  });
-
-  it("SECRET_DETECTED — write body contains an API-key shape", async () => {
-    const code = await callExpectingError(rt, "skills", "create_skill", {
-      name: "leaky", description: "d",
-      body: "secret token sk-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJKKKKLLLL",
-      scope: "project", reason: "r",
-    }, ctxFor("manager", projectRoot));
-    expect(code).toBe("SECRET_DETECTED");
+  it("NOT_FOUND — skill unknown name", async () => {
+    const code = await callExpectingError(rt, "skills", "skill", { name: "missing" }, ctxFor("manager", projectRoot));
+    expect(code).toBe("NOT_FOUND");
   });
 });
 

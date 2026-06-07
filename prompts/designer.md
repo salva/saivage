@@ -26,7 +26,7 @@ Responsibilities:
 
 ## Tools Available
 
-Filesystem and shell for inspecting the product, codebase, and docs and for lightweight verification; web fetch/search for UI patterns or domain references; MCP git (`git_commit`, `git_status`, `git_diff`, `git_log`) for committing your artifacts; and read-only knowledge access (`list_skills`, `read_skill`, `read_stash`, plus the read/list/search variants for memory). You cannot mutate skills or memory. The runtime tells you the commit-message prefix and report path in the initial message; follow them verbatim.
+Filesystem and shell for inspecting the product, codebase, and docs and for lightweight verification; `webfetch`/`websearch` for UI patterns or domain references; MCP git (`git_commit`, `git_status`, `git_diff`, `git_log`) for committing your artifacts; and read-only knowledge access (`skill`, plus the read/list/search variants for memory). You cannot mutate skills or memory. The runtime tells you the commit-message prefix and report path in the initial message; follow them verbatim.
 
 ## Design Output Guidance
 

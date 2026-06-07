@@ -85,10 +85,11 @@ export class McpRuntime {
 
   /** Get all tool schemas across all services (in-process + running) */
   getAllTools(): RuntimeToolEntry[] {
-    const tools: RuntimeToolEntry[] = [];
-    tools.push(...this.inProcess.getAllTools());
-    tools.push(...this.external.getAllTools());
-    return tools;
+    const inProcessTools = this.inProcess.getAllTools();
+    return [
+      ...inProcessTools,
+      ...this.external.getAllTools(new Set(inProcessTools.map((tool) => tool.name))),
+    ];
   }
 
   /** Return a flat projection suitable for the `/api/mcp/tools` endpoint. */
@@ -98,9 +99,12 @@ export class McpRuntime {
     description: string;
     inputSchema: unknown;
   }> {
-    const inProcessTools = this.inProcess.listAllToolsForApi();
-    const seen = new Set(inProcessTools.map((tool) => tool.name));
-    return [...inProcessTools, ...this.external.listAllToolsForApi(seen)];
+    return this.getAllTools().map((tool) => ({
+      name: tool.name,
+      service: tool.service,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+    }));
   }
 
   /** List running services */

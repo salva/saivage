@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { dirname, relative } from "node:path";
+import { dirname, join } from "node:path";
 
 import { parse as parseHtml, type HTMLElement } from "node-html-parser";
 
@@ -14,7 +14,6 @@ import {
   classifyNetworkError,
   type BoundedReadResult,
   type ClassifiedHttpError,
-  type HttpFetchErrorCode,
   type TimedFetch,
 } from "../httpFetch.js";
 import type { BuiltinContext } from "./context.js";
@@ -42,6 +41,17 @@ function imageMime(contentType: string): string | null {
   const mime = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
   if (["image/png", "image/jpeg", "image/webp", "image/gif"].includes(mime)) return mime;
   return null;
+}
+
+function isTextMime(contentType: string): boolean {
+  const mime = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
+  return mime.startsWith("text/") || [
+    "application/json",
+    "application/javascript",
+    "application/xml",
+    "application/xhtml+xml",
+    "application/x-ndjson",
+  ].includes(mime);
 }
 
 function stripHtml(value: string): string {
@@ -130,156 +140,34 @@ export function extractDdgResults(html: string, base: URL, max: number): DdgExtr
   return { results, skipped };
 }
 
-interface DownloadAttempt {
-  url: string;
-  attempt: number;
-  status?: number;
-  ok?: boolean;
-  code?: HttpFetchErrorCode;
-  error?: string;
-  errno?: string;
-  bytes?: number;
-  headers?: Record<string, string>;
+type WebfetchReadMode = "auto" | "text" | "multimodal";
+
+function webfetchReadMode(value: unknown): WebfetchReadMode {
+  if (value === undefined || value === "auto") return "auto";
+  if (value === "text" || value === "multimodal") return value;
+  throw new Error("read_mode must be 'auto', 'text', or 'multimodal'");
 }
 
-interface DownloadSuccess {
-  url: string;
-  path: string;
-  bytes: number;
-  sha256: string;
-  headers: Record<string, string>;
-  attempts: DownloadAttempt[];
+function boundedPositiveInt(value: unknown, fallback: number, min: number, max: number, name: string): number {
+  const raw = value === undefined ? fallback : Number(value);
+  if (!Number.isFinite(raw) || raw < 0 || !Number.isInteger(raw)) {
+    throw new Error(`${name} must be a non-negative integer`);
+  }
+  return Math.min(Math.max(raw, min), max);
 }
 
-type DownloadOutcome =
-  | { ok: true; success: DownloadSuccess }
-  | {
-      ok: false;
-      failure: ClassifiedHttpError & { status?: number };
-      attempt: DownloadAttempt;
-    };
-
-async function downloadUrl(
-  context: BuiltinContext,
-  url: URL,
-  outPath: string,
-  options: {
-    maxBytes: number;
-    headers?: Record<string, string>;
-    attempts: DownloadAttempt[];
-    attemptNumber: number;
-  },
-): Promise<DownloadOutcome> {
-  let timed: TimedFetch;
-  try {
-    timed = await fetchWithTimeout(
-      url,
-      { headers: { "User-Agent": "Saivage/0.1 data-agent", ...(options.headers ?? {}) } },
-      context.limits.fetchTimeoutMs,
-    );
-  } catch (err) {
-    const cls = classifyNetworkError(err, url.toString());
-    const attempt: DownloadAttempt = {
-      url: url.toString(),
-      attempt: options.attemptNumber,
-      code: cls.code,
-      error: cls.error,
-      errno: cls.errno,
-    };
-    options.attempts.push(attempt);
-    return { ok: false, failure: cls, attempt };
-  }
-  try {
-    const { response, signal, timedOut } = timed;
-    const responseHeaders = headersObject(response.headers);
-    const attempt: DownloadAttempt = {
-      url: url.toString(),
-      attempt: options.attemptNumber,
-      status: response.status,
-      ok: response.ok,
-      headers: responseHeaders,
-    };
-    options.attempts.push(attempt);
-
-    if (!response.ok) {
-      await discardBody(response);
-      const failure: ClassifiedHttpError & { status?: number } = {
-        code: "UPSTREAM_HTTP_ERROR",
-        error: `UPSTREAM_HTTP_ERROR: ${url} returned HTTP ${response.status}.`,
-        status: response.status,
-      };
-      attempt.code = failure.code;
-      attempt.error = failure.error;
-      return { ok: false, failure, attempt };
-    }
-
-    const contentLength = Number(response.headers.get("content-length") ?? 0);
-    if (contentLength > options.maxBytes) {
-      await discardBody(response);
-      const failure: ClassifiedHttpError = {
-        code: "RESPONSE_TOO_LARGE",
-        error: `RESPONSE_TOO_LARGE: Content-Length ${contentLength} exceeds max_bytes ${options.maxBytes}`,
-      };
-      attempt.code = failure.code;
-      attempt.error = failure.error;
-      return { ok: false, failure, attempt };
-    }
-
-    let read: BoundedReadResult<Buffer>;
-    try {
-      read = await readBoundedBinaryBody(response, options.maxBytes, signal);
-    } catch (err) {
-      const cls = classifyNetworkError(err, url.toString(), { timedOut: timedOut() });
-      attempt.code = cls.code;
-      attempt.error = cls.error;
-      attempt.errno = cls.errno;
-      return { ok: false, failure: cls, attempt };
-    }
-    attempt.bytes = read.bytes;
-    if (read.truncated) {
-      const failure: ClassifiedHttpError = {
-        code: "RESPONSE_TOO_LARGE",
-        error: `RESPONSE_TOO_LARGE: body exceeds max_bytes ${options.maxBytes}`,
-      };
-      attempt.code = failure.code;
-      attempt.error = failure.error;
-      return { ok: false, failure, attempt };
-    }
-
-    try {
-      await mkdir(dirname(outPath), { recursive: true });
-      await writeFile(outPath, read.body);
-    } catch (err) {
-      const failure: ClassifiedHttpError = {
-        code: "IO_ERROR",
-        error: `IO_ERROR: ${err instanceof Error ? err.message : String(err)}`,
-        errno: (err as NodeJS.ErrnoException).code,
-      };
-      attempt.code = failure.code;
-      attempt.error = failure.error;
-      attempt.errno = failure.errno;
-      return { ok: false, failure, attempt };
-    }
-
-    return {
-      ok: true,
-      success: {
-        url: url.toString(),
-        path: relative(context.project.projectRoot, outPath),
-        bytes: read.bytes,
-        sha256: createHash("sha256").update(read.body).digest("hex"),
-        headers: responseHeaders,
-        attempts: options.attempts,
-      },
-    };
-  } finally {
-    timed.dispose();
-  }
+async function writeStash(context: BuiltinContext, text: string): Promise<string> {
+  const hash = createHash("sha256").update(text).digest("hex").slice(0, 16);
+  const stashPath = `.saivage/tmp/stash/webfetch-${Date.now()}-${hash}.txt`;
+  const absolute = join(context.project.projectRoot, stashPath);
+  await mkdir(dirname(absolute), { recursive: true });
+  await writeFile(absolute, text, "utf-8");
+  return stashPath;
 }
 
 const dataTools: ToolEntry[] = [
   {
-    name: "web_search",
+    name: "websearch",
     description:
       "Search the public web for data sources, APIs, documentation, and downloadable datasets. " +
       "Returns candidate URLs with snippets when available. On failure the envelope carries a " +
@@ -300,65 +188,18 @@ const dataTools: ToolEntry[] = [
     },
   },
   {
-    name: "fetch_url",
-    description: "Fetch a URL as text with status, selected headers, and a truncated body. Use for API docs, CSV previews, metadata pages, and robots-friendly web pages. The byte cap bounds the raw response stream.",
+    name: "webfetch",
+    description: "Fetch an HTTP(S) URL as bounded raw bytes or decoded text, optionally saving the fetched content to an authorized project path. metadata_only uses GET with Range bytes=0-0.",
     inputSchema: {
       type: "object",
       properties: {
         url: { type: "string" },
-        max_bytes: { type: "number", description: "Maximum response bytes to read from the upstream stream (default mcp.maxFetchBytes; clamped 1000..1000000)" },
+        read_mode: { type: "string", enum: ["auto", "text", "multimodal"], description: "Default 'auto' returns raw bytes as base64. 'text' returns decoded UTF-8 text. 'multimodal' returns image attachments when supported." },
+        metadata_only: { type: "boolean", description: "Fetch only response metadata using GET with Range: bytes=0-0. Cannot be combined with save_as." },
+        max_bytes: { type: "number", description: "Maximum response bytes to read (default mcp.maxFetchBytes; clamped 1..1000000 for inline fetches)." },
+        max_inline_bytes: { type: "number", description: "Maximum decoded text bytes returned inline before spilling text to .saivage/tmp/stash/." },
+        save_as: { type: "string", description: "Optional project-relative path to save fetched raw bytes or decoded text. Requires path mutation authorization." },
       },
-      required: ["url"],
-    },
-  },
-  {
-    name: "fetch_page_text",
-    description: "Fetch an HTML page and return readable text extracted from it. Use this before falling back to Playwright for simple static pages. The byte cap bounds the raw HTML stream, not the stripped output.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        url: { type: "string" },
-        max_bytes: { type: "number", description: "Maximum raw HTML bytes to read from the upstream stream before stripping (default mcp.maxFetchBytes; clamped 1000..1000000)" },
-      },
-      required: ["url"],
-    },
-  },
-  {
-    name: "download_file",
-    description: "Download a public http/https file to any project-relative path chosen by the task, returning path, byte size, sha256, and provenance headers.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        url: { type: "string" },
-        path: { type: "string", description: "Project-relative output path selected for this artifact; not restricted to one directory" },
-        max_bytes: { type: "number", description: "Maximum bytes allowed (default 250MB)" },
-        headers: { type: "object", description: "Optional request headers for sources that require a documented header such as Accept" },
-      },
-      required: ["url", "path"],
-    },
-  },
-  {
-    name: "download_with_fallbacks",
-    description: "Try multiple http/https source URLs with bounded retries, save the first successful artifact, and return an attempt log for provenance and reliability accounting.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        urls: { type: "array", items: { type: "string" }, description: "Candidate source URLs in preference order" },
-        path: { type: "string", description: "Project-relative output path selected for this artifact; not restricted to one directory" },
-        max_bytes: { type: "number", description: "Maximum bytes allowed (default 250MB)" },
-        retries_per_url: { type: "number", description: "Attempts per URL before trying the next source (default 2, max 5)" },
-        headers: { type: "object", description: "Optional request headers applied to each candidate URL" },
-        manifest_path: { type: "string", description: "Optional project-relative JSON path where the source attempts and selected artifact metadata should be written" },
-      },
-      required: ["urls", "path"],
-    },
-  },
-  {
-    name: "head_url",
-    description: "Request URL metadata without downloading the full body. Use to check availability, content type, file size, etag, and last-modified.",
-    inputSchema: {
-      type: "object",
-      properties: { url: { type: "string" } },
       required: ["url"],
     },
   },
@@ -370,7 +211,7 @@ export function makeDataService(context: BuiltinContext): {
 } {
   const handler: InProcessToolHandler = async (toolName, args, ctx) => {
     switch (toolName) {
-      case "web_search": {
+      case "websearch": {
         const query = typeof args.query === "string" ? args.query.trim() : "";
         if (!query) {
           return {
@@ -497,10 +338,16 @@ export function makeDataService(context: BuiltinContext): {
         }
       }
 
-      case "fetch_url": {
+      case "webfetch": {
         let url: URL;
+        let readMode: WebfetchReadMode;
+        let maxBytes: number;
+        let maxInlineBytes: number;
         try {
           url = parseHttpUrl(String(args.url));
+          readMode = webfetchReadMode(args.read_mode);
+          maxBytes = boundedPositiveInt(args.max_bytes, context.limits.maxFetchBytes, 1, 1_000_000, "max_bytes");
+          maxInlineBytes = boundedPositiveInt(args.max_inline_bytes, context.limits.maxFileReadBytes, 0, 1_000_000, "max_inline_bytes");
         } catch (err) {
           return {
             content: {
@@ -511,12 +358,26 @@ export function makeDataService(context: BuiltinContext): {
             isError: true,
           };
         }
-        const maxBytes = Math.min(Math.max(Number(args.max_bytes ?? context.limits.maxFetchBytes), 1_000), 1_000_000);
+        const metadataOnly = Boolean(args.metadata_only);
+        const saveAs = typeof args.save_as === "string" && args.save_as.length > 0 ? args.save_as : undefined;
+        if (metadataOnly && saveAs) {
+          return {
+            content: {
+              code: "INVALID_ARGUMENT",
+              error: "INVALID_ARGUMENT: metadata_only cannot be combined with save_as",
+              url: url.toString(),
+            },
+            isError: true,
+          };
+        }
+        const authorized = saveAs ? authorizePathMutation(ctx, saveAs, context.project.projectRoot) : undefined;
+        if (authorized && "error" in authorized) return { content: authorized.error, isError: true };
+
         let timed: TimedFetch;
         try {
           timed = await fetchWithTimeout(
             url,
-            { headers: { "User-Agent": "Saivage/0.1 data-agent" } },
+            { headers: { "User-Agent": "Saivage/0.1 data-agent", ...(metadataOnly ? { Range: "bytes=0-0" } : {}) } },
             context.limits.fetchTimeoutMs,
           );
         } catch (err) {
@@ -527,6 +388,14 @@ export function makeDataService(context: BuiltinContext): {
         }
         try {
           const { response, signal, timedOut } = timed;
+          const responseHeaders = headersObject(response.headers);
+          if (metadataOnly) {
+            await discardBody(response);
+            return {
+              content: { url: url.toString(), status: response.status, ok: response.ok, headers: responseHeaders },
+              isError: false,
+            };
+          }
           if (!response.ok) {
             await discardBody(response);
             return {
@@ -535,16 +404,26 @@ export function makeDataService(context: BuiltinContext): {
                 error: `UPSTREAM_HTTP_ERROR: ${url} returned HTTP ${response.status}.`,
                 url: url.toString(),
                 status: response.status,
-                headers: headersObject(response.headers),
+                headers: responseHeaders,
               },
               isError: true,
             };
           }
-          const mime = imageMime(response.headers.get("content-type") ?? "");
-          if (mime) {
-            let read: BoundedReadResult<Buffer>;
+          const declaredLength = response.headers.get("content-length");
+          if (declaredLength !== null) {
+            const declaredBytes = Number(declaredLength);
+            if (Number.isFinite(declaredBytes) && declaredBytes > maxBytes) {
+              await discardBody(response);
+              return { content: { code: "RESPONSE_TOO_LARGE", error: `RESPONSE_TOO_LARGE: content-length ${declaredBytes} exceeds max_bytes ${maxBytes}`, url: url.toString(), max_bytes: maxBytes, content_length: declaredBytes }, isError: true };
+            }
+          }
+          const contentType = response.headers.get("content-type") ?? "";
+          const mime = imageMime(contentType);
+          const shouldReadText = readMode === "text" || (!authorized && readMode === "auto" && !mime && isTextMime(contentType));
+          if (shouldReadText) {
+            let read: BoundedReadResult<string>;
             try {
-              read = await readBoundedBinaryBody(response, maxBytes, signal);
+              read = await readBoundedTextBody(response, maxBytes, signal);
             } catch (err) {
               return {
                 content: {
@@ -554,240 +433,67 @@ export function makeDataService(context: BuiltinContext): {
                 isError: true,
               };
             }
+            if (read.truncated) {
+              return { content: { code: "RESPONSE_TOO_LARGE", error: `RESPONSE_TOO_LARGE: body exceeds max_bytes ${maxBytes}`, url: url.toString() }, isError: true };
+            }
+            if (authorized && !("error" in authorized)) {
+              await mkdir(dirname(authorized.path), { recursive: true });
+              await writeFile(authorized.path, read.body, "utf-8");
+              return { content: { url: url.toString(), status: response.status, ok: response.ok, headers: responseHeaders, bytes_read: read.bytes, sha256: createHash("sha256").update(read.body).digest("hex"), saved_path: authorized.relativePath }, isError: false };
+            }
+            const result: Record<string, unknown> = { url: url.toString(), status: response.status, ok: response.ok, headers: responseHeaders, bytes_read: read.bytes, truncated: false };
+            if (Buffer.byteLength(read.body, "utf-8") > maxInlineBytes) {
+              result.stash_path = await writeStash(context, read.body);
+              result.content_preview = read.body.slice(0, maxInlineBytes);
+            } else {
+              result.content = read.body;
+            }
+            return { content: result, isError: false };
+          }
+          let read: BoundedReadResult<Buffer>;
+          try {
+            read = await readBoundedBinaryBody(response, maxBytes, signal);
+          } catch (err) {
+            return {
+              content: {
+                ...classifyNetworkError(err, url.toString(), { timedOut: timedOut() }),
+                url: url.toString(),
+              },
+              isError: true,
+            };
+          }
+          if (read.truncated) {
+            return { content: { code: "RESPONSE_TOO_LARGE", error: `RESPONSE_TOO_LARGE: body exceeds max_bytes ${maxBytes}`, url: url.toString() }, isError: true };
+          }
+          if (authorized && !("error" in authorized)) {
+            await mkdir(dirname(authorized.path), { recursive: true });
+            await writeFile(authorized.path, read.body);
+            return { content: { url: url.toString(), status: response.status, ok: response.ok, headers: responseHeaders, bytes_read: read.bytes, sha256: createHash("sha256").update(read.body).digest("hex"), saved_path: authorized.relativePath }, isError: false };
+          }
+          if ((readMode === "multimodal" || readMode === "auto") && mime) {
             return {
               content: {
                 text: "Image fetched successfully",
                 url: url.toString(),
                 status: response.status,
                 ok: response.ok,
-                headers: headersObject(response.headers),
+                headers: responseHeaders,
                 bytes_read: read.bytes,
-                truncated: read.truncated,
-                attachments: [
-                  {
-                    mime,
-                    url: `data:${mime};base64,${read.body.toString("base64")}`,
-                    filename: url.pathname.split("/").filter(Boolean).at(-1),
-                  },
-                ],
+                attachments: [{ mime, url: `data:${mime};base64,${read.body.toString("base64")}`, filename: url.pathname.split("/").filter(Boolean).at(-1) }],
               },
               isError: false,
             };
           }
-          let read: BoundedReadResult<string>;
-          try {
-            read = await readBoundedTextBody(response, maxBytes, signal);
-          } catch (err) {
-            return {
-              content: {
-                ...classifyNetworkError(err, url.toString(), { timedOut: timedOut() }),
-                url: url.toString(),
-              },
-              isError: true,
-            };
+          if (readMode === "multimodal") {
+            return { content: { code: "UNSUPPORTED_MEDIA_TYPE", error: `UNSUPPORTED_MEDIA_TYPE: ${contentType || "unknown"} cannot be attached`, url: url.toString(), status: response.status, headers: responseHeaders }, isError: true };
           }
           return {
-            content: {
-              url: url.toString(),
-              status: response.status,
-              ok: response.ok,
-              headers: headersObject(response.headers),
-              content: read.body,
-              bytes_read: read.bytes,
-              truncated: read.truncated,
-            },
-            isError: false,
+            content: { code: "UNSUPPORTED_BINARY_CONTENT", error: `UNSUPPORTED_BINARY_CONTENT: ${contentType || "unknown"} is not safe for inline return; use save_as to persist it`, url: url.toString(), status: response.status, headers: responseHeaders, bytes_read: read.bytes, sha256: createHash("sha256").update(read.body).digest("hex") },
+            isError: true,
           };
         } finally {
           timed.dispose();
         }
-      }
-
-      case "fetch_page_text": {
-        let url: URL;
-        try {
-          url = parseHttpUrl(String(args.url));
-        } catch (err) {
-          return {
-            content: {
-              code: "INVALID_ARGUMENT",
-              error: `INVALID_ARGUMENT: ${err instanceof Error ? err.message : String(err)}`,
-              url: String(args.url),
-            },
-            isError: true,
-          };
-        }
-        const maxBytes = Math.min(Math.max(Number(args.max_bytes ?? context.limits.maxFetchBytes), 1_000), 1_000_000);
-        let timed: TimedFetch;
-        try {
-          timed = await fetchWithTimeout(
-            url,
-            { headers: { "User-Agent": "Saivage/0.1 data-agent" } },
-            context.limits.fetchTimeoutMs,
-          );
-        } catch (err) {
-          return {
-            content: { ...classifyNetworkError(err, url.toString()), url: url.toString() },
-            isError: true,
-          };
-        }
-        try {
-          const { response, signal, timedOut } = timed;
-          if (!response.ok) {
-            await discardBody(response);
-            return {
-              content: {
-                code: "UPSTREAM_HTTP_ERROR",
-                error: `UPSTREAM_HTTP_ERROR: ${url} returned HTTP ${response.status}.`,
-                url: url.toString(),
-                status: response.status,
-                headers: headersObject(response.headers),
-              },
-              isError: true,
-            };
-          }
-          let read: BoundedReadResult<string>;
-          try {
-            read = await readBoundedTextBody(response, maxBytes, signal);
-          } catch (err) {
-            return {
-              content: {
-                ...classifyNetworkError(err, url.toString(), { timedOut: timedOut() }),
-                url: url.toString(),
-              },
-              isError: true,
-            };
-          }
-          const stripped = stripHtml(read.body);
-          return {
-            content: {
-              url: url.toString(),
-              status: response.status,
-              ok: response.ok,
-              headers: headersObject(response.headers),
-              text: stripped,
-              bytes_read: read.bytes,
-              truncated: read.truncated,
-            },
-            isError: false,
-          };
-        } finally {
-          timed.dispose();
-        }
-      }
-
-      case "download_file": {
-        let url: URL;
-        try {
-          url = parseHttpUrl(String(args.url));
-        } catch (err) {
-          return {
-            content: {
-              code: "INVALID_ARGUMENT",
-              error: `INVALID_ARGUMENT: ${err instanceof Error ? err.message : String(err)}`,
-              url: String(args.url),
-            },
-            isError: true,
-          };
-        }
-        const authorized = authorizePathMutation(ctx, String(args.path), context.project.projectRoot);
-        if ("error" in authorized) return { content: authorized.error, isError: true };
-        const outPath = authorized.path;
-        const maxBytes = Math.min(Math.max(Number(args.max_bytes ?? context.limits.maxDownloadBytes), 1), 2 * 1024 * 1024 * 1024);
-        const attempts: DownloadAttempt[] = [];
-        const outcome = await downloadUrl(context, url, outPath, {
-          maxBytes,
-          headers: args.headers as Record<string, string> | undefined,
-          attempts,
-          attemptNumber: 1,
-        });
-        if (outcome.ok) return { content: outcome.success, isError: false };
-        return {
-          content: {
-            ...outcome.failure,
-            url: url.toString(),
-            attempts,
-          },
-          isError: true,
-        };
-      }
-
-      case "download_with_fallbacks": {
-        const rawUrls = Array.isArray(args.urls) ? args.urls.map(String).filter(Boolean) : [];
-        if (rawUrls.length === 0) {
-          return {
-            content: {
-              code: "INVALID_ARGUMENT",
-              error: "INVALID_ARGUMENT: urls must contain at least one source",
-            },
-            isError: true,
-          };
-        }
-        const authorized = authorizePathMutation(ctx, String(args.path), context.project.projectRoot);
-        if ("error" in authorized) return { content: authorized.error, isError: true };
-        const outPath = authorized.path;
-        let manifestPath: string | null = null;
-        if (args.manifest_path) {
-          const manifestAuthorized = authorizePathMutation(ctx, String(args.manifest_path), context.project.projectRoot);
-          if ("error" in manifestAuthorized) return { content: manifestAuthorized.error, isError: true };
-          manifestPath = manifestAuthorized.path;
-        }
-        const maxBytes = Math.min(Math.max(Number(args.max_bytes ?? context.limits.maxDownloadBytes), 1), 2 * 1024 * 1024 * 1024);
-        const retriesPerUrl = Math.min(Math.max(Number(args.retries_per_url ?? 2), 1), 5);
-        const headers = args.headers as Record<string, string> | undefined;
-        const attempts: DownloadAttempt[] = [];
-        let lastFailure: (ClassifiedHttpError & { status?: number }) | null = null;
-
-        for (const rawUrl of rawUrls) {
-          let url: URL;
-          try {
-            url = parseHttpUrl(rawUrl);
-          } catch (err) {
-            const cls: ClassifiedHttpError = {
-              code: "INVALID_ARGUMENT",
-              error: `INVALID_ARGUMENT: ${err instanceof Error ? err.message : String(err)}`,
-            };
-            attempts.push({ url: rawUrl, attempt: 0, code: cls.code, error: cls.error });
-            lastFailure = cls;
-            continue;
-          }
-          for (let attemptNumber = 1; attemptNumber <= retriesPerUrl; attemptNumber++) {
-            const outcome = await downloadUrl(context, url, outPath, {
-              maxBytes, headers, attempts, attemptNumber,
-            });
-            if (outcome.ok) {
-              const success = outcome.success;
-              if (manifestPath) {
-                await mkdir(dirname(manifestPath), { recursive: true });
-                await writeFile(manifestPath, JSON.stringify(success, null, 2) + "\n", "utf-8");
-              }
-              return { content: { ...success, selected_url: success.url }, isError: false };
-            }
-            lastFailure = outcome.failure;
-          }
-        }
-
-        const baseFailure = lastFailure
-          ?? ({ code: "NETWORK_ERROR" as const, error: "NETWORK_ERROR: all sources failed" } satisfies ClassifiedHttpError);
-        const failure = {
-          ...baseFailure,
-          error: lastFailure
-            ? `ALL_SOURCES_FAILED: last failure: ${lastFailure.error}`
-            : "ALL_SOURCES_FAILED: no sources attempted",
-          path: relative(context.project.projectRoot, outPath),
-          attempts,
-        };
-        if (manifestPath) {
-          await mkdir(dirname(manifestPath), { recursive: true });
-          await writeFile(manifestPath, JSON.stringify(failure, null, 2) + "\n", "utf-8");
-        }
-        return { content: failure, isError: true };
-      }
-
-      case "head_url": {
-        const url = parseHttpUrl(String(args.url));
-        const response = await fetch(url, { method: "HEAD", headers: { "User-Agent": "Saivage/0.1 data-agent" } });
-        return { content: { url: url.toString(), status: response.status, ok: response.ok, headers: headersObject(response.headers) }, isError: false };
       }
 
       default:

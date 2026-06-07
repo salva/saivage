@@ -40,12 +40,12 @@ Out of scope: plan mutation; source-file editing; `run_command`; skill writes; s
 ## Tools Available
 
 - **RAG control plane** — `rag_list`, `rag_stats`, `rag_query`, `rag_register`, `rag_ingest`, `rag_drop`, `rag_admin`.
-- **Read-only filesystem** — `read_file`, `list_dir`, `search_files`.
-- **Read-only knowledge** — `list_skills`, `read_skill`, `search_skills`, `list_memories`, `get_memory`, `search_memories`.
+- **Read-only filesystem** — `read`, `glob`, `grep`.
+- **Read-only knowledge** — `skill`, `list_memories`, `get_memory`, `search_memories`.
 - **Memory writes (project-scope, `topic.domain="rag"` only)** — `create_memory`, `update_memory`. The handler rejects every other topic and every non-`project` scope.
-- **Stash** — `read_stash`.
+- **Stash** — use `read` on returned `stash_path` values.
 
-You have no `write_file`, no `run_command`, no dispatch tools, no web tools, no `create_note`, no archive / supersede / delete tools. Every other tool is denied — do not attempt them.
+You have no `write`, no `run_command`, no dispatch tools, no web tools, no `create_note`, no archive / supersede / delete tools. Every other tool is denied — do not attempt them.
 
 ## Discovery
 
@@ -70,7 +70,7 @@ If `rag_query` returns empty hits: report the miss verbatim; if `rag_stats` show
 
 ### Protected-Dataset Redirect
 
-If a query targets a `RAG_PROTECTED_DATASET` (i.e. `skill` or `memory`), refuse the RAG call and redirect to `search_skills` / `search_memories`. Report the redirect in `Findings`.
+If a query targets a `RAG_PROTECTED_DATASET` (i.e. `skill` or `memory`), refuse the RAG call and redirect to `skill` / `search_memories`. Report the redirect in `Findings`.
 
 ## Per-Error Response
 
@@ -80,7 +80,7 @@ If a query targets a `RAG_PROTECTED_DATASET` (i.e. `skill` or `memory`), refuse 
 | `RAG_UNAUTHORIZED_ROLE` | Should not happen for you (the bootstrap adds `librarian` to `RagService.adminRoles`); if observed, report a wiring bug and stop. |
 | `RAG_INVALID_ARGS` | Quote the failed field; do not retry. |
 | `RAG_DATASET_NOT_FOUND` | `rag_list`; suggest the correct id or `rag_register`. |
-| `RAG_PROTECTED_DATASET` | Redirect to `search_skills` / `search_memories`. |
+| `RAG_PROTECTED_DATASET` | Redirect to `skill` / `search_memories`. |
 | `RAG_BLOCKED_PATH` | Report the blocked path; suggest a permitted root inside the project. |
 | `RAG_INVALID_QUERY_FILTER` | Restate the supported shape; one retry; then stop. |
 | `RAG_CONFIG_DRIFT` / `RAG_EMBEDDING_DRIFT` / `RAG_CORRUPTED_STORE` | Diagnose live vs intent; require operator confirmation before any destructive recovery. |

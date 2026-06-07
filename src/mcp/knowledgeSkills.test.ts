@@ -8,6 +8,7 @@ import { makeKnowledgeSkillsHandler } from "./knowledgeSkills.js";
 import { makeTestStore } from "../knowledge/_testfixtures/store.js";
 import { initProjectTree } from "../store/project.js";
 import type { KnowledgeStore } from "../knowledge/init.js";
+import { createSkill } from "../knowledge/lifecycle.js";
 import type { InProcessToolHandler } from "./toolRuntime.js";
 import type { ToolCallContext } from "./toolContext.js";
 
@@ -38,103 +39,63 @@ afterEach(() => {
 describe("MCP knowledgeSkills handler — permissions (§F)", () => {
   it("requires a ToolCallContext", async () => {
     const { handler } = await tmpProject();
-    const r = await handler("list_skills", {}, undefined);
+    const r = await handler("skill", {}, undefined);
     expect(r.isError).toBe(true);
     expect((r.content as { error: { code: string } }).error.code).toBe("UNAUTHORIZED_ROLE");
   });
 
-  it("rejects worker create_skill (coder)", async () => {
+  it("allows coder read access", async () => {
     const { root, handler } = await tmpProject();
-    const r = await handler("create_skill", {
-      name: "x", description: "d", body: "b", scope: "project", reason: "test",
-    }, ctxFor("coder", root));
-    expect(r.isError).toBe(true);
-    expect((r.content as { error: { code: string } }).error.code).toBe("UNAUTHORIZED_ROLE");
+    const r = await handler("skill", {}, ctxFor("coder", root));
+    expect(r.isError).toBe(false);
   });
 
-  it("rejects data_agent any write", async () => {
+  it("allows data_agent read access", async () => {
     const { root, handler } = await tmpProject();
-    const r = await handler("create_skill", {
-      name: "x", description: "d", body: "b", scope: "project", reason: "test",
-    }, ctxFor("data_agent", root));
-    expect(r.isError).toBe(true);
+    const r = await handler("skill", {}, ctxFor("data_agent", root));
+    expect(r.isError).toBe(false);
   });
 
-  it("allows manager create_skill", async () => {
+  it("allows manager read access", async () => {
     const { root, handler } = await tmpProject();
-    const r = await handler("create_skill", {
-      name: "build-web", description: "How to build", body: "Run npm build",
-      scope: "project", reason: "initial",
-    }, ctxFor("manager", root));
+    const r = await handler("skill", {}, ctxFor("manager", root));
     expect(r.isError).toBe(false);
   });
 });
 
 describe("MCP knowledgeSkills handler — lifecycle + redaction", () => {
-  it("create + search round-trip with triggerless skill", async () => {
+  it("lists available skills", async () => {
     const { root, handler } = await tmpProject();
-    const created = await handler("create_skill", {
+    const store = stores.at(-1)!;
+    await createSkill(store, {
       name: "deploy-prod", description: "deploy steps", body: "kubectl apply",
       scope: "project", reason: "doc",
-    }, ctxFor("manager", root));
-    expect(created.isError).toBe(false);
+    }, { role: "manager", agent_id: "agent-manager" });
 
-    // RAG-backed search (B06): the test fixture's `ragManager.query` stub
-    // returns []; assert the call succeeds and the envelope shape is right.
-    const search = await handler("search_skills", { query: "deploy" }, ctxFor("planner", root));
-    expect(search.isError).toBe(false);
-    const hits = (search.content as { hits: Array<unknown> }).hits;
-    expect(Array.isArray(hits)).toBe(true);
+    const r = await handler("skill", {}, ctxFor("planner", root));
+    expect(r.isError).toBe(false);
+    const skills = (r.content as { skills: Array<{ name: string }> }).skills;
+    expect(skills.map((s) => s.name)).toContain("deploy-prod");
   });
 
-  it("rejects empty reason (EMPTY_REASON)", async () => {
+  it("reads a skill by name", async () => {
     const { root, handler } = await tmpProject();
-    const r = await handler("create_skill", {
-      name: "x", description: "d", body: "b", scope: "project", reason: "   ",
-    }, ctxFor("manager", root));
-    expect(r.isError).toBe(true);
-    expect((r.content as { error: { code: string } }).error.code).toBe("EMPTY_REASON");
-  });
-
-  it("rejects active name collision (NAME_COLLISION)", async () => {
-    const { root, handler } = await tmpProject();
-    const ctx = ctxFor("manager", root);
-    await handler("create_skill", { name: "dup", description: "a", body: "b1", scope: "project", reason: "r" }, ctx);
-    const r = await handler("create_skill", { name: "dup", description: "a", body: "b2", scope: "project", reason: "r" }, ctx);
-    expect(r.isError).toBe(true);
-    expect((r.content as { error: { code: string } }).error.code).toBe("NAME_COLLISION");
-  });
-
-  it("rejects invalid supersede scope (project→stage)", async () => {
-    const { root, handler } = await tmpProject();
-    const ctx = ctxFor("manager", root);
-    const created = await handler("create_skill", {
-      name: "s1", description: "d", body: "b", scope: "project", reason: "r",
-    }, ctx);
-    const oldId = (created.content as { id: string }).id;
-
-    const r = await handler("supersede_skill", {
-      old_id: oldId,
-      new_record: { name: "s1", description: "d", body: "b2", scope: "stage", scope_ref: "stage-x" },
-      reason: "r2",
-    }, ctx);
-    expect(r.isError).toBe(true);
-    expect((r.content as { error: { code: string } }).error.code).toBe("INVALID_SUPERSEDE_SCOPE");
-  });
-
-  it("redacts on read (round-trip)", async () => {
-    const { root, handler } = await tmpProject();
-    const ctx = ctxFor("manager", root);
-    const created = await handler("create_skill", {
+    const store = stores.at(-1)!;
+    await createSkill(store, {
       name: "redact-test", description: "d", body: "Plain body, no secrets.",
       scope: "project", reason: "r",
-    }, ctx);
-    expect(created.isError).toBe(false);
-    const id = (created.content as { id: string }).id;
-    const read = await handler("read_skill", { id }, ctx);
+    }, { role: "manager", agent_id: "agent-manager" });
+    const read = await handler("skill", { name: "redact-test" }, ctxFor("manager", root));
     expect(read.isError).toBe(false);
     const c = read.content as { body: string; redacted_spans: number };
     expect(c.body).toBe("Plain body, no secrets.");
     expect(c.redacted_spans).toBe(0);
+  });
+
+  it("returns NOT_FOUND for an unknown skill name", async () => {
+    const { root, handler } = await tmpProject();
+    const r = await handler("skill", { name: "missing" }, ctxFor("manager", root));
+    expect(r.isError).toBe(true);
+    expect((r.content as { error: { code: string } }).error.code).toBe("NOT_FOUND");
   });
 });
