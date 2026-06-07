@@ -127,12 +127,12 @@ This preserves one runtime path while making the model-facing tools flat and ind
 | `read` | `read_file`, part of `list_dir` | Read text files, list directories, and return supported local media as multimodal attachments | No | Yes, for image/PDF later |
 | `write` | `write_file` | Create or overwrite a file | Yes | No |
 | `edit` | none | Replace exact text in an existing file | Yes | No |
-| `apply_patch` | none | Apply structured multi-file patch | Yes | No |
+| `apply_patch` | none | Apply unified diff patch with file deletions | Yes | No |
 | `glob` | `search_files` | Match project files by path glob | No | No |
 | `grep` | none | Regex content search over project files | No | No |
 | `webfetch` | `fetch_url`, `fetch_page_text`, `head_url`, `download_file`, `download_with_fallbacks` | Fetch URLs as text/HTML/markdown/media metadata and optionally save bounded content | Optional | Yes, for image responses |
 | `websearch` | `web_search` | Web search | No | No |
-| `skill` | skill list/read tools | List/read/search skill instructions | No by default | No |
+| `skill` | `list_skills`, `read_skill`, `search_skills`, `create_skill`, `update_skill`, `supersede_skill`, `archive_skill`, `delete_skill` | Discover and read skill instructions by name; list available skills | No | No |
 
 ## Tool Contract Details
 
@@ -295,32 +295,29 @@ Implementation notes:
 
 ### `apply_patch`
 
-Purpose: structured multi-file edits with path preflight and audit-friendly output.
+Purpose: structured multi-file edits using standard unified diff plus file deletions.
 
 Proposed input:
 
 ```json
 {
-  "patch": "string"
+  "patch": "string (unified diff)",
+  "deletions": "string[]?"
 }
 ```
 
 Patch format:
 
-- Use an OpenCode/Codex-style stripped patch envelope:
-- `*** Begin Patch`
-- `*** Add File: <path>`
-- `*** Update File: <path>`
-- optional move support only if needed later
-- `*** Delete File: <path>`
-- hunks with exact context
-- `*** End Patch`
+- `patch` contains standard unified diff hunks. Models are heavily trained on unified diff from commit messages, PRs, and code review data.
+- New files use `--- /dev/null` diff headers.
+- Modified files use standard `--- a/path` and `+++ b/path` headers with `@@ ... @@` hunks.
+- `deletions` is an optional array of project-relative file paths to delete. This handles file removal, which unified diff does not cover natively.
 
 Rules:
 
-- Parse the patch in-process; do not shell out to `patch` or `git apply`.
+- Parse the unified diff in-process; do not shell out to `patch` or `git apply`.
 - Preflight every target path before changing any file.
-- Use write authorization for adds, updates, deletes, and moves.
+- Use write authorization for adds, updates, and deletions.
 - Deny `.saivage/` and other role-disallowed paths before any mutation.
 - Apply atomically as far as practical: compute all new file contents first, then write.
 - If any hunk fails, do not mutate any file.
@@ -333,16 +330,17 @@ Output:
   "applied": true,
   "files": [
     { "path": "src/a.ts", "operation": "update" },
-    { "path": "docs/new.md", "operation": "add" }
+    { "path": "docs/new.md", "operation": "add" },
+    { "path": "src/old.ts", "operation": "delete" }
   ]
 }
 ```
 
 Implementation notes:
 
-- If a robust internal patch parser is too large for one step, implement only add/update/delete with exact hunk replacement first.
-- Do not add compatibility with arbitrary unified diff formats unless tests prove it is worth the complexity.
-- Keep comments in code minimal; parser tests should carry most of the spec.
+- Unified diff has the lowest implementation risk and highest model familiarity. No model is trained on the custom `*** Begin Patch` envelope format.
+- Start with a focused unified diff parser. Support context lines, additions, and deletions. Reject anything ambiguous.
+- `deletions` is a simple array of paths; no parsing needed beyond path validation and write authorization.
 
 ### `glob`
 
@@ -403,7 +401,7 @@ Rules:
 - Search text files only; skip binary files.
 - `include` is an optional glob filter, e.g. `*.ts` or `**/*.md`.
 - `directory` defaults to project root. Use `directory` for the search root and `include` for file glob filtering.
-- Cap number of matching lines/results.
+- `context_lines` defaults to 0. Hard cap of 3 lines of context per match. Cap total matching lines/results via `max_results`.
 - Cap bytes read per file or total bytes scanned.
 - Return line numbers and bounded line text.
 - Do not return enormous context blocks.
@@ -459,6 +457,21 @@ Rules:
 - Automatic spill files are runtime-owned artifacts and do not use caller write permissions. `save_as` is a project mutation and must use the same write authorization as `write`.
 - Every successful non-metadata response must include an untrusted-content warning in returned text or metadata.
 - Optional hardening: deny link-local metadata IPs, loopback, and private networks unless explicitly enabled. This is recommended, but it may affect local dev workflows. If implemented, include an `allow_local_network` config flag rather than a per-call model argument.
+
+Parameter interaction table for `webfetch`:
+
+| `metadata_only` | `save_as` | `read_mode` | Behavior |
+|---|---|---|---|
+| `true` | omitted | — | GET with Range: bytes=0-0; return headers and metadata only, no body |
+| `true` | provided | — | Error: cannot save body when not fetching body |
+| `false`/absent | omitted | `auto` | Infer from content-type; spill oversized inline content |
+| `false`/absent | omitted | `text` | Force text; spill oversized inline content |
+| `false`/absent | omitted | `multimodal` | Force attachment; reject unsupported types |
+| `false`/absent | provided | `auto` | Save whatever `auto` would return inline; return metadata + saved path |
+| `false`/absent | provided | `text` | Save decoded text; return metadata + saved path |
+| `false`/absent | provided | `multimodal` | Save raw bytes; return attachment + metadata + saved path |
+
+`metadata_only` uses GET with `Range: bytes=0-0` and closes after receiving headers, rather than HTTP HEAD, because many servers deny or truncate HEAD responses.
 
 Output examples:
 
@@ -562,7 +575,7 @@ Output:
   "results": [
     { "title": "...", "url": "https://...", "snippet": "..." }
   ],
-  "status": 200,
+  "ok": true,
   "skipped": 0
 }
 ```
@@ -574,30 +587,28 @@ Migration:
 
 ### `skill`
 
-Purpose: one read-only skill discovery/loading tool.
+Purpose: one skill discovery/loading tool using name-based dispatch, not action-based dispatch.
 
 Proposed input:
 
 ```json
 {
-  "action": "list | read | search",
-  "name": "string?",
-  "query": "string?"
+  "name": "string?"
 }
 ```
 
 Rules:
 
-- `list` returns available skills with names and short descriptions.
-- `read` returns one skill's full instructions and metadata.
-- `search` searches skill names/descriptions/content if supported cheaply.
-- Skill mutation is out of scope for this tool unless a separate operator-only mutation tool is later requested.
+- `skill` with `name` returns that skill's full instructions and metadata.
+- `skill` without `name` lists available skills with names and short descriptions.
+- No `action` field. No `query` field. Content search is covered by `glob`/`grep` on skill directories if needed.
+- Skill mutation (`create_skill`, `update_skill`, `archive_skill`, `delete_skill`, `supersede_skill`) is removed from the model-visible tool surface. Skills are workspace files; agents discover them via `skill` and the runtime manages them internally.
 - Existing role permissions must be preserved: roles that currently have read-only skill access keep it; roles with no skill access do not gain access.
 - Skill content is instructions loaded from trusted project/workspace sources, not untrusted web content. It should be injected as tool output, not system prompt, unless the caller explicitly uses it in subsequent reasoning.
 
 Output examples:
 
-List:
+List (no `name`):
 
 ```json
 {
@@ -607,7 +618,7 @@ List:
 }
 ```
 
-Read:
+Read (with `name`):
 
 ```json
 {
@@ -619,9 +630,10 @@ Read:
 
 Migration:
 
-- Replace current model-visible skill tools with `skill`.
-- Memory tools are not automatically part of this migration unless they are currently named as skill tools. Do not collapse memory CRUD into `skill`.
-- If current tests expect `list_skills` or `read_skill`, rewrite them to `skill` actions and delete old tool names.
+- Replace `list_skills`, `read_skill`, and `search_skills` with `skill`.
+- Remove `create_skill`, `update_skill`, `supersede_skill`, `archive_skill`, and `delete_skill` from the model-visible tool surface. Skills are workspace files, not agent-authored runtime entities.
+- Memory tools (`create_memory`, `update_memory`, etc.) remain unchanged in this pass. They stay under the `memory` service with their current names and schemas.
+- If current tests expect `list_skills` or `read_skill`, rewrite them to `skill` calls and delete old tool names.
 
 ## Role Permissions And Tool Filters
 
@@ -653,7 +665,8 @@ Expected prompt changes:
 - Shell-based content search guidance -> `grep` first, shell only for cases `grep` cannot cover.
 - `web_search` -> `websearch`
 - `fetch_url`, `fetch_page_text`, `head_url`, `download_file`, `download_with_fallbacks` -> `webfetch`
-- `list_skills`/`read_skill` -> `skill` with `action: "list"` or `action: "read"`
+- `list_skills`/`read_skill`/`search_skills` -> `skill` (with `name` for read, without `name` for list)
+- `create_skill`/`update_skill`/`supersede_skill`/`archive_skill`/`delete_skill` -> removed from model surface; skills are workspace files
 - Data Agent prompt should explain `webfetch.save_as` if download behavior is retained.
 - All web and multimodal prompt sections should remind agents to treat fetched content and media as untrusted data.
 
@@ -670,6 +683,43 @@ Required changes:
   - image blocks
 - Ensure provider routing still skips non-image-capable providers when media is attached.
 - Ensure tool call context and artifact execution context keep flowing into write/edit/patch operations.
+- Remove `create_skill`, `update_skill`, `supersede_skill`, `archive_skill`, and `delete_skill` from the model-visible tool surface and from role filter sets. Skills are workspace files not agent-authored runtime entities.
+
+## Unchanged Tools
+
+The following tools and services remain in their current form with their current names for this pass:
+
+- `run_command` (shell service) — stays as-is.
+- `git_status`, `git_create_branch`, `git_checkout`, `git_commit`, `git_merge`, `git_diff`, `git_delete_branch`, `git_log` (git service) — stay as-is.
+- `create_note` (notes service) — stays as-is.
+- `plan_get`, `plan_get_stage`, `plan_get_current_stage`, `plan_set_stages`, `plan_add_stage`, `plan_remove_stage`, `plan_set_current`, `plan_complete_stage`, `plan_get_history`, `plan_init`, `plan_commit`, `plan_done`, `stage_write_tasks`, `task_write_report`, `stage_write_summary`, `stage_get_run`, `stage_list_reports` (plan service) — stay as-is.
+- `rag_list`, `rag_stats`, `rag_query`, `rag_register`, `rag_ingest`, `rag_drop`, `rag_admin` (rag service) — stay as-is.
+- `create_memory`, `update_memory`, `supersede_memory`, `archive_memory`, `delete_memory`, `list_memories`, `get_memory`, `search_memories` (memory service) — stay as-is.
+
+These tools are not in scope for renaming but they must not break during builtin tool migration. The tool dispatcher, filter system, and prompt templates must still reference them correctly.
+
+## Overflow Unification
+
+The current codebase has three separate overflow/spill mechanisms:
+
+| Mechanism | Path | Purpose |
+|-----------|------|---------|
+| `run_command` spill | `.saivage/tmp/command-logs/` | Always written; agent gets path reference |
+| Stash system | `.saivage/tmp/stash/` | Tool results exceeding 5% of context window |
+| Proposed `webfetch` spill | `.saivage/tmp/webfetch/` | Inline content exceeding `max_inline_bytes` |
+
+Unify into one mechanism: use the existing stash system for all tool-result overflow, including `webfetch` inline content that exceeds `max_inline_bytes`. `run_command` keeps its always-written `command-logs/` directory because command logs are always written regardless of size.
+
+Remove `read_stash` as a separate synthetic tool. Spill files are accessible via `read` using their project-relative path under `.saivage/tmp/`.
+
+## Handler Registration Architecture
+
+The plan introduces a flat model-facing tool namespace while preserving the internal service-based dispatch. Key decisions:
+
+- Handler return type stays `Promise<{ content: unknown; isError: boolean }>` for explicit error signaling. No `Promise<unknown>` return types.
+- The model sees flat tool names (`read`, `write`, `edit`, etc.). Internally, tools can be grouped into services for code organization, but the service name is never visible to agents or prompts.
+- Per-tool handler functions are registered via an adapter that wraps them into the existing `InProcessServiceRegistry`. The registry continues to route by `(serviceName, toolName)` internally, but tool filters check only `toolName`.
+- `applyToolFilter` checks tool name only, not service name.
 
 ## Tests To Add Or Rewrite
 
@@ -717,11 +767,12 @@ Required changes:
 
 ### Skill Tests
 
-- `skill list` returns known skills.
-- `skill read` returns known skill content.
-- `skill search` returns bounded matches if implemented.
+- `skill` without `name` lists available skills with names and descriptions.
+- `skill` with `name` returns that skill's content and metadata.
+- `skill` with unknown `name` returns a clear error.
 - Unauthorized roles cannot call `skill` if they could not access skill reads before.
-- Old skill tool names are absent.
+- `create_skill`, `update_skill`, `supersede_skill`, `archive_skill`, `delete_skill`, `list_skills`, `read_skill`, `search_skills` are absent from the model-visible tool catalogue.
+- Memory tools (`create_memory`, `list_memories`, etc.) remain available to roles that currently have access.
 
 ### Prompt And Snapshot Tests
 
@@ -734,39 +785,36 @@ Required changes:
 ### Step 1: Built-In Tool Registry Reshape
 
 - Add a flat built-in registry adapter while retaining `McpRuntime.registerInProcess` internally.
-- Register a single `builtin` in-process service or otherwise ensure model-facing names are flat.
-- Delete old model-facing tool entries as each replacement lands.
+- Keep handler return type as `Promise<{ content: unknown; isError: boolean }>` for type safety.
+- The model sees flat tool names; internally, tool filters check `toolName` only, not `serviceName`.
 - Add catalogue tests proving only new names appear.
 
 ### Step 2: Filesystem Rename And New Edit Tools
 
-- Rename `read_file` to `read`.
-- Rename `write_file` to `write`.
-- Rename `search_files` to `glob`.
+- Hard cutover: remove `read_file`, `write_file`, `search_files`, `list_dir` and add `read`, `write`, `glob`, `grep`, `edit`, `apply_patch` in one commit.
 - Rename `response_format` to `read_mode`, replace `attachment` with `multimodal`, and make `auto` the default.
-- Add `edit`.
-- Add `apply_patch`.
-- Add `grep`.
-- Update prompts and tests for filesystem/search tools.
+- Fold `list_dir` into `read` (directory listing inferred from path type).
+- Update prompts, filters, and tests for filesystem/search tools in the same commit.
+- Remove `read_stash` as a separate tool; spill files are accessible via `read`.
 
 ### Step 3: Web Consolidation
 
-- Implement `websearch` as the renamed current `web_search`.
-- Implement `webfetch` as the single replacement for URL fetch, page text, metadata/head, image attachment, and optional download/save behavior.
-- Delete old web/data tool names.
-- Update Data Agent, Researcher, Coder, Inspector, Designer, and Chat prompts.
+- Hard cutover: remove `web_search`, `fetch_url`, `fetch_page_text`, `head_url`, `download_file`, `download_with_fallbacks` and add `webfetch`, `websearch` in one commit.
+- Implement `webfetch` with `read_mode`, `metadata_only`, `save_as`, and spill-to-stash for oversized content. Use GET with Range header for `metadata_only`, not HEAD.
+- Intentionally drop `download_with_fallbacks` multi-URL retry, manifest writing, and `download_file` custom `headers`. Agents compose multiple `webfetch.save_as` calls if they need fallback behavior.
+- Update Data Agent, Researcher, Coder, Inspector, Designer, and Chat prompts in the same commit.
 
 ### Step 4: Skill Consolidation
 
-- Implement `skill` actions.
-- Delete old skill read/list model-visible tool names.
-- Preserve memory tools separately if they are not skill tools.
-- Update prompts and tool filters.
+- Hard cutover: remove `list_skills`, `read_skill`, `search_skills`, `create_skill`, `update_skill`, `supersede_skill`, `archive_skill`, `delete_skill` and add `skill` (name-based dispatch) in one commit.
+- Memory tools remain unchanged this pass.
+- Update prompts and tool filters in the same commit.
 
 ### Step 5: Cleanup And Guards
 
 - Search the repo for old names and remove all model-facing references.
-- Add tests that reject old names in prompts/tool catalogues.
+- Unify overflow: `webfetch` spill uses the stash system. Remove `.saivage/tmp/webfetch/` special case in favor of the existing stash directory.
+- Add tests that reject old names in prompts/tool catalogues/filter sets.
 - Update remediation docs and internals docs.
 - Run full validation.
 
@@ -805,21 +853,31 @@ If implementation order naturally differs, keep each commit buildable and testab
 | Risk | Mitigation |
 | --- | --- |
 | Active agents emit old tool names | No compatibility by design; rely on tool catalogue and repair loops. Restart active services after deploy if needed. |
-| `apply_patch` parser is complex | Start with a strict limited format and comprehensive tests. Reject anything ambiguous. |
-| `webfetch` becomes too broad | Keep `read_mode`, `metadata_only`, and `save_as` semantics orthogonal. Treat automatic spill files as runtime-owned artifacts and explicit `save_as` as authorized project writes. |
+| `apply_patch` parser complexity | Use standard unified diff plus `deletions` array. Models are trained on unified diff; no custom envelope format. |
+| `webfetch` becomes too broad | Keep `read_mode`, `metadata_only`, and `save_as` semantics orthogonal. Explicit parameter interaction table. Treat automatic spill files as stash entries and explicit `save_as` as authorized project writes. |
 | `read` directory/text/multimodal behavior becomes overloaded | Use `read_mode='auto'` by default, infer directories from path type, and reserve explicit modes only for forcing text or multimodal behavior. |
 | Prompt injection through fetched text/media | Add untrusted-content warnings in tool outputs and synthetic media messages; consider SSRF/private-network restrictions. |
 | Role permissions drift during renames | Add tests for tool filters and denied direct runtime calls. |
-| Skill consolidation accidentally merges memory mutation | Keep `skill` read-only; leave memory tools alone unless explicitly migrated later. |
+| Skill consolidation removes needed mutation | Skills are workspace files, not agent-authored runtime entities. Agent skill creation was a v2 feature that v3 does not need. |
+| Overflow fragmentation | Unify command logs, stash, and webfetch spill into one consistent mechanism. |
+| Handler return type loses error signaling | Keep `Promise<{ content, isError }>` return type. |
 
 ## Acceptance Criteria
 
 - The model-visible built-in catalogue exposes `read`, `write`, `edit`, `apply_patch`, `grep`, `glob`, `webfetch`, `websearch`, and `skill`.
-- The old names listed in this document are absent from prompts and tool schemas.
+- `skill` uses name-based dispatch: `skill` without `name` lists, `skill` with `name` reads. No `action` field.
+- `apply_patch` uses standard unified diff plus `deletions` array. No custom `*** Begin Patch` envelope.
+- Skill mutation tools (`create_skill`, `update_skill`, `supersede_skill`, `archive_skill`, `delete_skill`) are removed from the model-visible tool surface.
+- The old names listed in this document are absent from prompts, tool schemas, and role filter sets.
 - Existing behavior is represented under the new names where still desired.
 - `read_mode='auto'` is the default for both `read` and `webfetch`; `read_mode='multimodal'` replaces `response_format='attachment'`.
-- `webfetch` spills oversized inline content to runtime-owned artifact files and supports `save_as` for authorized direct persistence.
+- `webfetch` spills oversized inline content to the stash system and supports `save_as` for authorized direct persistence.
+- `webfetch` uses GET with Range header for `metadata_only`, not HTTP HEAD.
+- `webfetch` parameter interactions are specified: `metadata_only + save_as` is rejected; `metadata_only` ignores `read_mode`.
 - File writes, edits, and patches all share path authorization.
 - Search tools do not shell out.
 - Web content and multimodal media include prompt-injection warnings.
+- `read_stash` is removed; stash/spill files are accessible via `read`.
+- Handler return type preserves `{ content, isError }` structure.
+- Unchanged tools (`run_command`, `git_*`, `create_note`, `plan_*`, `rag_*`, memory tools) are not broken.
 - Full validation passes.

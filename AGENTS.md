@@ -6,6 +6,16 @@ Project-specific Copilot skills live in `.github/skills/`. Converted Codex copie
 
 Read `/home/salva/g/ml/CODEX_PROJECT_MEMORY.md` before substantial work here.
 
+## Design Principles
+
+- **Simple and clean architecture over everything.** When the clean solution requires a larger, deeper, or more complex change, take the better path. Do not compromise architecture to minimize diff size or avoid refactoring.
+- **Zero backward compatibility weight.** Old test structures, on-disk formats, tool names, API shapes, and runtime conventions that are being replaced have zero weight in design decisions. Remove them outright. No aliases, shims, or transition periods.
+- **Be brave.** Tackle large, deep, or complex changes when they result in the better solution. Do not preserve legacy patterns out of caution.
+- **Small, predictable tool vocabulary.** Prefer a few general tools over many specialized ones. Avoid action-dispatch patterns inside a single tool. Model-facing tool names describe agent intent, not internal service partitioning.
+- **One overflow mechanism.** Prefer unified spill/stash over per-tool ad-hoc overflow paths.
+- **Explicit parameter interactions.** When a tool has multiple optional parameters, specify the interaction table for all valid and invalid combinations.
+- **Type safety in handler contracts.** Handler return types should explicitly distinguish success from error. No `Promise<unknown>` return types.
+
 ## Project-Specific Skills
 
 - `saivage-container`: operate the old Saivage LXC container and service.
