@@ -51,7 +51,7 @@ type BuiltinToolHandler = (
 
 Also remove or rewrite the earlier recommendation to register all built-ins under a single `builtin` service. The later decision is cleaner: flat model-visible names, internal grouping as an implementation detail.
 
-### C7: Flat model-visible names need duplicate-name rejection
+### C7: Flat model-visible names need deterministic conflict renaming
 
 The current runtime already exposes tool names flat to models:
 
@@ -64,14 +64,17 @@ The plan says the model-facing namespace should be flat, but it does not add the
 
 Without this, a future external MCP tool named `read`, `grep`, `webfetch`, or `skill` can shadow or be shadowed unpredictably. The ambiguity is worse after the migration because the names are intentionally generic.
 
-**Fix:** Add a registry/catalogue invariant:
+**Fix:** Add a registry/catalogue invariant and collision-renaming rule:
 
-- Build one model-visible tool catalogue that rejects duplicate names at startup.
-- Built-ins reserve their names globally.
-- External MCP tools with duplicate names fail registration or are hidden from agent-facing schemas with an operator-visible diagnostic.
+- Build one model-visible tool catalogue with globally unique names.
+- Built-ins reserve their flat names globally and are never renamed.
+- If an external MCP tool conflicts with a built-in or earlier external tool, rename the external model-visible name deterministically to `<service>_<tool>`, for example `github_read`.
+- Store the original `(serviceName, toolName)` behind the alias so dispatch still calls the correct MCP tool.
+- Surface an operator-visible diagnostic when a rename happens.
+- If the prefixed alias also collides, fail startup unless the operator disables one service.
 - `Dispatcher.executeLocalTool()` should not use `find()` over ambiguous entries; it should use a precomputed `Map<string, RuntimeToolEntry>` that is guaranteed unique.
 
-This is a simple architecture requirement and should be implemented before adding generic flat names.
+This is a simple architecture requirement and should be implemented before adding generic flat names. It keeps built-ins clean while preserving loaded MCP tools under explicit service-prefixed aliases.
 
 ### C8: `read_stash` removal needs an explicit rewrite of the stash mechanism
 
@@ -239,7 +242,7 @@ Given that the reviews materially change the implementation guidance, link them 
 | Priority | Issue | Action |
 | --- | --- | --- |
 | Critical | C6: Stale handler architecture | Update architecture block to `{ content, isError }` return type and remove single-service implication. |
-| Critical | C7: Duplicate flat tool names | Add global unique-name invariant and startup/catalogue rejection for duplicates. |
+| Critical | C7: Duplicate flat tool names | Add global unique-name invariant; keep built-ins reserved; rename external MCP collisions to `<service>_<tool>`. |
 | Critical | C8: `read_stash` removal incomplete | Rewrite `maybeStash`, `stashResult`, tool schemas, dispatcher, and tests around `read(path=...)`. |
 | Significant | S13: Hedged role table | Replace with exact per-role allowlists. |
 | Significant | S14: Split authorization boundary | Introduce one authorizer shared by schema exposure and execution. |

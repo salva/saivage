@@ -720,6 +720,8 @@ The plan introduces a flat model-facing tool namespace while preserving the inte
 - The model sees flat tool names (`read`, `write`, `edit`, etc.). Internally, tools can be grouped into services for code organization, but the service name is never visible to agents or prompts.
 - Per-tool handler functions are registered via an adapter that wraps them into the existing `InProcessServiceRegistry`. The registry continues to route by `(serviceName, toolName)` internally, but tool filters check only `toolName`.
 - `applyToolFilter` checks tool name only, not service name.
+- Built-in tool names are reserved in the model-visible namespace. If an external MCP service exposes a conflicting model-visible name, keep the external tool available by renaming it deterministically to `<service>_<tool>` in the model-visible catalogue, for example `filesystem_read` or `github_read`. Record the original `(serviceName, toolName)` behind that alias for dispatch and surface an operator-visible diagnostic. Do not rename built-ins.
+- The dispatcher resolves calls through a unique `Map<modelVisibleName, RuntimeToolEntry>` instead of `find()` over all tools. Collisions between two built-ins are startup errors. Collisions between external MCP aliases after prefixing are startup errors unless the operator explicitly disables one service.
 
 ## Tests To Add Or Rewrite
 
@@ -779,6 +781,7 @@ The plan introduces a flat model-facing tool namespace while preserving the inte
 - Update prompt snapshots.
 - Add a guard test that old tool names do not appear in prompts.
 - Add a guard test that old tool names do not appear in model-visible tool schemas.
+- Add a guard test that built-in names stay unprefixed and external MCP name collisions are exposed as `<service>_<tool>` aliases.
 
 ## Implementation Sequence
 
