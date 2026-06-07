@@ -6,7 +6,7 @@ Reviewer: self-review of `opencode-aligned-builtin-tools-plan.md`
 
 ## Summary
 
-The plan is structurally solid, covers the right scope, and makes the correct no-backward-compatibility call. However, it has several concrete issues and a few missed opportunities for higher-level simplification. This review identifies 9 issues (3 critical, 4 significant, 2 minor) and 3 architectural alternatives worth considering before implementation starts.
+The plan is structurally solid, covers the right scope, and makes the correct no-backward-compatibility call. However, it has several concrete issues and a few missed opportunities for higher-level simplification. This review identifies 10 issues (3 critical, 4 significant, 3 minor) and 3 architectural alternatives worth considering before implementation starts. It was updated after operator review to keep `webfetch.save_as`, add automatic spill-to-file behavior, and make `read_mode='auto'` the default for `read` and `webfetch`.
 
 ---
 
@@ -22,36 +22,40 @@ The plan introduces `format: "markdown | text | html | metadata | attachment"` o
 
 These are not the same axis. An agent requesting metadata for an image URL does not want `format: "attachment"`. An agent fetching an HTML page may want markdown or raw HTML depending on the task. An image response should auto-attach regardless of what the agent "requested" as format, because the agent cannot know the content-type before fetching.
 
-**Recommendation:** Split into orthogonal parameters:
+**Recommendation:** Split into orthogonal parameters and use the same `read_mode` vocabulary as `read`:
 
 ```json
 {
   "url": "string",
-  "mode": "content | metadata",
-  "render": "markdown | text | html",
+  "read_mode": "auto | text | multimodal",
+  "metadata_only": "boolean?",
   "max_bytes": "number?",
+  "max_inline_bytes": "number?",
   "save_as": "string?"
 }
 ```
 
-- `mode=content` (default): fetch the body. `mode=metadata`: HEAD-like.
-- `render` only applies to text/HTML bodies. Image responses always attach.
-- If `render` is omitted, default to `markdown` for HTML content-type, `text` for plain text, and automatic attachment for image MIME types.
+- `read_mode='auto'` (default): fetch the body and infer text vs multimodal from content-type.
+- `metadata_only=true`: HEAD-like metadata behavior, no body.
+- Image responses auto-attach in `auto` mode.
 - Remove `format="attachment"` entirely. Attachments are driven by response content-type, not by a model pre-declaring intent.
+- If the text body exceeds `max_inline_bytes`, spill to a runtime-owned artifact file and return the path plus a capped preview.
+- Keep `save_as` for direct authorized persistence when the agent's intent is to save the fetched body rather than inspect it inline.
 
 This avoids the semantic layering problem and mirrors how OpenCode's `webfetch` actually works: it does not have an explicit `attachment` format; images auto-attach.
 
 ### C2: `read` is three tools in a trench coat
 
-The plan folds directory listing, text file reading, and multimodal attachment reading into one `read` tool via `read_mode: "text | multimodal | directory"`. This creates a tool with three entirely different output shapes, which is the kind of overload that confuses agents.
+The plan originally folded directory listing, text file reading, and multimodal attachment reading into one `read` tool via `read_mode: "text | multimodal | directory"`. This creates a tool with three entirely different output shapes, which is the kind of overload that confuses agents.
 
 OpenCode's `read` tool handles this differently: it reads a path. If the path is a directory, it returns entries. If the path is a file, it returns text or an attachment. The mode is inferred from what the path actually is, with `read_mode` as an override only for the text-vs-multimodal choice on files. Directory listing is not a separate explicit mode; it falls out naturally.
 
 **Recommendation:** Remove `read_mode="directory"`. Instead:
 
 - If `path` points to a directory, always return directory entries. No mode needed.
-- If `path` points to a file, `read_mode` controls text vs multimodal (default: text).
-- This makes `read_mode` a simple `"text" | "multimodal"` with a smart default — which is what we wanted in the first place.
+- If `path` points to a file, `read_mode` controls auto/text/multimodal behavior.
+- Default to `read_mode='auto'`, not `text`, so agents can call `read` without already knowing whether a path is text or supported media.
+- This makes `read_mode` a simple `"auto" | "text" | "multimodal"` with a smart default.
 
 This also eliminates the question of "what if the agent passes `read_mode='directory'` on a file path" — a confusing edge case the plan does not address.
 
@@ -109,15 +113,18 @@ OpenCode handles this by having `skill` be a single "load skill by name" tool, w
 
 Option B is closest to OpenCode and simplest. Option A is safest if we want strict per-action validation. The current plan's multi-action dispatch is the worst of both worlds.
 
-### S2: `webfetch.save_as` conflates read and write
+### S2: `webfetch.save_as` needs explicit write semantics, not removal
 
-The plan allows `webfetch` to optionally save fetched content to a project path. This means `webfetch` can mutate the project filesystem, which breaks the clean "web tools are read-only" assumption that the role permission table depends on.
+The plan allows `webfetch` to optionally save fetched content to a project path. This means `webfetch` can mutate the project filesystem, which breaks the simple "web tools are read-only" assumption that the role permission table depends on.
 
-If `save_as` goes through write authorization, then `webfetch` needs the same path guards as `write`. If it does not, it is a write-policy bypass. Either way, a read tool that sometimes writes complicates the security model.
+However, operator review confirmed that `save_as` is desirable: it avoids an unnecessary model round trip and avoids filling context with large data that the agent only wants to persist. This is also consistent with `run_command`, which writes oversized output to runtime-owned files and returns paths.
 
-**Recommendation:** Remove `save_as` from `webfetch`. If an agent needs to persist fetched content, it should use `webfetch` to retrieve it and then `write` to save it. This is one extra step but keeps the write boundary clean and audit-friendly. The current `download_file` / `download_with_fallbacks` behavior of saving to disk can be removed entirely; agents that need downloaded files can compose `webfetch` + `write`.
+**Recommendation:** Keep `save_as`, but make the write semantics explicit:
 
-If this is too inconvenient for the Data Agent workflow, consider a dedicated `download` tool that explicitly writes and goes through write authorization, rather than smuggling writes into `webfetch`.
+- If `save_as` is omitted and inline content is too large, write to a runtime-owned artifact path under `.saivage/tmp/webfetch/` and return the path plus a capped preview. This does not use project write permissions because it is runtime-owned evidence, analogous to command logs.
+- If `save_as` is provided, write to that caller-requested project path using the exact same authorization as `write`.
+- The role permission table must treat `webfetch` as a potentially mutating tool when `save_as` is available, or the runtime must reject `save_as` for roles without write privileges.
+- Tool output should clearly distinguish `artifact_path` (runtime-owned spill) from `path`/`saved_path` (project mutation).
 
 ### S3: `edit` should support creating new files
 
@@ -210,11 +217,11 @@ The plan is directionally correct and the scope is well-chosen. The three critic
 
 | Priority | Issue | Action |
 | --- | --- | --- |
-| Critical | C1: `webfetch` format enum | Replace with `mode` + `render`. Remove `format="attachment"`. Auto-attach images. |
-| Critical | C2: `read` triple-mode | Remove `read_mode="directory"`. Infer directory listing from path type. Keep `read_mode: "text" \| "multimodal"`. |
+| Critical | C1: `webfetch` format enum | Replace with `read_mode='auto' \| 'text' \| 'multimodal'` plus `metadata_only`. Remove `format="attachment"`. Auto-attach images and spill oversized inline text to runtime-owned files. |
+| Critical | C2: `read` triple-mode | Remove `read_mode="directory"`. Infer directory listing from path type. Keep `read_mode: "auto" \| "text" \| "multimodal"` with `auto` as default. |
 | Critical | C3: `apply_patch` custom format | Use unified diff + `deletions` array. |
 | Significant | S1: `skill` multi-action | Simplify to `skill` with `name` (required for read, omitted for list). Drop `search`. |
-| Significant | S2: `webfetch.save_as` | Remove. Let agents compose `webfetch` + `write`. |
+| Significant | S2: `webfetch.save_as` | Keep it, but enforce write authorization and add automatic runtime-owned spill files for oversized inline content. |
 | Significant | S3: `edit` new-file behavior | Keep file-must-exist; document clearly. |
 | Significant | S4: `glob`/`grep` `path` vs `directory` | Use `directory` for search roots, `path` for file targets. |
 | Minor | M1: `grep` context_lines | Default 0, hard cap 3. |
@@ -223,4 +230,4 @@ The plan is directionally correct and the scope is well-chosen. The three critic
 
 ### Overall Assessment
 
-The plan is **implementable with revisions**. Fix the three critical issues, apply the significant-issue tweaks, and the design will be clean and consistent. The architectural alternatives are worth documenting as future considerations but should not delay this pass.
+The plan is **implementable with revisions**. Fix the three critical issues, apply the significant-issue tweaks, and keep `webfetch.save_as` with explicit authorization and spill semantics. The architectural alternatives are worth documenting as future considerations but should not delay this pass.
