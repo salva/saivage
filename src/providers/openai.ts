@@ -40,6 +40,10 @@ export class OpenAICompatibleProvider extends BaseProvider {
     });
   }
 
+  override supportsImages(): boolean {
+    return true;
+  }
+
   async chat(request: ChatRequest): Promise<ChatResponse> {
     const messages = this.convertMessages(request);
     const tools = request.tools?.map((t) => this.convertTool(t));
@@ -131,18 +135,33 @@ export class OpenAICompatibleProvider extends BaseProvider {
             ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
           });
         } else if (m.role === "user") {
-          // Tool results
+          const userContent: Array<
+            | { type: "text"; text: string }
+            | { type: "image_url"; image_url: { url: string } }
+          > = [];
           for (const b of blocks) {
             if (b.type === "tool_result") {
+              if (userContent.length > 0) {
+                result.push({ role: "user", content: userContent } as OpenAI.ChatCompletionUserMessageParam);
+                userContent.length = 0;
+              }
               if (!b.tool_use_id) throw new Error("tool_result block missing tool_use_id");
               result.push({
                 role: "tool",
                 tool_call_id: b.tool_use_id,
                 content: b.content ?? "",
               });
+            } else if (b.type === "image" && b.url) {
+              userContent.push({ type: "image_url", image_url: { url: b.url } });
+            } else if (b.type === "text" && b.text) {
+              userContent.push({ type: "text", text: b.text });
             } else {
-              result.push({ role: "user", content: b.text ?? "" });
+              const text = b.text ?? "";
+              if (text) userContent.push({ type: "text", text });
             }
+          }
+          if (userContent.length > 0) {
+            result.push({ role: "user", content: userContent } as OpenAI.ChatCompletionUserMessageParam);
           }
         }
       }

@@ -220,6 +220,8 @@ export class PlannerAgent extends BaseAgent {
         is_error: r.isError,
       }));
       this.pushMessage({ role: "user", content: resultBlocks });
+      const mediaBlocks = this.mediaBlocksFromToolResults(dispatchResult);
+      if (mediaBlocks.length > 0) this.pushMessage({ role: "user", content: mediaBlocks });
       if (dispatchResult.aborted) break;
     }
 

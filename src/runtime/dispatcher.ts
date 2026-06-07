@@ -41,6 +41,35 @@ export interface ToolCallResultEntry {
   toolUseId: string;
   content: string;
   isError: boolean;
+  attachments?: ToolResultAttachment[];
+}
+
+export interface ToolResultAttachment {
+  mime: string;
+  url: string;
+  filename?: string;
+}
+
+function isAttachment(value: unknown): value is ToolResultAttachment {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.mime === "string" && typeof candidate.url === "string";
+}
+
+function normalizeToolOutput(value: unknown): { content: string; attachments?: ToolResultAttachment[] } {
+  if (typeof value === "string") return { content: value };
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const attachments = Array.isArray(obj.attachments) ? obj.attachments.filter(isAttachment) : [];
+    if (attachments.length > 0) {
+      const { attachments: _attachments, ...rest } = obj;
+      return {
+        content: typeof obj.text === "string" ? obj.text : JSON.stringify(rest),
+        attachments,
+      };
+    }
+  }
+  return { content: JSON.stringify(value) };
 }
 
 /**
@@ -193,9 +222,13 @@ export class Dispatcher {
         ctx.artifactExecution,
       );
 
-      const content =
-        typeof result === "string" ? result : JSON.stringify(result);
-      return { toolUseId: tc.id, content, isError: false };
+      const output = normalizeToolOutput(result);
+      return {
+        toolUseId: tc.id,
+        content: output.content,
+        ...(output.attachments ? { attachments: output.attachments } : {}),
+        isError: false,
+      };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
 

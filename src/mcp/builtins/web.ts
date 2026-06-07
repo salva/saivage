@@ -38,6 +38,12 @@ function headersObject(headers: Headers): Record<string, string> {
   return result;
 }
 
+function imageMime(contentType: string): string | null {
+  const mime = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
+  if (["image/png", "image/jpeg", "image/webp", "image/gif"].includes(mime)) return mime;
+  return null;
+}
+
 function stripHtml(value: string): string {
   return value
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -532,6 +538,40 @@ export function makeDataService(context: BuiltinContext): {
                 headers: headersObject(response.headers),
               },
               isError: true,
+            };
+          }
+          const mime = imageMime(response.headers.get("content-type") ?? "");
+          if (mime) {
+            let read: BoundedReadResult<Buffer>;
+            try {
+              read = await readBoundedBinaryBody(response, maxBytes, signal);
+            } catch (err) {
+              return {
+                content: {
+                  ...classifyNetworkError(err, url.toString(), { timedOut: timedOut() }),
+                  url: url.toString(),
+                },
+                isError: true,
+              };
+            }
+            return {
+              content: {
+                text: "Image fetched successfully",
+                url: url.toString(),
+                status: response.status,
+                ok: response.ok,
+                headers: headersObject(response.headers),
+                bytes_read: read.bytes,
+                truncated: read.truncated,
+                attachments: [
+                  {
+                    mime,
+                    url: `data:${mime};base64,${read.body.toString("base64")}`,
+                    filename: url.pathname.split("/").filter(Boolean).at(-1),
+                  },
+                ],
+              },
+              isError: false,
             };
           }
           let read: BoundedReadResult<string>;

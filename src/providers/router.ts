@@ -39,6 +39,12 @@ const PRIMARY_RETRY_BASE_DELAY_MS = 30_000;
 const PRIMARY_RETRY_BACKOFF_MULT = 1.5;
 const PRIMARY_RETRY_MAX_DELAY_MS = 20 * 60_000;
 
+function requestHasImages(messages: Message[]): boolean {
+  return messages.some(
+    (message) => Array.isArray(message.content) && message.content.some((block) => block.type === "image"),
+  );
+}
+
 interface StickyFailoverState {
   spec: string;
   retryDelayMs: number;
@@ -295,6 +301,7 @@ export class ModelRouter {
     const chain = this.buildCandidateChain(request.modelSpec, request);
     let lastError: Error | undefined;
     let attemptedPrimary = false;
+    const needsImages = requestHasImages(request.messages);
 
     for (const candidate of chain) {
       const spec = candidate.spec;
@@ -314,6 +321,11 @@ export class ModelRouter {
       const provider = this.getProviderForRequest(providerName, candidateRequest);
       if (!provider) {
         log.warn(`Provider "${providerName}" not registered, skipping ${candidate.healthKey}`);
+        continue;
+      }
+      if (needsImages && !provider.supportsImages()) {
+        lastError = new Error(`provider ${providerName} does not support image inputs`);
+        log.warn(`[router] Skipping ${candidate.healthKey}: image input is present but provider does not support images`);
         continue;
       }
       if (provider.setApiKey) {

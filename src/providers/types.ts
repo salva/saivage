@@ -16,6 +16,9 @@ export interface ContentBlock {
   tool_use_id?: string;
   content?: string;
   is_error?: boolean;
+  url?: string;
+  mediaType?: string;
+  filename?: string;
 }
 
 export interface ToolSchema {

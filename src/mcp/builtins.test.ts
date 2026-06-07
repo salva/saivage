@@ -643,6 +643,32 @@ describe("built-in MCP shell — inner wall-clock cap", () => {
     }
   });
 
+  it("fetch_url returns image attachments for image responses", async () => {
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC",
+      "base64",
+    );
+    const server: Server = createServer((_req, res) => {
+      res.statusCode = 200;
+      res.setHeader("content-type", "image/png");
+      res.end(png);
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const addr = server.address();
+    if (!addr || typeof addr === "string") throw new Error("no port");
+    try {
+      const result = await runtime.callTool("data", "fetch_url", {
+        url: `http://127.0.0.1:${addr.port}/pixel.png`,
+      }) as { text: string; attachments: Array<{ mime: string; url: string; filename?: string }> };
+      expect(result.text).toBe("Image fetched successfully");
+      expect(result.attachments).toHaveLength(1);
+      expect(result.attachments[0]).toMatchObject({ mime: "image/png", filename: "pixel.png" });
+      expect(result.attachments[0]?.url).toMatch(/^data:image\/png;base64,/);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+
   it("fetch_page_text caps raw HTML bytes (not the stripped text)", async () => {
     // Body is just text bytes, no HTML tags — bytes_read should reflect the raw stream cap.
     const big = "x".repeat(50_000);

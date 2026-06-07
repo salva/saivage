@@ -277,6 +277,10 @@ export class BaseAgent {
         })),
       );
       this.pushMessage({ role: "user", content: resultBlocks });
+      const mediaBlocks = this.mediaBlocksFromToolResults(dispatchResult);
+      if (mediaBlocks.length > 0) {
+        this.pushMessage({ role: "user", content: mediaBlocks });
+      }
 
       if (this.abortSignal?.aborted || dispatchResult.aborted) {
         return { text: "Aborted during tool execution", finishReason: "abort" };
@@ -507,6 +511,20 @@ export class BaseAgent {
   protected setArtifactExecutionContext(context: ArtifactExecutionContext | undefined): void {
     if (context) this.ctx.artifactExecution = context;
     else delete this.ctx.artifactExecution;
+  }
+
+  protected mediaBlocksFromToolResults(dispatchResult: DispatchResult): ContentBlock[] {
+    const attachments = dispatchResult.toolResults.flatMap((result) => result.attachments ?? []);
+    if (attachments.length === 0) return [];
+    return [
+      { type: "text", text: "Attached media from tool result:" },
+      ...attachments.map((attachment): ContentBlock => ({
+        type: "image",
+        url: attachment.url,
+        mediaType: attachment.mime,
+        filename: attachment.filename,
+      })),
+    ];
   }
 
   // ─── Private ────────────────────────────────────────────────────────────
