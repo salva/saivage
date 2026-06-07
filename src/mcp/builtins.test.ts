@@ -389,6 +389,39 @@ describe("read_file size cap (G31)", () => {
       .rejects.toThrow(/BINARY_CONTENT/);
   });
 
+  it("returns local image attachments when requested", async () => {
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC",
+      "base64",
+    );
+    writeFileSync(join(projectRoot, "pixel.png"), png);
+    const result = await runtime.callTool("filesystem", "read_file", {
+      path: "pixel.png",
+      response_format: "attachment",
+    }) as { text: string; attachments: Array<{ mime: string; url: string; filename?: string }> };
+    expect(result.text).toContain("untrusted media");
+    expect(result.attachments).toHaveLength(1);
+    expect(result.attachments[0]).toMatchObject({ mime: "image/png", filename: "pixel.png" });
+    expect(result.attachments[0]?.url).toMatch(/^data:image\/png;base64,/);
+  });
+
+  it("rejects unsupported local attachment types", async () => {
+    writeFileSync(join(projectRoot, "doc.pdf"), Buffer.from("%PDF-1.7\n"));
+    await expect(runtime.callTool("filesystem", "read_file", {
+      path: "doc.pdf",
+      response_format: "attachment",
+    })).rejects.toThrow(/UNSUPPORTED_ATTACHMENT_TYPE/);
+  });
+
+  it("rejects windowed local attachment reads", async () => {
+    writeFileSync(join(projectRoot, "pixel.gif"), Buffer.from("GIF89a"));
+    await expect(runtime.callTool("filesystem", "read_file", {
+      path: "pixel.gif",
+      response_format: "attachment",
+      offset: 0,
+    })).rejects.toThrow(/does not support offset or length/);
+  });
+
   it("reports truncated:false when the file fits below the cap", async () => {
     writeFileSync(join(projectRoot, "tiny.txt"), "hi");
     await expect(runtime.callTool("filesystem", "read_file", { path: "tiny.txt" }))

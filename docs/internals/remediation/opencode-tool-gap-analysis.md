@@ -30,7 +30,7 @@ Observed from `anomalyco/opencode` `dev` branch under `packages/opencode/src/too
 
 ## Saivage v2 Current Equivalent Coverage
 
-- File read/write/list/search: covered by `read_file`, `write_file`, `list_dir`, `search_files`, but read is UTF-8 only and lacks OpenCode-style media/PDF attachment reads.
+- File read/write/list/search: covered by `read_file`, `write_file`, `list_dir`, `search_files`. `read_file` supports UTF-8 text reads and OpenCode-style local image attachments via `response_format='attachment'`; PDF/file attachments are not yet implemented.
 - Shell: covered by `run_command`, with runtime-owned logs.
 - Web: covered by `web_search`, `fetch_url`, `fetch_page_text`, `download_file`, `download_with_fallbacks`, `head_url`; `fetch_url` now returns image attachments for image responses.
 - Git: Saivage has more explicit git tools than OpenCode: `git_status`, branch, checkout, commit, merge, diff, delete branch, log.
@@ -53,9 +53,9 @@ Saivage agents currently use `write_file` for all file changes, which encourages
 
 Add a structured patch tool for multi-file edits. This is safer than shelling out to ad hoc patch commands and gives the runtime a clear audit trail of changed paths. It should reject edits under disallowed territories before applying.
 
-3. `read_file` media/PDF attachments
+3. `read_file` PDF/file attachments
 
-For image/PDF files, return concise text metadata plus `attachments` instead of rejecting as binary. This would make the model-requested-image flow work for local screenshots and assets, not only `fetch_url` image responses.
+For PDF files and other provider-supported non-image files, return concise text metadata plus `attachments` instead of rejecting as binary. Local image attachment reads are implemented; this follow-up depends on provider-native file/PDF serialization rather than mapping every attachment to an image block.
 
 4. `capture_screenshot`
 
