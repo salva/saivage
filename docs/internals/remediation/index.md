@@ -28,6 +28,7 @@ implemented. Current subsystem behavior is documented in the main internals docs
 | Architecture/data cleanup | [Architecture and data cleanup master plan](./v2-architecture-data-cleanup-master-plan.md) | Records the staged cleanup that simplified schemas, stage ownership, plan-history reads, worker dispatch, MCP runtime structure, bootstrap composition, config schema organization, and final legacy shims. |
 | Event/history storage | [Event and history canonicalization](./event-history-canonicalization.md) | Keeps stage artifacts canonical, treats events as timeline/read-model evidence, and defers per-stage aggregate, SQLite, or event-sourcing migrations until there is a concrete trigger. |
 | Built-in tools | [OpenCode-aligned built-in tool redesign](./opencode-aligned-builtin-tools-plan.md) | Plans a no-backward-compatibility replacement of the model-facing built-in tool surface with `read`, `write`, `edit`, `apply_patch`, `grep`, `glob`, `webfetch`, `websearch`, and `skill`, while keeping built-ins directly implemented in-process. |
+| Built-in tools review | [Initial review](./opencode-aligned-builtin-tools-review.md), [second review](./opencode-aligned-builtin-tools-review-2.md), [third review](./opencode-aligned-builtin-tools-review-3.md) | Records unresolved implementation risks and plan-consistency findings for the OpenCode-aligned built-in tool redesign. |
 
 ## Current Authority
 
