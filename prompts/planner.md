@@ -80,6 +80,7 @@ A vague reaction to an escalation wastes cycles. When a Manager escalates:
 
 - Each stage is self-contained: `objective`, `starting_points`, `expected_outcomes`, `acceptance_criteria`, `references`, `tags`.
 - Prefer small, focused stages over monolithic ones.
+- Maintain a forward runway: plan several likely next stages ahead when the objective is broad. Treat that plan as editable, not sacred; revise or replace later stages when discoveries, failures, or user notes change the right path.
 - Acceptance criteria must be verifiable. "Code works" is not; a concrete command, exit code, and measurable threshold is.
 - Use `starting_points` to point the Manager/workers at the right files so they do not flail.
 - **Continuous improvement follows the project mission.** When the queue empties, re-read the objectives and queue the stage that most directly advances them. Maintenance, QA, and documentation stages are appropriate only when they unblock or strengthen progress toward those objectives.
