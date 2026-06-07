@@ -31,10 +31,9 @@ afterEach(() => {
 // ─── Conventions ─────────────────────────────────────────────────────────────
 
 describe("Conventions", () => {
-  it("detects coder writing to research/", () => {
+  it("allows coder writing to research/", () => {
     const warning = checkConvention("coder", "research/findings.md");
-    expect(warning).not.toBeNull();
-    expect(warning).toContain("Convention violation");
+    expect(warning).toBeNull();
   });
 
   it("allows coder writing to src/", () => {
@@ -84,16 +83,42 @@ describe("Conventions", () => {
   it("getConvention returns rule for known role", () => {
     const rule = getConvention("coder");
     expect(rule).not.toBeNull();
-    expect(rule?.writeTerritory).toContain("src/");
+    expect(rule?.writeTerritory).toEqual([""]);
+    expect(rule?.excludeTerritory).toContain(".saivage/");
   });
 
-  it("denies coder writes outside write territory", () => {
+  it("allows coder writes anywhere outside .saivage", () => {
     const decision = decidePathMutation(
       { role: "coder", agentId: "coder-1", projectRoot: tmpDir },
       "notes/free.md",
     );
+    expect(decision.ok).toBe(true);
+  });
+
+  it("denies coder writes under .saivage", () => {
+    const decision = decidePathMutation(
+      { role: "coder", agentId: "coder-1", projectRoot: tmpDir },
+      ".saivage/stages/stage-1/notes.md",
+    );
     expect(decision.ok).toBe(false);
-    if (!decision.ok) expect(decision.reason).toContain("outside write territory");
+    if (!decision.ok) expect(decision.reason).toContain("cannot write .saivage");
+  });
+
+  it("allows manager writes anywhere outside .saivage", () => {
+    const decision = decidePathMutation(
+      { role: "manager", agentId: "manager-1", projectRoot: tmpDir },
+      "src/planning-helper.ts",
+    );
+    expect(decision.ok).toBe(true);
+  });
+
+  it("denies manager writes under .saivage", () => {
+    const decision = decidePathMutation(
+      { role: "manager", agentId: "manager-1", projectRoot: tmpDir },
+      ".saivage/stages/stage-1/summary.json",
+    );
+    expect(decision.ok).toBe(false);
+    if (!decision.ok) expect(decision.reason).toContain("cannot write .saivage");
   });
 
   it("denies researcher writes to source through enforceable decisions", () => {

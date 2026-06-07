@@ -6,7 +6,6 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import type { SaivageConfig } from "../../config.js";
 import type { InProcessToolHandler } from "../runtime.js";
-import type { ToolCallContext } from "../toolContext.js";
 import type { ToolEntry } from "../types.js";
 import {
   DEFAULT_BUILTIN_SECURITY_CONTEXT,
@@ -14,7 +13,7 @@ import {
   type BuiltinContext,
   type BuiltinSecurityContext,
 } from "./context.js";
-import { authorizePathMutation, resolvePath } from "./paths.js";
+import { resolvePath } from "./paths.js";
 
 /** Headroom between the inner wall-clock cap and the outer McpRuntime
  *  race so the inner kill timer always wins and emits a structured result. */
@@ -38,14 +37,6 @@ const shellTools: ToolEntry[] = [
         inactivity_timeout_ms: {
           type: "number",
           description: "Kill the process if stdout/stderr stop growing for this many milliseconds. Preferred over timeout_ms for most commands. Minimum 600000 (10 min). Omit or set 0 to disable.",
-        },
-        stdout_path: {
-          type: "string",
-          description: "Optional project-relative file path for full stdout. Defaults to .saivage/tmp/command-logs/...",
-        },
-        stderr_path: {
-          type: "string",
-          description: "Optional project-relative file path for full stderr. Defaults to .saivage/tmp/command-logs/...",
         },
       },
       required: ["command"],
@@ -265,21 +256,22 @@ interface CommandResult {
 function resolveCommandLogPaths(
   args: Record<string, unknown>,
   context: BuiltinContext,
-  ctx?: ToolCallContext,
-): CommandLogPaths | { error: { error: string; code: "BLOCKED_PATH"; path: string } } {
+): CommandLogPaths | { error: { error: string; code: "INVALID_ARGUMENT" | "BLOCKED_PATH"; path?: string } } {
   const id = `${Date.now()}-${randomUUID().slice(0, 8)}`;
   const explicitStdout = typeof args.stdout_path === "string";
   const explicitStderr = typeof args.stderr_path === "string";
-  const stdoutRel = explicitStdout ? args.stdout_path as string : `.saivage/tmp/command-logs/${id}.stdout.log`;
-  const stderrRel = explicitStderr ? args.stderr_path as string : `.saivage/tmp/command-logs/${id}.stderr.log`;
-  const stdout = explicitStdout
-    ? authorizePathMutation(ctx, stdoutRel, context.project.projectRoot)
-    : { path: resolvePath(stdoutRel, context.project.projectRoot), relativePath: stdoutRel };
-  if ("error" in stdout) return { error: stdout.error };
-  const stderr = explicitStderr
-    ? authorizePathMutation(ctx, stderrRel, context.project.projectRoot)
-    : { path: resolvePath(stderrRel, context.project.projectRoot), relativePath: stderrRel };
-  if ("error" in stderr) return { error: stderr.error };
+  if (explicitStdout || explicitStderr) {
+    return {
+      error: {
+        error: "stdout_path and stderr_path are runtime-managed and cannot be specified by agents",
+        code: "INVALID_ARGUMENT",
+      },
+    };
+  }
+  const stdoutRel = `.saivage/tmp/command-logs/${id}.stdout.log`;
+  const stderrRel = `.saivage/tmp/command-logs/${id}.stderr.log`;
+  const stdout = { path: resolvePath(stdoutRel, context.project.projectRoot), relativePath: stdoutRel };
+  const stderr = { path: resolvePath(stderrRel, context.project.projectRoot), relativePath: stderrRel };
   return {
     stdoutAbs: stdout.path,
     stderrAbs: stderr.path,
@@ -357,7 +349,7 @@ export function makeShellService(
       ["inactivity_timeout_ms"],
       "inactivity_timeout_ms",
     ), context);
-    const outputPaths = resolveCommandLogPaths(args, context, ctx);
+    const outputPaths = resolveCommandLogPaths(args, context);
     if ("error" in outputPaths) return { content: outputPaths.error, isError: true };
 
     // Always enforce a hard wall-clock cap so the process group is

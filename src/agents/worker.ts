@@ -66,7 +66,7 @@ export async function buildInitialMessage(
     instructions.push(`Write optional detailed notes to: ${meta.notesDir(input.stageId)}`);
   }
   instructions.push(
-    `Call task_write_report({ report }) with a TaskReport object for .saivage/stages/${input.stageId}/reports/${input.task.id}.json`,
+    `Call task_write_report({ report }) with semantic report fields: status, summary, checklist_results, files_modified, files_created, tests_added, tests_run, commits, issues_found, and optional failure_reason. The runtime stamps task_id, stage_id, agent, and timing.`,
   );
   instructions.push(
     `Commit using git with message prefix: [${input.task.id}] if you modify files.`,
@@ -166,6 +166,11 @@ export class WorkerAgent extends BaseAgent {
     );
     const startedAt = new Date().toISOString();
     const startMs = Date.now();
+    this.setArtifactExecutionContext({
+      stageId: input.stageId,
+      taskId: input.task.id,
+      timing: { startedAt, startMs },
+    });
 
     try {
       const { text, finishReason } = await this.runLoop();
@@ -227,6 +232,8 @@ export class WorkerAgent extends BaseAgent {
           msg,
         ),
       };
+    } finally {
+      this.setArtifactExecutionContext(undefined);
     }
   }
 

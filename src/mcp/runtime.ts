@@ -2,7 +2,7 @@ import type { ServiceEntry, ToolEntry } from "./types.js";
 import type { McpClient } from "./client.js";
 import { log } from "../log.js";
 import type { SaivageConfig } from "../config.js";
-import type { ToolCallContext } from "./toolContext.js";
+import type { ArtifactExecutionContext, ToolCallContext } from "./toolContext.js";
 import { InProcessServiceRegistry, type InProcessToolHandler, type RuntimeToolEntry } from "./in-process-registry.js";
 import { ExternalMcpRuntime } from "./external-runtime.js";
 
@@ -75,9 +75,10 @@ export class McpRuntime {
     toolName: string,
     args: Record<string, unknown>,
     ctx?: ToolCallContext,
+    artifact?: ArtifactExecutionContext,
   ): Promise<unknown> {
     if (this.inProcess.hasService(serviceName)) {
-      return this.inProcess.callTool(serviceName, toolName, args, ctx);
+      return this.inProcess.callTool(serviceName, toolName, args, ctx, artifact);
     }
     return this.external.callTool(serviceName, toolName, args, ctx);
   }

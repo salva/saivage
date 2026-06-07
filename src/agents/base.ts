@@ -17,6 +17,7 @@ import type {
   AgentRole,
   InputChannel,
 } from "./types.js";
+import type { ArtifactExecutionContext } from "../mcp/toolContext.js";
 import { getToolFilter } from "./roster.js";
 import { applyToolFilter } from "./tool-filters.js";
 import { Dispatcher } from "../runtime/dispatcher.js";
@@ -501,6 +502,11 @@ export class BaseAgent {
   protected hasMeaningfulToolNamed(...toolNames: string[]): boolean {
     const allowed = new Set(toolNames);
     return this.meaningfulToolCallNames.some((name) => allowed.has(name));
+  }
+
+  protected setArtifactExecutionContext(context: ArtifactExecutionContext | undefined): void {
+    if (context) this.ctx.artifactExecution = context;
+    else delete this.ctx.artifactExecution;
   }
 
   // ─── Private ────────────────────────────────────────────────────────────

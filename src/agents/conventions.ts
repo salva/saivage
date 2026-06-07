@@ -43,6 +43,7 @@ function normalizeProjectRelative(projectRoot: string, filePath: string): { path
 function isInside(relPath: string, territory: string): boolean {
   const normalized = territory.replace(/\\/g, "/").replace(/^\.\//, "");
   const trimmed = normalized.endsWith("/") ? normalized.slice(0, -1) : normalized;
+  if (trimmed === "" || trimmed === ".") return true;
   return relPath === trimmed || relPath.startsWith(`${trimmed}/`);
 }
 

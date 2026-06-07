@@ -115,15 +115,15 @@ describe("built-in MCP services", () => {
       .rejects.toThrow('MCP service "web" is not running');
   });
 
-  it("exposes an optional shell command timeout", () => {
+  it("exposes shell command timeout controls but not runtime log path internals", () => {
     const runCommand = runtime.getAllTools().find((tool) => tool.service === "shell" && tool.name === "run_command");
 
     expect(runCommand?.inputSchema.properties).toMatchObject({
       timeout_ms: { type: "number" },
       inactivity_timeout_ms: { type: "number" },
-      stdout_path: { type: "string" },
-      stderr_path: { type: "string" },
     });
+    expect(runCommand?.inputSchema.properties).not.toHaveProperty("stdout_path");
+    expect(runCommand?.inputSchema.properties).not.toHaveProperty("stderr_path");
   });
 
   it("times out shell commands only when the caller requests it", async () => {
@@ -166,16 +166,22 @@ describe("built-in MCP services", () => {
     expect(result.duration_ms).toBeGreaterThan(0);
   });
 
-  it("writes full shell command output to requested log files", async () => {
-    const result = await runtime.callTool("shell", "run_command", {
+  it("rejects caller-specified shell command log files", async () => {
+    await expect(runtime.callTool("shell", "run_command", {
       command: "node -e \"console.log('stdout file'); console.error('stderr file')\"",
       stdout_path: "tmp/logs/stdout.log",
       stderr_path: "tmp/logs/stderr.log",
+    })).rejects.toThrow("stdout_path and stderr_path are runtime-managed");
+  });
+
+  it("writes full shell command output to runtime-generated log files", async () => {
+    const result = await runtime.callTool("shell", "run_command", {
+      command: "node -e \"console.log('stdout file'); console.error('stderr file')\"",
     }) as { stdout: string; stderr: string; exitCode: number; stdout_path: string; stderr_path: string; stdout_bytes: number; stderr_bytes: number; started_at: string; completed_at: string; duration_ms: number; last_output_at: string | null };
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout_path).toBe("tmp/logs/stdout.log");
-    expect(result.stderr_path).toBe("tmp/logs/stderr.log");
+    expect(result.stdout_path).toMatch(/^\.saivage\/tmp\/command-logs\/.+\.stdout\.log$/);
+    expect(result.stderr_path).toMatch(/^\.saivage\/tmp\/command-logs\/.+\.stderr\.log$/);
     expect(readFileSync(join(projectRoot, result.stdout_path), "utf-8")).toContain("stdout file");
     expect(readFileSync(join(projectRoot, result.stderr_path), "utf-8")).toContain("stderr file");
     expect(result.stdout_bytes).toBeGreaterThan(0);
@@ -184,6 +190,34 @@ describe("built-in MCP services", () => {
     expect(new Date(result.completed_at).getTime()).not.toBeNaN();
     expect(result.duration_ms).toBeGreaterThanOrEqual(0);
     expect(result.last_output_at).toEqual(expect.any(String));
+  });
+
+  it("uses runtime-generated command logs for worker shell commands", async () => {
+    const result = await runtime.callTool("shell", "run_command", {
+      command: "node -e \"console.log('stdout file'); console.error('stderr file')\"",
+    }, {
+      role: "coder",
+      agentId: "coder-1",
+      projectRoot,
+    }) as { stdout_path: string; stderr_path: string; exitCode: number };
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout_path).toMatch(/^\.saivage\/tmp\/command-logs\/.+\.stdout\.log$/);
+    expect(result.stderr_path).toMatch(/^\.saivage\/tmp\/command-logs\/.+\.stderr\.log$/);
+    expect(readFileSync(join(projectRoot, result.stdout_path), "utf-8")).toContain("stdout file");
+    expect(readFileSync(join(projectRoot, result.stderr_path), "utf-8")).toContain("stderr file");
+  });
+
+  it("rejects worker-selected command log paths", async () => {
+    await expect(runtime.callTool("shell", "run_command", {
+      command: "node -e \"console.log('stdout file'); console.error('stderr file')\"",
+      stdout_path: ".saivage/tmp/command-logs/coder-command.out",
+      stderr_path: ".saivage/tmp/command-logs/coder-command.err",
+    }, {
+      role: "coder",
+      agentId: "coder-1",
+      projectRoot,
+    })).rejects.toThrow("stdout_path and stderr_path are runtime-managed");
   });
 
   it("rejects invalid shell command timeouts", async () => {

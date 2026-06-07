@@ -16,6 +16,7 @@ import { log } from "../log.js";
 import { buildHandoffContext } from "./handoff.js";
 import { loadRolePrompt } from "./prompts.js";
 import { buildEagerBlock } from "../knowledge/eagerLoader.js";
+import { inspectionId } from "../ids.js";
 
 
 export class InspectorAgent extends BaseAgent {
@@ -86,7 +87,7 @@ export class InspectorAgent extends BaseAgent {
 /** Normalize an inspection request that may have missing fields from LLM output. */
 function normalizeInspectionRequest(raw: Record<string, unknown>): import("../types.js").InspectionRequest {
   return {
-    id: (raw.id as string | undefined) ?? "unknown",
+    id: (raw.id as string | undefined) ?? inspectionId(),
     scope: (raw.scope as string | undefined) ?? (raw.description as string | undefined) ?? "(no scope)",
     questions: Array.isArray(raw.questions) ? (raw.questions as string[]) : [],
     requested_at: (raw.requested_at as string | undefined) ?? new Date().toISOString(),

@@ -7,6 +7,7 @@ import { seedProject } from "../store/project.js";
 import { StageRunStore } from "../store/stage-run-store.js";
 import { PlanService } from "./plan-server.js";
 import type { StageSummary, TaskList, TaskReport } from "../types.js";
+import type { ToolCallContext } from "./toolContext.js";
 
 let projectRoot: string;
 
@@ -63,7 +64,90 @@ describe("Plan MCP stage artifact tools", () => {
 
     expect(result).toMatchObject({ isError: true, content: { code: "VALIDATION_ERROR" } });
   });
+
+  it("enriches semantic stage artifact inputs with runtime-owned fields", async () => {
+    const project = await seedProject(projectRoot, { name: "p", objectives: [] });
+    const stageRuns = new StageRunStore(project);
+    const service = new PlanService(project.saivageDir, stageRuns);
+    await service.init();
+
+    const managerCtx = toolCtx("manager", "manager-1", projectRoot, "stage-1");
+    const workerCtx = toolCtx("coder", "coder-1", projectRoot, "stage-1");
+
+    await expect(service.handleToolCall(
+      "stage_write_tasks",
+      { task_list: { tasks: makeTaskList().tasks } },
+      { ctx: managerCtx, artifact: { stageId: "stage-1" } },
+    )).resolves.toMatchObject({ isError: false });
+
+    const firstTasks = JSON.parse(readFileSync(stageRuns.stageTaskListPath("stage-1"), "utf-8"));
+    expect(firstTasks).toMatchObject({ stage_id: "stage-1", tasks: [{ id: "task-1" }] });
+    expect(typeof firstTasks.created_at).toBe("string");
+    expect(typeof firstTasks.updated_at).toBe("string");
+
+    await expect(service.handleToolCall(
+      "stage_write_tasks",
+      { task_list: { tasks: makeTaskList({ tasks: [{ ...makeTaskList().tasks[0], id: "task-2" }] }).tasks } },
+      { ctx: managerCtx, artifact: { stageId: "stage-1" } },
+    )).resolves.toMatchObject({ isError: false });
+
+    const secondTasks = JSON.parse(readFileSync(stageRuns.stageTaskListPath("stage-1"), "utf-8"));
+    expect(secondTasks.created_at).toBe(firstTasks.created_at);
+    expect(secondTasks).toMatchObject({ tasks: [{ id: "task-2" }] });
+
+    await expect(service.handleToolCall(
+      "task_write_report",
+      { report: { status: "completed", summary: "done" } },
+      {
+        ctx: workerCtx,
+        artifact: {
+          stageId: "stage-1",
+          taskId: "task-1",
+          timing: { startedAt: "2026-01-01T00:00:00.000Z", startMs: Date.now() - 5 },
+        },
+      },
+    )).resolves.toMatchObject({ isError: false });
+
+    const report = JSON.parse(readFileSync(stageRuns.stageTaskReportPath("stage-1", "task-1"), "utf-8"));
+    expect(report).toMatchObject({ task_id: "task-1", stage_id: "stage-1", agent: "coder", status: "completed", summary: "done" });
+    expect(report.checklist_results).toEqual([]);
+    expect(report.started_at).toBe("2026-01-01T00:00:00.000Z");
+    expect(typeof report.completed_at).toBe("string");
+    expect(report.duration_ms).toBeGreaterThanOrEqual(0);
+
+    await expect(service.handleToolCall(
+      "stage_write_summary",
+      {
+        summary: {
+          result: "escalated",
+          summary: "blocked",
+          tasks_completed: 0,
+          tasks_failed: 1,
+          total_tasks: 1,
+          escalation: { reason: "missing data", attempted_remediations: [] },
+        },
+      },
+      {
+        ctx: managerCtx,
+        artifact: { stageId: "stage-1", timing: { startedAt: "2026-01-01T00:00:00.000Z", startMs: Date.now() - 5 } },
+      },
+    )).resolves.toMatchObject({ isError: false });
+
+    const summary = JSON.parse(readFileSync(stageRuns.stageSummaryPath("stage-1"), "utf-8"));
+    expect(summary).toMatchObject({ stage_id: "stage-1", result: "escalated", outcomes_achieved: [], outcomes_missed: [], issues: [] });
+    expect(summary.escalation).toMatchObject({ stage_id: "stage-1", reason: "missing data" });
+    expect(typeof summary.escalation.created_at).toBe("string");
+  });
 });
+
+function toolCtx(role: ToolCallContext["role"], agentId: string, root: string, stageId?: string): ToolCallContext {
+  return {
+    role,
+    agentId,
+    projectRoot: root,
+    ...(stageId ? { stageId } : {}),
+  };
+}
 
 function makeTaskReport(overrides: Partial<TaskReport> = {}): TaskReport {
   return {

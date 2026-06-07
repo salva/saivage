@@ -16,8 +16,11 @@ import {
   StageSchema,
   CompletedStageSchema,
   TaskListSchema,
+  TaskListInputSchema,
   TaskReportSchema,
+  TaskReportInputSchema,
   StageSummarySchema,
+  StageSummaryInputSchema,
   type ActivePlanView,
   type PlanDocument,
   type PlanHistoryView,
@@ -28,10 +31,12 @@ import {
   type TaskReport,
   type StageSummary,
 } from "../types.js";
+import { WORKER_ROLES, type WorkerRole } from "../agents/roster.js";
 import { activePlanView, planHistoryView } from "../store/plan-read-models.js";
 import type { StageRunStore } from "../store/stage-run-store.js";
 import { archiveStage } from "../knowledge/lifecycle.js";
 import { log } from "../log.js";
+import type { ArtifactExecutionContext, ToolCallContext } from "./toolContext.js";
 export { PLAN_READER_TOOLS, PLAN_WRITER_TOOLS } from "./plan-registry.js";
 import { dispatchPlanToolCall, getPlanToolSchemas, PLAN_WRITER_TOOLS } from "./plan-registry.js";
 
@@ -49,8 +54,45 @@ export interface PlanError {
   error: string;
 }
 
+export interface PlanToolCallOptions {
+  ctx?: ToolCallContext;
+  artifact?: ArtifactExecutionContext;
+  /** Legacy test/operator attribution path; prefer ctx.agentId for new calls. */
+  agentId?: string;
+}
+
 function planError(code: PlanErrorCode, message: string): PlanError {
   return { code, error: message };
+}
+
+function agentIdFromOpts(opts: PlanToolCallOptions): string | undefined {
+  return opts.ctx?.agentId ?? opts.agentId;
+}
+
+function isWorkerRole(role: string | undefined): role is WorkerRole {
+  return !!role && (WORKER_ROLES as readonly string[]).includes(role);
+}
+
+function runtimeTiming(
+  opts: PlanToolCallOptions,
+  canonical?: { started_at: string; completed_at: string; duration_ms: number },
+): { started_at: string; completed_at: string; duration_ms: number } | PlanError {
+  const timing = opts.artifact?.timing;
+  if (timing) {
+    return {
+      started_at: timing.startedAt,
+      completed_at: new Date().toISOString(),
+      duration_ms: Date.now() - timing.startMs,
+    };
+  }
+  if (canonical) {
+    return {
+      started_at: canonical.started_at,
+      completed_at: canonical.completed_at,
+      duration_ms: canonical.duration_ms,
+    };
+  }
+  return planError("VALIDATION_ERROR", "Runtime timing is required for semantic artifact writes");
 }
 
 /**
@@ -433,11 +475,21 @@ export class PlanService {
   }
 
   /** stage_write_tasks — Submit the manager-created task list for a stage. */
-  async stage_write_tasks(args: { task_list: TaskList }, opts: { agentId?: string } = {}): Promise<{ ok: true; path: string } | PlanError> {
+  async stage_write_tasks(args: { task_list: TaskList }, opts: PlanToolCallOptions = {}): Promise<{ ok: true; path: string } | PlanError> {
     if (!this.stageRuns) return planError("IO_ERROR", "StageRunStore is not configured");
     try {
-      const taskList = TaskListSchema.parse(args.task_list);
-      await this.stageRuns.writeTaskList(taskList, { agentId: opts.agentId });
+      const input = TaskListInputSchema.parse(args.task_list);
+      const stageId = input.stage_id ?? opts.artifact?.stageId ?? opts.ctx?.stageId;
+      if (!stageId) return planError("VALIDATION_ERROR", "stage_write_tasks requires stage_id or runtime stage context");
+      const now = new Date().toISOString();
+      const existing = await readDocOrNull(this.stageRuns.stageTaskListPath(stageId), TaskListSchema);
+      const taskList = TaskListSchema.parse({
+        stage_id: stageId,
+        created_at: existing?.created_at ?? now,
+        updated_at: now,
+        tasks: input.tasks,
+      });
+      await this.stageRuns.writeTaskList(taskList, { agentId: agentIdFromOpts(opts), at: now });
       return { ok: true, path: this.stageRuns.stageTaskListPath(taskList.stage_id) };
     } catch (err) {
       return planError("VALIDATION_ERROR", err instanceof Error ? err.message : String(err));
@@ -445,11 +497,31 @@ export class PlanService {
   }
 
   /** task_write_report — Submit a worker TaskReport artifact. */
-  async task_write_report(args: { report: TaskReport }, opts: { agentId?: string } = {}): Promise<{ ok: true; path: string } | PlanError> {
+  async task_write_report(args: { report: TaskReport }, opts: PlanToolCallOptions = {}): Promise<{ ok: true; path: string } | PlanError> {
     if (!this.stageRuns) return planError("IO_ERROR", "StageRunStore is not configured");
     try {
-      const report = TaskReportSchema.parse(args.report);
-      await this.stageRuns.writeTaskReport(report, { agentId: opts.agentId });
+      const input = TaskReportInputSchema.parse(args.report);
+      const canonical = TaskReportSchema.safeParse(args.report);
+      const taskId = opts.artifact?.taskId ?? (canonical.success ? canonical.data.task_id : undefined);
+      if (!taskId) return planError("VALIDATION_ERROR", "task_write_report requires task_id or runtime task context");
+      const stageId = opts.artifact?.stageId ?? opts.ctx?.stageId ?? (canonical.success ? canonical.data.stage_id : undefined);
+      if (!stageId) return planError("VALIDATION_ERROR", "task_write_report requires stage_id or runtime stage context");
+      const agent = isWorkerRole(opts.ctx?.role)
+        ? opts.ctx.role
+        : canonical.success
+          ? canonical.data.agent
+          : undefined;
+      if (!agent) return planError("VALIDATION_ERROR", "task_write_report requires a worker runtime role");
+      const timing = runtimeTiming(opts, canonical.success ? canonical.data : undefined);
+      if ("code" in timing) return timing;
+      const report = TaskReportSchema.parse({
+        ...input,
+        task_id: taskId,
+        stage_id: stageId,
+        agent,
+        ...timing,
+      });
+      await this.stageRuns.writeTaskReport(report, { agentId: agentIdFromOpts(opts), at: report.completed_at });
       return { ok: true, path: this.stageRuns.stageTaskReportPath(report.stage_id, report.task_id) };
     } catch (err) {
       return planError("VALIDATION_ERROR", err instanceof Error ? err.message : String(err));
@@ -457,11 +529,29 @@ export class PlanService {
   }
 
   /** stage_write_summary — Submit the manager-created stage summary. */
-  async stage_write_summary(args: { summary: StageSummary }, opts: { agentId?: string } = {}): Promise<{ ok: true; path: string } | PlanError> {
+  async stage_write_summary(args: { summary: StageSummary }, opts: PlanToolCallOptions = {}): Promise<{ ok: true; path: string } | PlanError> {
     if (!this.stageRuns) return planError("IO_ERROR", "StageRunStore is not configured");
     try {
-      const summary = StageSummarySchema.parse(args.summary);
-      await this.stageRuns.writeStageSummary(summary, { agentId: opts.agentId });
+      const input = StageSummaryInputSchema.parse(args.summary);
+      const canonical = StageSummarySchema.safeParse(args.summary);
+      const stageId = input.stage_id ?? opts.artifact?.stageId ?? opts.ctx?.stageId ?? (canonical.success ? canonical.data.stage_id : undefined);
+      if (!stageId) return planError("VALIDATION_ERROR", "stage_write_summary requires stage_id or runtime stage context");
+      const timing = runtimeTiming(opts, canonical.success ? canonical.data : undefined);
+      if ("code" in timing) return timing;
+      const escalation = input.escalation
+        ? {
+            ...input.escalation,
+            stage_id: input.escalation.stage_id ?? stageId,
+            created_at: timing.completed_at,
+          }
+        : undefined;
+      const summary = StageSummarySchema.parse({
+        ...input,
+        stage_id: stageId,
+        escalation,
+        ...timing,
+      });
+      await this.stageRuns.writeStageSummary(summary, { agentId: agentIdFromOpts(opts), at: summary.completed_at });
       return { ok: true, path: this.stageRuns.stageSummaryPath(summary.stage_id) };
     } catch (err) {
       return planError("VALIDATION_ERROR", err instanceof Error ? err.message : String(err));
@@ -493,7 +583,7 @@ export class PlanService {
   async handleToolCall(
     toolName: string,
     args: Record<string, unknown>,
-    opts: { agentId?: string } = {},
+    opts: PlanToolCallOptions = {},
   ): Promise<{ content: unknown; isError: boolean }> {
     if (PLAN_WRITER_TOOLS.has(toolName)) {
       return this.serializeOp(() => dispatchPlanToolCall(this, toolName, args, opts));

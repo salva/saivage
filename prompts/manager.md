@@ -124,7 +124,7 @@ The `issues[]` array aggregates ALL `error`/`warning` issues found across worker
 
 ## Escalation Format
 
-When you must escalate, return a `StageSummary` with `result: "escalated"` and a populated `escalation` object. The summary must satisfy `StageSummarySchema`: include `stage_id`, `result`, `summary`, `tasks_completed`, `tasks_failed`, `total_tasks`, `outcomes_achieved`, `outcomes_missed`, `issues`, `started_at`, `completed_at`, `duration_ms`, plus the `escalation` block. The escalation block itself requires `stage_id`, `reason`, `attempted_remediations`, `created_at`, and should provide `suggested_action` (and `task_id` when a specific task triggered it).
+When you must escalate, call `stage_write_summary({ summary })` with `result: "escalated"` and a populated `escalation` object. You provide semantic fields: `result`, `summary`, task counts, outcomes, `issues`, and the `escalation` block. The runtime stamps `stage_id`, `started_at`, `completed_at`, `duration_ms`, and `escalation.created_at`. The escalation block itself requires `reason` and `attempted_remediations`, and should provide `suggested_action` (and `task_id` when a specific task triggered it).
 
 `reason` must be a specific technical root cause. `attempted_remediations` must list concrete actions you actually tried. `suggested_action` must be a concrete next step the Planner can act on.
 
@@ -134,12 +134,9 @@ Good: `reason: "Frozen run-spec at specs/baseline.json references dataset 'ds-A'
 
 ## File Conventions
 
-- Task list: `.saivage/stages/<stage-id>/tasks.json`. It MUST be a `TaskList` object — never a bare array:
+- Task list: call `stage_write_tasks({ task_list })`. It MUST be an object with `tasks` — never a bare array. The runtime stamps `stage_id`, `created_at`, and `updated_at`:
   ```json
   {
-    "stage_id": "<stage-id>",
-    "created_at": "<ISO>",
-    "updated_at": "<ISO>",
     "tasks": [
       {
         "id": "t1-short-name",
@@ -157,9 +154,9 @@ Good: `reason: "Frozen run-spec at specs/baseline.json references dataset 'ds-A'
   ```
   Valid `type`: `code`, `research`, `data`, `review`, `test`, `document`, `design`, `critique`. Valid `assigned_to`: `coder`, `researcher`, `data_agent`, `reviewer`, `designer`, `critic`. Valid statuses: `pending`, `in-progress`, `completed`, `failed`, `aborted`; new tasks start `pending`.
 - Worker reports: `.saivage/stages/<stage-id>/reports/`.
-- Stage summary: `.saivage/stages/<stage-id>/summary.json`.
+- Stage summary: call `stage_write_summary({ summary })`; provide semantic result fields only. The runtime stamps stage id and timing.
 - Commit messages: `[stg-<id>] <description>`.
 
-Write `.saivage/stages/<stage-id>/summary.json` as the full `StageSummary` JSON, then return a concise final response. Do not put the full `StageSummary` JSON in final prose.
+Call the stage artifact tools, then return a concise final response. Do not put the full summary JSON in final prose.
 
 {{> shared/execution-style}}

@@ -46,6 +46,18 @@ export interface ToolCallContext {
   operatorContext?: boolean;
 }
 
+/** Runtime execution state for stage artifact writer tools. */
+export interface ArtifactWriteTiming {
+  startedAt: string;
+  startMs: number;
+}
+
+export interface ArtifactExecutionContext {
+  stageId?: string;
+  taskId?: string;
+  timing?: ArtifactWriteTiming;
+}
+
 /**
  * Derive a stable `author` string for audit records when none is supplied.
  */

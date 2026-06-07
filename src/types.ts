@@ -145,6 +145,12 @@ export const TaskListSchema = z.object({
 });
 export type TaskList = z.infer<typeof TaskListSchema>;
 
+export const TaskListInputSchema = z.object({
+  stage_id: z.string().optional(),
+  tasks: z.array(TaskSchema),
+});
+export type TaskListInput = z.infer<typeof TaskListInputSchema>;
+
 // ─── 6. Task Report ─────────────────────────────────────────────────────────
 
 export const ChecklistResultSchema = z.object({
@@ -193,6 +199,21 @@ export const TaskReportSchema = z.object({
 });
 export type TaskReport = z.infer<typeof TaskReportSchema>;
 
+export const TaskReportInputSchema = z.object({
+  status: z.enum(["completed", "failed"]),
+  summary: z.string(),
+  checklist_results: z.array(ChecklistResultSchema).default([]),
+  files_modified: z.array(z.string()).default([]),
+  files_created: z.array(z.string()).default([]),
+  tests_added: z.array(z.string()).default([]),
+  tests_run: z.array(TestResultSchema).default([]),
+  commits: z.array(z.string()).default([]),
+  issues_found: z.array(IssueSchema).default([]),
+  output_truncated: z.boolean().optional(),
+  failure_reason: z.string().optional(),
+});
+export type TaskReportInput = z.infer<typeof TaskReportInputSchema>;
+
 // ─── 7. Stage Summary ───────────────────────────────────────────────────────
 
 export const EscalationSchema = z.object({
@@ -204,6 +225,15 @@ export const EscalationSchema = z.object({
   created_at: z.string(),
 });
 export type Escalation = z.infer<typeof EscalationSchema>;
+
+export const EscalationInputSchema = z.object({
+  stage_id: z.string().optional(),
+  task_id: z.string().optional(),
+  reason: z.string(),
+  attempted_remediations: z.array(z.string()),
+  suggested_action: z.string().optional(),
+});
+export type EscalationInput = z.infer<typeof EscalationInputSchema>;
 
 export const StageSummarySchema = z.object({
   stage_id: z.string(),
@@ -231,6 +261,29 @@ export const StageSummarySchema = z.object({
 });
 export type StageSummary = z.infer<typeof StageSummarySchema>;
 
+export const StageSummaryInputSchema = z.object({
+  stage_id: z.string().optional(),
+  result: z.enum(["completed", "failed", "escalated", "aborted"]),
+  summary: z.string(),
+  tasks_completed: z.number().int().nonnegative(),
+  tasks_failed: z.number().int().nonnegative(),
+  total_tasks: z.number().int().nonnegative(),
+  outcomes_achieved: z.array(z.string()).default([]),
+  outcomes_missed: z.array(z.string()).default([]),
+  issues: z.array(IssueSchema).default([]),
+  escalation: EscalationInputSchema.optional(),
+  abort_reason: z.string().optional(),
+}).superRefine((summary, ctx) => {
+  if (summary.tasks_completed + summary.tasks_failed > summary.total_tasks) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "tasks_completed plus tasks_failed must not exceed total_tasks",
+      path: ["total_tasks"],
+    });
+  }
+});
+export type StageSummaryInput = z.infer<typeof StageSummaryInputSchema>;
+
 // ─── 8. User Notes ──────────────────────────────────────────────────────────
 
 export const UserNoteSchema = z.object({
@@ -256,6 +309,16 @@ export const InspectionRequestSchema = z.object({
   chat_channel: z.string().optional(),
 });
 export type InspectionRequest = z.infer<typeof InspectionRequestSchema>;
+
+export const InspectionRequestInputSchema = z.object({
+  id: z.string().optional(),
+  scope: z.string(),
+  questions: z.array(z.string()).default([]),
+  requested_at: z.string().optional(),
+  requested_by: z.enum(["planner", "chat"]).optional(),
+  chat_channel: z.string().optional(),
+});
+export type InspectionRequestInput = z.infer<typeof InspectionRequestInputSchema>;
 
 export const InspectionReportSchema = z.object({
   id: z.string(),

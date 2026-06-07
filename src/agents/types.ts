@@ -11,6 +11,7 @@ import type {
 } from "../types.js";
 import type { ProjectContext } from "../store/project.js";
 import type { McpRuntime } from "../mcp/runtime.js";
+import type { ArtifactExecutionContext } from "../mcp/toolContext.js";
 import type { NoteManager } from "../runtime/notes.js";
 import type { ChatRequest, ChatResponse, Message, ToolSchema } from "../providers/types.js";
 
@@ -78,6 +79,8 @@ export interface AgentContext {
   channelId?: string;
   /** Chat session id (per-channel monotonic id) for chat-scoped agents. */
   sessionId?: string;
+  /** Current artifact writer execution state, set only while a task/stage runs. */
+  artifactExecution?: ArtifactExecutionContext;
 }
 
 /** Inputs for each agent type. */

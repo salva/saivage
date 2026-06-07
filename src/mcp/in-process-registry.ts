@@ -1,5 +1,5 @@
 import type { ToolEntry } from "./types.js";
-import type { ToolCallContext } from "./toolContext.js";
+import type { ArtifactExecutionContext, ToolCallContext } from "./toolContext.js";
 import { applyToolFilter } from "../agents/tool-filters.js";
 import { getToolFilter } from "../agents/roster.js";
 import { log } from "../log.js";
@@ -12,6 +12,7 @@ export type InProcessToolHandler = (
   toolName: string,
   args: Record<string, unknown>,
   ctx?: ToolCallContext,
+  artifact?: ArtifactExecutionContext,
 ) => Promise<{ content: unknown; isError: boolean }>;
 
 interface InProcessService {
@@ -43,6 +44,7 @@ export class InProcessServiceRegistry {
     toolName: string,
     args: Record<string, unknown>,
     ctx?: ToolCallContext,
+    artifact?: ArtifactExecutionContext,
   ): Promise<unknown> {
     const service = this.services.get(serviceName);
     if (!service) throw new Error(`Unknown in-process MCP service "${serviceName}"`);
@@ -52,7 +54,7 @@ export class InProcessServiceRegistry {
       ? this.opts.shellTimeoutMs
       : this.opts.inProcessTimeoutMs;
     const result = await withTimeout(
-      service.handler(toolName, args, ctx),
+      service.handler(toolName, args, ctx, artifact),
       timeoutMs,
       `Tool "${toolName}" on "${serviceName}" timed out after ${timeoutMs}ms`,
     );

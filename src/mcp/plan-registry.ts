@@ -1,5 +1,5 @@
 import type { Stage, StageSummary, TaskList, TaskReport } from "../types.js";
-import type { PlanService } from "./plan-server.js";
+import type { PlanService, PlanToolCallOptions } from "./plan-server.js";
 
 export type PlanToolSchema = {
   name: string;
@@ -11,7 +11,7 @@ export type PlanToolAccess = "reader" | "writer";
 
 type PlanToolEntry = PlanToolSchema & {
   access: PlanToolAccess;
-  handler(service: PlanService, args: Record<string, unknown>, opts: { agentId?: string }): Promise<unknown>;
+  handler(service: PlanService, args: Record<string, unknown>, opts: PlanToolCallOptions): Promise<unknown>;
 };
 
 export const PLAN_TOOL_REGISTRY = [
@@ -153,13 +153,13 @@ export const PLAN_TOOL_REGISTRY = [
   {
     name: "stage_write_tasks",
     access: "writer",
-    description: "Submit a validated TaskList artifact for a stage; persists .saivage/stages/<stage-id>/tasks.json.",
+    description: "Submit semantic task-list content for a stage; runtime stamps stage metadata and persists .saivage/stages/<stage-id>/tasks.json.",
     inputSchema: {
       type: "object",
       properties: {
         task_list: {
           type: "object",
-          description: "TaskList object with stage_id, created_at, updated_at, and tasks.",
+          description: "Task-list input with tasks and optional stage_id. Runtime owns created_at and updated_at.",
         },
       },
       required: ["task_list"],
@@ -169,13 +169,13 @@ export const PLAN_TOOL_REGISTRY = [
   {
     name: "task_write_report",
     access: "writer",
-    description: "Submit a validated TaskReport artifact; persists .saivage/stages/<stage-id>/reports/<task-id>.json.",
+    description: "Submit semantic task-report content; runtime stamps worker identity and timing, then persists .saivage/stages/<stage-id>/reports/<task-id>.json.",
     inputSchema: {
       type: "object",
       properties: {
         report: {
           type: "object",
-          description: "TaskReport object for the completed or failed worker task.",
+          description: "Task-report input with status, summary, evidence arrays, and issues. Runtime owns task_id, stage_id, agent, and timing.",
         },
       },
       required: ["report"],
@@ -185,13 +185,13 @@ export const PLAN_TOOL_REGISTRY = [
   {
     name: "stage_write_summary",
     access: "writer",
-    description: "Submit a validated StageSummary artifact; persists .saivage/stages/<stage-id>/summary.json.",
+    description: "Submit semantic stage-summary content; runtime stamps stage metadata and timing, then persists .saivage/stages/<stage-id>/summary.json.",
     inputSchema: {
       type: "object",
       properties: {
         summary: {
           type: "object",
-          description: "StageSummary object for the stage result.",
+          description: "Stage-summary input with result, summary, task counts, outcomes, issues, and optional escalation. Runtime owns stage_id and timing.",
         },
       },
       required: ["summary"],
@@ -238,7 +238,7 @@ export async function dispatchPlanToolCall(
   service: PlanService,
   toolName: string,
   args: Record<string, unknown>,
-  opts: { agentId?: string } = {},
+  opts: PlanToolCallOptions = {},
 ): Promise<{ content: unknown; isError: boolean }> {
   const tool = PLAN_TOOL_REGISTRY.find((entry) => entry.name === toolName);
   if (!tool) {

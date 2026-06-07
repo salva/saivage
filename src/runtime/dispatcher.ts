@@ -190,6 +190,7 @@ export class Dispatcher {
         tc.name,
         args,
         toolCtx,
+        ctx.artifactExecution,
       );
 
       const content =

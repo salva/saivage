@@ -439,8 +439,8 @@ async function initializePlanMcpService(
   mcpRuntime.registerInProcess(
     "plan",
     planTools,
-    (toolName: string, args: Record<string, unknown>, ctx?: import("../mcp/toolContext.js").ToolCallContext) =>
-      planService.handleToolCall(toolName, args, { agentId: ctx?.agentId }),
+    (toolName: string, args: Record<string, unknown>, ctx?: import("../mcp/toolContext.js").ToolCallContext, artifact?: import("../mcp/toolContext.js").ArtifactExecutionContext) =>
+      planService.handleToolCall(toolName, args, { ctx, artifact }),
   );
 
   return planService;
