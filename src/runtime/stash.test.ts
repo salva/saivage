@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stashResult, readStash, cleanStash } from "./stash.js";
+import { stashResult, cleanStash } from "./stash.js";
 
 describe("runtime/stash", () => {
   let projectRoot: string;
@@ -29,40 +29,30 @@ describe("runtime/stash", () => {
     rmSync(projectRoot, { recursive: true, force: true });
   });
 
-  it("round-trips a small payload through stashResult + readStash", async () => {
+  it("returns a project-relative stash path readable by filesystem read", async () => {
     const path = await stashResult("hello world", "tool_T1");
-    expect(path.startsWith(stashRoot)).toBe(true);
-    const r = await readStash(path);
-    expect(r.content).toBe("hello world");
-    expect(r.totalSize).toBe(11);
+    expect(path.startsWith(".saivage/tmp/stash/")).toBe(true);
+    expect(readFileSync(join(projectRoot, path), "utf-8")).toBe("hello world");
   });
 
-  it("slices via offset/length", async () => {
+  it("writes stash files under the project-local stash directory", async () => {
     const content = "x".repeat(1024);
     const path = await stashResult(content, "tool_T2");
-    expect(path.startsWith(stashRoot)).toBe(true);
-    const r = await readStash(path, 100, 50);
-    expect(r.content.length).toBe(50);
-    expect(r.offset).toBe(100);
-    expect(r.length).toBe(50);
-    expect(r.totalSize).toBe(1024);
-  });
-
-  it("rejects paths outside the stash root", async () => {
-    await expect(readStash("/etc/passwd")).rejects.toThrow(/read_stash only works on stashed files under/);
+    expect(path.startsWith(".saivage/tmp/stash/")).toBe(true);
+    expect(join(projectRoot, path).startsWith(stashRoot)).toBe(true);
+    expect(existsSync(join(projectRoot, path))).toBe(true);
   });
 
   it("cleanStash removes only files older than maxAgeMs", async () => {
     const a = await stashResult("a", "tool_T3");
     const b = await stashResult("b", "tool_T3");
     const c = await stashResult("c", "tool_T3");
-    expect(a.startsWith(stashRoot)).toBe(true);
+    expect(a.startsWith(".saivage/tmp/stash/")).toBe(true);
     const past = new Date(Date.now() - 10 * 60_000);
-    await utimes(a, past, past);
-    await utimes(b, past, past);
+    await utimes(join(projectRoot, a), past, past);
+    await utimes(join(projectRoot, b), past, past);
     const removed = await cleanStash(60_000);
     expect(removed).toBe(2);
-    const remaining = await readStash(c);
-    expect(remaining.content).toBe("c");
+    expect(readFileSync(join(projectRoot, c), "utf-8")).toBe("c");
   });
 });

@@ -55,9 +55,9 @@ const LIBRARIAN_TOOL_CATALOG: RuntimeToolEntry[] = [
   { service: "skills", name: "list_skills", description: "", inputSchema: {} },
   { service: "skills", name: "read_skill", description: "", inputSchema: {} },
   { service: "skills", name: "search_skills", description: "", inputSchema: {} },
-  { service: "filesystem", name: "read_file", description: "", inputSchema: {} },
-  { service: "filesystem", name: "list_dir", description: "", inputSchema: {} },
-  { service: "filesystem", name: "search_files", description: "", inputSchema: {} },
+  { service: "filesystem", name: "read", description: "", inputSchema: {} },
+  { service: "filesystem", name: "glob", description: "", inputSchema: {} },
+  { service: "filesystem", name: "grep", description: "", inputSchema: {} },
 ];
 
 type ToolStub = (args: Record<string, unknown>) => unknown;

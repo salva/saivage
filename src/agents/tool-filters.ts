@@ -10,8 +10,7 @@
 import type { ToolFilterKind } from "./roster.js";
 
 const READ_ONLY_TOOLS = new Set<string>([
-  "read_file", "list_dir", "search_files", "git_status", "git_log", "git_diff",
-  "list_skills", "read_skill",
+  "read", "glob", "grep", "git_status", "git_log", "git_diff", "skill",
 ]);
 
 const PLAN_TOOLS = new Set<string>([
@@ -28,30 +27,26 @@ const STAGE_ARTIFACT_TOOLS = new Set<string>([
 
 const WORKER_EXCLUDED_TOOLS = new Set<string>([
   ...PLAN_TOOLS,
-  "create_skill", "update_skill",
 ]);
 
-const READ_STASH = "read_stash";
-const WEB_TOOLS = new Set<string>(["web_search", "fetch_url", "fetch_page_text"]);
+const WEB_TOOLS = new Set<string>(["websearch", "webfetch"]);
 
 const LIBRARIAN_TOOLS = new Set<string>([
   "rag_list", "rag_stats", "rag_query",
   "rag_register", "rag_ingest", "rag_drop", "rag_admin",
-  "read_file", "list_dir", "search_files",
-  "list_skills", "read_skill", "search_skills",
+  "read", "glob", "grep", "skill",
   "list_memories", "get_memory", "search_memories",
   "create_memory", "update_memory",
-  "read_stash",
 ]);
 
 const TOOL_FILTERS: Record<ToolFilterKind, (name: string) => boolean> = {
-  planner: (n) => PLAN_TOOLS.has(n) || STAGE_ARTIFACT_TOOLS.has(n) || READ_ONLY_TOOLS.has(n) || n === READ_STASH,
+  planner: (n) => PLAN_TOOLS.has(n) || STAGE_ARTIFACT_TOOLS.has(n) || READ_ONLY_TOOLS.has(n),
   worker: (n) => !WORKER_EXCLUDED_TOOLS.has(n),
-  reviewer: (n) => READ_ONLY_TOOLS.has(n) || STAGE_ARTIFACT_TOOLS.has(n) || n === "run_command" || n === READ_STASH,
+  reviewer: (n) => READ_ONLY_TOOLS.has(n) || STAGE_ARTIFACT_TOOLS.has(n) || n === "run_command",
   inspector: (n) =>
-    READ_ONLY_TOOLS.has(n) || n === "run_command" || n === READ_STASH || WEB_TOOLS.has(n),
+    READ_ONLY_TOOLS.has(n) || n === "run_command" || WEB_TOOLS.has(n),
   chat: (n) =>
-    READ_ONLY_TOOLS.has(n) || n === READ_STASH || WEB_TOOLS.has(n) || n === "create_note",
+    READ_ONLY_TOOLS.has(n) || WEB_TOOLS.has(n) || n === "create_note",
   librarian: (n) => LIBRARIAN_TOOLS.has(n),
 };
 

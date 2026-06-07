@@ -1,10 +1,10 @@
 /**
  * Stash: saves large tool results to disk so the model can access them
- * selectively via read_stash, instead of blowing up the context window.
+ * selectively via the filesystem read tool, instead of blowing up the context window.
  */
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile, readFile, readdir, stat, unlink } from "node:fs/promises";
-import { join, resolve, relative } from "node:path";
+import { mkdir, writeFile, readdir, stat, unlink } from "node:fs/promises";
+import { join, relative } from "node:path";
 import { saivageDir } from "../config.js";
 import { log } from "../log.js";
 
@@ -16,7 +16,7 @@ async function ensureDir(): Promise<void> {
   await mkdir(stashDir(), { recursive: true });
 }
 
-/** Save content to a stash file. Returns the absolute file path. */
+/** Save content to a stash file. Returns the project-relative file path. */
 export async function stashResult(content: string, toolName: string): Promise<string> {
   await ensureDir();
   const id = randomUUID().slice(0, 12);
@@ -24,24 +24,7 @@ export async function stashResult(content: string, toolName: string): Promise<st
   const filepath = join(stashDir(), filename);
   await writeFile(filepath, content, "utf-8");
   log.info(`Stashed ${content.length} chars from tool "${toolName}" → ${filepath}`);
-  return filepath;
-}
-
-/** Read a portion of a stashed file. */
-export async function readStash(
-  filepath: string,
-  offset = 0,
-  length = 10_000,
-): Promise<{ content: string; totalSize: number; offset: number; length: number }> {
-  const stashRoot = resolve(stashDir());
-  const resolved = resolve(filepath);
-  const rel = relative(stashRoot, resolved);
-  if (rel.startsWith("..") || resolve(stashRoot, rel) !== resolved) {
-    throw new Error(`read_stash only works on stashed files under ${stashRoot}`);
-  }
-  const full = await readFile(filepath, "utf-8");
-  const chunk = full.slice(offset, offset + length);
-  return { content: chunk, totalSize: full.length, offset, length: chunk.length };
+  return relative(process.env["PROJECT_ROOT"] ?? process.cwd(), filepath);
 }
 
 /** Clean up stash files older than maxAgeMs (default 24h). Returns the count removed. */

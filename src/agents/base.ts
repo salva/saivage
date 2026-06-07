@@ -437,38 +437,13 @@ export class BaseAgent {
     const allTools = this.ctx.mcpRuntime.getAllTools();
     const kind = getToolFilter(this.role);
     const filtered = allTools.filter((t: RuntimeToolEntry) =>
-      applyToolFilter(kind, { name: t.name, service: t.service }),
+      applyToolFilter(kind, { name: t.originalName ?? t.name, service: t.service }),
     );
     const schemas: ToolSchema[] = filtered.map((t: RuntimeToolEntry) => ({
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema,
     }));
-
-    // Add synthetic read_stash tool
-    schemas.push({
-      name: "read_stash",
-      description:
-        "Read a portion of a previously stashed large result. Use when a tool result was too large and was stashed to disk.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          path: {
-            type: "string",
-            description: "Path to the stashed file",
-          },
-          offset: {
-            type: "number",
-            description: "Byte offset to start reading from (default: 0)",
-          },
-          length: {
-            type: "number",
-            description: "Number of bytes to read (default: 10000)",
-          },
-        },
-        required: ["path"],
-      },
-    });
 
     // Add dispatch tool schemas based on agent role
     if (this.hasChildSpawner) {
@@ -547,7 +522,7 @@ export class BaseAgent {
     const path = await stashResult(content, `tool_${toolUseId}`);
     return (
       `[Result stashed to disk — too large for context window (${tokens} tokens)]\n` +
-      `Use read_stash(path="${path}") to read portions of this result.`
+      `Use read(path="${path}") to read portions of this result.`
     );
   }
 

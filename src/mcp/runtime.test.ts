@@ -141,15 +141,15 @@ describe("McpRuntime role/tool enforcement", () => {
       .rejects.toThrow(/UNAUTHORIZED_TOOL/);
   });
 
-  it("denies reviewer write_file through direct runtime invocation", async () => {
+  it("denies reviewer write through direct runtime invocation", async () => {
     const runtime = makeRuntime();
     runtime.registerInProcess(
       "filesystem",
-      [{ name: "write_file", description: "write", inputSchema: { type: "object" } }],
+      [{ name: "write", description: "write", inputSchema: { type: "object" } }],
       async () => ({ content: { ok: true }, isError: false }),
     );
 
-    await expect(runtime.callTool("filesystem", "write_file", { path: "src/a.ts" }, baseCtx("reviewer")))
+    await expect(runtime.callTool("filesystem", "write", { path: "src/a.ts" }, baseCtx("reviewer")))
       .rejects.toThrow(/UNAUTHORIZED_TOOL/);
   });
 
@@ -177,7 +177,7 @@ describe("McpRuntime role/tool enforcement", () => {
       .resolves.toEqual({ ok: true });
   });
 
-  it("rejects agent-originated external MCP calls", async () => {
+  it("applies role filtering to external MCP calls", async () => {
     const runtime = new McpRuntime(
       {
         runtime: { restartOnCrash: true, continuousImprovement: true, healthCheckIntervalMs: 0, idleShutdownMs: 0, maxServices: 50 },
@@ -196,14 +196,93 @@ describe("McpRuntime role/tool enforcement", () => {
           connected: true,
           connect: async () => undefined,
           disconnect: async () => undefined,
-          getTools: () => [{ name: "fetch_url", description: "fetch", inputSchema: { type: "object" } }],
+          getTools: () => [{ name: "run_command", description: "run", inputSchema: { type: "object" } }],
           callTool: async () => ({ content: { ok: true }, isError: false }),
         } as unknown as ReturnType<NonNullable<McpRuntimeOptions["clientFactory"]>>),
       },
     );
-    await runtime.startFromEntry(makeEntry("external-web"));
+    await runtime.startFromEntry(makeEntry("external-shell"));
 
-    await expect(runtime.callTool("external-web", "fetch_url", { url: "https://example.com" }, baseCtx("researcher")))
-      .rejects.toThrow(/external MCP tool/);
+    await expect(runtime.callTool("external-shell", "run_command", { command: "pwd" }, baseCtx("planner")))
+      .rejects.toThrow(/UNAUTHORIZED_TOOL/);
+    await expect(runtime.callTool("external-shell", "run_command", { command: "pwd" }, baseCtx("researcher")))
+      .resolves.toEqual({ ok: true });
+  });
+
+  it("keeps built-in tool names unprefixed and aliases conflicting external MCP tools", async () => {
+    const runtime = new McpRuntime(
+      {
+        runtime: { restartOnCrash: true, continuousImprovement: true, healthCheckIntervalMs: 0, idleShutdownMs: 0, maxServices: 50 },
+        mcp: {
+          shellTimeoutMs: 4 * 60 * 60 * 1000,
+          shellTimeoutFloorMs: 10 * 60 * 1000,
+          inProcessTimeoutMs: 300_000,
+          maxOutputBytes: 100 * 1024,
+          maxFetchChars: 200_000,
+          maxDownloadBytes: 250 * 1024 * 1024,
+          maxFileReadBytes: 200_000,
+        },
+      } as unknown as SaivageConfig,
+      {
+        clientFactory: () => ({
+          connected: true,
+          connect: async () => undefined,
+          disconnect: async () => undefined,
+          getTools: () => [{ name: "read", description: "external read", inputSchema: { type: "object" } }],
+          callTool: async () => ({ content: { ok: true }, isError: false }),
+        } as unknown as ReturnType<NonNullable<McpRuntimeOptions["clientFactory"]>>),
+      },
+    );
+    runtime.registerInProcess(
+      "filesystem",
+      [{ name: "read", description: "builtin read", inputSchema: { type: "object" } }],
+      async () => ({ content: { ok: true }, isError: false }),
+    );
+
+    await runtime.startFromEntry(makeEntry("external-files"));
+
+    expect(runtime.getAllTools()).toEqual([
+      expect.objectContaining({ service: "filesystem", name: "read" }),
+      expect.objectContaining({ service: "external-files", name: "external-files_read", originalName: "read" }),
+    ]);
+    expect(new Set(runtime.getAllTools().map((tool) => tool.name)).size).toBe(runtime.getAllTools().limit);
+    expect(runtime.listAllToolsForApi().map((tool) => tool.name)).toEqual([
+      "read",
+      "external-files_read",
+    ]);
+  });
+
+  it("aliases duplicate external MCP tools deterministically", async () => {
+    const runtime = new McpRuntime(
+      {
+        runtime: { restartOnCrash: true, continuousImprovement: true, healthCheckIntervalMs: 0, idleShutdownMs: 0, maxServices: 50 },
+        mcp: {
+          shellTimeoutMs: 4 * 60 * 60 * 1000,
+          shellTimeoutFloorMs: 10 * 60 * 1000,
+          inProcessTimeoutMs: 300_000,
+          maxOutputBytes: 100 * 1024,
+          maxFetchChars: 200_000,
+          maxDownloadBytes: 250 * 1024 * 1024,
+          maxFileReadBytes: 200_000,
+        },
+      } as unknown as SaivageConfig,
+      {
+        clientFactory: () => ({
+          connected: true,
+          connect: async () => undefined,
+          disconnect: async () => undefined,
+          getTools: () => [{ name: "search", description: "search", inputSchema: { type: "object" } }],
+          callTool: async () => ({ content: { ok: true }, isError: false }),
+        } as unknown as ReturnType<NonNullable<McpRuntimeOptions["clientFactory"]>>),
+      },
+    );
+
+    await runtime.startFromEntry(makeEntry("alpha"));
+    await runtime.startFromEntry(makeEntry("beta"));
+
+    expect(runtime.getAllTools()).toEqual([
+      expect.objectContaining({ service: "alpha", name: "search" }),
+      expect.objectContaining({ service: "beta", name: "beta_search", originalName: "search" }),
+    ]);
   });
 });

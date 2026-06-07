@@ -152,8 +152,8 @@ describe("reviewer worker role", () => {
       countTokens: () => 0,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         calls.push(request);
-        const reviewNumber = Math.ceil(calls.length / 2);
-        if (calls.length % 2 === 1) {
+        const reviewNumber = Math.ceil(calls.limit / 2);
+        if (calls.limit % 2 === 1) {
           return {
             content: `Inspecting evidence for review ${reviewNumber}.`,
             toolCalls: [{ id: `tool-${reviewNumber}`, name: "test_tool", input: {} }],
@@ -217,7 +217,7 @@ describe("reviewer worker role", () => {
         calls.push(request);
         // Calls 1 and 3 are first turns of each review (need a tool call to
         // satisfy validateFinalResponse on the no-tool turn that follows).
-        if (calls.length === 1) {
+        if (calls.limit === 1) {
           return {
             content: "Inspecting evidence.",
             toolCalls: [{ id: "tool-1", name: "test_tool", input: {} }],
@@ -225,7 +225,7 @@ describe("reviewer worker role", () => {
             usage: { inputTokens: 1, outputTokens: 1 },
           };
         }
-        if (calls.length === 2) {
+        if (calls.limit === 2) {
           writeStageArtifact("stage-1/reports/review-1.json", makeTaskReport({
             task_id: "review-1",
             agent: "reviewer",
@@ -238,7 +238,7 @@ describe("reviewer worker role", () => {
             usage: { inputTokens: 1, outputTokens: 1 },
           };
         }
-        if (calls.length === 3) {
+        if (calls.limit === 3) {
           return {
             content: "Re-inspecting.",
             toolCalls: [{ id: "tool-2", name: "test_tool", input: {} }],
@@ -290,7 +290,7 @@ describe("reviewer worker role", () => {
 
     // Messages snapshotted on call 3 = state after review 1 finished.
     const msgs = calls[2].messages as Array<{ role: string; content: unknown }>;
-    const count = msgs.filter((m) => assistantTextEquals(m, "REVIEW DONE")).length;
+    const count = msgs.filter((m) => assistantTextEquals(m, "REVIEW DONE")).limit;
     expect(count).toBe(1);
   });
 });
@@ -305,12 +305,12 @@ describe("ChatAgent", () => {
       countTokens: () => 0,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         routerCalls.push(request);
-        if (routerCalls.length === 1) {
+        if (routerCalls.limit === 1) {
           firstRouterCall.resolve();
           await firstResponse.promise;
         }
         return {
-          content: `response ${routerCalls.length}`,
+          content: `response ${routerCalls.limit}`,
           toolCalls: [],
           finishReason: "end_turn",
           usage: { inputTokens: 1, outputTokens: 1 },
@@ -353,9 +353,9 @@ describe("ChatAgent", () => {
       countTokens: () => 0,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         routerCalls.push(request);
-        if (routerCalls.length === 1) await firstResponse.promise;
+        if (routerCalls.limit === 1) await firstResponse.promise;
         return {
-          content: `response ${routerCalls.length}`,
+          content: `response ${routerCalls.limit}`,
           toolCalls: [],
           finishReason: "end_turn",
           usage: { inputTokens: 1, outputTokens: 1 },
@@ -472,7 +472,7 @@ describe("Execution guards", () => {
       countTokens: () => 0,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         calls.push(request);
-        if (calls.length === 1) {
+        if (calls.limit === 1) {
           return {
             content: "Inspecting before completion.",
             toolCalls: [{ id: "tool-1", name: "test_tool", input: {} }],
@@ -515,7 +515,7 @@ describe("Execution guards", () => {
       countTokens: () => 0,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         calls.push(request);
-        if (calls.length === 1) {
+        if (calls.limit === 1) {
           return {
             content: "Dispatching implementation worker.",
             toolCalls: [{ id: "dispatch-1", name: "run_coder", input: { task: {}, stageId: "stage-1" } }],
@@ -523,7 +523,7 @@ describe("Execution guards", () => {
             usage: { inputTokens: 1, outputTokens: 1 },
           };
         }
-        if (calls.length === 2) {
+        if (calls.limit === 2) {
           return {
             content: "Dispatching reviewer.",
             toolCalls: [{ id: "dispatch-2", name: "run_reviewer", input: { task: {}, stageId: "stage-1" } }],
@@ -565,7 +565,7 @@ describe("Execution guards", () => {
       countTokens: () => 0,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         calls.push(request);
-        if (calls.length === 1) {
+        if (calls.limit === 1) {
           return {
             content: "Inspecting before completion.",
             toolCalls: [{ id: "tool-1", name: "test_tool", input: {} }],
@@ -645,7 +645,7 @@ describe("Execution guards", () => {
       countTokens: () => 0,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         calls.push(request);
-        if (calls.length === 1) {
+        if (calls.limit === 1) {
           return {
             content: JSON.stringify({
               task_id: "task-1",
@@ -659,7 +659,7 @@ describe("Execution guards", () => {
             usage: { inputTokens: 1, outputTokens: 1 },
           };
         }
-        if (calls.length === 2) {
+        if (calls.limit === 2) {
           return {
             content: "I am inspecting a file before returning the report.",
             toolCalls: [{ id: "tool-1", name: "test_tool", input: {} }],
@@ -703,7 +703,7 @@ describe("Execution guards", () => {
       countTokens: () => 0,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         calls.push(request);
-        if (calls.length === 1) {
+        if (calls.limit === 1) {
           return {
             content: JSON.stringify({
               stage_id: "stage-1",
@@ -721,7 +721,7 @@ describe("Execution guards", () => {
             usage: { inputTokens: 1, outputTokens: 1 },
           };
         }
-        if (calls.length === 2) {
+        if (calls.limit === 2) {
           return {
             content: "I am dispatching a coder now.",
             toolCalls: [{ id: "dispatch-1", name: "run_coder", input: { task: {}, stageId: "stage-1" } }],
@@ -729,7 +729,7 @@ describe("Execution guards", () => {
             usage: { inputTokens: 1, outputTokens: 1 },
           };
         }
-        if (calls.length === 3) {
+        if (calls.limit === 3) {
           return {
             content: "I am dispatching a reviewer now.",
             toolCalls: [{ id: "dispatch-2", name: "run_reviewer", input: { task: {}, stageId: "stage-1" } }],
@@ -790,7 +790,7 @@ describe("Execution guards", () => {
       countTokens: () => 0,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         calls.push(request);
-        if (calls.length === 1) {
+        if (calls.limit === 1) {
           return {
             content: "Dispatching implementation worker.",
             toolCalls: [{ id: "dispatch-1", name: "run_coder", input: { task: {}, stageId: "stage-1" } }],
@@ -798,7 +798,7 @@ describe("Execution guards", () => {
             usage: { inputTokens: 1, outputTokens: 1 },
           };
         }
-        if (calls.length === 2) {
+        if (calls.limit === 2) {
           writeStageArtifact("stage-1/summary.json", makeStageSummary({
             summary: "Worker completed the stage.",
             tasks_completed: 1,
@@ -821,7 +821,7 @@ describe("Execution guards", () => {
             usage: { inputTokens: 1, outputTokens: 1 },
           };
         }
-        if (calls.length === 3) {
+        if (calls.limit === 3) {
           return {
             content: "Dispatching reviewer.",
             toolCalls: [{ id: "dispatch-2", name: "run_reviewer", input: { task: {}, stageId: "stage-1" } }],
@@ -882,10 +882,10 @@ describe("Execution guards", () => {
       countTokens: () => 0,
       chat: async (request: ChatRequest): Promise<ChatResponse> => {
         calls.push(request);
-        if (calls.length === 2) {
+        if (calls.limit === 2) {
           return {
             content: "Listing files only.",
-            toolCalls: [{ id: "tool-1", name: "list_dir", input: { path: "." } }],
+            toolCalls: [{ id: "tool-1", name: "read", input: { path: "." } }],
             finishReason: "tool_use",
             usage: { inputTokens: 1, outputTokens: 1 },
           };
@@ -906,7 +906,7 @@ describe("Execution guards", () => {
 
     const agent = await WorkerAgent.createWorker(
       makeReviewerContext(tmpDir, router, {
-        getAllTools: () => [{ name: "list_dir", description: "list", inputSchema: {}, service: "filesystem" }],
+        getAllTools: () => [{ name: "read", description: "read", inputSchema: {}, service: "filesystem" }],
         callTool: async () => ({ ok: true }),
       }),
       makeWorkerInput("task-1", "Do one thing"),

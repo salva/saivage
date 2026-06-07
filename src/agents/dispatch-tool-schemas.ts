@@ -1,7 +1,7 @@
 import type { ToolSchema } from "../providers/types.js";
 import { ROSTER, type AgentRole } from "./roster.js";
 
-export const TRIVIAL_EVIDENCE_TOOLS = new Set(["list_dir", "read_stash"]);
+export const TRIVIAL_EVIDENCE_TOOLS = new Set(["read"]);
 
 const RUN_MANAGER_SCHEMA: ToolSchema = {
   name: "run_manager",

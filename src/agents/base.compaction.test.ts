@@ -261,7 +261,7 @@ describe("BaseAgent compaction integration (WI-14)", () => {
     agent.seedMessage({ role: "user", content: "older context" });
     agent.seedMessage({
       role: "assistant",
-      content: [{ type: "tool_use", id: "tu-1", name: "read_file", input: {} }],
+      content: [{ type: "tool_use", id: "tu-1", name: "read", input: {} }],
     });
     agent.seedMessage({
       role: "user",

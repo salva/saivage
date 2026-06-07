@@ -7,7 +7,7 @@ export interface ClassifiedFsError {
 }
 
 // Exported for unit testing only. classifyFsError is intentionally
-// scoped to read_file's contract; other filesystem tools should add
+// scoped to read's contract; other filesystem tools should add
 // their own classifier if they need one.
 export function classifyFsError(
   err: unknown,
@@ -23,7 +23,7 @@ export function classifyFsError(
         code: "NOT_FOUND",
         error:
           `NOT_FOUND: ${path} does not exist (during ${context}). ` +
-          `Check the spelling or use list_dir on the parent directory.`,
+          `Check the spelling or use read on the parent directory.`,
         errno,
       };
     case "EACCES":
@@ -40,7 +40,7 @@ export function classifyFsError(
         code: "NOT_A_FILE",
         error:
           `NOT_A_FILE: ${path} is a directory (open returned EISDIR). ` +
-          `Use list_dir.`,
+          `Use read.`,
         errno,
       };
     default:

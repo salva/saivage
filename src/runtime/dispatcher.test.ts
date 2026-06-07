@@ -53,3 +53,49 @@ describe("Dispatcher parallel batch dispatch", () => {
     });
   });
 });
+
+describe("Dispatcher tool resolution", () => {
+  it("dispatches aliased runtime tools by original service tool name", async () => {
+    const calls: Array<{ serviceName: string; toolName: string }> = [];
+    const dispatcher = new Dispatcher({
+      getAllTools: () => [
+        {
+          service: "external-files",
+          name: "external-files_read",
+          originalName: "read",
+          description: "external read",
+          inputSchema: { type: "object" },
+        },
+      ],
+      callTool: async (serviceName: string, toolName: string) => {
+        calls.push({ serviceName, toolName });
+        return { ok: true };
+      },
+    } as unknown as McpRuntime);
+
+    await expect(dispatcher.processToolCalls(
+      [{ id: "call-1", name: "external-files_read", input: { path: "README.md" } }],
+      { role: "researcher", agentId: "researcher-1", project: { projectRoot: "/tmp/project" } } as AgentContext,
+    )).resolves.toMatchObject({
+      toolResults: [{ toolUseId: "call-1", isError: false }],
+    });
+    expect(calls).toEqual([{ serviceName: "external-files", toolName: "read" }]);
+  });
+
+  it("rejects duplicate runtime tool names before dispatching", async () => {
+    const dispatcher = new Dispatcher({
+      getAllTools: () => [
+        { service: "a", name: "search", description: "a", inputSchema: { type: "object" } },
+        { service: "b", name: "search", description: "b", inputSchema: { type: "object" } },
+      ],
+      callTool: async () => ({ ok: true }),
+    } as unknown as McpRuntime);
+
+    await expect(dispatcher.processToolCalls(
+      [{ id: "call-1", name: "search", input: {} }],
+      { role: "researcher", agentId: "researcher-1", project: { projectRoot: "/tmp/project" } } as AgentContext,
+    )).resolves.toMatchObject({
+      toolResults: [{ toolUseId: "call-1", isError: true, content: "Error: Duplicate runtime tool name 'search'" }],
+    });
+  });
+});

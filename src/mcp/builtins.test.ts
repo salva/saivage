@@ -88,25 +88,30 @@ describe("built-in MCP services", () => {
   it("allows filesystem access inside the project root", async () => {
     writeFileSync(join(projectRoot, "README.md"), "hello", "utf-8");
 
-    await expect(runtime.callTool("filesystem", "read_file", { path: "README.md" }))
+    await expect(runtime.callTool("filesystem", "read", { path: "README.md" }))
       .resolves.toMatchObject({
         content: "hello",
         offset: 0,
-        length: 5,
+        lines_read: 1,
         size_bytes: 5,
         truncated: false,
       });
   });
 
   it("rejects filesystem access outside the project root", async () => {
-    await expect(runtime.callTool("filesystem", "read_file", { path: "/etc/passwd" }))
+    await expect(runtime.callTool("filesystem", "read", { path: "/etc/passwd" }))
       .rejects.toThrow("Path must stay inside");
   });
 
   it("does not register retired unavailable stub services", async () => {
     const toolNames = runtime.getAllTools().map((tool) => tool.name);
 
-    expect(toolNames).toContain("read_file");
+    expect(toolNames).toContain("read");
+    expect(toolNames).toContain("write");
+    expect(toolNames).toContain("glob");
+    expect(toolNames).toContain("grep");
+    expect(toolNames).toContain("edit");
+    expect(toolNames).toContain("apply_patch");
     expect(toolNames).toContain("fetch_url");
     expect(toolNames).toContain("download_file");
     expect(toolNames).toContain("download_with_fallbacks");
@@ -313,7 +318,7 @@ describe("built-in MCP services", () => {
   });
 });
 
-describe("read_file size cap (G31)", () => {
+describe("read size cap (G31)", () => {
   let projectRoot: string;
   let previousProjectRoot: string | undefined;
   let previousSaivageRoot: string | undefined;
@@ -352,52 +357,51 @@ describe("read_file size cap (G31)", () => {
   it("rejects whole-file reads above the configured cap (FILE_TOO_LARGE)", async () => {
     const MAX = cfg.mcp.maxFileReadBytes;
     writeFileSync(join(projectRoot, "big.log"), "x".repeat(MAX + 1));
-    await expect(runtime.callTool("filesystem", "read_file", { path: "big.log" }))
+    await expect(runtime.callTool("filesystem", "read", { path: "big.log" }))
       .rejects.toThrow(/FILE_TOO_LARGE/);
   });
 
-  it("returns the requested slice for a windowed read", async () => {
-    writeFileSync(join(projectRoot, "win.log"), "abcdefghijklmnop");
-    await expect(runtime.callTool("filesystem", "read_file",
-      { path: "win.log", offset: 4, length: 4 }))
+  it("returns the requested lines for a windowed read", async () => {
+    writeFileSync(join(projectRoot, "win.log"), "a\nb\nc\nd\ne\nf\ng\n");
+    await expect(runtime.callTool("filesystem", "read",
+      { path: "win.log", offset: 4, limit: 2 }))
       .resolves.toMatchObject({
-        content: "efgh",
+        content: "e\nf",
         offset: 4,
-        length: 4,
-        size_bytes: 16,
+        limit: 2,
         truncated: true,
       });
   });
 
-  it("rejects length > cap (LENGTH_TOO_LARGE)", async () => {
+  it("allows line limits larger than the byte cap", async () => {
     writeFileSync(join(projectRoot, "ok.txt"), "hi");
-    await expect(runtime.callTool("filesystem", "read_file",
-      { path: "ok.txt", length: cfg.mcp.maxFileReadBytes + 1 }))
-      .rejects.toThrow(/LENGTH_TOO_LARGE/);
+    await expect(runtime.callTool("filesystem", "read",
+      { path: "ok.txt", limit: cfg.mcp.maxFileReadBytes + 1 }))
+      .resolves.toMatchObject({ content: "hi", truncated: false });
   });
 
-  it("rejects offset > file size (INVALID_RANGE)", async () => {
+  it("rejects offset > line count (INVALID_RANGE)", async () => {
     writeFileSync(join(projectRoot, "small.txt"), "abc");
-    await expect(runtime.callTool("filesystem", "read_file",
+    await expect(runtime.callTool("filesystem", "read",
       { path: "small.txt", offset: 99 }))
       .rejects.toThrow(/INVALID_RANGE/);
   });
 
   it("rejects files with NUL bytes in the head (BINARY_CONTENT)", async () => {
     writeFileSync(join(projectRoot, "bin.dat"), Buffer.from([1, 2, 0, 4]));
-    await expect(runtime.callTool("filesystem", "read_file", { path: "bin.dat" }))
+    await expect(runtime.callTool("filesystem", "read", { path: "bin.dat" }))
       .rejects.toThrow(/BINARY_CONTENT/);
   });
 
-  it("returns local image attachments when requested", async () => {
+  it("returns local image multimodals when requested", async () => {
     const png = Buffer.from(
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC",
       "base64",
     );
     writeFileSync(join(projectRoot, "pixel.png"), png);
-    const result = await runtime.callTool("filesystem", "read_file", {
+    const result = await runtime.callTool("filesystem", "read", {
       path: "pixel.png",
-      response_format: "attachment",
+      read_mode: "multimodal",
     }) as { text: string; attachments: Array<{ mime: string; url: string; filename?: string }> };
     expect(result.text).toContain("untrusted media");
     expect(result.attachments).toHaveLength(1);
@@ -405,45 +409,45 @@ describe("read_file size cap (G31)", () => {
     expect(result.attachments[0]?.url).toMatch(/^data:image\/png;base64,/);
   });
 
-  it("rejects unsupported local attachment types", async () => {
+  it("rejects unsupported local multimodal types", async () => {
     writeFileSync(join(projectRoot, "doc.pdf"), Buffer.from("%PDF-1.7\n"));
-    await expect(runtime.callTool("filesystem", "read_file", {
+    await expect(runtime.callTool("filesystem", "read", {
       path: "doc.pdf",
-      response_format: "attachment",
+      read_mode: "multimodal",
     })).rejects.toThrow(/UNSUPPORTED_ATTACHMENT_TYPE/);
   });
 
-  it("rejects windowed local attachment reads", async () => {
+  it("rejects windowed local multimodal reads", async () => {
     writeFileSync(join(projectRoot, "pixel.gif"), Buffer.from("GIF89a"));
-    await expect(runtime.callTool("filesystem", "read_file", {
+    await expect(runtime.callTool("filesystem", "read", {
       path: "pixel.gif",
-      response_format: "attachment",
+      read_mode: "multimodal",
       offset: 0,
-    })).rejects.toThrow(/does not support offset or length/);
+    })).rejects.toThrow(/do not support offset or limit/);
   });
 
   it("reports truncated:false when the file fits below the cap", async () => {
     writeFileSync(join(projectRoot, "tiny.txt"), "hi");
-    await expect(runtime.callTool("filesystem", "read_file", { path: "tiny.txt" }))
+    await expect(runtime.callTool("filesystem", "read", { path: "tiny.txt" }))
       .resolves.toMatchObject({
         content: "hi",
         offset: 0,
-        length: 2,
+        limit: 1,
         size_bytes: 2,
         truncated: false,
       });
   });
 
-  it("rejects malformed offset/length values (INVALID_ARGUMENT)", async () => {
+  it("rejects malformed offset/limit values (INVALID_ARGUMENT)", async () => {
     writeFileSync(join(projectRoot, "tiny.txt"), "hi");
     for (const bad of [-1, 1.5, "0", Number.NaN]) {
-      await expect(runtime.callTool("filesystem", "read_file",
+      await expect(runtime.callTool("filesystem", "read",
         { path: "tiny.txt", offset: bad as never }))
         .rejects.toThrow(/INVALID_ARGUMENT/);
     }
     for (const bad of [-1, 1.5, "0", Number.NaN]) {
-      await expect(runtime.callTool("filesystem", "read_file",
-        { path: "tiny.txt", length: bad as never }))
+      await expect(runtime.callTool("filesystem", "read",
+        { path: "tiny.txt", limit: bad as never }))
         .rejects.toThrow(/INVALID_ARGUMENT/);
     }
   });
@@ -452,32 +456,37 @@ describe("read_file size cap (G31)", () => {
     // NUL at byte 1; window [4, 8) is all ASCII.
     writeFileSync(join(projectRoot, "head-nul.dat"),
       Buffer.from([0x41, 0x00, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47]));
-    await expect(runtime.callTool("filesystem", "read_file",
-      { path: "head-nul.dat", offset: 4, length: 4 }))
+    await expect(runtime.callTool("filesystem", "read",
+      { path: "head-nul.dat", offset: 4, limit: 4 }))
       .rejects.toThrow(/BINARY_CONTENT/);
   });
 
-  it("treats offset === size as an empty successful read", async () => {
+  it("treats offset === line count as an empty successful read", async () => {
     writeFileSync(join(projectRoot, "three.txt"), "abc");
-    await expect(runtime.callTool("filesystem", "read_file",
-      { path: "three.txt", offset: 3 }))
+    await expect(runtime.callTool("filesystem", "read",
+      { path: "three.txt", offset: 1 }))
       .resolves.toMatchObject({
         content: "",
-        offset: 3,
-        length: 0,
+        offset: 1,
+        limit: 1,
         size_bytes: 3,
         truncated: false,
       });
   });
 
-  it("rejects directories with NOT_A_FILE", async () => {
+  it("reads directories with sorted entries", async () => {
     mkdirSync(join(projectRoot, "sub"));
-    await expect(runtime.callTool("filesystem", "read_file", { path: "sub" }))
-      .rejects.toThrow(/NOT_A_FILE/);
+    writeFileSync(join(projectRoot, "sub", "b.txt"), "b");
+    writeFileSync(join(projectRoot, "sub", "a.txt"), "a");
+    await expect(runtime.callTool("filesystem", "read", { path: "sub" }))
+      .resolves.toMatchObject({
+        entries: [{ name: "a.txt", type: "file" }, { name: "b.txt", type: "file" }],
+        truncated: false,
+      });
   });
 
   it("returns NOT_FOUND for missing paths", async () => {
-    await expect(runtime.callTool("filesystem", "read_file",
+    await expect(runtime.callTool("filesystem", "read",
       { path: "does-not-exist.txt" }))
       .rejects.toThrow(/NOT_FOUND/);
   });
@@ -491,7 +500,7 @@ describe("read_file size cap (G31)", () => {
         // Running as root bypasses POSIX permission bits — skip per design r3 §8 risk 1.
         return;
       }
-      await expect(runtime.callTool("filesystem", "read_file",
+      await expect(runtime.callTool("filesystem", "read",
         { path: "no-read.txt" }))
         .rejects.toThrow(/PERMISSION_DENIED/);
     } finally {
@@ -676,7 +685,7 @@ describe("built-in MCP shell — inner wall-clock cap", () => {
     }
   });
 
-  it("fetch_url returns image attachments for image responses", async () => {
+  it("fetch_url returns image multimodals for image responses", async () => {
     const png = Buffer.from(
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC",
       "base64",
@@ -692,11 +701,11 @@ describe("built-in MCP shell — inner wall-clock cap", () => {
     try {
       const result = await runtime.callTool("data", "fetch_url", {
         url: `http://127.0.0.1:${addr.port}/pixel.png`,
-      }) as { text: string; attachments: Array<{ mime: string; url: string; filename?: string }> };
+      }) as { text: string; multimodals: Array<{ mime: string; url: string; filename?: string }> };
       expect(result.text).toBe("Image fetched successfully");
-      expect(result.attachments).toHaveLength(1);
-      expect(result.attachments[0]).toMatchObject({ mime: "image/png", filename: "pixel.png" });
-      expect(result.attachments[0]?.url).toMatch(/^data:image\/png;base64,/);
+      expect(result.multimodals).toHaveLength(1);
+      expect(result.multimodals[0]).toMatchObject({ mime: "image/png", filename: "pixel.png" });
+      expect(result.multimodals[0]?.url).toMatch(/^data:image\/png;base64,/);
     } finally {
       await new Promise<void>((r) => server.close(() => r()));
     }
@@ -1054,7 +1063,7 @@ describe("data: web_search (G33)", () => {
   });
 });
 
-describe("search_files (G32)", () => {
+describe("glob (G32)", () => {
   let projectRoot: string;
   let previousProjectRoot: string | undefined;
   let previousSaivageRoot: string | undefined;
@@ -1113,10 +1122,10 @@ describe("search_files (G32)", () => {
     return r.files.map((f) => f.startsWith(projectRoot + "/") ? f.slice(projectRoot.length + 1) : f).sort();
   }
 
-  it("exposes search_files in the tool catalogue with the new schema", () => {
+  it("exposes glob in the tool catalogue with the new schema", () => {
     const tools = runtime.getAllTools();
-    const tool = tools.find((t) => t.name === "search_files");
-    if (!tool) throw new Error("search_files tool not found");
+    const tool = tools.find((t) => t.name === "glob");
+    if (!tool) throw new Error("glob tool not found");
     const schema = tool.inputSchema as { properties: Record<string, unknown>; required: string[] };
     expect(schema.required).toEqual(["directory", "pattern"]);
     expect(schema.properties.max_results).toBeDefined();
@@ -1125,7 +1134,7 @@ describe("search_files (G32)", () => {
   // 5.2 glob matrix
   it("matches *.ts at the top level only", async () => {
     touch("a.ts"); touch("b.txt"); touch("src/c.ts");
-    const r = await runtime.callTool("filesystem", "search_files", { directory: ".", pattern: "*.ts" });
+    const r = await runtime.callTool("filesystem", "glob", { directory: ".", pattern: "*.ts" });
     expect(relMatches(r)).toEqual(["a.ts"]);
     expect((r as { truncated: boolean }).truncated).toBe(false);
     expect((r as { truncated_reason: unknown }).truncated_reason).toBeNull();
@@ -1133,25 +1142,25 @@ describe("search_files (G32)", () => {
 
   it("matches **/*.ts recursively", async () => {
     touch("a.ts"); touch("b.txt"); touch("src/c.ts");
-    const r = await runtime.callTool("filesystem", "search_files", { directory: ".", pattern: "**/*.ts" });
+    const r = await runtime.callTool("filesystem", "glob", { directory: ".", pattern: "**/*.ts" });
     expect(relMatches(r)).toEqual(["a.ts", "src/c.ts"]);
   });
 
   it("matches src/*.ts as directory-anchored single segment", async () => {
     touch("a.ts"); touch("src/c.ts"); touch("src/sub/d.ts");
-    const r = await runtime.callTool("filesystem", "search_files", { directory: ".", pattern: "src/*.ts" });
+    const r = await runtime.callTool("filesystem", "glob", { directory: ".", pattern: "src/*.ts" });
     expect(relMatches(r)).toEqual(["src/c.ts"]);
   });
 
   it("matches src/**/*.ts recursively under src", async () => {
     touch("a.ts"); touch("src/c.ts"); touch("src/sub/d.ts");
-    const r = await runtime.callTool("filesystem", "search_files", { directory: ".", pattern: "src/**/*.ts" });
+    const r = await runtime.callTool("filesystem", "glob", { directory: ".", pattern: "src/**/*.ts" });
     expect(relMatches(r)).toEqual(["src/c.ts", "src/sub/d.ts"]);
   });
 
   it("matches src/** as everything beneath src", async () => {
     touch("a.ts"); touch("src/c.ts"); touch("src/sub/d.ts");
-    const r = await runtime.callTool("filesystem", "search_files", { directory: ".", pattern: "src/**" });
+    const r = await runtime.callTool("filesystem", "glob", { directory: ".", pattern: "src/**" });
     expect(relMatches(r)).toEqual(["src/c.ts", "src/sub/d.ts"]);
   });
 
@@ -1160,7 +1169,7 @@ describe("search_files (G32)", () => {
     writeFileSync(join(projectRoot, "tree", "a.ts"), "x");
     mkdirSync(join(projectRoot, "tree", "src"));
     writeFileSync(join(projectRoot, "tree", "src", "c.ts"), "x");
-    const r = await runtime.callTool("filesystem", "search_files", { directory: "tree", pattern: "**" });
+    const r = await runtime.callTool("filesystem", "glob", { directory: "tree", pattern: "**" });
     const files = (r as { files: string[] }).files
       .map((f) => f.slice(join(projectRoot, "tree").length + 1))
       .sort();
@@ -1169,19 +1178,19 @@ describe("search_files (G32)", () => {
 
   it("matches a/**/b.ts across zero or more intermediate segments", async () => {
     touch("a/b.ts"); touch("a/x/b.ts"); touch("a/x/y/b.ts"); touch("b.ts");
-    const r = await runtime.callTool("filesystem", "search_files", { directory: ".", pattern: "a/**/b.ts" });
+    const r = await runtime.callTool("filesystem", "glob", { directory: ".", pattern: "a/**/b.ts" });
     expect(relMatches(r)).toEqual(["a/b.ts", "a/x/b.ts", "a/x/y/b.ts"]);
   });
 
   it("matches ?.ts as a single character", async () => {
     touch("a.ts"); touch("ab.ts");
-    const r = await runtime.callTool("filesystem", "search_files", { directory: ".", pattern: "?.ts" });
+    const r = await runtime.callTool("filesystem", "glob", { directory: ".", pattern: "?.ts" });
     expect(relMatches(r)).toEqual(["a.ts"]);
   });
 
   it("matches [ab].ts as a character class", async () => {
     touch("a.ts"); touch("b.ts"); touch("c.ts");
-    const r = await runtime.callTool("filesystem", "search_files", { directory: ".", pattern: "[ab].ts" });
+    const r = await runtime.callTool("filesystem", "glob", { directory: ".", pattern: "[ab].ts" });
     expect(relMatches(r)).toEqual(["a.ts", "b.ts"]);
   });
 
@@ -1193,14 +1202,14 @@ describe("search_files (G32)", () => {
     ["[abc"],
   ])("rejects pattern %s with INVALID_PATTERN", async (pat) => {
     touch("a.ts");
-    await expect(runtime.callTool("filesystem", "search_files", { directory: ".", pattern: pat }))
+    await expect(runtime.callTool("filesystem", "glob", { directory: ".", pattern: pat }))
       .rejects.toThrow(/INVALID_PATTERN/);
   });
 
   // 5.4 truncation envelope
   it("returns empty files / truncated:false when no matches", async () => {
     touch("a.txt");
-    const r = await runtime.callTool("filesystem", "search_files", { directory: ".", pattern: "*.ts" });
+    const r = await runtime.callTool("filesystem", "glob", { directory: ".", pattern: "*.ts" });
     expect((r as { files: string[] }).files).toEqual([]);
     expect((r as { truncated: boolean }).truncated).toBe(false);
     expect((r as { truncated_reason: unknown }).truncated_reason).toBeNull();
@@ -1208,7 +1217,7 @@ describe("search_files (G32)", () => {
 
   it("max_results:0 with matches present yields truncated_reason:results", async () => {
     touch("a.ts"); touch("b.ts"); touch("c.ts");
-    const r = await runtime.callTool("filesystem", "search_files",
+    const r = await runtime.callTool("filesystem", "glob",
       { directory: ".", pattern: "*.ts", max_results: 0 });
     expect((r as { files: string[] }).files).toEqual([]);
     expect((r as { truncated: boolean }).truncated).toBe(true);
@@ -1217,7 +1226,7 @@ describe("search_files (G32)", () => {
 
   it("max_results:0 with zero matches does NOT mark truncated", async () => {
     touch("a.txt");
-    const r = await runtime.callTool("filesystem", "search_files",
+    const r = await runtime.callTool("filesystem", "glob",
       { directory: ".", pattern: "*.ts", max_results: 0 });
     expect((r as { files: string[] }).files).toEqual([]);
     expect((r as { truncated: boolean }).truncated).toBe(false);
@@ -1226,7 +1235,7 @@ describe("search_files (G32)", () => {
 
   it("under-boundary returns all matches, truncated:false", async () => {
     touch("a.ts"); touch("b.ts");
-    const r = await runtime.callTool("filesystem", "search_files",
+    const r = await runtime.callTool("filesystem", "glob",
       { directory: ".", pattern: "*.ts", max_results: 5 });
     expect((r as { files: string[] }).files.length).toBe(2);
     expect((r as { truncated: boolean }).truncated).toBe(false);
@@ -1234,7 +1243,7 @@ describe("search_files (G32)", () => {
 
   it("exact-boundary returns max_results matches, truncated:false (regression)", async () => {
     touch("a.ts"); touch("b.ts"); touch("c.ts");
-    const r = await runtime.callTool("filesystem", "search_files",
+    const r = await runtime.callTool("filesystem", "glob",
       { directory: ".", pattern: "*.ts", max_results: 3 });
     expect((r as { files: string[] }).files.length).toBe(3);
     expect((r as { truncated: boolean }).truncated).toBe(false);
@@ -1243,7 +1252,7 @@ describe("search_files (G32)", () => {
 
   it("over-boundary returns max_results matches, truncated_reason:results", async () => {
     for (const n of ["a", "b", "c", "d", "e"]) touch(`${n}.ts`);
-    const r = await runtime.callTool("filesystem", "search_files",
+    const r = await runtime.callTool("filesystem", "glob",
       { directory: ".", pattern: "*.ts", max_results: 3 });
     expect((r as { files: string[] }).files.length).toBe(3);
     expect((r as { truncated: boolean }).truncated).toBe(true);
@@ -1255,7 +1264,7 @@ describe("search_files (G32)", () => {
     setup({ maxSearchDepth: 2 });
     await finishSetup();
     touch("a/b/c/leaf.ts");
-    const r = await runtime.callTool("filesystem", "search_files",
+    const r = await runtime.callTool("filesystem", "glob",
       { directory: ".", pattern: "**/*.ts" });
     expect((r as { files: string[] }).files).toEqual([]);
     expect((r as { truncated_reason: unknown }).truncated_reason).toBe("depth");
@@ -1266,7 +1275,7 @@ describe("search_files (G32)", () => {
     setup({ maxSearchMs: 1 });
     await finishSetup();
     for (let i = 0; i < 200; i++) touch(`f${i}.ts`);
-    const r = await runtime.callTool("filesystem", "search_files",
+    const r = await runtime.callTool("filesystem", "glob",
       { directory: ".", pattern: "*.ts" });
     const tr = (r as { truncated_reason: unknown }).truncated_reason;
     // either time-truncated or completed before the 1ms deadline expired
@@ -1278,38 +1287,38 @@ describe("search_files (G32)", () => {
 
   // 5.5 error envelope
   it("rejects empty pattern with INVALID_ARGUMENT", async () => {
-    await expect(runtime.callTool("filesystem", "search_files",
+    await expect(runtime.callTool("filesystem", "glob",
       { directory: ".", pattern: "" }))
       .rejects.toThrow(/INVALID_ARGUMENT: pattern must be a non-empty string/);
   });
 
   it("rejects non-string pattern with INVALID_ARGUMENT", async () => {
-    await expect(runtime.callTool("filesystem", "search_files",
+    await expect(runtime.callTool("filesystem", "glob",
       { directory: ".", pattern: 42 as never }))
       .rejects.toThrow(/INVALID_ARGUMENT/);
   });
 
   it.each([[-1], [1.5]])("rejects max_results=%s with INVALID_ARGUMENT", async (bad) => {
-    await expect(runtime.callTool("filesystem", "search_files",
+    await expect(runtime.callTool("filesystem", "glob",
       { directory: ".", pattern: "*.ts", max_results: bad as never }))
       .rejects.toThrow(/INVALID_ARGUMENT/);
   });
 
   it("returns NOT_A_DIRECTORY when directory argument is a file", async () => {
     touch("a.txt");
-    await expect(runtime.callTool("filesystem", "search_files",
+    await expect(runtime.callTool("filesystem", "glob",
       { directory: "a.txt", pattern: "*" }))
       .rejects.toThrow(/NOT_A_DIRECTORY/);
   });
 
   it("returns NOT_FOUND when directory does not exist", async () => {
-    await expect(runtime.callTool("filesystem", "search_files",
+    await expect(runtime.callTool("filesystem", "glob",
       { directory: "missing-dir", pattern: "*" }))
       .rejects.toThrow(/NOT_FOUND/);
   });
 
   it("rejects directories outside the project root", async () => {
-    await expect(runtime.callTool("filesystem", "search_files",
+    await expect(runtime.callTool("filesystem", "glob",
       { directory: "/etc", pattern: "*" }))
       .rejects.toThrow(/Path must stay inside/);
   });
@@ -1322,7 +1331,7 @@ describe("search_files (G32)", () => {
     writeFileSync(join(projectRoot, "locked", "hidden.ts"), "x");
     chmodSync(join(projectRoot, "locked"), 0o000);
     try {
-      const r = await runtime.callTool("filesystem", "search_files",
+      const r = await runtime.callTool("filesystem", "glob",
         { directory: ".", pattern: "**/*.ts" });
       expect((r as { files: string[] }).files.map((f) => f.split("/").pop()).sort()).toEqual(["a.ts"]);
       expect((r as { truncated: boolean }).truncated).toBe(false);
@@ -1348,7 +1357,7 @@ describe("search_files (G32)", () => {
     // Symlink loops are followed by opendir up to MAX_SEARCH_DEPTH, which
     // terminates the walk with truncated_reason:"depth" rather than
     // READ_DIRECTORY_FAILED. Assert the walker terminates and a.ts is found.
-    const r = await runtime.callTool("filesystem", "search_files",
+    const r = await runtime.callTool("filesystem", "glob",
       { directory: ".", pattern: "**/*.ts" });
     const fnames = (r as { files: string[] }).files.map((f) => f.split("/").pop());
     expect(fnames).toContain("a.ts");
@@ -1384,7 +1393,7 @@ describe("search_files (G32)", () => {
       }) as typeof original,
     });
     try {
-      await expect(runtime.callTool("filesystem", "search_files",
+      await expect(runtime.callTool("filesystem", "glob",
         { directory: ".", pattern: "**/*.ts" }))
         .rejects.toThrow(/READ_DIRECTORY_FAILED/);
     } finally {

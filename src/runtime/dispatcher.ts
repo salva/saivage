@@ -9,7 +9,6 @@ import { ProviderError } from "../providers/error.js";
 import type { AgentContext, AgentResult } from "../agents/types.js";
 import { ROSTER, isConcurrencyLimitedDispatch, type DispatchableRole } from "../agents/roster.js";
 import type { McpRuntime, RuntimeToolEntry } from "../mcp/runtime.js";
-import { readStash } from "./stash.js";
 import { log } from "../log.js";
 
 /** Maps dispatch tool name to child agent role. */
@@ -170,22 +169,15 @@ export class Dispatcher {
     ctx: AgentContext,
   ): Promise<ToolCallResultEntry> {
     try {
-      // Handle synthetic read_stash tool
-      if (tc.name === "read_stash") {
-        const args = tc.input as { path?: string; offset?: number; length?: number };
-        if (!args.path) {
-          return { toolUseId: tc.id, content: "Error: 'path' is required for read_stash", isError: true };
-        }
-        const result = await readStash(args.path, args.offset ?? 0, args.length ?? 10_000);
-        this.consecutiveInvalidCalls = 0;
-        return { toolUseId: tc.id, content: JSON.stringify(result), isError: false };
-      }
-
-      // Find which service owns this tool
       const allTools = this.mcpRuntime.getAllTools();
-      const toolEntry = allTools.find(
-        (t: RuntimeToolEntry) => t.name === tc.name,
-      );
+      const toolsByName = new Map<string, RuntimeToolEntry>();
+      for (const tool of allTools) {
+        if (toolsByName.has(tool.name)) {
+          throw new Error(`Duplicate runtime tool name '${tool.name}'`);
+        }
+        toolsByName.set(tool.name, tool);
+      }
+      const toolEntry = toolsByName.get(tc.name);
 
       if (!toolEntry) {
         this.consecutiveInvalidCalls++;
@@ -216,7 +208,7 @@ export class Dispatcher {
       };
       const result = await this.mcpRuntime.callTool(
         toolEntry.service,
-        tc.name,
+        toolEntry.originalName ?? toolEntry.name,
         args,
         toolCtx,
         ctx.artifactExecution,

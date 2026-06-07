@@ -1,5 +1,5 @@
 /**
- * WI-15 — write_file BLOCKED_PATH guard for .saivage/skills/ and .saivage/memory/.
+ * WI-15 — write BLOCKED_PATH guard for .saivage/skills/ and .saivage/memory/.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 async function writeFileTool(path: string, content: string): Promise<unknown> {
-  return runtime.callTool("filesystem", "write_file", { path, content }, {
+  return runtime.callTool("filesystem", "write", { path, content }, {
     role: "coder",
     agentId: "coder-test",
     projectRoot: tmpDir,
@@ -46,7 +46,7 @@ function operatorCtx(): ToolCallContext {
   };
 }
 
-describe("write_file BLOCKED_PATH guard (WI-15)", () => {
+describe("write BLOCKED_PATH guard (WI-15)", () => {
   it("blocks writes under .saivage/skills/", async () => {
     await expect(writeFileTool(".saivage/skills/project/foo.md", "x")).rejects.toThrow(
       /BLOCKED_PATH/,
@@ -60,13 +60,13 @@ describe("write_file BLOCKED_PATH guard (WI-15)", () => {
   });
 
   it("permits writes outside the knowledge store", async () => {
-    await runtime.callTool("filesystem", "write_file", { path: "notes/free.md", content: "hello" }, operatorCtx());
+    await runtime.callTool("filesystem", "write", { path: "notes/free.md", content: "hello" }, operatorCtx());
     expect(existsSync(join(tmpDir, "notes/free.md"))).toBe(true);
     expect(readFileSync(join(tmpDir, "notes/free.md"), "utf-8")).toBe("hello");
   });
 
   it("permits writes inside .saivage/ but outside skills/ and memory/", async () => {
-    await runtime.callTool("filesystem", "write_file", { path: ".saivage/notes/free.md", content: "ok" }, operatorCtx());
+    await runtime.callTool("filesystem", "write", { path: ".saivage/notes/free.md", content: "ok" }, operatorCtx());
     expect(existsSync(join(tmpDir, ".saivage/notes/free.md"))).toBe(true);
   });
 });
