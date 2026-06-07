@@ -13,7 +13,7 @@ export interface PlannerRestartRequest {
   requestedAt: string;
 }
 
-interface PlannerControlDeps {
+export interface PlannerControlDeps {
   consumeRestartRequest(): PlannerRestartRequest | null;
   onRestartRequested(listener: (request: PlannerRestartRequest) => void): () => void;
 }
@@ -51,7 +51,7 @@ export const CONTINUOUS_IMPROVEMENT_PROMPT =
   `7. Following the contract above, call plan_set_current(stage.id) and then run_manager(stage).\n\n` +
   `Only call plan_done if continuous-improvement mode has been disabled by runtime configuration or shutdown is requested.`;
 
-interface PlannerRunnerDeps {
+export interface PlannerRunnerDeps {
   runPlanner?: (runtime: PlannerRuntimeDeps, options?: { abortSignal?: { aborted: boolean } }) => Promise<AgentResult>;
   waitForRecoveryDelay?: (ms: number, signal?: RuntimeCancellationSignal) => Promise<boolean>;
 }

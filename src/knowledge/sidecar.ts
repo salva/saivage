@@ -133,7 +133,7 @@ const CURRENT_USER_VERSION = 1;
 /**
  * Open (or create) the sidecar database at the canonical project path
  * `<projectRoot>/.saivage/knowledge/store.sqlite`. Applies migrations
- * up to {@link CURRENT_USER_VERSION}.
+ * up to the current sidecar schema version.
  */
 export async function openSidecar(projectRoot: string): Promise<SidecarHandle> {
   const path = sidecarPath(projectRoot);

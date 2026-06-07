@@ -20,7 +20,7 @@ import type { ArtifactReadResult } from "./project-store.js";
 
 export type StageRunStatus = "planned" | "running" | "tasks_ready" | "summarized" | "completed" | "failed" | "escalated" | "aborted";
 
-type StageRunStoreProject = {
+export type StageRunStoreProject = {
   paths: Pick<ProjectContext["paths"], "plan" | "stages" | "events">;
 };
 

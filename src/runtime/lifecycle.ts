@@ -31,7 +31,7 @@ export class RuntimeLifecycle {
   private readonly abortListeners = new Set<() => void>();
   private readonly cancellationState = { aborted: false };
 
-  readonly signal = new RuntimeCancellationSignalImpl(
+  readonly signal: RuntimeCancellationSignal = new RuntimeCancellationSignalImpl(
     this.cancellationState,
     this.abortListeners,
   );
