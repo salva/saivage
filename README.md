@@ -69,4 +69,4 @@ tracking, and a richer web UI.
 
 ## License
 
-Private — all rights reserved.
+GNU General Public License v3.0 only. See [LICENSE](LICENSE).

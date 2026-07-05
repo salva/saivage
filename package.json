@@ -2,6 +2,7 @@
   "name": "saivage",
   "version": "0.1.0",
   "description": "Self-extending autonomous AI agent",
+  "license": "GPL-3.0-only",
   "type": "module",
   "engines": {
     "node": ">=24.0.0"
