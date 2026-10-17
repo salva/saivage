@@ -1,15 +1,18 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import FormattedContent from "../FormattedContent.vue";
 import ToolCallRow from "./ToolCallRow.vue";
+import ToolGroupRow from "./ToolGroupRow.vue";
 import type { ConversationEntry } from "../../api/types";
 import type { Round } from "./types";
+import { groupToolPairs, isToolGroup } from "./toolGrouping";
 import {
   FORMATTED_CONTENT_MAX_HEIGHT_CONTEXT,
   FORMATTED_CONTENT_MAX_HEIGHT_DIAGNOSTIC,
   FORMATTED_CONTENT_MAX_HEIGHT_REASONING,
 } from "./constants";
 
-defineProps<{
+const props = defineProps<{
   round: Round;
   defaultModelSpec: string | null;
   expanded: ReadonlySet<string>;
@@ -17,8 +20,11 @@ defineProps<{
 
 const emit = defineEmits<{
   "toggle-details": [id: string];
-  "open-file": [payload: { path: string; root: "project" | "saivage" }];
+  "open-file": [payload: { path: string; root: "project" | "saivage"; line?: number }];
+  "open-conversation": [payload: { agentId: string; roundId?: string }];
 }>();
+
+const toolItems = computed(() => groupToolPairs(props.round.id, props.round.toolPairs));
 
 function diagnosticTone(kind: ConversationEntry["kind"]): "ok" | "warn" | "danger" | "neutral" {
   if (kind === "model_recovered") return "ok";
@@ -55,12 +61,24 @@ function diagnosticLabel(kind: ConversationEntry["kind"]): string {
     </div>
 
     <div v-if="round.toolPairs.length > 0" class="agent-tool-list">
-      <template v-for="pair in round.toolPairs" :key="`${round.id}-tool-${pair.toolUseId}`">
+      <template v-for="item in toolItems" :key="isToolGroup(item) ? item.id : `${round.id}-tool-${item.toolUseId}`">
+        <ToolGroupRow
+          v-if="isToolGroup(item)"
+          :group="item"
+          :open="expanded.has(item.id)"
+          :expanded="expanded"
+          @toggle="emit('toggle-details', $event)"
+          @toggle-tool="emit('toggle-details', $event)"
+          @open-file="emit('open-file', $event)"
+          @open-conversation="emit('open-conversation', $event)"
+        />
         <ToolCallRow
-          :pair="pair"
-          :open="expanded.has(pair.toolUseId)"
+          v-else
+          :pair="item"
+          :open="expanded.has(item.toolUseId)"
           @toggle="emit('toggle-details', $event)"
           @open-file="emit('open-file', $event)"
+          @open-conversation="emit('open-conversation', $event)"
         />
       </template>
     </div>

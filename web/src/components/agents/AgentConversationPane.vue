@@ -7,7 +7,6 @@ import { parseRoundId } from "./round-id";
 import type { AgentConversation, ConversationEntry, AgentRole } from "../../api/types";
 import "./agent-conversation-pane.css";
 import {
-  FORMATTED_CONTENT_MAX_HEIGHT_CONTEXT,
   FORMATTED_CONTENT_MAX_HEIGHT_DIAGNOSTIC,
 } from "./constants";
 
@@ -19,7 +18,8 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   "toggle-details": [id: string];
-  "open-file": [payload: { path: string; root: "project" | "saivage" }];
+  "open-file": [payload: { path: string; root: "project" | "saivage"; line?: number }];
+  "open-conversation": [payload: { agentId: string; roundId?: string }];
 }>();
 
 const threadBody = ref<HTMLElement | null>(null);
@@ -71,7 +71,9 @@ function roleColor(role: AgentRole): string {
     case "data_agent": return "var(--teal)";
     case "reviewer": return "var(--purple)";
     case "designer": return "var(--pink, var(--accent))";
+    case "critic": return "var(--pink, var(--accent))";
     case "inspector": return "var(--orange)";
+    case "librarian": return "var(--teal)";
     case "chat": return "var(--text-muted)";
   }
 }
@@ -130,6 +132,7 @@ function durationUntil(ts: string): string {
         :expanded="expanded"
         @toggle-details="emit('toggle-details', $event)"
         @open-file="emit('open-file', $event)"
+        @open-conversation="emit('open-conversation', $event)"
       />
 
       <div
@@ -147,14 +150,14 @@ function durationUntil(ts: string): string {
         class="agent-context-standalone"
         :data-round-id="item.context.id"
       >
-        <div
-          v-for="c in item.context.context"
-          :key="`${item.context.id}-ctx-${c.messageIndex}-${c.blockIndex}`"
-          class="agent-context-block"
-          :title="new Date(c.timestamp).toLocaleString()"
-        >
-          <FormattedContent :content="c.content" :max-height="FORMATTED_CONTENT_MAX_HEIGHT_CONTEXT" />
-        </div>
+        <AgentRoundCard
+          :round="item.context"
+          :default-model-spec="defaultModelSpec"
+          :expanded="expanded"
+          @toggle-details="emit('toggle-details', $event)"
+          @open-file="emit('open-file', $event)"
+          @open-conversation="emit('open-conversation', $event)"
+        />
       </section>
 
       <section v-else class="agent-compacted-cluster">

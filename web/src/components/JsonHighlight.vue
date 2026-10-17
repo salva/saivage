@@ -118,7 +118,11 @@ const tokens = computed<Token[]>(() => {
   background: var(--code-block-bg);
   border-top: 1px solid var(--code-block-border);
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
   overflow-y: auto;
   tab-size: 2;
 }

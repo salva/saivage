@@ -1,201 +1,135 @@
 ---
 name: saivage-container
-description: "Manage the Saivage LXC container: start, stop, restart, deploy, rebuild, run tests, view logs, open shell, check status, get IP. Use when: operating the container, deploying changes, debugging the running service, running commands inside the container, managing the Saivage daemon. Also use whenever the user says things like 'check on saivage', 'is saivage running', 'rebuild saivage', 'saivage logs', 'SSH into the container', 'update saivage', 'restart the service', 'what is the container IP', or any mention of the LXC container, even if they don't say 'container' explicitly."
-compatibility: "Requires bare LXC (not LXD), SSH access configured via 'Host saivage' in ~/.ssh/config, Ubuntu host with NVIDIA GPU optional."
-allowed-tools: Bash(ssh:*) Bash(make:*) Bash(sudo:*)
+description: "Operate Saivage v2 services in local classic LXC containers. Use when checking health, inspecting or restarting a Saivage v2 service, viewing logs, verifying bind mounts, running commands in a container, deploying this v2 repo, or handling requests like 'restart the service', 'check saivage', 'saivage logs', 'SSH into the container', or 'what is the container IP'. Prefer this skill for Saivage v2 runtime operations, including named v2 harness instances."
+compatibility: "Requires classic LXC (not LXD). Prefer SSH into containers; use sudo lxc-* only for lifecycle or SSH-repair fallback."
+allowed-tools: Bash(ssh:*) Bash(make:*) Bash(sudo:*) Bash(curl:*)
 metadata:
   author: salva
-  version: "1.0"
+  version: "2.0"
 ---
 
-# Saivage LXC Container Management
+# Saivage v2 LXC Operations
 
-## Overview
+## Ground Rules
 
-Saivage runs inside a bare LXC container on the host. The host source directory is bind-mounted into the container at `/opt/saivage`, so edits on the host are immediately visible inside.
+- Work from `/home/salva/g/ml` unless the task names another path.
+- Read `/home/salva/g/ml/WORKSPACE_HANDOFF.md` before changing deployment/runtime state or long-running autonomous processes.
+- Prefer SSH for in-container inspection and service control. Use `root@<ip>` for privileged actions when available; use `salva@<ip>` for non-privileged inspection.
+- Use classic LXC commands only for container lifecycle, recovering broken SSH, reading host LXC config, or when the container has no reachable IP: `sudo lxc-ls --fancy`, `sudo lxc-info -n <container>`, `sudo lxc-attach -n <container> -- <command>`.
+- Do not use `lxc exec` or `lxc list`; this host uses classic LXC tooling.
+- Secret-bearing files such as `.saivage/auth-profiles.json`, `.saivage/saivage.json`, provider configs, env files, shell history, token files, or backups may be inspected or edited when authorized or needed. Avoid unnecessary disclosure of secret values in chat or logs.
+- Use `/home/salva/g/ml/tmp/` for temporary artifacts that may need inspection.
 
-All runtime commands go through **SSH** (`ssh saivage`) — no sudo required. Only container lifecycle commands (create, start-container, stop-container, destroy) need `sudo lxc-*`.
+## Deployment Inventory
 
-## Architecture
+Do not duplicate target-project-specific deployment tables in this project skill. For current container names, IPs, bind mounts, service names, and health snapshots, read `/home/salva/g/ml/WORKSPACE_HANDOFF.md` and verify live state before making changes.
 
-- **Container name**: `saivage`
-- **Base OS**: Ubuntu 25.10 (questing), matching host for NVIDIA/CUDA compatibility
-- **Node.js**: 24 (via NodeSource)
-- **Source mount**: host project root → `/opt/saivage` (bind mount, read-write)
-- **Service**: systemd unit `saivage.service` running `node dist/cli.js serve` on port 8080
-- **SSH**: passwordless via `Host saivage` entry in `~/.ssh/config`
-- **GPU**: NVIDIA devices bind-mounted (optional), userspace libs installed in container
-- **Network**: veth on lxcbr0, static IP `10.0.3.111` (DHCP reservation via MAC `00:16:3e:5a:1e:a9`)
+Saivage v2 services usually have this shape:
 
-## Quick Reference
+- Source repo mounted at `/opt/saivage`.
+- Target project mounted under `/work/<target>`.
+- Systemd service usually named `saivage.service` unless the workspace handoff documents a deployment-specific unit.
+- Service command shape usually `node dist/cli.js serve /work/<target>`.
+- HTTP health endpoint usually `http://<container-ip>:8080/health`.
 
-All commands run from `deploy/` directory. Prefer the Makefile targets.
+## Standard Restart Workflow
+
+1. Probe health from the host:
+
+```bash
+curl -fsS --max-time 5 http://<container-ip>:8080/health || true
+```
+
+2. Inspect status over SSH:
+
+```bash
+ssh root@<container-ip> 'systemctl status <service-name> --no-pager --lines=20'
+```
+
+If root SSH is not available but `salva` has sudo rights:
+
+```bash
+ssh salva@<container-ip> 'sudo systemctl status <service-name> --no-pager --lines=20'
+```
+
+3. Restart only the intended service:
+
+```bash
+ssh root@<container-ip> 'systemctl restart <service-name> && systemctl is-active <service-name>'
+```
+
+or:
+
+```bash
+ssh salva@<container-ip> 'sudo systemctl restart <service-name> && systemctl is-active <service-name>'
+```
+
+4. Verify systemd and health:
+
+```bash
+ssh root@<container-ip> 'systemctl show <service-name> -p ActiveState -p SubState -p MainPID --no-pager'
+curl -fsS --max-time 10 http://<container-ip>:8080/health
+```
+
+## Host-Key Handling
+
+If SSH reaches the container but fails host-key verification, do not edit global SSH config or known_hosts casually. Use a workspace-local known-hosts file for the operation:
+
+```bash
+ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/home/salva/g/ml/tmp/<container>-known-hosts <user>@<container-ip> '<command>'
+```
+
+## Deploy This v2 Repo After Code Changes
+
+For the primary v2 deployment managed by this repo's `deploy/` Makefile, prefer the project targets:
+
+```bash
+make -C deploy deploy
+make -C deploy status
+make -C deploy logs
+```
+
+`make -C deploy deploy` rebuilds inside the deployment environment and restarts the service. For named harness instances documented in the workspace handoff, build the mounted `/opt/saivage` repo as required by that deployment before restarting its service.
+
+## Logs And Process Inspection
+
+```bash
+ssh root@<container-ip> 'journalctl -u <service-name> -n 120 --no-pager'
+ssh root@<container-ip> 'ps -ef | grep -E "node|saivage" | grep -v grep'
+ssh root@<container-ip> 'ss -ltnp | grep -E ":8080|node" || true'
+```
+
+## LXC Fallback
+
+Use these only when SSH or health probing is unavailable, or for container lifecycle:
+
+```bash
+sudo lxc-ls --fancy
+sudo lxc-info -n <container>
+sudo lxc-attach -n <container> -- systemctl status <service-name> --no-pager --lines=20
+```
+
+If SSH is broken, copy the container user's authorized public keys into root's authorized keys via `lxc-attach`. Do not print private keys or token material.
+
+```bash
+CT=<container>
+sudo lxc-attach -n "$CT" -- sh -lc 'set -eu; mkdir -p /root/.ssh; chmod 700 /root/.ssh; touch /root/.ssh/authorized_keys; chmod 600 /root/.ssh/authorized_keys; if [ -f /home/salva/.ssh/authorized_keys ]; then while IFS= read -r key; do [ -n "$key" ] || continue; grep -qxF "$key" /root/.ssh/authorized_keys || printf "%s\n" "$key" >> /root/.ssh/authorized_keys; done < /home/salva/.ssh/authorized_keys; fi; chown -R root:root /root/.ssh'
+sudo lxc-attach -n "$CT" -- systemctl restart ssh.service
+```
+
+## Local v2 Container Makefile Reference
+
+When operating the primary project-local container, these targets may be available:
 
 | Task | Command |
-|------|---------|
+| --- | --- |
 | Start daemon | `make -C deploy start` |
 | Stop daemon | `make -C deploy stop` |
 | Restart daemon | `make -C deploy restart` |
 | View status | `make -C deploy status` |
 | Tail logs | `make -C deploy logs` |
 | Open shell | `make -C deploy shell` |
-| Rebuild & restart | `make -C deploy deploy` |
+| Rebuild and restart | `make -C deploy deploy` |
 | Run tests | `make -C deploy test` |
 | Get container IP | `make -C deploy ip` |
 | Container info | `make -C deploy info` |
-| Open dashboard | `make -C deploy dashboard` |
-| Edit config | `make -C deploy configure` |
-
-## Common Procedures
-
-### Run a command inside the container
-
-```bash
-ssh saivage "command here"
-```
-
-For interactive commands (like chat), use `-t` for a TTY:
-
-```bash
-# Chat is available via the web dashboard (WebSocket)
-CONTAINER_IP=$(make -C deploy ip)
-xdg-open "http://${CONTAINER_IP}:8080"
-```
-
-### Deploy after code changes
-
-Source is bind-mounted, so changes are already visible. Just rebuild and restart:
-
-```bash
-make -C deploy deploy
-```
-
-This runs `npm ci && npm run build` inside the container, then restarts the systemd service.
-
-### Check if the service is healthy
-
-```bash
-ssh saivage "sudo systemctl status saivage"
-```
-
-Or check the HTTP endpoint:
-
-```bash
-CONTAINER_IP=$(make -C deploy ip)
-curl -s "http://${CONTAINER_IP}:8080/health" || echo "Service not responding"
-```
-
-### View recent logs
-
-```bash
-ssh saivage "sudo journalctl -u saivage -n 50 --no-pager"
-```
-
-For live tailing:
-
-```bash
-ssh saivage "sudo journalctl -u saivage -f --no-pager"
-```
-
-### Restart after a crash
-
-```bash
-ssh saivage "sudo systemctl restart saivage"
-```
-
-Check why it crashed:
-
-```bash
-ssh saivage "sudo journalctl -u saivage -n 100 --no-pager"
-```
-
-### Full container lifecycle (first-time setup)
-
-```bash
-cd deploy
-make create      # Create LXC container
-make provision   # Install Node, NVIDIA libs, build, create systemd unit
-make configure   # Edit saivage.json (API keys, model config)
-make start       # Start the daemon
-```
-
-### Destroy the container
-
-```bash
-make -C deploy destroy
-```
-
-This prompts for confirmation before deleting.
-
-## Troubleshooting
-
-### SSH connection refused
-
-The container may not be running:
-
-```bash
-sudo lxc-info -n saivage
-sudo lxc-start -n saivage
-```
-
-Or SSH may not have started inside:
-
-```bash
-sudo lxc-attach -n saivage -- systemctl status ssh
-```
-
-### Container IP changed
-
-The `Host saivage` entry in `~/.ssh/config` has a fixed IP from provisioning time. If the container gets a new IP after restart:
-
-```bash
-NEW_IP=$(sudo lxc-info -n saivage -iH | head -1)
-sed -i "s/HostName .*/HostName ${NEW_IP}/" ~/.ssh/config
-```
-
-### Build failures
-
-If `npm ci` or `npm run build` fails inside the container:
-
-```bash
-ssh saivage "cd /opt/saivage && npm ci 2>&1 | tail -30"
-```
-
-Common causes: stale `node_modules` (remove and retry), native module build issues (check `build-essential` and `python3` are installed), or disk space. The bind mount means `node_modules` lives on the host filesystem.
-
-### Port conflict
-
-If the service won't start because port 8080 is already in use:
-
-```bash
-ssh saivage "ss -tlnp | grep 8080"
-```
-
-Kill the conflicting process or change the port in `/opt/saivage/.saivage/saivage.json` inside the container.
-
-### NVIDIA/CUDA not working
-
-Check that the host devices are visible:
-
-```bash
-ssh saivage "ls -la /dev/nvidia*"
-ssh saivage "nvidia-smi"
-```
-
-If `nvidia-smi` fails, the userspace libs may not match the host driver. Check versions:
-
-```bash
-cat /proc/driver/nvidia/version          # host
-ssh saivage "dpkg -l | grep nvidia"      # container
-```
-
-## Key File Paths
-
-- **Makefile**: `deploy/Makefile`
-- **Container creation**: `deploy/scripts/create-container.sh`
-- **Provisioning**: `deploy/scripts/provision.sh`
-- **Default config**: `deploy/config/saivage.json`
-- **LXC config** (host, needs sudo): `/var/lib/lxc/saivage/config`
-- **Runtime config** (inside container): `/opt/saivage/.saivage/saivage.json`
-- **Systemd unit** (inside container): `/etc/systemd/system/saivage.service`
-- **Source** (inside container): `/opt/saivage` (bind mount of host project root)

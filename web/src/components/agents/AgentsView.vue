@@ -11,7 +11,7 @@ import type { ChatLog } from "../../api/types";
 import type { SelectionKind } from "./types";
 
 const emit = defineEmits<{
-  "open-file": [payload: { path: string; root: "project" | "saivage" }];
+  "open-file": [payload: { path: string; root: "project" | "saivage"; line?: number }];
 }>();
 
 type Selection = { kind: SelectionKind; id: string };
@@ -46,6 +46,11 @@ async function selectAgent(agentId: string): Promise<void> {
   if (selected.value?.kind !== "agent" || selected.value.id !== agentId) {
     stopAgentPolling();
   }
+}
+
+function openConversation(payload: { agentId: string; roundId?: string }): void {
+  void selectAgent(payload.agentId);
+  if (payload.roundId) toggleDetails(payload.roundId);
 }
 
 async function selectSession(sessionId: string): Promise<void> {
@@ -109,6 +114,7 @@ watch(
         :expanded="expanded"
         @toggle-details="toggleDetails"
         @open-file="emit('open-file', $event)"
+        @open-conversation="openConversation"
       />
 
       <ChatSessionPane

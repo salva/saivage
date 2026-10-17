@@ -492,7 +492,10 @@ function shortModelLabel(msg: Message): string {
   font-size: 13px;
   line-height: 1.55;
   white-space: normal;
-  word-break: break-word;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .msg.user .msg-content {
@@ -535,16 +538,16 @@ function shortModelLabel(msg: Message): string {
 .msg.assistant .msg-content :deep(h1) { display: block; font-size: 16px; margin: 8px 0 4px; }
 .msg.assistant .msg-content :deep(h2) { display: block; font-size: 14px; margin: 6px 0 3px; }
 .msg.assistant .msg-content :deep(h3) { display: block; font-size: 13px; margin: 4px 0 2px; }
-.msg.assistant .msg-content :deep(code) { background: var(--code-bg); color: var(--code-color); padding: 1px 5px; border-radius: 3px; font-family: var(--mono); font-size: 12px; }
-.msg.assistant .msg-content :deep(pre) { background: var(--code-block-bg); border: 1px solid var(--code-block-border); padding: 10px 12px; border-radius: 6px; margin: 6px 0; overflow-x: auto; font-size: 12px; line-height: 1.5; }
-.msg.assistant .msg-content :deep(pre code) { font-family: var(--mono); color: var(--code-block-text); background: transparent; padding: 0; }
+.msg.assistant .msg-content :deep(code) { background: var(--code-bg); color: var(--code-color); padding: 1px 5px; border-radius: 3px; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; word-break: normal; }
+.msg.assistant .msg-content :deep(pre) { background: var(--code-block-bg); border: 1px solid var(--code-block-border); padding: 10px 12px; border-radius: 6px; margin: 6px 0; overflow-x: hidden; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; min-width: 0; max-width: 100%; font-size: 12px; line-height: 1.5; }
+.msg.assistant .msg-content :deep(pre code) { font-family: var(--mono); color: var(--code-block-text); background: transparent; padding: 0; white-space: inherit; overflow-wrap: inherit; word-break: inherit; }
 .msg.assistant .msg-content :deep(ul), .msg.assistant .msg-content :deep(ol) { padding-left: 1.2em; margin: 4px 0; }
 .msg.assistant .msg-content :deep(li) { line-height: 1.4; }
 .msg.assistant .msg-content :deep(blockquote) { border-left: 3px solid var(--border, #444); padding-left: 10px; margin: 6px 0; color: var(--text-muted); }
-.msg.assistant .msg-content :deep(a) { color: var(--link, #6cf); text-decoration: underline; }
+.msg.assistant .msg-content :deep(a) { color: var(--link, #6cf); text-decoration: underline; overflow-wrap: anywhere; word-break: normal; }
 .msg.assistant .msg-content :deep(hr) { border: 0; border-top: 1px solid var(--border, #444); margin: 8px 0; }
-.msg.assistant .msg-content :deep(table) { border-collapse: collapse; margin: 8px 0; font-size: 12px; }
-.msg.assistant .msg-content :deep(th), .msg.assistant .msg-content :deep(td) { border: 1px solid var(--border, #444); padding: 4px 8px; text-align: left; }
+.msg.assistant .msg-content :deep(table) { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 8px 0; font-size: 12px; }
+.msg.assistant .msg-content :deep(th), .msg.assistant .msg-content :deep(td) { border: 1px solid var(--border, #444); padding: 4px 8px; text-align: left; overflow-wrap: anywhere; word-break: normal; }
 .msg.assistant .msg-content :deep(th) { background: var(--bg-strong, rgba(255,255,255,0.05)); font-weight: 600; }
 .msg.assistant .msg-content :deep(th[align="right"]), .msg.assistant .msg-content :deep(td[align="right"]) { text-align: right; }
 .msg.assistant .msg-content :deep(th[align="center"]), .msg.assistant .msg-content :deep(td[align="center"]) { text-align: center; }

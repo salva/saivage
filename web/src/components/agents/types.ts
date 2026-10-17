@@ -26,6 +26,17 @@ export interface Round {
   requestedModelSpec?: string;
 }
 
+export interface ToolGroup {
+  kind: "tool_group";
+  id: string;
+  label: string;
+  summary: string;
+  pairs: ToolPair[];
+  status: ToolPairStatus;
+}
+
+export type ToolListItem = ToolPair | ToolGroup;
+
 export type TimelineItem =
   | { kind: "round"; id: string; timestamp: string; round: Round }
   | { kind: "diagnostic"; id: string; timestamp: string; diagnostic: ConversationEntry }

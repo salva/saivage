@@ -10,8 +10,10 @@ export type AgentRole =
   | "data_agent"
   | "reviewer"
   | "designer"
+  | "critic"
   | "inspector"
-  | "chat";
+  | "chat"
+  | "librarian";
 
 export interface AgentCompactionState {
   count: number;

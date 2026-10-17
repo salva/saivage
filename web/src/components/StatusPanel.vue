@@ -82,14 +82,17 @@ function roleColor(role: string): string {
     case "researcher": return "var(--warn)";
     case "data_agent": return "var(--teal)";
     case "reviewer": return "var(--purple)";
+    case "designer": return "var(--pink, var(--accent))";
+    case "critic": return "var(--pink, var(--accent))";
     case "inspector": return "var(--orange)";
+    case "librarian": return "var(--teal)";
     case "chat": return "var(--text-muted)";
     default: return "var(--text)";
   }
 }
 
 const ROLE_ORDER: Record<AgentRole, number> = {
-  planner: 0, manager: 1, coder: 2, researcher: 3, data_agent: 4, reviewer: 5, designer: 6, inspector: 7, chat: 8,
+  planner: 0, manager: 1, coder: 2, researcher: 3, data_agent: 4, reviewer: 5, designer: 6, critic: 7, inspector: 8, librarian: 9, chat: 10,
 };
 
 const stats = computed(() => {

@@ -745,6 +745,10 @@ function parseJson(content: string): unknown {
   font-size: 12px;
   line-height: 1.5;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .console-pill.warn {
@@ -765,7 +769,11 @@ function parseJson(content: string): unknown {
   font-size: 12px;
   line-height: 1.55;
   white-space: pre-wrap;
-  word-break: break-word;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 @media (max-width: 900px) {

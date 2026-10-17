@@ -133,12 +133,33 @@
   border: 1px solid var(--code-block-border);
   border-radius: 6px;
   padding: 10px 12px;
-  overflow-x: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.5;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  min-width: 0;
+  max-width: 100%;
   color: var(--code-block-text);
+}
+
+.code-block code,
+.text-content-wrap code {
+  white-space: inherit;
+  overflow-wrap: inherit;
+  word-break: inherit;
+}
+
+.text-content-wrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
 }
 
 /* ── JSON / Syntax highlighting ──────────────────────────────────────────── */

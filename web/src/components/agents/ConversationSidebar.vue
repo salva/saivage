@@ -49,7 +49,9 @@ function roleColor(role: AgentRole): string {
     case "data_agent": return "var(--teal)";
     case "reviewer": return "var(--purple)";
     case "designer": return "var(--pink, var(--accent))";
+    case "critic": return "var(--pink, var(--accent))";
     case "inspector": return "var(--orange)";
+    case "librarian": return "var(--teal)";
     case "chat": return "var(--text-muted)";
   }
 }
